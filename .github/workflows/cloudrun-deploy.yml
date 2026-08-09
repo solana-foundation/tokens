@@ -35,7 +35,7 @@ jobs:
     timeout-minutes: 20
     environment: ${{ inputs.env == 'prd' && 'production' || 'staging' }}
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v4
 
       - id: auth
         uses: google-github-actions/auth@71f986410dfbc7added4569d411d040a91dc6935 # v2
