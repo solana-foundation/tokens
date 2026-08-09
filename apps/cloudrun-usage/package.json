@@ -21,7 +21,7 @@
     "postgres": "^3.4.5"
   },
   "devDependencies": {
-    "@eslint/js": "^9.16.0",
+    "@eslint/js": "^10.0.1",
     "@tokens/eslint-config": "workspace:*",
     "@tokens/typescript-config": "workspace:*",
     "@types/bun": "^1.1.14",
