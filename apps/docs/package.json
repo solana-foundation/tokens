@@ -17,7 +17,7 @@
     "@tokens/ui": "workspace:*",
     "@types/mdx": "^2.0.13",
     "fumadocs-core": "^16.7.15",
-    "fumadocs-mdx": "^14.2.14",
+    "fumadocs-mdx": "^15.2.2",
     "fumadocs-ui": "^16.7.15",
     "next": "16.3.0",
     "react": "^19.2.3",
