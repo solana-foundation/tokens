@@ -14,7 +14,7 @@
     "node": ">=20"
   },
   "dependencies": {
-    "@clerk/nextjs": "^6.39.5",
+    "@clerk/nextjs": "^7.7.0",
     "@solana/design-system": "^1.0.0",
     "@tanstack/react-query": "^5.90.12",
     "@tanstack/react-table": "^8.21.3",
