@@ -19,7 +19,7 @@
     "@radix-ui/react-dialog": "^1.1.15",
     "@solana/design-system": "^1.0.0",
     "@tanstack/react-query": "^5.90.12",
-    "@tanstack/react-table": "^8.21.3",
+    "@tanstack/react-table": "^9.0.0",
     "@tokens/ui": "workspace:*",
     "@wallet-standard/app": "^1.1.0",
     "class-variance-authority": "^0.7.1",
