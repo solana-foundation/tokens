@@ -42,14 +42,33 @@ const SK_HYNIX_ONDO_MINT = 'Huyb2fyDDjSuDKCRWsN9ci2rmcgPo6NFiLbx9ZDondo';
 const SK_HYNIX_XSTOCK_MINT = 'XsnhgGRQwhExfS2bmWzR6EYddKGPRGDEjeJsatkmKqU';
 const TAKE_TWO_BACKPACK_MINT = 'TTWofwAge91oFhZs7kpQdyrVRkmevgM88xijGvQFbKo';
 
+const ANTHROPIC_PRESTOCK_MINT = 'Pren1FvFX6J3E4kXhJuCiAD5aDmGEb7qJRncwA8Lkhw';
+const ANDURIL_PRESTOCK_MINT = 'PresTj4Yc2bAR197Er7wz4UUKSfqt6FryBEdAriBoQB';
+const POLYMARKET_PRESTOCK_MINT = 'Pre8AREmFPtoJFT8mQSXQLh56cwJmM7CFDRuoGBZiUP';
+const KALSHI_PRESTOCK_MINT = 'PreLWGkkeqG1s4HEfFZSy9moCrJ7btsHuUtfcCeoRua';
+
 const PRE_STOCK_MINTS: string[] = [
     SPACEX_PRESTOCK_MINT,
     OPENAI_PRESTOCK_MINT,
-    'Pren1FvFX6J3E4kXhJuCiAD5aDmGEb7qJRncwA8Lkhw',
-    'PresTj4Yc2bAR197Er7wz4UUKSfqt6FryBEdAriBoQB',
-    'Pre8AREmFPtoJFT8mQSXQLh56cwJmM7CFDRuoGBZiUP',
-    'PreLWGkkeqG1s4HEfFZSy9moCrJ7btsHuUtfcCeoRua',
+    ANTHROPIC_PRESTOCK_MINT,
+    ANDURIL_PRESTOCK_MINT,
+    POLYMARKET_PRESTOCK_MINT,
+    KALSHI_PRESTOCK_MINT,
 ];
+
+/**
+ * Display metadata for PreStocks mints that are not promoted to a hand-curated asset.
+ *
+ * Without this, `buildPreStockAssets` emits a canonical entry carrying only an address, so a
+ * consumer comparing a candidate mint against the canonical one has nothing to compare but the
+ * address itself. SpaceX and OpenAI already avoid this by being fully described above.
+ */
+const PRE_STOCK_METADATA: Record<string, { symbol: string; name: string }> = {
+    [ANTHROPIC_PRESTOCK_MINT]: { symbol: 'ANTHROPIC', name: 'Anthropic PreStocks' },
+    [ANDURIL_PRESTOCK_MINT]: { symbol: 'ANDURIL', name: 'Anduril PreStocks' },
+    [POLYMARKET_PRESTOCK_MINT]: { symbol: 'POLYMARKET', name: 'Polymarket PreStocks' },
+    [KALSHI_PRESTOCK_MINT]: { symbol: 'KALSHI', name: 'Kalshi PreStocks' },
+};
 
 const UNLISTED_STOCK_MINTS: string[] = [
     'B5KufqHkskgGYwMXtL8FSHgREAkMQvE3ykhH5Kmondo',
@@ -526,18 +545,22 @@ function buildSpecialEquityAssets(): CanonicalAsset[] {
 function buildPreStockAssets(existingMints: ReadonlySet<string>): CanonicalAsset[] {
     return PRE_STOCK_MINTS.filter(mint => !existingMints.has(mint) && !SPECIAL_EQUITY_MINTS.has(mint)).map(mint => {
         const assetId = preStockAssetId(mint);
+        const metadata = PRE_STOCK_METADATA[mint];
 
         return {
             assetId,
+            ...(metadata ? { name: metadata.name, symbol: metadata.symbol } : {}),
             category: 'equity',
-            aliases: uniqueStrings([assetId, mint]),
+            aliases: uniqueStrings([assetId, mint, ...(metadata ? [metadata.symbol, metadata.name] : [])]),
             variants: [
                 {
                     variantId: `${assetId}:mint`,
                     mint,
+                    ...(metadata ? { symbol: metadata.symbol, name: metadata.name } : {}),
                     kind: 'tokenized_equity',
                     trustTier: defaultTrustTier(),
-                    tags: ['curated:stocks'],
+                    tags: metadata ? ['curated:stocks', 'PreStocks'] : ['curated:stocks'],
+                    ...(metadata ? { label: 'PreStocks' } : {}),
                     stockVariantTier: 'not_redeemable',
                 },
             ],
