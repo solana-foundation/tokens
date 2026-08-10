@@ -160,6 +160,12 @@ function makeJobsRepo(state: FakeState): JobsRepo {
         async pruneApiRequestEventsForProject() {
             return 0;
         },
+        async ensureApiRequestEventsPartition() {
+            return 'created' as const;
+        },
+        async countApiRequestEventsDefaultRows() {
+            return 0;
+        },
         async getOhlcvBounds(address, interval) {
             return state.ohlcvBoundsByKey?.[`${address}\n${interval}`] ?? { minTime: null, maxTime: null };
         },

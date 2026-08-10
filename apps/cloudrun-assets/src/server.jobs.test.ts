@@ -196,6 +196,8 @@ function emptyCronDeps(): CronDeps {
             async applyEndpointDailyRollupDelta() {},
             async listAllProjectIds() { return []; },
             async pruneApiRequestEventsForProject() { return 0; },
+            async ensureApiRequestEventsPartition() { return 'created' as const; },
+            async countApiRequestEventsDefaultRows() { return 0; },
             async getOhlcvBounds() { return { minTime: null, maxTime: null }; },
             async upsertOhlcvCandles() { return { inserted: 0, updated: 0, skipped: 0 }; },
             async applyRollupBatchAtomic() { return true; },

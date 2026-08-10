@@ -2,7 +2,7 @@
 
 Cloud Run service that handles the `usage` slice of the Convex → GCP migration: platform API-key auth, request logging, Redis usage-aggregate ingest, and the dashboard-facing user/project/usage queries.
 
-Unlike the other `cloudrun-*` services, `usage` has `ingress = INGRESS_TRAFFIC_ALL` (needed for externally-sourced webhook/ingest traffic). The canonical event rollup + prune crons live on **cloudrun-assets** (`/jobs/rollup-active-api-usage`, `/jobs/prune-api-request-events`) — this service intentionally hosts no crons to avoid double-counting.
+Unlike the other `cloudrun-*` services, `usage` has `ingress = INGRESS_TRAFFIC_ALL` (needed for externally-sourced webhook/ingest traffic). The canonical event rollup + prune + partition-maintenance crons live on **cloudrun-assets** (`/jobs/rollup-active-api-usage`, `/jobs/prune-api-request-events`, `/jobs/create-api-usage-partitions`) — this service intentionally hosts no crons to avoid double-counting.
 
 ## Wire format
 

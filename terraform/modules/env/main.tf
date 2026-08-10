@@ -452,6 +452,18 @@ module "scheduler_jobs" {
       attempt_deadline = "540s"
     },
     {
+      # Rolls api_request_events monthly partition coverage forward (current
+      # month + monthsAhead). Idempotent; daily so a failed run self-heals
+      # well before a month boundary.
+      name      = "create-api-usage-partitions"
+      schedule  = "45 0 * * *"
+      http_path = "/jobs/create-api-usage-partitions"
+      body_json = jsonencode({
+        monthsAhead = 3
+      })
+      attempt_deadline = "540s"
+    },
+    {
       name      = "refresh-curated-ohlcv-15m"
       schedule  = "6,36 * * * *"
       http_path = "/jobs/refresh-curated-ohlcv-15m"

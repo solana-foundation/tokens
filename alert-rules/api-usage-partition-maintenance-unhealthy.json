@@ -1,0 +1,93 @@
+{
+  "uid": "tokens-api-usage-partitions-unhealthy",
+  "title": "tokens-assets: api_request_events partition maintenance unhealthy",
+  "ruleGroup": "tokens-crons",
+  "folderUID": "tokens-xyz",
+  "noDataState": "OK",
+  "execErrState": "OK",
+  "for": "0s",
+  "data": [
+    {
+      "refId": "A",
+      "datasourceUid": "grafanacloud-logs",
+      "queryType": "range",
+      "relativeTimeRange": {
+        "from": 90000,
+        "to": 0
+      },
+      "model": {
+        "expr": "sum(count_over_time({service=\"tokens-assets-prd-us\"} |~ \"\\\\[createApiUsagePartitions\\\\] ensure failed|\\\\[createApiUsagePartitions\\\\] probe failed|\\\\[createApiUsagePartitions\\\\] default partition has rows\" [25h]))",
+        "queryType": "range",
+        "refId": "A"
+      }
+    },
+    {
+      "refId": "B",
+      "datasourceUid": "__expr__",
+      "queryType": "",
+      "relativeTimeRange": {
+        "from": 0,
+        "to": 0
+      },
+      "model": {
+        "type": "reduce",
+        "refId": "B",
+        "expression": "A",
+        "reducer": "last",
+        "settings": {
+          "mode": "replaceNN",
+          "replaceWithValue": 0
+        }
+      }
+    },
+    {
+      "refId": "C",
+      "datasourceUid": "__expr__",
+      "queryType": "",
+      "relativeTimeRange": {
+        "from": 0,
+        "to": 0
+      },
+      "model": {
+        "type": "threshold",
+        "refId": "C",
+        "expression": "B",
+        "conditions": [
+          {
+            "evaluator": {
+              "type": "gt",
+              "params": [
+                0
+              ]
+            },
+            "operator": {
+              "type": "and"
+            },
+            "query": {
+              "params": [
+                "B"
+              ]
+            },
+            "reducer": {
+              "type": "last",
+              "params": []
+            },
+            "type": "query"
+          }
+        ]
+      }
+    }
+  ],
+  "condition": "C",
+  "labels": {
+    "service": "tokens-assets",
+    "severity": "warning",
+    "pagerduty": "false",
+    "slack": "true"
+  },
+  "annotations": {
+    "summary": "api_request_events partition pre-creation failing or rows landing in the default partition",
+    "description": "The daily create-api-usage-partitions cron logged a partition-ensure failure, or its probe found rows from the covered era in api_request_events_default (a month boundary was missed). Once rows for a month sit in the default partition, that month's partition can no longer be created with plain DDL and requires moving the rows out before ATTACH. Check Loki for [createApiUsagePartitions] lines and the Cloud Scheduler run history for tokens-create-api-usage-partitions-prd.",
+    "runbook_url": "https://github.com/solana-foundation/tokens/issues/23"
+  }
+}

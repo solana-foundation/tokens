@@ -2,6 +2,7 @@ import { describe, expect, it } from 'bun:test';
 
 import {
     InvalidArgsError,
+    createApiUsagePartitions,
     pruneApiRequestEvents,
     refreshCuratedAssetMarkets,
     refreshCuratedAssetRisk,
@@ -78,6 +79,9 @@ interface MockRepoState {
     allProjectIds?: string[];
     prunedByProject?: Record<string, number>;
     pruneCalls?: { projectId: string; cutoffTs: number; beforeCreationTime: number }[];
+    partitionEnsureCalls?: { tableName: string; fromBound: string; toBound: string }[];
+    partitionEnsureOutcomes?: Record<string, 'created' | 'exists' | 'bound_mismatch' | 'throw'>;
+    defaultPartitionRows?: number;
     ohlcvBoundsByKey?: Record<string, { minTime: number | null; maxTime: number | null }>;
     upsertedOhlcvBatches?: { address: string; interval: string; candles: OhlcvCandle[] }[];
     ohlcvUpsertResult?: OhlcvUpsertResult;
@@ -98,6 +102,7 @@ function makeRepo(state: MockRepoState = {}): JobsRepo {
     state.appliedEndpointDeltas ??= [];
     state.upsertedOhlcvBatches ??= [];
     state.pruneCalls ??= [];
+    state.partitionEnsureCalls ??= [];
     return {
         async upsertVariantMarketFromBirdeye(args) {
             state.upsertedBirdeye!.push(args);
@@ -221,6 +226,15 @@ function makeRepo(state: MockRepoState = {}): JobsRepo {
         async pruneApiRequestEventsForProject(projectId, cutoffTs, beforeCreationTime) {
             state.pruneCalls!.push({ projectId, cutoffTs, beforeCreationTime });
             return state.prunedByProject?.[projectId] ?? 0;
+        },
+        async ensureApiRequestEventsPartition(tableName, fromBound, toBound) {
+            state.partitionEnsureCalls!.push({ tableName, fromBound, toBound });
+            const outcome = state.partitionEnsureOutcomes?.[tableName];
+            if (outcome === 'throw') throw new Error(`ensure failed for ${tableName}`);
+            return outcome ?? 'created';
+        },
+        async countApiRequestEventsDefaultRows() {
+            return state.defaultPartitionRows ?? 0;
         },
         async getOhlcvBounds(address, interval) {
             return state.ohlcvBoundsByKey?.[`${address}\n${interval}`] ?? { minTime: null, maxTime: null };
@@ -810,6 +824,135 @@ describe('pruneApiRequestEvents', () => {
         const res = await pruneApiRequestEvents(deps, {});
         expect(res.failed).toBe(1);
         expect(res.deleted).toBe(3);
+    });
+});
+
+describe('createApiUsagePartitions', () => {
+    it('ensures the current month plus monthsAhead future months with UTC month bounds', async () => {
+        const { deps, state } = makeDeps({
+            now: () => Date.UTC(2026, 7, 10, 12, 0, 0), // 2026-08-10T12:00Z
+            state: {
+                partitionEnsureOutcomes: { api_request_events_y2026m08: 'exists' },
+            },
+        });
+        const res = await createApiUsagePartitions(deps, { monthsAhead: 3 });
+        expect(res.ok).toBe(true);
+        expect(res.processed).toBe(4);
+        expect(state.partitionEnsureCalls!.map(c => c.tableName)).toEqual([
+            'api_request_events_y2026m08',
+            'api_request_events_y2026m09',
+            'api_request_events_y2026m10',
+            'api_request_events_y2026m11',
+        ]);
+        expect(state.partitionEnsureCalls![0]).toEqual({
+            tableName: 'api_request_events_y2026m08',
+            fromBound: '2026-08-01 00:00:00+00',
+            toBound: '2026-09-01 00:00:00+00',
+        });
+        expect(state.partitionEnsureCalls![1]).toEqual({
+            tableName: 'api_request_events_y2026m09',
+            fromBound: '2026-09-01 00:00:00+00',
+            toBound: '2026-10-01 00:00:00+00',
+        });
+        expect(res.existing).toEqual(['api_request_events_y2026m08']);
+        expect(res.created).toEqual([
+            'api_request_events_y2026m09',
+            'api_request_events_y2026m10',
+            'api_request_events_y2026m11',
+        ]);
+        expect(res.failed).toBe(0);
+        expect(res.boundMismatches).toEqual([]);
+    });
+
+    it('crosses year boundaries with correct partition names and bounds', async () => {
+        const { deps, state } = makeDeps({
+            now: () => Date.UTC(2026, 10, 15), // 2026-11-15T00:00Z
+        });
+        const res = await createApiUsagePartitions(deps, { monthsAhead: 3 });
+        expect(res.ok).toBe(true);
+        expect(state.partitionEnsureCalls!.map(c => c.tableName)).toEqual([
+            'api_request_events_y2026m11',
+            'api_request_events_y2026m12',
+            'api_request_events_y2027m01',
+            'api_request_events_y2027m02',
+        ]);
+        expect(state.partitionEnsureCalls![1]).toEqual({
+            tableName: 'api_request_events_y2026m12',
+            fromBound: '2026-12-01 00:00:00+00',
+            toBound: '2027-01-01 00:00:00+00',
+        });
+        expect(state.partitionEnsureCalls![2]).toEqual({
+            tableName: 'api_request_events_y2027m01',
+            fromBound: '2027-01-01 00:00:00+00',
+            toBound: '2027-02-01 00:00:00+00',
+        });
+    });
+
+    it('is idempotent when every partition already exists', async () => {
+        const { deps } = makeDeps({
+            now: () => Date.UTC(2026, 7, 10),
+            state: {
+                partitionEnsureOutcomes: {
+                    api_request_events_y2026m08: 'exists',
+                    api_request_events_y2026m09: 'exists',
+                    api_request_events_y2026m10: 'exists',
+                    api_request_events_y2026m11: 'exists',
+                },
+            },
+        });
+        const res = await createApiUsagePartitions(deps, { monthsAhead: 3 });
+        expect(res.created).toEqual([]);
+        expect(res.existing).toHaveLength(4);
+        expect(res.failed).toBe(0);
+    });
+
+    it('keeps ensuring later months when one month fails', async () => {
+        const { deps, state } = makeDeps({
+            now: () => Date.UTC(2026, 7, 10),
+            state: {
+                partitionEnsureOutcomes: { api_request_events_y2026m09: 'throw' },
+            },
+        });
+        const res = await createApiUsagePartitions(deps, { monthsAhead: 3 });
+        expect(res.failed).toBe(1);
+        expect(state.partitionEnsureCalls!).toHaveLength(4);
+        expect(res.created).toEqual([
+            'api_request_events_y2026m08',
+            'api_request_events_y2026m10',
+            'api_request_events_y2026m11',
+        ]);
+    });
+
+    it('reports a relation that exists with unexpected bounds as a bound mismatch', async () => {
+        const { deps } = makeDeps({
+            now: () => Date.UTC(2026, 7, 10),
+            state: {
+                partitionEnsureOutcomes: { api_request_events_y2026m09: 'bound_mismatch' },
+            },
+        });
+        const res = await createApiUsagePartitions(deps, { monthsAhead: 3 });
+        expect(res.boundMismatches).toEqual(['api_request_events_y2026m09']);
+        expect(res.failed).toBe(0);
+        expect(res.created).toEqual([
+            'api_request_events_y2026m08',
+            'api_request_events_y2026m10',
+            'api_request_events_y2026m11',
+        ]);
+    });
+
+    it('surfaces the default-partition row probe in the result', async () => {
+        const { deps } = makeDeps({
+            now: () => Date.UTC(2026, 7, 10),
+            state: { defaultPartitionRows: 5 },
+        });
+        const res = await createApiUsagePartitions(deps, {});
+        expect(res.defaultPartitionRows).toBe(5);
+        expect(res.failed).toBe(0);
+    });
+
+    it('rejects non-numeric args with InvalidArgsError', async () => {
+        const { deps } = makeDeps();
+        await expect(createApiUsagePartitions(deps, { monthsAhead: 'lots' })).rejects.toThrow(/numeric arg/);
     });
 });
 

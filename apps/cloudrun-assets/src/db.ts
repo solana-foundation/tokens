@@ -1455,6 +1455,74 @@ export function makePostgresJobsRepo(sql: Sql): JobsRepo {
             return rows[0]?.count ?? 0;
         },
 
+        async ensureApiRequestEventsPartition(tableName, fromBound, toBound) {
+            // Only the create-api-usage-partitions cron calls this, with
+            // internally generated values — but DDL cannot take bind
+            // parameters, so anything interpolated into it is pinned by
+            // regex first. These checks are load-bearing; do not relax them.
+            if (!/^api_request_events_y\d{4}m(0[1-9]|1[0-2])$/.test(tableName)) {
+                throw new Error(`ensureApiRequestEventsPartition: invalid table name ${JSON.stringify(tableName)}`);
+            }
+            const boundPattern = /^\d{4}-(0[1-9]|1[0-2])-01 00:00:00\+00$/;
+            if (!boundPattern.test(fromBound) || !boundPattern.test(toBound)) {
+                throw new Error('ensureApiRequestEventsPartition: invalid partition bound literal');
+            }
+            const expectedBounds = `FOR VALUES FROM ('${fromBound}') TO ('${toBound}')`;
+            try {
+                return await sql.begin(async tx => {
+                    // TimeZone pinned so pg_get_expr renders bounds
+                    // deterministically; lock_timeout so the ACCESS EXCLUSIVE
+                    // acquisition on the parent fails fast instead of damming
+                    // the insert path — the daily cron retries tomorrow.
+                    await tx`SET LOCAL TimeZone = 'UTC'`;
+                    await tx`SET LOCAL lock_timeout = '5s'`;
+                    const rows = await tx<{ bounds: string | null; parent_ok: boolean }[]>`
+                        SELECT pg_get_expr(c.relpartbound, c.oid) AS bounds,
+                               COALESCE(i.inhparent = 'public.api_request_events'::regclass, false) AS parent_ok
+                        FROM pg_class c
+                        JOIN pg_namespace n ON n.oid = c.relnamespace
+                        LEFT JOIN pg_inherits i ON i.inhrelid = c.oid
+                        WHERE n.nspname = 'public' AND c.relname = ${tableName}
+                    `;
+                    const row = rows[0];
+                    if (row) {
+                        return row.parent_ok && row.bounds === expectedBounds ? 'exists' : 'bound_mismatch';
+                    }
+                    await tx.unsafe(
+                        `CREATE TABLE IF NOT EXISTS public.${tableName} PARTITION OF public.api_request_events ` +
+                            `FOR VALUES FROM ('${fromBound}') TO ('${toBound}')`,
+                    );
+                    return 'created';
+                });
+            } catch (err) {
+                // Concurrent creation race: IF NOT EXISTS checks the name
+                // before taking the creation lock, so the loser of a race can
+                // still surface duplicate_table (42P07) or a catalog unique
+                // violation (23505). The partition exists either way.
+                const code = (err as { code?: unknown }).code;
+                if (code === '42P07' || code === '23505') return 'exists';
+                throw err;
+            }
+        },
+
+        async countApiRequestEventsDefaultRows(limit) {
+            const lim = Math.min(Math.max(limit, 1), 1_000_000);
+            // Only rows inside the partitioned era count as misplaced;
+            // 0003 anticipated pre-coverage historical imports living in the
+            // default partition, and coverage starts at 2026-05-01. LIMIT
+            // bounds the probe so it can never become an unbounded count.
+            const rows = await sql<{ count: number }[]>`
+                SELECT count(*)::int AS count
+                FROM (
+                    SELECT 1
+                    FROM api_request_events_default
+                    WHERE created_at >= '2026-05-01 00:00:00+00'::timestamptz
+                    LIMIT ${lim}
+                ) t
+            `;
+            return rows[0]?.count ?? 0;
+        },
+
         async getOhlcvBounds(address, interval) {
             const rows = await sql<{ min_time: number | null; max_time: number | null }[]>`
                 SELECT MIN(time) AS min_time, MAX(time) AS max_time

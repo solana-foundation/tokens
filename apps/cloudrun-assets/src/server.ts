@@ -93,6 +93,7 @@ import {
 } from './handlers/ohlcvReads';
 import {
     InvalidArgsError as CronInvalidArgsError,
+    createApiUsagePartitions,
     pruneApiRequestEvents,
     refreshCuratedAssetMarkets,
     refreshCuratedAssetRisk,
@@ -411,6 +412,7 @@ export function createApp(deps: ServerDeps) {
     jobs['refresh-curated-asset-risk'] = refreshCuratedAssetRisk;
     jobs['rollup-active-api-usage'] = rollupActiveApiUsage;
     jobs['prune-api-request-events'] = pruneApiRequestEvents;
+    jobs['create-api-usage-partitions'] = createApiUsagePartitions;
     jobs['refresh-curated-ohlcv-15m'] = refreshCuratedOhlcv;
     jobs['refresh-curated-ohlcv-1h'] = refreshCuratedOhlcv;
     jobs['refresh-curated-ohlcv-4h'] = refreshCuratedOhlcv;

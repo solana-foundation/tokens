@@ -312,6 +312,12 @@ export interface JobsRepo {
         beforeCreationTime: number,
         batchSize: number,
     ): Promise<number>;
+    ensureApiRequestEventsPartition(
+        tableName: string,
+        fromBound: string,
+        toBound: string,
+    ): Promise<'created' | 'exists' | 'bound_mismatch'>;
+    countApiRequestEventsDefaultRows(limit: number): Promise<number>;
 
     getOhlcvBounds(address: string, interval: string): Promise<{ minTime: number | null; maxTime: number | null }>;
     upsertOhlcvCandles(
@@ -1774,6 +1780,103 @@ export async function pruneApiRequestEvents(deps: CronDeps, rawArgs: unknown): P
         deleted,
         cutoffTs,
         failed,
+    };
+}
+
+function apiUsagePartitionForMonthUtc(
+    year: number,
+    monthIndex: number,
+): { tableName: string; fromBound: string; toBound: string } {
+    const pad2 = (n: number) => String(n).padStart(2, '0');
+    const monthBound = (d: Date) => `${d.getUTCFullYear()}-${pad2(d.getUTCMonth() + 1)}-01 00:00:00+00`;
+    const from = new Date(Date.UTC(year, monthIndex, 1));
+    const to = new Date(Date.UTC(year, monthIndex + 1, 1));
+    return {
+        tableName: `api_request_events_y${from.getUTCFullYear()}m${pad2(from.getUTCMonth() + 1)}`,
+        fromBound: monthBound(from),
+        toBound: monthBound(to),
+    };
+}
+
+export async function createApiUsagePartitions(deps: CronDeps, rawArgs: unknown): Promise<CronResult> {
+    const args = asObject(rawArgs);
+    const monthsAhead = clampInt(args.monthsAhead, 3, 1, 12);
+
+    const start = deps.now();
+    const now = new Date(start);
+
+    const created: string[] = [];
+    const existing: string[] = [];
+    const boundMismatches: string[] = [];
+    let failed = 0;
+
+    // Current month plus monthsAhead future months, so processed = monthsAhead + 1.
+    for (let k = 0; k <= monthsAhead; k++) {
+        const { tableName, fromBound, toBound } = apiUsagePartitionForMonthUtc(
+            now.getUTCFullYear(),
+            now.getUTCMonth() + k,
+        );
+        try {
+            const outcome = await deps.repo.ensureApiRequestEventsPartition(tableName, fromBound, toBound);
+            if (outcome === 'created') {
+                created.push(tableName);
+            } else if (outcome === 'exists') {
+                existing.push(tableName);
+            } else {
+                boundMismatches.push(tableName);
+                console.error(
+                    `[createApiUsagePartitions] ensure failed month=${tableName} reason=bound_mismatch: a relation with this name exists but is not a partition of api_request_events with bounds [${fromBound}, ${toBound})`,
+                );
+            }
+        } catch (err) {
+            failed += 1;
+            const code = (err as { code?: unknown }).code;
+            if (code === '23514') {
+                console.error(
+                    `[createApiUsagePartitions] ensure failed month=${tableName} code=23514: rows for this range already sit in api_request_events_default, so plain CREATE is blocked; move them out of the default partition and ATTACH the month manually`,
+                );
+            } else {
+                console.error(
+                    `[createApiUsagePartitions] ensure failed month=${tableName}`,
+                    err instanceof Error ? err.message : String(err),
+                );
+            }
+        }
+    }
+
+    // Tripwire: rows inside the covered era (2026-05 onward) sitting in the
+    // default partition mean a month boundary was missed.
+    let defaultPartitionRows = 0;
+    try {
+        defaultPartitionRows = await deps.repo.countApiRequestEventsDefaultRows(100_000);
+        if (defaultPartitionRows > 0) {
+            console.warn(
+                `[createApiUsagePartitions] default partition has rows count=${defaultPartitionRows}: events are falling through to api_request_events_default instead of a monthly partition`,
+            );
+        }
+    } catch (err) {
+        failed += 1;
+        console.error(
+            '[createApiUsagePartitions] probe failed for api_request_events_default',
+            err instanceof Error ? err.message : String(err),
+        );
+    }
+
+    if (failed === 0 && boundMismatches.length === 0) {
+        console.log(
+            `[createApiUsagePartitions] ok created=[${created.join(',')}] existing=[${existing.join(',')}] defaultPartitionRows=${defaultPartitionRows}`,
+        );
+    }
+
+    return {
+        ok: true,
+        processed: monthsAhead + 1,
+        durationMs: deps.now() - start,
+        created,
+        existing,
+        boundMismatches,
+        failed,
+        defaultPartitionRows,
     };
 }
 
