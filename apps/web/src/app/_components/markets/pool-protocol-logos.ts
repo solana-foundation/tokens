@@ -6,6 +6,7 @@ const POOL_PROTOCOL_LOGOS: Array<{ match: RegExp; icon: string }> = [
     { match: /meteora|^met$/i, icon: 'https://www.meteora.ag/icons/v2.svg' },
     { match: /lifinity|lfinity|^lfnty$/i, icon: 'https://lifinity.io/favicon.ico' },
     { match: /byreal/i, icon: 'https://www.byreal.io/favicon.ico' },
+    { match: /manifest/i, icon: '/logos/popular/manifest.svg' },
 ];
 
 export function getPoolProtocolLogo(token: Pick<TokenMarketToken, 'symbol' | 'name' | 'address' | 'icon'> | undefined): string | undefined {

@@ -53,6 +53,7 @@ type PerpsProviderId = PerpsMarketProviderId | 'jupiter';
 const FLASH_TRADE_ICON_SRC = '/logos/popular/flashtrade.png';
 const JUPITER_ICON_SRC = '/logos/popular/jupiter.png';
 const KAMINO_ICON_SRC = '/logos/popular/kamino.png';
+const MANIFEST_ICON_SRC = '/logos/popular/manifest.svg';
 const OMFG_ICON_SRC = '/logos/popular/omfg.svg';
 const PHOENIX_TRADE_ICON_SRC = '/logos/popular/pheonix.png';
 const SUNRISE_ICON_SRC = '/logos/popular/sunrise.svg';
@@ -230,6 +231,12 @@ function getMeteoraPoolUrl(poolAddress: string): string {
     return `https://app.meteora.ag/dlmm/${poolAddress}`;
 }
 
+function getManifestMarketUrl(marketAddress: string): string {
+    // Manifest is a CLOB; its app routes to a market by on-chain market address,
+    // which is exactly the market's address here.
+    return `https://manifest.trade/market/${marketAddress}`;
+}
+
 function getPoolDeepLink(market: TokenMarket): { href: string; name: string } | null {
     const source = (market.source ?? '').trim();
     const address = (market.address ?? '').trim();
@@ -238,6 +245,7 @@ function getPoolDeepLink(market: TokenMarket): { href: string; name: string } | 
     if (/orca/i.test(source)) return { href: getOrcaPoolUrl(address), name: 'Orca' };
     if (/raydium/i.test(source)) return { href: getRaydiumPoolUrl(address), name: 'Raydium' };
     if (/meteora/i.test(source)) return { href: getMeteoraPoolUrl(address), name: 'Meteora' };
+    if (/manifest/i.test(source)) return { href: getManifestMarketUrl(address), name: 'Manifest' };
 
     return null;
 }
@@ -316,6 +324,12 @@ function getSunriseSwapUrl(args: { fromToken: string; toToken: string | undefine
     url.searchParams.set('fromToken', fromToken);
     url.searchParams.set('toToken', toToken);
     return url.toString();
+}
+
+function getManifestSwapUrl(): string {
+    // Manifest is a CLOB whose UI routes by on-chain market address, which we
+    // don't have here, so link to the trade app's landing page.
+    return 'https://manifest.trade/';
 }
 
 function getOmfgSwapUrl(args: { from: string; to: string }): string | null {
@@ -640,6 +654,7 @@ function SwapProvidersDropdownBase({
     const sunriseToToken = buySymbol ?? variantMatch?.variant.symbol ?? variantMatch?.asset.symbol;
     const sunriseUrl = getSunriseSwapUrl({ fromToken: 'USDC', toToken: sunriseToToken });
     const omfgUrl = getOmfgSwapUrl({ from: USDC_MINT, to: safeBuyAddress });
+    const manifestUrl = getManifestSwapUrl();
 
     const { marketsForPoolsTab, poolsByVolume, isMarketsFetched, isMarketsLoading, perpsMarkets } = useSwapMarkets({
         assetId,
@@ -719,6 +734,7 @@ function SwapProvidersDropdownBase({
         ...(sunriseUrl ? [{ href: sunriseUrl, name: 'Sunrise', iconSrc: SUNRISE_ICON_SRC }] : []),
         ...(omfgUrl ? [{ href: omfgUrl, name: 'OMFG', iconSrc: OMFG_ICON_SRC }] : []),
         { href: kaminoUrl, name: 'Kamino', iconSrc: KAMINO_ICON_SRC },
+        { href: manifestUrl, name: 'Manifest', iconSrc: MANIFEST_ICON_SRC },
         { href: orcaUrl, name: 'Orca', iconSrc: 'https://www.orca.so/favicon.ico' },
     ];
 
