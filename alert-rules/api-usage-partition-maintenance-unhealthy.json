@@ -12,7 +12,7 @@
       "datasourceUid": "grafanacloud-logs",
       "queryType": "range",
       "relativeTimeRange": {
-        "from": 90000,
+        "from": 300,
         "to": 0
       },
       "model": {

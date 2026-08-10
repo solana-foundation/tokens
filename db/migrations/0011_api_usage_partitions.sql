@@ -95,4 +95,13 @@ CREATE TABLE IF NOT EXISTS api_request_events_y2027m02 PARTITION OF api_request_
 CREATE TABLE IF NOT EXISTS api_request_events_y2027m03 PARTITION OF api_request_events
     FOR VALUES FROM ('2027-03-01 00:00:00+00') TO ('2027-04-01 00:00:00+00');
 
+-- The create-api-usage-partitions cron probes the default partition daily
+-- for covered-era rows (created_at >= 2026-05-01). No inherited index covers
+-- created_at (the PK leads with id), so without this the probe is a
+-- sequential scan of whatever sits in the default partition — 0003
+-- explicitly anticipates historical imports living there. Index only this
+-- partition; the hot-path monthly partitions are unaffected.
+CREATE INDEX IF NOT EXISTS api_request_events_default_created_at_idx
+    ON api_request_events_default (created_at);
+
 INSERT INTO schema_migrations(version) VALUES ('0011_api_usage_partitions');
