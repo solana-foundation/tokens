@@ -27,6 +27,7 @@ export const BITCOIN_VARIANT_GROUP: TokenVariantGroup = {
         { address: '6DNSN2BJsaPFdFFc1zP37kkeNe4Usc1Sqkzr9C9vPWcU' },
         { address: '9hX59xHHnaZXLU6quvm5uGY2iDiT3jczaReHy6A6TYKw' },
         { address: '21BTCo9hWHjGYYUQQLqjLgDBxjcn8vDt4Zic7TB3UbNE' },
+        { address: 'upBTCBNCis2uHqFdCg2vFACLhkJ3NKwYbC4k8xbHjj4', label: 'upBTC' }, // Manifest Destiny BTC vault
     ],
 };
 

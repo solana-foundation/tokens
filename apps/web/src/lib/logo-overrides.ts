@@ -158,6 +158,14 @@ const POPULAR_LOGO_BY_SYMBOL: Record<string, string> = {
     SUI: '/logos/currencies/sui.png',
     TETHER: '/logos/popular/tether.png',
     USDT: '/logos/popular/tether.png',
+    // Manifest Destiny vault LP tokens.
+    UPCASH: '/logos/popular/upcash.svg',
+    UPUSD1: '/logos/popular/upusd1.png',
+    UPPYUSD: '/logos/popular/uppyusd.svg',
+    UPUSDS: '/logos/popular/upusds.svg',
+    UPUSDG: '/logos/popular/upusdg.png',
+    UPJITOSOL: '/logos/popular/upjitosol.png',
+    UPBTC: '/logos/popular/upbtc.png',
 };
 
 const POPULAR_LOGO_BY_MINT: Record<string, string> = {
@@ -170,6 +178,16 @@ const POPULAR_LOGO_BY_MINT: Record<string, string> = {
     // SpaceX (Ondo Tokenized) — SPCXon. Market data sources have no icon for this mint yet;
     // same Ondo CDN pattern as their other tokenized equities (tslaon, nvdaon, ...).
     wzAyQTorWyoVXuJKj2x8EqKEGJpS13z6EWE9z5Aondo: 'https://cdn.ondo.finance/tokens/logos/spcxon_160x160.png',
+
+    // Manifest Destiny vault LP tokens — curated logos so the variant lists show
+    // them even when market data sources have no icon for the mint.
+    upCASH4EueUGr6QpzmfZcec9DE76SiUipfj97HYMUrS: '/logos/popular/upcash.svg',
+    upUSD1NPCzeFsNUj4mgqoUjwoJZpzxmfq3H6yHNbzd6: '/logos/popular/upusd1.png',
+    upPyusDv3nEtrUE6ESsX2j6BiZhwBjzogoirFenYg6m: '/logos/popular/uppyusd.svg',
+    upUSDSL8V1nhX9B7N51XtHQZ9RAS1v7RKURXrFDdamp: '/logos/popular/upusds.svg',
+    upUSDGePfXHWusRCRqGYkuSrQY3DkEGwu5w3VfzkhsB: '/logos/popular/upusdg.png',
+    upJ1TohUMJaeZGcFDBf6V3zxkm4KCpx5PiUfzWXw3aA: '/logos/popular/upjitosol.png',
+    upBTCBNCis2uHqFdCg2vFACLhkJ3NKwYbC4k8xbHjj4: '/logos/popular/upbtc.png',
 };
 
 /**

@@ -68,6 +68,12 @@ const STABLECOIN_OVERRIDES: Record<string, StablecoinOverride> = {
     '4UbvZiomFvXDnZSz6vdHiDNiHozH2ykTEqjhhbVHiv9z': { name: 'XUSD', symbol: 'XUSD' },
     myrcAs6bpP2g5oGHZ3qpgrfZQAFkbo9KUHdqYDXMjGv: { name: 'MYRC', symbol: 'MYRC' },
     AUDDttiEpCydTm7joUMbYddm72jAWXZnCpPZtDoxqBSw: { name: 'AUDD', symbol: 'AUDD' },
+    // Manifest Destiny vault LP tokens (yield-bearing wrappers of USD stablecoins).
+    upCASH4EueUGr6QpzmfZcec9DE76SiUipfj97HYMUrS: { name: 'upCASH', symbol: 'upCASH' },
+    upUSD1NPCzeFsNUj4mgqoUjwoJZpzxmfq3H6yHNbzd6: { name: 'upUSD1', symbol: 'upUSD1' },
+    upPyusDv3nEtrUE6ESsX2j6BiZhwBjzogoirFenYg6m: { name: 'upPYUSD', symbol: 'upPYUSD' },
+    upUSDSL8V1nhX9B7N51XtHQZ9RAS1v7RKURXrFDdamp: { name: 'upUSDS', symbol: 'upUSDS' },
+    upUSDGePfXHWusRCRqGYkuSrQY3DkEGwu5w3VfzkhsB: { name: 'upUSDG', symbol: 'upUSDG' },
 };
 
 const USD_VARIANT_SYMBOLS = new Set<string>(
@@ -107,11 +113,19 @@ const USD_VARIANT_SYMBOLS = new Set<string>(
         'USX',
         'jupUSD',
         'XUSD',
+        // Manifest Destiny vault LP tokens (yield-bearing USD wrappers).
+        'upCASH',
+        'upUSD1',
+        'upPYUSD',
+        'upUSDS',
+        'upUSDG',
     ].map(value => value.trim().toLowerCase()),
 );
 
 const USD_YIELD_VARIANT_SYMBOLS = new Set<string>(
-    ['USDY', 'USD*', 'legacyUSD*', 'sUSD', 'syrupUSDC'].map(value => value.trim().toLowerCase()),
+    ['USDY', 'USD*', 'legacyUSD*', 'sUSD', 'syrupUSDC', 'upCASH', 'upUSD1', 'upPYUSD', 'upUSDS', 'upUSDG'].map(value =>
+        value.trim().toLowerCase(),
+    ),
 );
 
 const EUR_VARIANT_SYMBOLS = new Set<string>(

@@ -21,6 +21,7 @@ const LST_OVERRIDES: Record<string, LstOverride> = {
     hy1oXYgrBW6PVcJ4s6s2FKavRdwgWTXdfE69AxT7kPT: { name: 'hyloSOL', symbol: 'hyloSOL' },
     sctmB7GPi5L2Q5G9tUSzXvhZ4YiDMEGcRov9KfArQpx: { name: 'dfdvSOL', symbol: 'dfdvSOL' },
     sctmAy9zFfZznZUWxEMgGtF6PHZ3gwoiCGcfwRua1AZ: { name: 'sctmSOL', symbol: 'sctmSOL' },
+    upJ1TohUMJaeZGcFDBf6V3zxkm4KCpx5PiUfzWXw3aA: { name: 'upJitoSOL', symbol: 'upJitoSOL' },
 };
 
 function normalizeVariantIdSuffix(value: string): string {

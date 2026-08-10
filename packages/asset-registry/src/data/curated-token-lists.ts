@@ -66,6 +66,7 @@ export const CURATED_TOKEN_LISTS = {
             'sctmB7GPi5L2Q5G9tUSzXvhZ4YiDMEGcRov9KfArQpx', // dfdvSOL
             'sctmAy9zFfZznZUWxEMgGtF6PHZ3gwoiCGcfwRua1AZ', // sctmSOL
             'bSo13r4TkiE4KumL71LsHTPpL2euBYLFx6h9HP3piy1', // Added
+            'upJ1TohUMJaeZGcFDBf6V3zxkm4KCpx5PiUfzWXw3aA', // upJitoSOL (Manifest Destiny JitoSOL vault)
         ],
     },
     currencies: {
@@ -117,6 +118,13 @@ export const CURATED_TOKEN_LISTS = {
             'USD1ttGY1N17NEEHLmELoaybftRBUSErhqYiQzvEmuB', // USD1 (World Liberty Financial USD)
             'dngKhBQM3BGvsDHKhrLnjvRKfY5Q7gEnYGToj9Lk8rk', // ZARP (ZARP Stablecoin)
             'JuprjznTrTSp2UFa3ZBUFgwdAmtZCq4MQCwysN55USD', // Added
+
+            // Manifest Destiny vault tokens — yield-bearing LP tokens for USD stablecoin deposits.
+            'upCASH4EueUGr6QpzmfZcec9DE76SiUipfj97HYMUrS', // upCASH (Manifest Destiny CASH vault)
+            'upUSD1NPCzeFsNUj4mgqoUjwoJZpzxmfq3H6yHNbzd6', // upUSD1 (Manifest Destiny USD1 vault)
+            'upPyusDv3nEtrUE6ESsX2j6BiZhwBjzogoirFenYg6m', // upPYUSD (Manifest Destiny PYUSD vault)
+            'upUSDSL8V1nhX9B7N51XtHQZ9RAS1v7RKURXrFDdamp', // upUSDS (Manifest Destiny USDS vault)
+            'upUSDGePfXHWusRCRqGYkuSrQY3DkEGwu5w3VfzkhsB', // upUSDG (Manifest Destiny USDG vault)
 
             // Missing Birdeye token_overview symbol (these would show as "???" without filtering).
             'AUDDttiEpCydTm7joUMbYddm72jAWXZnCpPZtDoxqBSw',

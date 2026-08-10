@@ -1,0 +1,83 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<svg
+   id="USDS-Coin"
+   version="1.1"
+   viewBox="0 0 1000 1000"
+   sodipodi:docname="upUSDS.svg"
+   inkscape:version="1.2.2 (b0a8486541, 2022-12-01)"
+   xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"
+   xmlns:sodipodi="http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd"
+   xmlns="http://www.w3.org/2000/svg"
+   xmlns:svg="http://www.w3.org/2000/svg">
+  <sodipodi:namedview
+     id="namedview521"
+     pagecolor="#ffffff"
+     bordercolor="#000000"
+     borderopacity="0.25"
+     inkscape:showpageshadow="2"
+     inkscape:pageopacity="0.0"
+     inkscape:pagecheckerboard="0"
+     inkscape:deskcolor="#d1d1d1"
+     showgrid="false"
+     inkscape:zoom="0.6151829"
+     inkscape:cx="29.259591"
+     inkscape:cy="581.94075"
+     inkscape:window-width="2560"
+     inkscape:window-height="1043"
+     inkscape:window-x="0"
+     inkscape:window-y="0"
+     inkscape:window-maximized="1"
+     inkscape:current-layer="USDS-Coin" />
+  <defs
+     id="defs515">
+    <style
+       id="style508">
+      .cls-1 {
+        fill: url(#radial-gradient);
+      }
+
+      .cls-1, .cls-2 {
+        stroke-width: 0px;
+      }
+
+      .cls-2 {
+        fill: #fff;
+      }
+    </style>
+    <radialGradient
+       id="radial-gradient"
+       cx="976.2772395"
+       cy="23.9735075"
+       fx="976.2772395"
+       fy="23.9735075"
+       r="2.0690868"
+       gradientTransform="translate(-18064.581412 757167.6887207) rotate(-90) scale(774.3790283)"
+       gradientUnits="userSpaceOnUse">
+      <stop
+         offset="0"
+         stop-color="#ffd232"
+         id="stop510" />
+      <stop
+         offset="1"
+         stop-color="#ff6d6d"
+         id="stop512" />
+    </radialGradient>
+  </defs>
+  <g
+     id="USDS-Coin-2">
+    <circle
+       id="Element"
+       class="cls-1"
+       cx="500"
+       cy="500"
+       r="500" />
+    <path
+       id="Element-2"
+       class="cls-2"
+       d="M308.7752075,631.4499512h-71.1536255c5.8073578,111.0870361,98.7437439,207.6535034,263.558075,207.6535034,164.0899963,0,268.643158-90.0327148,268.643158-206.2026367,0-220.7210693-333.2608948-208.3778076-333.2608948-336.1646118,0-35.5768127,26.8637085-77.6894531,89.3042297-77.6894531,69.7028198,0,151.7467651,54.4559021,157.5562134,124.1566467h70.427124c-7.2602539-112.5398407-116.8963623-190.9537048-256.2999573-190.9537048-144.4844666,0-253.3941803,84.2232666-253.3941803,203.2969055,0,227.2569885,333.26091,197.4875183,333.26091,337.6174622,0,43.5634766-26.8637085,79.8667603-94.387207,79.8667603-84.2232971,0-169.1729736-58.8104248-174.2539062-141.5808716h.000061ZM368.3120117,313.4359436c0,172.8010559,330.3572388,138.677124,330.3572388,323.0970154,0,55.1802368-36.3032837,103.8267212-79.8667603,116.1679077,15.2468872-14.5205078,26.8637085-46.4672241,26.8637085-76.9609985,0-170.6238403-331.0836487-147.3901978-331.0836487-322.370575,0-58.812439,37.7561035-106.0060425,84.9496765-120.5264893-18.1526489,21.7807007-31.2202454,50.0972595-31.2202454,80.5931396h.0000305Z" />
+  </g>
+  <path
+     id="rect443"
+     style="font-variation-settings:'wght' 700;fill:#deb36c;fill-opacity:0.93;stroke-width:2.87263"
+     d="m 833.53797,137.51287 -250.28682,72.33897 67.64297,68.43142 -514.6397,532.00905 49.39409,51.06114 515.17498,-532.5624 68.1727,68.96191 z" />
+</svg>
