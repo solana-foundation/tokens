@@ -110,20 +110,20 @@ export function StatusTimeline({ initialData }: StatusTimelineProps) {
     }
 
     return (
-        <section className="mx-auto flex max-w-[1120px] flex-col gap-10 px-6 py-10">
+        <section className="mx-auto flex max-w-280 flex-col gap-10 px-6 py-10">
             <div className="grid gap-4 md:grid-cols-[minmax(0,1fr)_280px]">
                 <div className="rounded-lg border border-gray-1400/10 bg-white p-5 shadow-[0_1px_2px_rgba(0,0,0,0.04)]">
                     <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
                         <div>
                             <StatusPill state={overview.current.state} />
-                            <p className="mt-4 text-[length:var(--text-heading-xs-size)] font-medium leading-tight text-text-extra-high">
+                            <p className="mt-4 text-(length:--text-heading-xs-size) font-medium leading-tight text-text-extra-high">
                                 {overview.current.summary}
                             </p>
                         </div>
                         <button
                             type="button"
                             onClick={refreshOverview}
-                            className="inline-flex h-9 items-center justify-center gap-2 rounded-full border border-gray-1400/10 px-3 text-[length:var(--text-button-md)] font-semibold text-text-high transition-colors hover:bg-gray-1400/5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-text-extra-high/30"
+                            className="inline-flex h-9 items-center justify-center gap-2 rounded-full border border-gray-1400/10 px-3 text-(length:--text-button-md) font-semibold text-text-high transition-colors hover:bg-gray-1400/5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-text-extra-high/30"
                         >
                             <RefreshCw className="size-4" aria-hidden />
                             Refresh
@@ -137,19 +137,19 @@ export function StatusTimeline({ initialData }: StatusTimelineProps) {
                     </div>
                 </div>
 
-                <div className="rounded-lg border border-gray-1400/10 bg-gray-1400/[0.02] p-5">
-                    <p className="text-[length:var(--text-body-sm-size)] font-medium text-text-medium">Live health</p>
+                <div className="rounded-lg border border-gray-1400/10 bg-gray-1400/2 p-5">
+                    <p className="text-(length:--text-body-sm-size) font-medium text-text-medium">Live health</p>
                     {overview.liveCheck ? (
                         <div className="mt-3">
                             <StatusPill state={overview.liveCheck.state} compact />
-                            <div className="mt-4 space-y-2 text-[length:var(--text-body-sm-size)] text-text-medium">
+                            <div className="mt-4 space-y-2 text-(length:--text-body-sm-size) text-text-medium">
                                 <p>{formatDateTime(overview.liveCheck.checkedAt)}</p>
                                 <p>{formatLatency(overview.liveCheck.latencyMs)}</p>
                                 <p>{overview.liveCheck.status ?? 'No status code'}</p>
                             </div>
                         </div>
                     ) : (
-                        <p className="mt-3 text-[length:var(--text-body-sm-size)] leading-[var(--leading-normal)] text-text-medium">
+                        <p className="mt-3 text-(length:--text-body-sm-size) leading-normal text-text-medium">
                             Not configured.
                         </p>
                     )}
@@ -159,13 +159,13 @@ export function StatusTimeline({ initialData }: StatusTimelineProps) {
             {overview.warning ? <Notice tone="warning" message={overview.warning} /> : null}
             {error ? <Notice tone="error" message={error} /> : null}
 
-            <div className="rounded-lg border border-gray-1400/10 bg-white p-5 shadow-[0_1px_2px_rgba(0,0,0,0.04)]">
+            <div className="min-w-0 rounded-lg border border-gray-1400/10 bg-white p-5 shadow-[0_1px_2px_rgba(0,0,0,0.04)]">
                 <div className="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
                     <div>
-                        <h2 className="text-[length:var(--text-heading-sm-size)] font-medium leading-tight text-text-extra-high">
+                        <h2 className="text-(length:--text-heading-sm-size) font-medium leading-tight text-text-extra-high">
                             90-day history
                         </h2>
-                        <p className="mt-1 text-[length:var(--text-body-sm-size)] text-text-medium">UTC daily checks</p>
+                        <p className="mt-1 text-(length:--text-body-sm-size) text-text-medium">UTC daily checks</p>
                     </div>
                     <StatusLegend />
                 </div>
@@ -180,18 +180,18 @@ export function StatusTimeline({ initialData }: StatusTimelineProps) {
             </div>
 
             {dayData ? (
-                <div className="rounded-lg border border-gray-1400/10 bg-white p-5 shadow-[0_1px_2px_rgba(0,0,0,0.04)]">
+                <div className="min-w-0 rounded-lg border border-gray-1400/10 bg-white p-5 shadow-[0_1px_2px_rgba(0,0,0,0.04)]">
                     <div className="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
                         <div>
-                            <h2 className="text-[length:var(--text-heading-sm-size)] font-medium leading-tight text-text-extra-high">
+                            <h2 className="text-(length:--text-heading-sm-size) font-medium leading-tight text-text-extra-high">
                                 {dayData.selectedDate}
                             </h2>
-                            <p className="mt-1 text-[length:var(--text-body-sm-size)] text-text-medium">
+                            <p className="mt-1 text-(length:--text-body-sm-size) text-text-medium">
                                 24-hour detail in UTC
                             </p>
                         </div>
                         {selectedBucket ? (
-                            <p className="text-[length:var(--text-body-sm-size)] text-text-medium">
+                            <p className="text-(length:--text-body-sm-size) text-text-medium">
                                 {formatCoverage(selectedBucket.coverage)} coverage
                             </p>
                         ) : null}
@@ -218,8 +218,8 @@ function StatusPill({ state, compact = false }: { state: StatusState; compact?: 
         <span
             className={`inline-flex items-center gap-2 rounded-full border font-semibold ${styles.pillClassName} ${
                 compact
-                    ? 'px-2.5 py-1 text-[length:var(--text-body-sm-size)]'
-                    : 'px-3 py-1.5 text-[length:var(--text-body-md-size)]'
+                    ? 'px-2.5 py-1 text-(length:--text-body-sm-size)'
+                    : 'px-3 py-1.5 text-(length:--text-body-md-size)'
             }`}
         >
             <Icon className="size-4" aria-hidden />
@@ -230,9 +230,9 @@ function StatusPill({ state, compact = false }: { state: StatusState; compact?: 
 
 function Metric({ label, value }: { label: string; value: string }) {
     return (
-        <div className="rounded-md border border-gray-1400/10 bg-gray-1400/[0.02] p-3">
-            <p className="text-[length:var(--text-body-xs-size)] font-medium uppercase text-text-low">{label}</p>
-            <p className="mt-1 text-[length:var(--text-body-md-size)] font-medium text-text-extra-high">{value}</p>
+        <div className="rounded-md border border-gray-1400/10 bg-gray-1400/2 p-3">
+            <p className="text-(length:--text-body-xs-size) font-medium uppercase text-text-low">{label}</p>
+            <p className="mt-1 text-(length:--text-body-md-size) font-medium text-text-extra-high">{value}</p>
         </div>
     );
 }
@@ -251,39 +251,43 @@ function StatusBars({
     onSelect?: (id: string) => void;
 }) {
     return (
-        <div
-            className="mt-5 grid w-full items-end gap-1"
-            style={{ gridTemplateColumns: `repeat(${buckets.length}, minmax(3px, 1fr))` }}
-        >
-            {buckets.map(bucket => {
-                const styles = stateStyles[bucket.state];
-                const isSelected = selectedId === bucket.id;
-                const isLoading = loadingId === bucket.id;
-                const label = `${bucket.label}: ${styles.label}, ${bucket.sampleCount}/${bucket.expectedSamples} checks`;
+        <div className="mt-5 min-w-0 overflow-hidden">
+            <div
+                className="grid w-full items-end gap-0.5 sm:gap-1"
+                style={{
+                    gridTemplateColumns: `repeat(${buckets.length}, minmax(0, 1fr))`,
+                }}
+            >
+                {buckets.map(bucket => {
+                    const styles = stateStyles[bucket.state];
+                    const isSelected = selectedId === bucket.id;
+                    const isLoading = loadingId === bucket.id;
+                    const label = `${bucket.label}: ${styles.label}, ${bucket.sampleCount}/${bucket.expectedSamples} checks`;
 
-                return (
-                    <button
-                        key={bucket.id}
-                        type="button"
-                        aria-label={label}
-                        title={label}
-                        disabled={!onSelect || isLoading}
-                        onClick={() => onSelect?.(bucket.id)}
-                        className={`${heightClassName} min-w-0 rounded-[2px] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-text-extra-high/30 ${
-                            styles.barClassName
-                        } ${isSelected ? 'ring-2 ring-text-extra-high/35 ring-offset-2' : ''} ${
-                            onSelect ? 'cursor-pointer' : 'cursor-default'
-                        } ${isLoading ? 'animate-pulse' : ''}`}
-                    />
-                );
-            })}
+                    return (
+                        <button
+                            key={bucket.id}
+                            type="button"
+                            aria-label={label}
+                            title={label}
+                            disabled={!onSelect || isLoading}
+                            onClick={() => onSelect?.(bucket.id)}
+                            className={`${heightClassName} min-w-0 rounded-[2px] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-text-extra-high/30 ${
+                                styles.barClassName
+                            } ${isSelected ? 'ring-2 ring-inset ring-text-extra-high/20' : ''} ${
+                                onSelect ? 'cursor-pointer' : 'cursor-default'
+                            } ${isLoading ? 'animate-pulse' : ''}`}
+                        />
+                    );
+                })}
+            </div>
         </div>
     );
 }
 
 function StatusLegend() {
     return (
-        <div className="flex flex-wrap items-center gap-3 text-[length:var(--text-body-sm-size)] text-text-medium">
+        <div className="flex flex-wrap items-center gap-3 text-(length:--text-body-sm-size) text-text-medium">
             {(['operational', 'degraded', 'down', 'unknown'] as const).map(state => (
                 <span key={state} className="inline-flex items-center gap-1.5">
                     <span className={`size-2 rounded-full ${stateStyles[state].barClassName.split(' ')[0]}`} />
@@ -299,7 +303,7 @@ function FailurePanel({ failures }: { failures: StatusFailure[] }) {
         <div className="rounded-lg border border-rose-200 bg-rose-50/60 p-5">
             <div className="flex items-center gap-2 text-rose-700">
                 <AlertTriangle className="size-4" aria-hidden />
-                <h2 className="text-[length:var(--text-heading-xs-size)] font-medium leading-tight">Recent failures</h2>
+                <h2 className="text-(length:--text-heading-xs-size) font-medium leading-tight">Recent failures</h2>
             </div>
             <div className="mt-4 divide-y divide-rose-200/70">
                 {failures.map(failure => (
@@ -307,23 +311,23 @@ function FailurePanel({ failures }: { failures: StatusFailure[] }) {
                         key={`${failure.checkedAt}-${failure.probe}-${failure.method}-${failure.path}`}
                         className="grid gap-2 py-3 md:grid-cols-[180px_minmax(0,1fr)_90px]"
                     >
-                        <p className="text-[length:var(--text-body-sm-size)] font-medium text-rose-700">
+                        <p className="text-(length:--text-body-sm-size) font-medium text-rose-700">
                             {formatDateTime(failure.checkedAt)}
                         </p>
                         <div className="min-w-0">
-                            <p className="truncate text-[length:var(--text-body-sm-size)] font-medium text-text-extra-high">
+                            <p className="truncate text-(length:--text-body-sm-size) font-medium text-text-extra-high">
                                 {failure.probe}
                             </p>
-                            <p className="truncate text-[length:var(--text-body-sm-size)] text-text-medium">
+                            <p className="truncate text-(length:--text-body-sm-size) text-text-medium">
                                 {failure.method} {failure.path}
                             </p>
                             {failure.message ? (
-                                <p className="mt-1 truncate text-[length:var(--text-body-xs-size)] text-rose-700">
+                                <p className="mt-1 truncate text-(length:--text-body-xs-size) text-rose-700">
                                     {failure.message}
                                 </p>
                             ) : null}
                         </div>
-                        <p className="text-[length:var(--text-body-sm-size)] font-medium text-rose-700 md:text-right">
+                        <p className="text-(length:--text-body-sm-size) font-medium text-rose-700 md:text-right">
                             {failure.status ?? '---'}
                         </p>
                     </div>
@@ -337,7 +341,7 @@ function Notice({ tone, message }: { tone: 'warning' | 'error'; message: string 
     const isError = tone === 'error';
     return (
         <div
-            className={`flex items-center gap-2 rounded-lg border px-4 py-3 text-[length:var(--text-body-sm-size)] ${
+            className={`flex items-center gap-2 rounded-lg border px-4 py-3 text-(length:--text-body-sm-size) ${
                 isError ? 'border-rose-200 bg-rose-50 text-rose-700' : 'border-amber-200 bg-amber-50 text-amber-800'
             }`}
         >
