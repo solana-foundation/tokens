@@ -1,0 +1,93 @@
+{
+  "uid": "tokens-api-usage-partition-cron-silent",
+  "title": "tokens-assets: partition maintenance cron hasn't reported in over a day",
+  "ruleGroup": "tokens-crons",
+  "folderUID": "tokens-xyz",
+  "noDataState": "Alerting",
+  "execErrState": "OK",
+  "for": "0s",
+  "data": [
+    {
+      "refId": "A",
+      "datasourceUid": "grafanacloud-logs",
+      "queryType": "range",
+      "relativeTimeRange": {
+        "from": 93600,
+        "to": 0
+      },
+      "model": {
+        "expr": "sum(count_over_time({service=\"tokens-assets-prd-us\"} |~ \"\\\\[createApiUsagePartitions\\\\]\" [26h]))",
+        "queryType": "range",
+        "refId": "A"
+      }
+    },
+    {
+      "refId": "B",
+      "datasourceUid": "__expr__",
+      "queryType": "",
+      "relativeTimeRange": {
+        "from": 0,
+        "to": 0
+      },
+      "model": {
+        "type": "reduce",
+        "refId": "B",
+        "expression": "A",
+        "reducer": "last",
+        "settings": {
+          "mode": "replaceNN",
+          "replaceWithValue": 0
+        }
+      }
+    },
+    {
+      "refId": "C",
+      "datasourceUid": "__expr__",
+      "queryType": "",
+      "relativeTimeRange": {
+        "from": 0,
+        "to": 0
+      },
+      "model": {
+        "type": "threshold",
+        "refId": "C",
+        "expression": "B",
+        "conditions": [
+          {
+            "evaluator": {
+              "type": "lt",
+              "params": [
+                1
+              ]
+            },
+            "operator": {
+              "type": "and"
+            },
+            "query": {
+              "params": [
+                "B"
+              ]
+            },
+            "reducer": {
+              "type": "last",
+              "params": []
+            },
+            "type": "query"
+          }
+        ]
+      }
+    }
+  ],
+  "condition": "C",
+  "labels": {
+    "service": "tokens-assets",
+    "severity": "warning",
+    "pagerduty": "false",
+    "slack": "true"
+  },
+  "annotations": {
+    "summary": "create-api-usage-partitions cron produced no log lines in the last 26h",
+    "description": "The daily create-api-usage-partitions job (00:45 UTC) logged nothing at all in over a day — the companion unhealthy alert only fires on failure lines the job itself emits, so total silence (Cloud Scheduler job paused or deleted, invoker SA missing run.invoker, /jobs disabled on the service) would otherwise go unnoticed until partition coverage runs out and api_request_events inserts fall through to the default partition. Check the Cloud Scheduler run history for tokens-create-api-usage-partitions-prd and the cloudrun-assets service logs.",
+    "runbook_url": "https://github.com/solana-foundation/tokens/issues/23"
+  }
+}

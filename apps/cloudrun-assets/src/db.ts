@@ -1467,15 +1467,23 @@ export function makePostgresJobsRepo(sql: Sql): JobsRepo {
             if (!boundPattern.test(fromBound) || !boundPattern.test(toBound)) {
                 throw new Error('ensureApiRequestEventsPartition: invalid partition bound literal');
             }
+            // Name and lower bound must describe the same month, so a caller
+            // bug cannot create a partition whose name lies about its range.
+            const nameForFromBound = `api_request_events_y${fromBound.slice(0, 4)}m${fromBound.slice(5, 7)}`;
+            if (tableName !== nameForFromBound) {
+                throw new Error(
+                    `ensureApiRequestEventsPartition: table name ${tableName} does not match lower bound ${fromBound}`,
+                );
+            }
             const expectedBounds = `FOR VALUES FROM ('${fromBound}') TO ('${toBound}')`;
-            try {
-                return await sql.begin(async tx => {
-                    // TimeZone pinned so pg_get_expr renders bounds
-                    // deterministically; lock_timeout so the ACCESS EXCLUSIVE
-                    // acquisition on the parent fails fast instead of damming
-                    // the insert path — the daily cron retries tomorrow.
+
+            // TimeZone + DateStyle pinned so pg_get_expr renders bound
+            // constants deterministically ('YYYY-MM-DD HH:MI:SS+00') on any
+            // cluster configuration.
+            const inspect = () =>
+                sql.begin(async tx => {
                     await tx`SET LOCAL TimeZone = 'UTC'`;
-                    await tx`SET LOCAL lock_timeout = '5s'`;
+                    await tx`SET LOCAL DateStyle = 'ISO'`;
                     const rows = await tx<{ bounds: string | null; parent_ok: boolean }[]>`
                         SELECT pg_get_expr(c.relpartbound, c.oid) AS bounds,
                                COALESCE(i.inhparent = 'public.api_request_events'::regclass, false) AS parent_ok
@@ -1485,22 +1493,37 @@ export function makePostgresJobsRepo(sql: Sql): JobsRepo {
                         WHERE n.nspname = 'public' AND c.relname = ${tableName}
                     `;
                     const row = rows[0];
-                    if (row) {
-                        return row.parent_ok && row.bounds === expectedBounds ? 'exists' : 'bound_mismatch';
-                    }
+                    if (!row) return 'absent' as const;
+                    return row.parent_ok && row.bounds === expectedBounds
+                        ? ('exists' as const)
+                        : ('bound_mismatch' as const);
+                });
+
+            const before = await inspect();
+            if (before !== 'absent') return before;
+            try {
+                await sql.begin(async tx => {
+                    // lock_timeout so the ACCESS EXCLUSIVE acquisition on the
+                    // parent fails fast instead of damming the insert path —
+                    // the daily cron retries tomorrow.
+                    await tx`SET LOCAL lock_timeout = '5s'`;
                     await tx.unsafe(
                         `CREATE TABLE IF NOT EXISTS public.${tableName} PARTITION OF public.api_request_events ` +
                             `FOR VALUES FROM ('${fromBound}') TO ('${toBound}')`,
                     );
-                    return 'created';
                 });
+                return 'created';
             } catch (err) {
                 // Concurrent creation race: IF NOT EXISTS checks the name
                 // before taking the creation lock, so the loser of a race can
                 // still surface duplicate_table (42P07) or a catalog unique
-                // violation (23505). The partition exists either way.
+                // violation (23505). Something created the name concurrently —
+                // re-inspect rather than assume its bounds are right.
                 const code = (err as { code?: unknown }).code;
-                if (code === '42P07' || code === '23505') return 'exists';
+                if (code === '42P07' || code === '23505') {
+                    const after = await inspect();
+                    return after === 'absent' ? 'exists' : after;
+                }
                 throw err;
             }
         },

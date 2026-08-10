@@ -1810,6 +1810,11 @@ export async function createApiUsagePartitions(deps: CronDeps, rawArgs: unknown)
     const boundMismatches: string[] = [];
     let failed = 0;
 
+    // The "ensure failed" prefix is load-bearing: the Grafana alert rule
+    // matches it verbatim. Keep every failure branch on this one helper.
+    const logEnsureFailed = (tableName: string, detail: string) =>
+        console.error(`[createApiUsagePartitions] ensure failed month=${tableName} ${detail}`);
+
     // Current month plus monthsAhead future months, so processed = monthsAhead + 1.
     for (let k = 0; k <= monthsAhead; k++) {
         const { tableName, fromBound, toBound } = apiUsagePartitionForMonthUtc(
@@ -1824,34 +1829,35 @@ export async function createApiUsagePartitions(deps: CronDeps, rawArgs: unknown)
                 existing.push(tableName);
             } else {
                 boundMismatches.push(tableName);
-                console.error(
-                    `[createApiUsagePartitions] ensure failed month=${tableName} reason=bound_mismatch: a relation with this name exists but is not a partition of api_request_events with bounds [${fromBound}, ${toBound})`,
+                logEnsureFailed(
+                    tableName,
+                    `reason=bound_mismatch: a relation with this name exists but is not a partition of api_request_events with bounds [${fromBound}, ${toBound})`,
                 );
             }
         } catch (err) {
             failed += 1;
             const code = (err as { code?: unknown }).code;
             if (code === '23514') {
-                console.error(
-                    `[createApiUsagePartitions] ensure failed month=${tableName} code=23514: rows for this range already sit in api_request_events_default, so plain CREATE is blocked; move them out of the default partition and ATTACH the month manually`,
+                logEnsureFailed(
+                    tableName,
+                    'code=23514: rows for this range already sit in api_request_events_default, so plain CREATE is blocked; move them out of the default partition and ATTACH the month manually',
                 );
             } else {
-                console.error(
-                    `[createApiUsagePartitions] ensure failed month=${tableName}`,
-                    err instanceof Error ? err.message : String(err),
-                );
+                logEnsureFailed(tableName, err instanceof Error ? err.message : String(err));
             }
         }
     }
 
     // Tripwire: rows inside the covered era (2026-05 onward) sitting in the
     // default partition mean a month boundary was missed.
+    const probeLimit = 100_000;
     let defaultPartitionRows = 0;
     try {
-        defaultPartitionRows = await deps.repo.countApiRequestEventsDefaultRows(100_000);
+        defaultPartitionRows = await deps.repo.countApiRequestEventsDefaultRows(probeLimit);
         if (defaultPartitionRows > 0) {
+            const saturated = defaultPartitionRows >= probeLimit ? ' (probe saturated; actual count may be higher)' : '';
             console.warn(
-                `[createApiUsagePartitions] default partition has rows count=${defaultPartitionRows}: events are falling through to api_request_events_default instead of a monthly partition`,
+                `[createApiUsagePartitions] default partition has rows count=${defaultPartitionRows}${saturated}: events are falling through to api_request_events_default instead of a monthly partition`,
             );
         }
     } catch (err) {

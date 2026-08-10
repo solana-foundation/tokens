@@ -1,6 +1,13 @@
 -- 0003_api_usage.sql
 -- API request events (partitioned by month) + daily rollups + rollup cursor state.
 
+-- The partition bounds below are date-only literals, resolved in the session
+-- TimeZone at DDL time. Pin UTC so a fresh database bootstrapped on a server
+-- with a non-UTC default gets the same absolute bounds as production (0011's
+-- alignment guard depends on this). No effect where this migration is already
+-- applied — apply.sh skips it by version.
+SET LOCAL TimeZone = 'UTC';
+
 CREATE TABLE api_request_events (
     id          text NOT NULL,
     project_id  text NOT NULL,

@@ -10,21 +10,30 @@
 -- and gives the cron several months of headroom.
 --
 -- apply.sh runs this file inside a single transaction, so SET LOCAL applies
--- to every statement below. TimeZone is pinned so the bound literals and the
--- guard's rendered text are session-independent; lock_timeout keeps the
--- ACCESS EXCLUSIVE lock acquisition on the parent from damming the insert
--- path behind a long-running query (on timeout the whole file rolls back and
--- can simply be re-applied).
+-- to every statement below. TimeZone and DateStyle are pinned so the bound
+-- literals and the guard's pg_get_expr-rendered text are session- and
+-- cluster-setting-independent; lock_timeout keeps the ACCESS EXCLUSIVE lock
+-- acquisition on the parent from damming the insert path behind a
+-- long-running query (on timeout the whole file rolls back and can simply be
+-- re-applied).
 SET LOCAL TimeZone = 'UTC';
+SET LOCAL DateStyle = 'ISO';
 SET LOCAL lock_timeout = '5s';
 
--- Guard: the new partitions butt up against api_request_events_y2026m08.
--- If its live upper bound is not exactly 2026-09-01 00:00:00+00 (e.g. 0003
--- was applied under a non-UTC session TimeZone), creating m09 from that
--- instant would leave a silent coverage gap — abort loudly instead.
+-- Guards. First: the new partitions butt up against
+-- api_request_events_y2026m08 — if its live upper bound is not exactly
+-- 2026-09-01 00:00:00+00 (e.g. 0003 was applied under a non-UTC session
+-- TimeZone), creating m09 from that instant would leave a silent coverage
+-- gap; abort loudly instead. Second: IF NOT EXISTS below skips by name only,
+-- so any pre-existing relation named like a target partition must be a real
+-- partition of api_request_events with exactly the expected bounds —
+-- otherwise this file would record success while the coverage gap persists.
 DO $$
 DECLARE
     m08_bounds text;
+    rec record;
+    found_bounds text;
+    found_parent_ok boolean;
 BEGIN
     SELECT pg_get_expr(c.relpartbound, c.oid) INTO m08_bounds
     FROM pg_class c
@@ -37,6 +46,33 @@ BEGIN
     IF m08_bounds <> 'FOR VALUES FROM (''2026-08-01 00:00:00+00'') TO (''2026-09-01 00:00:00+00'')' THEN
         RAISE EXCEPTION 'api_request_events_y2026m08 has unexpected bounds [%]; verify partition alignment before applying 0011', m08_bounds;
     END IF;
+
+    FOR rec IN
+        SELECT *
+        FROM (VALUES
+            ('api_request_events_y2026m09', '2026-09-01 00:00:00+00', '2026-10-01 00:00:00+00'),
+            ('api_request_events_y2026m10', '2026-10-01 00:00:00+00', '2026-11-01 00:00:00+00'),
+            ('api_request_events_y2026m11', '2026-11-01 00:00:00+00', '2026-12-01 00:00:00+00'),
+            ('api_request_events_y2026m12', '2026-12-01 00:00:00+00', '2027-01-01 00:00:00+00'),
+            ('api_request_events_y2027m01', '2027-01-01 00:00:00+00', '2027-02-01 00:00:00+00'),
+            ('api_request_events_y2027m02', '2027-02-01 00:00:00+00', '2027-03-01 00:00:00+00'),
+            ('api_request_events_y2027m03', '2027-03-01 00:00:00+00', '2027-04-01 00:00:00+00')
+        ) AS t(relname, lo, hi)
+    LOOP
+        SELECT pg_get_expr(c.relpartbound, c.oid),
+               COALESCE(i.inhparent = 'public.api_request_events'::regclass, false)
+          INTO found_bounds, found_parent_ok
+          FROM pg_class c
+          JOIN pg_namespace n ON n.oid = c.relnamespace
+          LEFT JOIN pg_inherits i ON i.inhrelid = c.oid
+         WHERE n.nspname = 'public' AND c.relname = rec.relname;
+
+        IF FOUND AND (NOT found_parent_ok
+                      OR found_bounds IS DISTINCT FROM format('FOR VALUES FROM (%L) TO (%L)', rec.lo, rec.hi)) THEN
+            RAISE EXCEPTION '% already exists but is not a partition of api_request_events with bounds [% .. %); resolve it before applying 0011',
+                rec.relname, rec.lo, rec.hi;
+        END IF;
+    END LOOP;
 END $$;
 
 -- IF NOT EXISTS (unlike 0003's plain CREATE): the roll-forward cron or an
