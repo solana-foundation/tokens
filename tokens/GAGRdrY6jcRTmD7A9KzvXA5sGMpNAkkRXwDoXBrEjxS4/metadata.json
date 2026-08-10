@@ -1,0 +1,18 @@
+{
+  "mint": "GAGRdrY6jcRTmD7A9KzvXA5sGMpNAkkRXwDoXBrEjxS4",
+  "name": "MITHQAL Settlement Unit",
+  "symbol": "MTQ",
+  "decimals": 18,
+  "logoURI": "https://mithqal.vercel.app/mtq-logo.png",
+  "tags": [
+    "settlement",
+    "trade",
+    "institutional",
+    "sharia-compliant"
+  ],
+  "extensions": {
+    "website": "https://mithqal.vercel.app/",
+    "github": "https://github.com/MITHQALMTQ/mithqal",
+    "twitter": "https://x.com/MithqalMTQ"
+  }
+}
