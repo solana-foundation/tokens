@@ -74,3 +74,6 @@ tfplan
 terraform/**/tfplan*
 .vercel
 .env*
+# Keep committed .env.example templates (see README/CONTRIBUTING setup steps).
+!.env.example
+!**/.env.example
