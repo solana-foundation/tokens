@@ -97,9 +97,24 @@ export function formatAxisTimeLabel(epochSeconds: number, rangeDays: number): st
     return d.toLocaleDateString('en-US', { month: 'short', day: '2-digit' });
 }
 
+/**
+ * Picks the finest interval that keeps a range under `maxPoints`.
+ *
+ * The sub-hour candidates matter: starting at `1H` gave the 24H range only 24
+ * points, which draws as a coarse polyline rather than an intraday chart. `5m`
+ * puts it at 288, which is also exactly what CoinGecko returns natively for a
+ * one-day window, so the request maps onto the upstream's own granularity
+ * instead of being resampled.
+ *
+ * Requested interval per range: 24H 5m, 7D 15m, 30D 1H, 90D 4H, 1Y 1D. This is
+ * a ceiling, not a guarantee — a source coarser than the request simply yields
+ * fewer points (CoinGecko serves 7D hourly, so 7D draws 169 rather than 672).
+ */
 export function pickIntervalForDays(days: number): TimeInterval {
     const windowSecs = days * 24 * 60 * 60;
     const candidates: Array<{ interval: TimeInterval; secs: number }> = [
+        { interval: '5m', secs: 5 * 60 },
+        { interval: '15m', secs: 15 * 60 },
         { interval: '1H', secs: 60 * 60 },
         { interval: '4H', secs: 4 * 60 * 60 },
         { interval: '1D', secs: 24 * 60 * 60 },

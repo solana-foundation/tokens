@@ -108,6 +108,12 @@ const CHART_MODE_ITEMS = [
 
 function intervalToSeconds(interval: TokenPriceChartCoreProps['interval']): number | null {
     switch (interval) {
+        case '1m':
+            return 60;
+        case '5m':
+            return 5 * 60;
+        case '15m':
+            return 15 * 60;
         case '1H':
             return 60 * 60;
         case '4H':
