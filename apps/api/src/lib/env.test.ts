@@ -1,11 +1,17 @@
 import { describe, expect, it } from 'bun:test';
 
-import { loadEnv, resetEnvForTests } from './env';
+import { assertCloudRunEnvOrThrow, loadEnv, resetEnvForTests } from './env';
 
 const ENV_KEYS = [
     'NODE_ENV',
     'VERCEL_ENV',
     'TOKENS_USAGE_LOG_MODE',
+    'UPSTASH_REDIS_REST_URL',
+    'UPSTASH_REDIS_REST_TOKEN',
+    'TOKENS_CLOUDRUN_AUTH_TOKEN',
+    'TOKENS_CLOUDRUN_ASSETS_URL',
+    'TOKENS_CLOUDRUN_PRICES_URL',
+    'TOKENS_CLOUDRUN_USAGE_URL',
 ] as const;
 
 function setEnv(key: string, value: string): void {
@@ -69,5 +75,62 @@ describe('loadEnv usage logging mode', () => {
                 expect(loadEnv().usageLogMode).toBe('aggregated');
             },
         );
+    });
+});
+
+describe('loadEnv Upstash pairing', () => {
+    it('allows both Upstash vars to be unset', () => {
+        withEnv({}, () => {
+            expect(loadEnv().upstash).toBe(null);
+        });
+    });
+
+    it('loads Upstash when both URL and token are set', () => {
+        withEnv(
+            {
+                UPSTASH_REDIS_REST_URL: ' https://example.upstash.io ',
+                UPSTASH_REDIS_REST_TOKEN: ' token ',
+            },
+            () => {
+                expect(loadEnv().upstash).toEqual({
+                    url: 'https://example.upstash.io',
+                    token: 'token',
+                });
+            },
+        );
+    });
+
+    it('rejects setting only one of the Upstash credentials', () => {
+        withEnv({ UPSTASH_REDIS_REST_URL: 'https://example.upstash.io' }, () => {
+            expect(() => loadEnv()).toThrow(/must be set together/);
+        });
+
+        withEnv({ UPSTASH_REDIS_REST_TOKEN: 'token' }, () => {
+            expect(() => loadEnv()).toThrow(/must be set together/);
+        });
+    });
+});
+
+describe('assertCloudRunEnvOrThrow', () => {
+    it('passes when required Cloud Run vars are present', () => {
+        withEnv(
+            {
+                TOKENS_CLOUDRUN_AUTH_TOKEN: 'dev',
+                TOKENS_CLOUDRUN_ASSETS_URL: 'https://assets.example',
+                TOKENS_CLOUDRUN_PRICES_URL: 'https://prices.example',
+                TOKENS_CLOUDRUN_USAGE_URL: 'https://usage.example',
+            },
+            () => {
+                expect(() => assertCloudRunEnvOrThrow()).not.toThrow();
+            },
+        );
+    });
+
+    it('lists every missing required Cloud Run var', () => {
+        withEnv({}, () => {
+            expect(() => assertCloudRunEnvOrThrow()).toThrow(
+                /TOKENS_CLOUDRUN_AUTH_TOKEN, TOKENS_CLOUDRUN_ASSETS_URL, TOKENS_CLOUDRUN_PRICES_URL, TOKENS_CLOUDRUN_USAGE_URL/,
+            );
+        });
     });
 });
