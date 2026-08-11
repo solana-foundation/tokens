@@ -5,7 +5,12 @@ import { HeroSearch } from '@/components/hero-search';
 import { CategoryTabs, HighlightsSection, HomeTokensProvider } from '@/components/home';
 import { SiteFooter } from '@/components/site-footer';
 import { fetchApiAppJsonOrNull } from '@/lib/api-app';
-import { CURATED_LIST_ORDER_WITHOUT_LSTS, type CuratedTokenListIdWithoutLsts } from '@/lib/curated-token-lists';
+import {
+    CURATED_LIST_ORDER_WITHOUT_LSTS,
+    findLatestAddedMint,
+    getCuratedListName,
+    type CuratedTokenListIdWithoutLsts,
+} from '@/lib/curated-token-lists';
 import { createHomeHighlights, type HomeTabId } from '@/lib/home-highlights';
 import { fetchCuratedTokensFallback } from '@/lib/market-data/curated-fallback';
 import { getTokenLogoURLWithSecondarySymbol } from '@/lib/logo-overrides';
@@ -375,16 +380,13 @@ async function HomeTokensSection({ searchParams }: { searchParams: HomePageProps
         next: { revalidate: 60 },
     });
 
-    const categories: Array<{ id: CuratedTokenListIdWithoutLsts; name: string }> =
-        meta && Array.isArray(meta) && meta.length > 0
-            ? CURATED_LIST_ORDER_WITHOUT_LSTS.map(id => {
-                  const row = meta.find(r => r.id === id);
-                  return {
-                      id,
-                      name: row?.name ?? id,
-                  };
-              })
-            : CURATED_LIST_ORDER_WITHOUT_LSTS.map(id => ({ id, name: id }));
+    // The platform API's list meta customizes the tab labels; without it the
+    // registry's own names ("Crypto", "Treasuries") stand in, rather than the
+    // raw list ids.
+    const metaRows = meta && Array.isArray(meta) ? meta : [];
+    const categories: Array<{ id: CuratedTokenListIdWithoutLsts; name: string }> = CURATED_LIST_ORDER_WITHOUT_LSTS.map(
+        id => ({ id, name: metaRows.find(row => row.id === id)?.name ?? getCuratedListName(id) }),
+    );
 
     // Global highlight pool: every curated asset across all home lists, deduped.
     // Highlights are intentionally independent of the selected tab.
@@ -401,13 +403,21 @@ async function HomeTokensSection({ searchParams }: { searchParams: HomePageProps
     }
 
     // Latest added across ALL lists: the list meta row with the newest lastAddedAt wins.
-    const metaRows = meta && Array.isArray(meta) ? meta : [];
     const latestAddedRow = metaRows.reduce<CuratedListMeta | null>((best, row) => {
         if (!row.lastAddedAssetId) return best;
         if (!best) return row;
         return (row.lastAddedAt ?? 0) > (best.lastAddedAt ?? 0) ? row : best;
     }, null);
-    const highlights = createHomeHighlights(globalTokens, latestAddedRow?.lastAddedAssetId ?? null);
+
+    // Without the meta the registry answers the same question from its own
+    // git-history timestamps. Skipping this left the card on its "Token $0.00"
+    // placeholder, which reads like a broken row rather than a missing feature.
+    const latestAddedMint = latestAddedRow ? null : findLatestAddedMint();
+    const latestAddedAssetId =
+        latestAddedRow?.lastAddedAssetId ??
+        globalTokens.find(token => token.address === latestAddedMint)?.assetId ??
+        null;
+    const highlights = createHomeHighlights(globalTokens, latestAddedAssetId);
 
     const initialTokens =
         initialCategoryId === 'trending'
