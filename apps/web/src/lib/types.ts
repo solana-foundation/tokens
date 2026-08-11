@@ -23,6 +23,12 @@ export interface Token {
     volume15mUSD?: number;
     volume6hUSD?: number;
     volume24hUSD: number;
+    /**
+     * Where `volume24hUSD` came from. On-chain DEX volume and an exchange's
+     * traded value are not comparable, so anything that ranks tokens by volume
+     * has to know which one it is holding.
+     */
+    volume24hSource?: 'onchain' | 'canonical';
     underlyingVolume24hUSD?: number;
     underlyingVolume24hLabel?: string;
     trade5m?: number;

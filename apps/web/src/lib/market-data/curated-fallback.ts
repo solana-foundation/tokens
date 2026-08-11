@@ -78,14 +78,14 @@ const SYMBOL_OVERRIDES: Record<string, string> = {
 };
 
 /** GeckoTerminal's cap on addresses per multi-token call. */
-const LIQUIDITY_BATCH_SIZE = 30;
+const ONCHAIN_BATCH_SIZE = 30;
 
 /**
- * How long a warmed liquidity sweep is trusted before another one starts. Kept
+ * How long a warmed on-chain sweep is trusted before another one starts. Kept
  * under GeckoTerminal's own 5-minute batch cache so a refresh finds fresh
  * upstream data rather than replaying the cached batches.
  */
-const LIQUIDITY_REFRESH_MS = 4 * 60_000;
+const ONCHAIN_REFRESH_MS = 4 * 60_000;
 
 /** Spot metal benchmarks, which live outside the equity screener. */
 const METAL_TICKERS: Record<string, string> = {
@@ -142,10 +142,15 @@ const loadEquityIndex = withTtl(60_000, async (): Promise<ScreenerIndex> => {
     const bySymbol = new Map<string, Quote>();
     const byName = new Map<string, Quote>();
     for (const row of [...stocks.rows, ...funds.rows]) {
+        // The screener's `volume` is a share count, not a dollar amount. Passing
+        // it straight through rendered NVDA's 180M traded shares as "$180.00M".
+        // Multiplying by the last close is what turns it into traded value.
+        const price = numberOrNull(row.values.close);
+        const shares = numberOrNull(row.values.volume);
         const quote: Quote = {
-            price: numberOrNull(row.values.close),
+            price,
             changePercent: numberOrNull(row.values.change),
-            volume24h: numberOrNull(row.values.volume),
+            volume24h: price !== null && shares !== null ? price * shares : null,
             marketCap: numberOrNull(row.values.market_cap_basic) ?? numberOrNull(row.values.aum),
         };
         const symbol = stringOrNull(row.values.name)?.toUpperCase();
@@ -343,6 +348,7 @@ function toToken(asset: CuratedAsset, quote: Quote | null): Token {
         decimals: 0,
         liquidity: null,
         volume24hUSD: quote?.volume24h ?? 0,
+        volume24hSource: 'canonical',
         price: quote?.price ?? 0,
         priceChange24hPercent: quote?.changePercent ?? 0,
         marketCap: quote?.marketCap ?? 0,
@@ -435,17 +441,23 @@ export async function fetchCuratedTokensFallback(listId: CuratedTokenListId): Pr
     // Rows without a price would otherwise sort above real data in the table.
     tokens.sort((a, b) => b.marketCap - a.marketCap || b.volume24hUSD - a.volume24hUSD);
 
-    attachLiquidity(listId, tokens);
+    attachOnChainMarket(listId, tokens);
     return tokens;
 }
 
-// ----------------------------------------------------------------- Liquidity
+// ------------------------------------------------------------ On-chain market
 
-/** Lower-cased mint -> DEX depth in USD, filled by the sweep below. */
-const liquidityByAddress = new Map<string, number>();
+interface OnChainMarket {
+    liquidityUsd: number | null;
+    volume24hUsd: number | null;
+}
+
+/** Lower-cased mint -> what the DEX indexer knows, filled by the sweep below. */
+const onChainByAddress = new Map<string, OnChainMarket>();
 
 /**
- * Reads on-chain depth for every curated mint into `liquidityByAddress`.
+ * Reads every curated mint's DEX depth and traded volume into
+ * `onChainByAddress`.
  *
  * This deliberately does not run on the render path. GeckoTerminal's keyless
  * tier serializes callers and paces them ~1.5s apart, so the six curated lists
@@ -458,7 +470,7 @@ const liquidityByAddress = new Map<string, number>();
  * once the result ages out. It returns a count rather than nothing because an
  * `undefined` result would never satisfy its cache check.
  */
-const warmLiquidity = withTtl(LIQUIDITY_REFRESH_MS, async (): Promise<number> => {
+const warmOnChainMarkets = withTtl(ONCHAIN_REFRESH_MS, async (): Promise<number> => {
     // Curated variants are Solana mints today; the lookup is chain-parameterised
     // so other networks drop in once the registry carries their addresses.
     const addresses = [
@@ -466,40 +478,65 @@ const warmLiquidity = withTtl(LIQUIDITY_REFRESH_MS, async (): Promise<number> =>
     ];
 
     let filled = 0;
-    for (let offset = 0; offset < addresses.length; offset += LIQUIDITY_BATCH_SIZE) {
-        const batch = addresses.slice(offset, offset + LIQUIDITY_BATCH_SIZE);
+    for (let offset = 0; offset < addresses.length; offset += ONCHAIN_BATCH_SIZE) {
+        const batch = addresses.slice(offset, offset + ONCHAIN_BATCH_SIZE);
         const { byAddress } = await fetchTokenLiquidity('solana', batch);
         // Written per batch rather than at the end: a sweep over ~600 mints
         // takes tens of seconds, and renders in between should see the part
         // that has already landed.
-        for (const [address, depth] of byAddress) {
-            if (depth.liquidityUsd == null) continue;
-            liquidityByAddress.set(address, depth.liquidityUsd);
+        for (const [address, market] of byAddress) {
+            if (market.liquidityUsd == null && market.volume24hUsd == null) continue;
+            onChainByAddress.set(address, {
+                liquidityUsd: market.liquidityUsd,
+                volume24hUsd: market.volume24hUsd,
+            });
             filled += 1;
         }
     }
 
-    console.info(`[curated-fallback] liquidity sweep: ${filled}/${addresses.length} mints known to the DEX indexer`);
+    console.info(`[curated-fallback] on-chain sweep: ${filled}/${addresses.length} mints known to the DEX indexer`);
     return filled;
 });
 
 /**
- * Fills the liquidity column from whatever the sweep has resolved so far, and
- * makes sure a sweep is running. Rows it cannot answer for keep a null depth,
- * which the table renders as `—`.
+ * Overlays whatever the sweep has resolved so far, and makes sure a sweep is
+ * running.
+ *
+ * The 24h volume column leads with the on-chain figure and keeps the wider
+ * market's number as the secondary pill, matching how the platform API feeds
+ * the same column: for a wrapped asset those are genuinely different facts —
+ * cbBTC trades tens of millions on Solana while bitcoin itself trades tens of
+ * billions, and collapsing them into one number hides the one the reader came
+ * for. Rows the indexer does not know keep the canonical figure alone.
  */
-function attachLiquidity(listId: CuratedTokenListId, tokens: Token[]): void {
-    void warmLiquidity().catch(error => {
-        console.warn('[curated-fallback] liquidity sweep failed:', error);
+function attachOnChainMarket(listId: CuratedTokenListId, tokens: Token[]): void {
+    void warmOnChainMarkets().catch(error => {
+        console.warn('[curated-fallback] on-chain sweep failed:', error);
     });
 
-    let filled = 0;
+    let withLiquidity = 0;
+    let withVolume = 0;
     for (const token of tokens) {
-        const depth = liquidityByAddress.get(token.address.toLowerCase());
-        if (depth === undefined) continue;
-        token.liquidity = depth;
-        filled += 1;
+        const market = onChainByAddress.get(token.address.toLowerCase());
+        if (!market) continue;
+
+        if (market.liquidityUsd !== null) {
+            token.liquidity = market.liquidityUsd;
+            withLiquidity += 1;
+        }
+        if (market.volume24hUsd !== null) {
+            if (token.volume24hUSD > 0) {
+                token.underlyingVolume24hUSD = token.volume24hUSD;
+                token.underlyingVolume24hLabel = 'Canonical';
+            }
+            token.volume24hUSD = market.volume24hUsd;
+            token.volume24hSource = 'onchain';
+            withVolume += 1;
+        }
     }
 
-    console.info(`[curated-fallback] ${listId}: liquidity known for ${filled}/${tokens.length} rows`);
+    console.info(
+        `[curated-fallback] ${listId}: on-chain liquidity for ${withLiquidity}/${tokens.length} rows, ` +
+            `volume for ${withVolume}/${tokens.length}`,
+    );
 }
