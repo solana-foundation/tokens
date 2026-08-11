@@ -7,6 +7,7 @@ import { SiteFooter } from '@/components/site-footer';
 import { fetchApiAppJsonOrNull } from '@/lib/api-app';
 import { CURATED_LIST_ORDER_WITHOUT_LSTS, type CuratedTokenListIdWithoutLsts } from '@/lib/curated-token-lists';
 import { createHomeHighlights, type HomeTabId } from '@/lib/home-highlights';
+import { fetchCuratedTokensFallback } from '@/lib/market-data/curated-fallback';
 import { getTokenLogoURLWithSecondarySymbol } from '@/lib/logo-overrides';
 import type { Token } from '@/lib/types';
 import { type CuratedTokenListId } from '@tokens/asset-registry/compat';
@@ -282,6 +283,13 @@ async function fetchCuratedTokens(listId: CuratedTokenListId): Promise<Token[]> 
         `/api/v1/assets/curated?list=${encodeURIComponent(listId)}&groupBy=asset`,
         { next: { revalidate: 30 } },
     );
+
+    // The platform API needs TOKENS_PLATFORM_API_KEY plus the Cloud Run/Postgres
+    // stack behind it. Without them every tab renders empty, so fall back to
+    // public market data keyed by symbol. Once the API answers, this is skipped.
+    if (!data?.assets?.length) {
+        return await fetchCuratedTokensFallback(listId);
+    }
 
     const tokens = (data?.assets ?? []).map(assetResultToToken).filter((t): t is NonNullable<typeof t> => t !== null);
     const seen = new Set<string>();
