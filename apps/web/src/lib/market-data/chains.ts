@@ -1,4 +1,12 @@
-export const CHAIN_IDS = ['solana', 'base', 'stellar', 'robinhood'] as const;
+export const CHAIN_IDS = [
+    'solana',
+    'ethereum',
+    'base',
+    'bsc',
+    'arbitrum',
+    'stellar',
+    'robinhood',
+] as const;
 
 export type ChainId = (typeof CHAIN_IDS)[number];
 
@@ -37,6 +45,17 @@ export const CHAINS: Record<ChainId, ChainDefinition> = {
         nativeSymbol: 'SOL',
         explorerUrl: 'https://solscan.io',
     },
+    ethereum: {
+        id: 'ethereum',
+        label: 'Ethereum',
+        // GeckoTerminal abbreviates this one; the network segment is not the
+        // chain's name and a `/networks/ethereum/...` path 404s.
+        geckoterminalNetwork: 'eth',
+        defillamaChain: 'Ethereum',
+        coingeckoPlatform: 'ethereum',
+        nativeSymbol: 'ETH',
+        explorerUrl: 'https://etherscan.io',
+    },
     base: {
         id: 'base',
         label: 'Base',
@@ -45,6 +64,24 @@ export const CHAINS: Record<ChainId, ChainDefinition> = {
         coingeckoPlatform: 'base',
         nativeSymbol: 'ETH',
         explorerUrl: 'https://basescan.org',
+    },
+    bsc: {
+        id: 'bsc',
+        label: 'BNB Chain',
+        geckoterminalNetwork: 'bsc',
+        defillamaChain: 'BSC',
+        coingeckoPlatform: 'binance-smart-chain',
+        nativeSymbol: 'BNB',
+        explorerUrl: 'https://bscscan.com',
+    },
+    arbitrum: {
+        id: 'arbitrum',
+        label: 'Arbitrum',
+        geckoterminalNetwork: 'arbitrum',
+        defillamaChain: 'Arbitrum',
+        coingeckoPlatform: 'arbitrum-one',
+        nativeSymbol: 'ETH',
+        explorerUrl: 'https://arbiscan.io',
     },
     stellar: {
         id: 'stellar',
