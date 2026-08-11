@@ -6,6 +6,9 @@ on:
   schedule:
     - cron: '0 8 * * 1'
 
+permissions:
+  contents: read
+
 jobs:
   secret-scan:
     runs-on: ubuntu-latest
