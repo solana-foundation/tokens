@@ -614,9 +614,13 @@ function createColumns(variant: TokenTableVariantConfig, trendingWindow: Trendin
         variant.columns.showLiquidityUSD
             ? columnHelper.accessor('liquidity', {
                   header: 'Liquidity',
+                  // A token nobody has quoted depth for reads `—`; rendering it
+                  // as $0.00 claims the pool is empty, which is a different fact.
+                  sortUndefined: 'last',
+                  sortingFn: (a, b) => (a.original.liquidity ?? -1) - (b.original.liquidity ?? -1),
                   cell: info => (
                       <span className="block w-full text-right text-[14px] text-[#2D2D2D] font-medium tabular-nums">
-                          {formatVolume(info.getValue())}
+                          {formatOptionalVolume(info.getValue())}
                       </span>
                   ),
               })

@@ -16,7 +16,8 @@ export interface Token {
     symbol: string;
     decimals: number;
     logoURI?: string;
-    liquidity: number;
+    /** DEX depth in USD; `null` when no source has answered for this token yet. */
+    liquidity: number | null;
     volume1hUSD?: number;
     volume5mUSD?: number;
     volume15mUSD?: number;

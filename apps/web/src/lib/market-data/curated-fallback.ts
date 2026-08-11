@@ -77,19 +77,15 @@ const SYMBOL_OVERRIDES: Record<string, string> = {
     'vaneck-clo-etf': 'CLOI',
 };
 
-/**
- * How many rows per list get an on-chain liquidity lookup. One batch of 30,
- * because the homepage renders six lists at once and GeckoTerminal serializes
- * every caller: at two batches per list a cold render measured 14-26s per list.
- */
-const LIQUIDITY_LOOKUP_LIMIT = 30;
+/** GeckoTerminal's cap on addresses per multi-token call. */
+const LIQUIDITY_BATCH_SIZE = 30;
 
 /**
- * Liquidity is secondary to price, so it never blocks a render for long. Past
- * this deadline the rows are returned without it; the underlying batches keep
- * resolving into their 5-minute cache and populate the next render.
+ * How long a warmed liquidity sweep is trusted before another one starts. Kept
+ * under GeckoTerminal's own 5-minute batch cache so a refresh finds fresh
+ * upstream data rather than replaying the cached batches.
  */
-const LIQUIDITY_DEADLINE_MS = 5_000;
+const LIQUIDITY_REFRESH_MS = 4 * 60_000;
 
 /** Spot metal benchmarks, which live outside the equity screener. */
 const METAL_TICKERS: Record<string, string> = {
@@ -345,7 +341,7 @@ function toToken(asset: CuratedAsset, quote: Quote | null): Token {
         // mapped exchange ticker is both correct and what a table can show.
         symbol: asset.symbol || SYMBOL_OVERRIDES[asset.assetId] || asset.assetId.toUpperCase(),
         decimals: 0,
-        liquidity: 0,
+        liquidity: null,
         volume24hUSD: quote?.volume24h ?? 0,
         price: quote?.price ?? 0,
         priceChange24hPercent: quote?.changePercent ?? 0,
@@ -439,47 +435,71 @@ export async function fetchCuratedTokensFallback(listId: CuratedTokenListId): Pr
     // Rows without a price would otherwise sort above real data in the table.
     tokens.sort((a, b) => b.marketCap - a.marketCap || b.volume24hUSD - a.volume24hUSD);
 
-    await attachLiquidity(listId, tokens);
+    attachLiquidity(listId, tokens);
     return tokens;
 }
 
-/**
- * Fills the liquidity column from on-chain DEX reserves.
- *
- * Only the top rows are looked up. GeckoTerminal takes 30 addresses per call
- * and its keyless tier is paced, so covering all ~600 curated mints would add
- * roughly half a minute to a cold homepage render. Sorting by market cap first
- * means the budget is spent on the rows actually visible; the remainder keeps
- * a null liquidity and the count is logged rather than passed off as zero.
- */
-async function attachLiquidity(listId: CuratedTokenListId, tokens: Token[]): Promise<void> {
-    const covered = tokens.slice(0, LIQUIDITY_LOOKUP_LIMIT);
-    if (covered.length === 0) return;
+// ----------------------------------------------------------------- Liquidity
 
+/** Lower-cased mint -> DEX depth in USD, filled by the sweep below. */
+const liquidityByAddress = new Map<string, number>();
+
+/**
+ * Reads on-chain depth for every curated mint into `liquidityByAddress`.
+ *
+ * This deliberately does not run on the render path. GeckoTerminal's keyless
+ * tier serializes callers and paces them ~1.5s apart, so the six curated lists
+ * used to queue behind each other and four of them routinely blew past their
+ * five-second budget — which is why the column read $0.00 on a cold homepage.
+ * One shared sweep, refreshed on a timer, keeps renders instant and converges
+ * on full coverage instead of only the top rows of each list.
+ *
+ * `withTtl` both collapses concurrent callers onto one sweep and re-arms it
+ * once the result ages out. It returns a count rather than nothing because an
+ * `undefined` result would never satisfy its cache check.
+ */
+const warmLiquidity = withTtl(LIQUIDITY_REFRESH_MS, async (): Promise<number> => {
     // Curated variants are Solana mints today; the lookup is chain-parameterised
     // so other networks drop in once the registry carries their addresses.
-    const lookup = fetchTokenLiquidity('solana', covered.map(token => token.address));
-    const timeout = new Promise<null>(resolve => setTimeout(() => resolve(null), LIQUIDITY_DEADLINE_MS));
-
-    const result = await Promise.race([lookup, timeout]);
-    if (!result) {
-        console.info(`[curated-fallback] ${listId}: liquidity lookup exceeded its deadline, skipped`);
-        return;
-    }
-    const { byAddress, missing } = result;
+    const addresses = [
+        ...new Set(CURATED_LIST_ORDER.flatMap(listId => resolveCuratedAssets(listId).map(asset => asset.mint))),
+    ];
 
     let filled = 0;
-    for (const token of covered) {
-        const hit = byAddress.get(token.address.toLowerCase());
-        if (hit?.liquidityUsd == null) continue;
-        token.liquidity = hit.liquidityUsd;
+    for (let offset = 0; offset < addresses.length; offset += LIQUIDITY_BATCH_SIZE) {
+        const batch = addresses.slice(offset, offset + LIQUIDITY_BATCH_SIZE);
+        const { byAddress } = await fetchTokenLiquidity('solana', batch);
+        // Written per batch rather than at the end: a sweep over ~600 mints
+        // takes tens of seconds, and renders in between should see the part
+        // that has already landed.
+        for (const [address, depth] of byAddress) {
+            if (depth.liquidityUsd == null) continue;
+            liquidityByAddress.set(address, depth.liquidityUsd);
+            filled += 1;
+        }
+    }
+
+    console.info(`[curated-fallback] liquidity sweep: ${filled}/${addresses.length} mints known to the DEX indexer`);
+    return filled;
+});
+
+/**
+ * Fills the liquidity column from whatever the sweep has resolved so far, and
+ * makes sure a sweep is running. Rows it cannot answer for keep a null depth,
+ * which the table renders as `—`.
+ */
+function attachLiquidity(listId: CuratedTokenListId, tokens: Token[]): void {
+    void warmLiquidity().catch(error => {
+        console.warn('[curated-fallback] liquidity sweep failed:', error);
+    });
+
+    let filled = 0;
+    for (const token of tokens) {
+        const depth = liquidityByAddress.get(token.address.toLowerCase());
+        if (depth === undefined) continue;
+        token.liquidity = depth;
         filled += 1;
     }
 
-    const skipped = tokens.length - covered.length;
-    console.info(
-        `[curated-fallback] ${listId}: liquidity for ${filled}/${covered.length} looked-up rows` +
-            (missing.length > 0 ? `, ${missing.length} unknown to the DEX indexer` : '') +
-            (skipped > 0 ? `, ${skipped} rows below the lookup limit left unpriced` : ''),
-    );
+    console.info(`[curated-fallback] ${listId}: liquidity known for ${filled}/${tokens.length} rows`);
 }
