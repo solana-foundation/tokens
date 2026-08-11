@@ -5,6 +5,7 @@ import { cn } from '@tokens/ui/cn';
 import { CHAIN_LIST, type ChainId } from '@/lib/market-data/chains';
 import type { DexPair } from '@/lib/market-data/dex-pairs';
 import { CHANGE_WINDOWS, DexPairTable, type SortState } from './dex-pair-table';
+import { isSuspectTurnover, SUSPECT_TURNOVER_RATIO } from './dex-pair-health';
 
 /**
  * Chain-scoped pair explorer.
@@ -19,6 +20,8 @@ interface DexPairsResponse {
     chain: ChainId;
     pairs: DexPair[];
     degraded: boolean;
+    pagesLoaded: number;
+    pagesRequested: number;
     fetchedAt: number;
 }
 
@@ -61,14 +64,19 @@ export function DexExplorer({
     initialChain,
     initialPairs,
     initialDegraded,
+    initialPagesLoaded,
+    initialPagesRequested,
 }: {
     initialChain: ChainId;
     initialPairs: DexPair[];
     initialDegraded: boolean;
+    initialPagesLoaded: number;
+    initialPagesRequested: number;
 }) {
     const [chain, setChain] = useState<ChainId>(initialChain);
     const [pairs, setPairs] = useState<DexPair[]>(initialPairs);
     const [degraded, setDegraded] = useState(initialDegraded);
+    const [pages, setPages] = useState({ loaded: initialPagesLoaded, requested: initialPagesRequested });
     const [isLoading, setIsLoading] = useState(false);
     const [error, setError] = useState<string | null>(null);
     const [fetchedAt, setFetchedAt] = useState<number | null>(null);
@@ -76,6 +84,7 @@ export function DexExplorer({
     const [query, setQuery] = useState('');
     const [minLiquidity, setMinLiquidity] = useState<number>(0);
     const [minVolume, setMinVolume] = useState<number>(0);
+    const [hideSuspect, setHideSuspect] = useState(false);
     const [sort, setSort] = useState<SortState>({ key: 'volume', window: 'h24', desc: true });
 
     // The server already rendered `initialChain`; refetching it on mount would
@@ -86,12 +95,13 @@ export function DexExplorer({
         setIsLoading(true);
         setError(null);
         try {
-            const res = await fetch(`/api/dex/${next}?pages=5`, { signal });
+            const res = await fetch(`/api/dex/${next}`, { signal });
             const json = (await res.json()) as DexPairsResponse & { error?: string };
             if (!res.ok && !json.pairs) throw new Error(json.error ?? `HTTP ${res.status}`);
 
             setPairs(json.pairs ?? []);
             setDegraded(Boolean(json.degraded));
+            setPages({ loaded: json.pagesLoaded ?? 0, requested: json.pagesRequested ?? 0 });
             setFetchedAt(json.fetchedAt ?? Date.now());
             loadedChain.current = next;
         } catch (err) {
@@ -122,9 +132,12 @@ export function DexExplorer({
         return () => clearInterval(timer);
     }, [chain, load]);
 
+    const suspectCount = useMemo(() => pairs.filter(isSuspectTurnover).length, [pairs]);
+
     const visible = useMemo(() => {
         const needle = query.trim().toLowerCase();
         const filtered = pairs.filter(pair => {
+            if (hideSuspect && isSuspectTurnover(pair)) return false;
             if ((pair.liquidityUsd ?? 0) < minLiquidity) return false;
             if ((pair.volume.h24 ?? 0) < minVolume) return false;
             if (!needle) return true;
@@ -142,7 +155,7 @@ export function DexExplorer({
             const delta = sortValue(a, sort) - sortValue(b, sort);
             return sort.desc ? -delta : delta;
         });
-    }, [pairs, query, minLiquidity, minVolume, sort]);
+    }, [pairs, query, minLiquidity, minVolume, hideSuspect, sort]);
 
     const totalLiquidity = visible.reduce((sum, pair) => sum + (pair.liquidityUsd ?? 0), 0);
     const totalVolume = visible.reduce((sum, pair) => sum + (pair.volume.h24 ?? 0), 0);
@@ -222,6 +235,18 @@ export function DexExplorer({
                         </option>
                     ))}
                 </select>
+                <label
+                    className="flex h-9 select-none items-center gap-2 rounded-lg border border-gray-200 px-3 text-sm text-gray-600"
+                    title={`Pools whose 24h volume is ${SUSPECT_TURNOVER_RATIO}× their depth or more, which no tradable market sustains.`}
+                >
+                    <input
+                        type="checkbox"
+                        checked={hideSuspect}
+                        onChange={event => setHideSuspect(event.target.checked)}
+                        className="size-3.5 accent-gray-900"
+                    />
+                    Hide suspect turnover
+                </label>
                 <button
                     type="button"
                     onClick={() => void load(chain)}
@@ -238,6 +263,9 @@ export function DexExplorer({
                 </span>
                 <span>Liquidity {formatCompactUsd(totalLiquidity)}</span>
                 <span>24h volume {formatCompactUsd(totalVolume)}</span>
+                {suspectCount > 0 && (
+                    <span className="text-amber-700">{suspectCount} flagged for suspect turnover</span>
+                )}
                 {fetchedAt !== null && <span>Updated {new Date(fetchedAt).toLocaleTimeString()}</span>}
             </div>
 
@@ -245,6 +273,14 @@ export function DexExplorer({
                 <p className="mb-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
                     The DEX indexer did not answer for this network — showing nothing rather than stale
                     numbers.
+                </p>
+            )}
+
+            {!degraded && pages.requested > 0 && pages.loaded < pages.requested && (
+                <p className="mb-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+                    Showing {pages.loaded} of {pages.requested} pages — the indexer rate-limited the rest,
+                    so pools below these are missing rather than absent. Setting a CoinGecko API key
+                    removes the limit.
                 </p>
             )}
 

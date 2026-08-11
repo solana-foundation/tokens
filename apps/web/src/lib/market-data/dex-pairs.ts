@@ -172,18 +172,44 @@ async function loadPage(chain: ChainId, page: number): Promise<DexPair[]> {
  * trending and freshly created pools, which makes any cross-chain comparison
  * meaningless — the same mistake `fetchNetworkDexSnapshot` documents.
  */
-const loadPairsCached = withKeyedTtl(PAIRS_TTL_MS, async (key: string): Promise<DexPair[]> => {
+interface LoadedPairs {
+    pairs: DexPair[];
+    pagesLoaded: number;
+    pagesRequested: number;
+}
+
+const loadPairsCached = withKeyedTtl(PAIRS_TTL_MS, async (key: string): Promise<LoadedPairs> => {
     const [chain, rawPages] = key.split('|');
-    const pages = Number.parseInt(rawPages, 10);
+    const pagesRequested = Number.parseInt(rawPages, 10);
+
+    // Every page is requested at once even though the transport runs them one
+    // at a time. Awaiting page N before asking for N+1 leaves the queue empty
+    // between them, and a background sweep call slips into each gap — measured
+    // at 44s for a five-page read that takes ~11s when the pages are queued
+    // together and drain back to back.
+    //
+    // `allSettled`, not `all`: the provider rejects individual calls often
+    // enough that one refused page used to discard every page that did come
+    // back, and the caller then waited out the whole retry budget for nothing.
+    const settled = await Promise.allSettled(
+        Array.from({ length: pagesRequested }, (_, index) => loadPage(chain as ChainId, index + 1)),
+    );
 
     const pairs: DexPair[] = [];
-    for (let page = 1; page <= pages; page += 1) {
-        const batch = await loadPage(chain as ChainId, page);
-        pairs.push(...batch);
-        // Upstream ran out of pools before the requested page count.
-        if (batch.length < POOLS_PER_PAGE) break;
+    let pagesLoaded = 0;
+    for (const result of settled) {
+        if (result.status !== 'fulfilled') continue;
+        pagesLoaded += 1;
+        pairs.push(...result.value);
+        // A short page means upstream ran out of pools; later pages are empty.
+        if (result.value.length < POOLS_PER_PAGE) break;
     }
-    return pairs;
+
+    if (pagesLoaded === 0) {
+        const reason = settled.find(result => result.status === 'rejected');
+        throw reason?.status === 'rejected' ? reason.reason : new Error('No pages loaded');
+    }
+    return { pairs, pagesLoaded, pagesRequested };
 });
 
 export interface DexPairsResult {
@@ -191,18 +217,31 @@ export interface DexPairsResult {
     pairs: DexPair[];
     /** True when the chain's pools could not be read at all this cycle. */
     degraded: boolean;
+    /** Pages that answered, and how many were asked for. */
+    pagesLoaded: number;
+    pagesRequested: number;
 }
 
-export async function fetchDexPairs(chain: ChainId, pages = 5): Promise<DexPairsResult> {
+/**
+ * Pages read per chain by default.
+ *
+ * Two, because every page is one call against a provider whose keyless tier
+ * rejects roughly half of them; five pages measured at over a minute cold. With
+ * `COINGECKO_API_KEY` set the tier allows far more and callers can ask for up
+ * to `MAX_PAGE`.
+ */
+const DEFAULT_PAGES = 2;
+
+export async function fetchDexPairs(chain: ChainId, pages = DEFAULT_PAGES): Promise<DexPairsResult> {
     const bounded = Math.max(1, Math.min(MAX_PAGE, Math.floor(pages)));
     try {
-        const pairs = await loadPairsCached(`${chain}|${bounded}`);
-        return { chain, pairs, degraded: false };
+        const loaded = await loadPairsCached(`${chain}|${bounded}`);
+        return { chain, ...loaded, degraded: false };
     } catch (error) {
         console.warn(
             `[dex-pairs] ${chain} pools unavailable:`,
             error instanceof Error ? error.message : String(error),
         );
-        return { chain, pairs: [], degraded: true };
+        return { chain, pairs: [], degraded: true, pagesLoaded: 0, pagesRequested: bounded };
     }
 }

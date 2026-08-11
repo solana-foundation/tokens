@@ -11,7 +11,7 @@ export async function GET(request: Request, context: { params: Promise<{ chain: 
     }
 
     const requested = Number.parseInt(new URL(request.url).searchParams.get('pages') ?? '', 10);
-    const pages = Number.isFinite(requested) ? Math.max(1, Math.min(MAX_PAGES, requested)) : 5;
+    const pages = Number.isFinite(requested) ? Math.max(1, Math.min(MAX_PAGES, requested)) : undefined;
 
     const result = await fetchDexPairs(chain, pages);
     // `fetchDexPairs` reports an unreachable chain rather than throwing, so the

@@ -4,6 +4,7 @@ import { cn } from '@tokens/ui/cn';
 import { formatLargeNumber, formatPrice } from '@/lib/format';
 import type { DexPair } from '@/lib/market-data/dex-pairs';
 import { CHAINS } from '@/lib/market-data/chains';
+import { formatDepth, formatTurnover, isSuspectTurnover } from './dex-pair-health';
 
 /**
  * The pair table. Column set follows what a pair explorer is read for —
@@ -196,6 +197,14 @@ export function DexPairTable({
                                     <span className="ml-1 rounded-full bg-gray-100 px-2 py-0.5 text-[11px] font-medium text-gray-500">
                                         {formatDexName(pair.dex)}
                                     </span>
+                                    {isSuspectTurnover(pair) && (
+                                        <span
+                                            title={`24h volume is ${formatTurnover(pair)} this pool's depth — more than any tradable market turns over in a day.`}
+                                            className="rounded-full bg-amber-100 px-2 py-0.5 text-[11px] font-semibold text-amber-800"
+                                        >
+                                            {formatTurnover(pair)}
+                                        </span>
+                                    )}
                                 </a>
                             </td>
                             <td className="px-3 py-3 text-right tabular-nums text-gray-900">
@@ -220,7 +229,7 @@ export function DexPairTable({
                                 </td>
                             ))}
                             <td className="px-3 py-3 text-right tabular-nums text-gray-900">
-                                {formatLargeNumber(pair.liquidityUsd)}
+                                {formatDepth(pair.liquidityUsd)}
                             </td>
                             <td className="px-3 py-3 text-right tabular-nums text-gray-600">
                                 {formatLargeNumber(pair.fdvUsd)}

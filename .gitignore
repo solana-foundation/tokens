@@ -74,3 +74,6 @@ tfplan
 terraform/**/tfplan*
 .vercel
 .env*
+# Documents which variables exist; carries no values.
+!.env.example
+!**/.env.example

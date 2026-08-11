@@ -83,6 +83,19 @@ export function Header() {
                 </div>
 
                 <nav aria-label="Main navigation" className="hidden items-center gap-6 sm:flex sm:gap-8">
+                    <Link
+                        href="/dex"
+                        className="inline-flex h-10 items-center px-2 text-[length:var(--text-button-lg)] font-semibold leading-none text-text-medium transition-colors duration-150 hover:text-text-extra-high focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-text-extra-high/30 focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+                        onClick={() =>
+                            trackEvent('nav_link_clicked', {
+                                destination: 'dex',
+                                link_url: '/dex',
+                                source: 'header',
+                            })
+                        }
+                    >
+                        DEX
+                    </Link>
                     <a
                         href="https://docs.tokens.xyz"
                         target="_blank"

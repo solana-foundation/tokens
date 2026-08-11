@@ -27,8 +27,12 @@ function parseNumber(value: unknown): number | null {
 
 async function loadBatch(chain: ChainId, addresses: string[]): Promise<TokenLiquidity[]> {
     const network = CHAINS[chain].geckoterminalNetwork;
+    // Background priority: the only caller is the curated warm-up sweep, whose
+    // ~20 calls would otherwise make anything a reader is waiting on queue
+    // behind the whole sweep.
     const payload = await fetchGeckoTerminalJson(
         `/networks/${encodeURIComponent(network)}/tokens/multi/${addresses.map(encodeURIComponent).join(',')}`,
+        'background',
     );
 
     const rows = (payload as { data?: unknown })?.data;

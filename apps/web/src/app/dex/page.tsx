@@ -1,4 +1,5 @@
 import type { Metadata } from 'next';
+import { connection } from 'next/server';
 import { Suspense } from 'react';
 
 import { isChainId, type ChainId } from '@/lib/market-data/chains';
@@ -37,9 +38,22 @@ async function DexSection({ searchParams }: { searchParams: DexPageProps['search
     const raw = Array.isArray(resolved.chain) ? resolved.chain[0] : resolved.chain;
     const chain = raw && isChainId(raw) ? raw : DEFAULT_CHAIN;
 
-    const { pairs, degraded } = await fetchDexPairs(chain);
+    // Pool data is live and its cache is wall-clock based, so this cannot be
+    // prerendered: without this, `cacheComponents` trips on the `Date.now()`
+    // inside the TTL cache while trying to.
+    await connection();
 
-    return <DexExplorer initialChain={chain} initialPairs={pairs} initialDegraded={degraded} />;
+    const { pairs, degraded, pagesLoaded, pagesRequested } = await fetchDexPairs(chain);
+
+    return (
+        <DexExplorer
+            initialChain={chain}
+            initialPairs={pairs}
+            initialDegraded={degraded}
+            initialPagesLoaded={pagesLoaded}
+            initialPagesRequested={pagesRequested}
+        />
+    );
 }
 
 function DexPairsFallback() {

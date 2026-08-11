@@ -87,8 +87,8 @@ export function MarketExplorer() {
                 <h1 className="text-2xl font-semibold text-gray-900">Market Data</h1>
                 <p className="mt-1 text-sm text-gray-500">
                     Quotes from the TradingView screeners — tokens, ETFs, stocks, metals and
-                    tokenized real-world assets — plus liquidity across Solana, Base, Stellar and
-                    Robinhood.
+                    tokenized real-world assets — plus liquidity across every tracked network. For
+                    pool-level pairs, see <a className="underline hover:text-gray-700" href="/dex">/dex</a>.
                 </p>
             </header>
 
