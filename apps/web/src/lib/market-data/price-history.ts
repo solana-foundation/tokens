@@ -38,7 +38,7 @@ const INTERVAL_SECONDS: Record<TimeInterval, number> = {
     '1W': 7 * 24 * 60 * 60,
 };
 
-interface PricePoint {
+export interface PricePoint {
     timeSec: number;
     price: number;
 }
@@ -86,7 +86,7 @@ const loadSeriesCached = withKeyedTtl(60_000, loadSeries);
  * degenerates to a flat one — correct for a line chart, and honest in that it
  * never invents a wick that was not observed.
  */
-function toCandles(points: readonly PricePoint[], interval: TimeInterval): OHLCVData[] {
+export function toCandles(points: readonly PricePoint[], interval: TimeInterval): OHLCVData[] {
     const bucketSecs = INTERVAL_SECONDS[interval];
     const candles: OHLCVData[] = [];
 

@@ -4,7 +4,8 @@ import { getVariantByMint } from '@tokens/asset-registry';
 import { CURATED_LIST_ORDER, getCuratedTokenList, type CuratedTokenListId } from '@tokens/asset-registry/compat';
 import type { Token } from '@/lib/types';
 import { withTtl } from './cache';
-import { COINGECKO_BASE_URL, loadCoinGeckoIndex, resolveCoinGeckoId, slugify } from './coingecko-index';
+import { loadCoinGeckoIndex, resolveCoinGeckoId, slugify } from './coingecko-index';
+import { fetchCoinGeckoMarkets, type Quote } from './coingecko-markets';
 import { fetchTokenLiquidity } from './token-liquidity';
 import { runScannerQuery } from './tradingview';
 import { numberOrNull, stringOrNull } from './types';
@@ -20,13 +21,6 @@ import { numberOrNull, stringOrNull } from './types';
  * majors/currencies/metals/etfs and ~70% for stocks; unmatched rows are
  * returned without market numbers rather than being hidden.
  */
-
-interface Quote {
-    price: number | null;
-    changePercent: number | null;
-    volume24h: number | null;
-    marketCap: number | null;
-}
 
 interface CuratedAsset {
     mint: string;
@@ -219,50 +213,17 @@ async function loadMetalQuotes(): Promise<Map<string, Quote>> {
 
 // ------------------------------------------------------------------ CoinGecko
 
-async function fetchCoinGeckoQuotes(ids: readonly string[]): Promise<Map<string, Quote>> {
-    const quotes = new Map<string, Quote>();
-    if (ids.length === 0) return quotes;
-
-    // `/coins/markets` returns price, cap, volume and 24h change in one call.
-    for (let offset = 0; offset < ids.length; offset += 250) {
-        if (offset > 0) await new Promise(resolve => setTimeout(resolve, 1_500));
-        const batch = ids.slice(offset, offset + 250);
-        const url =
-            `${COINGECKO_BASE_URL}/coins/markets?vs_currency=usd&per_page=250&page=1` +
-            `&ids=${encodeURIComponent(batch.join(','))}`;
-
-        const res = await fetch(url, {
-            headers: { accept: 'application/json' },
-            signal: AbortSignal.timeout(30_000),
-            cache: 'no-store',
-        });
-        if (!res.ok) {
-            console.warn(`[curated-fallback] CoinGecko markets HTTP ${res.status}`);
-            continue;
-        }
-
-        const rows = (await res.json()) as Record<string, unknown>[];
-        for (const row of rows) {
-            const id = stringOrNull(row.id);
-            if (!id) continue;
-            quotes.set(id, {
-                price: numberOrNull(row.current_price),
-                changePercent: numberOrNull(row.price_change_percentage_24h),
-                volume24h: numberOrNull(row.total_volume),
-                marketCap: numberOrNull(row.market_cap),
-            });
-        }
-    }
-    return quotes;
-}
-
 /**
  * CoinGecko's keyless tier rate-limits aggressively, and the homepage renders
  * every curated tab at once. Resolving and fetching all lists together — behind
  * one cache entry that also collapses concurrent callers — keeps a full page
  * render at a couple of upstream calls instead of one burst per tab.
+ *
+ * Exported because the inline sparklines ride on the same batch: the OHLCV
+ * route awaits this to make sure a series has been fetched before it looks one
+ * up. See `coingecko-markets.ts`.
  */
-const loadCoinGeckoQuotes = withTtl(
+export const loadCoinGeckoQuotes = withTtl(
     60_000,
     async (): Promise<{ quotes: Map<string, Quote>; idsByAsset: Map<string, string> }> => {
         const index = await loadCoinGeckoIndex();
@@ -276,7 +237,7 @@ const loadCoinGeckoQuotes = withTtl(
             }
         }
 
-        const quotes = await fetchCoinGeckoQuotes([...new Set(idsByAsset.values())]);
+        const quotes = await fetchCoinGeckoMarkets([...new Set(idsByAsset.values())]);
         return { quotes, idsByAsset };
     },
 );
