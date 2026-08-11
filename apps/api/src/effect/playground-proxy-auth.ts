@@ -33,9 +33,7 @@ function timingSafeEqualString(a: string, b: string): boolean {
 
 function getPlaygroundProxySecret(): string | null {
     const secret = (process.env.TOKENS_PLAYGROUND_PROXY_SECRET ?? '').trim();
-    if (secret) return secret;
-    if (process.env.NODE_ENV !== 'production') return 'dev-playground-proxy-secret';
-    return null;
+    return secret || null;
 }
 
 async function hmacSha256Base64Url(value: string, secret: string): Promise<string> {
