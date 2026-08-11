@@ -3,14 +3,24 @@
 import { useCallback, useEffect, useState } from 'react';
 import { cn } from '@tokens/ui/cn';
 import { formatLargeNumber, formatPercent, formatPrice } from '@/lib/format';
+import type { CrossChainLiquidity } from '@/lib/market-data/cross-chain';
 import { MARKET_CATEGORIES, type MarketCategory, type MarketRow } from '@/lib/market-data/types';
+import { NetworksPanel } from './networks-panel';
 
-const CATEGORY_LABELS: Record<MarketCategory, string> = {
+/** The networks view is a tab but not a market category — it has its own shape. */
+const NETWORKS_TAB = 'networks';
+
+type TabId = MarketCategory | typeof NETWORKS_TAB;
+
+const TABS: TabId[] = [...MARKET_CATEGORIES, NETWORKS_TAB];
+
+const TAB_LABELS: Record<TabId, string> = {
     tokens: 'Tokens',
     etfs: 'ETFs',
     stocks: 'Stocks',
     metals: 'Metals',
     rwa: 'RWA',
+    networks: 'Networks',
 };
 
 interface MarketResponse {
@@ -32,25 +42,34 @@ function ChangeCell({ value }: { value: number | null }) {
 }
 
 export function MarketExplorer() {
-    const [category, setCategory] = useState<MarketCategory>('tokens');
+    const [tab, setTab] = useState<TabId>('tokens');
     const [data, setData] = useState<MarketResponse | null>(null);
+    const [networks, setNetworks] = useState<CrossChainLiquidity | null>(null);
     const [error, setError] = useState<string | null>(null);
     const [isLoading, setIsLoading] = useState(false);
 
-    const load = useCallback(async (next: MarketCategory, signal?: AbortSignal) => {
+    const load = useCallback(async (next: TabId, signal?: AbortSignal) => {
         setIsLoading(true);
         setError(null);
         try {
-            const res = await fetch(`/api/market/${next}?limit=50`, { signal });
+            const path = next === NETWORKS_TAB ? '/api/market/chains' : `/api/market/${next}?limit=50`;
+            const res = await fetch(path, { signal });
             const json = await res.json();
             if (!res.ok) {
                 throw new Error(json?.detail || json?.error || `HTTP ${res.status}`);
             }
-            setData(json as MarketResponse);
+            if (next === NETWORKS_TAB) {
+                setNetworks(json as CrossChainLiquidity);
+                setData(null);
+            } else {
+                setData(json as MarketResponse);
+                setNetworks(null);
+            }
         } catch (err) {
             if (err instanceof DOMException && err.name === 'AbortError') return;
             setError(err instanceof Error ? err.message : String(err));
             setData(null);
+            setNetworks(null);
         } finally {
             setIsLoading(false);
         }
@@ -58,34 +77,35 @@ export function MarketExplorer() {
 
     useEffect(() => {
         const controller = new AbortController();
-        void load(category, controller.signal);
+        void load(tab, controller.signal);
         return () => controller.abort();
-    }, [category, load]);
+    }, [tab, load]);
 
     return (
         <div className="mx-auto w-full max-w-5xl px-6 py-10">
             <header className="mb-6">
                 <h1 className="text-2xl font-semibold text-gray-900">Market Data</h1>
                 <p className="mt-1 text-sm text-gray-500">
-                    Live quotes from the TradingView screeners — tokens, ETFs, stocks, metals and
-                    tokenized real-world assets.
+                    Quotes from the TradingView screeners — tokens, ETFs, stocks, metals and
+                    tokenized real-world assets — plus liquidity across Solana, Base, Stellar and
+                    Robinhood.
                 </p>
             </header>
 
             <nav className="mb-4 flex flex-wrap gap-2">
-                {MARKET_CATEGORIES.map(item => (
+                {TABS.map(item => (
                     <button
                         key={item}
                         type="button"
-                        onClick={() => setCategory(item)}
+                        onClick={() => setTab(item)}
                         className={cn(
                             'rounded-full px-4 py-1.5 text-sm font-medium transition-colors',
-                            item === category
+                            item === tab
                                 ? 'bg-gray-900 text-white'
                                 : 'bg-gray-100 text-gray-600 hover:bg-gray-200',
                         )}
                     >
-                        {CATEGORY_LABELS[item]}
+                        {TAB_LABELS[item]}
                     </button>
                 ))}
             </nav>
@@ -93,7 +113,7 @@ export function MarketExplorer() {
             <div className="mb-3 flex items-center gap-3 text-xs text-gray-500">
                 <button
                     type="button"
-                    onClick={() => void load(category)}
+                    onClick={() => void load(tab)}
                     disabled={isLoading}
                     className="rounded border border-gray-200 px-2 py-1 font-medium hover:bg-gray-50 disabled:opacity-50"
                 >
@@ -104,6 +124,12 @@ export function MarketExplorer() {
                         {data.rows.length} of {data.totalCount.toLocaleString()} ·{' '}
                         {data.cached ? 'cached' : 'live'} ·{' '}
                         {new Date(data.fetchedAt).toLocaleTimeString()}
+                    </span>
+                )}
+                {networks && (
+                    <span>
+                        {networks.chains.length} networks ·{' '}
+                        {new Date(networks.fetchedAt).toLocaleTimeString()}
                     </span>
                 )}
             </div>
@@ -119,6 +145,8 @@ export function MarketExplorer() {
                     {error}
                 </p>
             )}
+
+            {networks && <NetworksPanel data={networks} />}
 
             {data && (
                 <div className="overflow-x-auto rounded-lg border border-gray-200">
