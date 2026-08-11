@@ -3,6 +3,7 @@ import 'server-only';
 import { getVariantByMint } from '@tokens/asset-registry';
 import { CURATED_LIST_ORDER, getCuratedTokenList, type CuratedTokenListId } from '@tokens/asset-registry/compat';
 import type { Token } from '@/lib/types';
+import { withTtl } from './cache';
 import { runScannerQuery } from './tradingview';
 import { numberOrNull, stringOrNull } from './types';
 
@@ -99,28 +100,6 @@ function slugify(value: string): string {
         .replaceAll('&', 'and')
         .replace(/[^a-z0-9]+/g, '-')
         .replace(/^-+|-+$/g, '');
-}
-
-function withTtl<T>(ttlMs: number, load: () => Promise<T>): () => Promise<T> {
-    let value: T | null = null;
-    let expiresAt = 0;
-    let inFlight: Promise<T> | null = null;
-
-    return async () => {
-        const now = Date.now();
-        if (value !== null && expiresAt > now) return value;
-        // Collapse concurrent tab loads onto a single upstream request.
-        inFlight ??= load()
-            .then(loaded => {
-                value = loaded;
-                expiresAt = Date.now() + ttlMs;
-                return loaded;
-            })
-            .finally(() => {
-                inFlight = null;
-            });
-        return await inFlight;
-    };
 }
 
 // ---------------------------------------------------------------- TradingView
