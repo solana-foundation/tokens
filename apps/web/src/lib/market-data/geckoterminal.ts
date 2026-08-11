@@ -61,7 +61,11 @@ function enqueue<T>(task: () => Promise<T>): Promise<T> {
     return run;
 }
 
-async function fetchJson(path: string): Promise<unknown> {
+/**
+ * Shared entry point so every GeckoTerminal caller goes through the same queue
+ * and backoff. Bypassing it with a direct fetch re-introduces the 429s.
+ */
+export async function fetchGeckoTerminalJson(path: string): Promise<unknown> {
     return await enqueue(async () => {
         for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt += 1) {
             const res = await fetch(`${GECKOTERMINAL_BASE_URL}${path}`, {
@@ -108,7 +112,7 @@ async function loadNetworkPools(network: string): Promise<NetworkDexSnapshot> {
     // Sorting by 24h volume matters: the default ordering returns trending and
     // newly created pools, which reported Solana at $664k against Base's $63M
     // purely because the samples were not comparable. Volume-sorted samples are.
-    const payload = await fetchJson(
+    const payload = await fetchGeckoTerminalJson(
         `/networks/${encodeURIComponent(network)}/pools?page=1&sort=h24_volume_usd_desc`,
     );
     const rows = (payload as { data?: unknown })?.data;

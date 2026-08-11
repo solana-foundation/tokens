@@ -4,6 +4,7 @@ import { getVariantByMint } from '@tokens/asset-registry';
 import { CURATED_LIST_ORDER, getCuratedTokenList, type CuratedTokenListId } from '@tokens/asset-registry/compat';
 import type { Token } from '@/lib/types';
 import { withTtl } from './cache';
+import { fetchTokenLiquidity } from './token-liquidity';
 import { runScannerQuery } from './tradingview';
 import { numberOrNull, stringOrNull } from './types';
 
@@ -80,6 +81,20 @@ const SYMBOL_OVERRIDES: Record<string, string> = {
     'ishares-aaa-clo-active-etf': 'CLOA',
     'vaneck-clo-etf': 'CLOI',
 };
+
+/**
+ * How many rows per list get an on-chain liquidity lookup. One batch of 30,
+ * because the homepage renders six lists at once and GeckoTerminal serializes
+ * every caller: at two batches per list a cold render measured 14-26s per list.
+ */
+const LIQUIDITY_LOOKUP_LIMIT = 30;
+
+/**
+ * Liquidity is secondary to price, so it never blocks a render for long. Past
+ * this deadline the rows are returned without it; the underlying batches keep
+ * resolving into their 5-minute cache and populate the next render.
+ */
+const LIQUIDITY_DEADLINE_MS = 5_000;
 
 /** Spot metal benchmarks, which live outside the equity screener. */
 const METAL_TICKERS: Record<string, string> = {
@@ -525,5 +540,49 @@ export async function fetchCuratedTokensFallback(listId: CuratedTokenListId): Pr
     );
 
     // Rows without a price would otherwise sort above real data in the table.
-    return tokens.sort((a, b) => b.marketCap - a.marketCap || b.volume24hUSD - a.volume24hUSD);
+    tokens.sort((a, b) => b.marketCap - a.marketCap || b.volume24hUSD - a.volume24hUSD);
+
+    await attachLiquidity(listId, tokens);
+    return tokens;
+}
+
+/**
+ * Fills the liquidity column from on-chain DEX reserves.
+ *
+ * Only the top rows are looked up. GeckoTerminal takes 30 addresses per call
+ * and its keyless tier is paced, so covering all ~600 curated mints would add
+ * roughly half a minute to a cold homepage render. Sorting by market cap first
+ * means the budget is spent on the rows actually visible; the remainder keeps
+ * a null liquidity and the count is logged rather than passed off as zero.
+ */
+async function attachLiquidity(listId: CuratedTokenListId, tokens: Token[]): Promise<void> {
+    const covered = tokens.slice(0, LIQUIDITY_LOOKUP_LIMIT);
+    if (covered.length === 0) return;
+
+    // Curated variants are Solana mints today; the lookup is chain-parameterised
+    // so other networks drop in once the registry carries their addresses.
+    const lookup = fetchTokenLiquidity('solana', covered.map(token => token.address));
+    const timeout = new Promise<null>(resolve => setTimeout(() => resolve(null), LIQUIDITY_DEADLINE_MS));
+
+    const result = await Promise.race([lookup, timeout]);
+    if (!result) {
+        console.info(`[curated-fallback] ${listId}: liquidity lookup exceeded its deadline, skipped`);
+        return;
+    }
+    const { byAddress, missing } = result;
+
+    let filled = 0;
+    for (const token of covered) {
+        const hit = byAddress.get(token.address.toLowerCase());
+        if (hit?.liquidityUsd == null) continue;
+        token.liquidity = hit.liquidityUsd;
+        filled += 1;
+    }
+
+    const skipped = tokens.length - covered.length;
+    console.info(
+        `[curated-fallback] ${listId}: liquidity for ${filled}/${covered.length} looked-up rows` +
+            (missing.length > 0 ? `, ${missing.length} unknown to the DEX indexer` : '') +
+            (skipped > 0 ? `, ${skipped} rows below the lookup limit left unpriced` : ''),
+    );
 }
