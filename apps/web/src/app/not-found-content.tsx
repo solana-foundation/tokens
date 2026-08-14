@@ -39,7 +39,7 @@ export function NotFoundContent() {
                         </h1>
                         <p className="mx-auto max-w-[40rem] text-center font-inter text-[length:var(--text-body-xl-size)] leading-[var(--leading-normal)] text-text-medium">
                             This page does not exist, but the Tokens Asteroids field is live. Clear a few waves,
-                            then jump back to the API or the market index.
+                            then jump back to the pair explorer or the market index.
                         </p>
                     </div>
                     <div className="flex w-full flex-col justify-center gap-3 sm:w-auto sm:flex-row">
@@ -51,11 +51,11 @@ export function NotFoundContent() {
                             Home
                         </Link>
                         <Link
-                            href="/assets-api"
+                            href="/dex"
                             className="inline-flex h-11 items-center justify-center gap-2 rounded-full border border-border-light bg-background px-4 text-[length:var(--text-button-md)] leading-none font-inter-semibold text-text-extra-high transition-[colors,transform] duration-150 hover:bg-background-hover active:scale-[0.96]"
                         >
                             <BookOpen className="size-4" />
-                            Assets API
+                            Dex
                         </Link>
                     </div>
                 </div>

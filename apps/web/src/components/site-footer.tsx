@@ -108,17 +108,17 @@ export function SiteFooter({ tone = 'dark', asteroidsOpen, onAsteroidsOpenChange
                                 Status
                             </Link>
                             <Link
-                                href="https://docs.tokens.xyz"
+                                href="/dex"
                                 className={linkClass}
                                 onClick={() =>
-                                    trackEvent('external_link_clicked', {
-                                        link_type: 'docs',
-                                        link_url: 'https://docs.tokens.xyz',
+                                    trackEvent('nav_link_clicked', {
+                                        destination: 'dex',
+                                        link_url: '/dex',
                                         source: 'site_footer',
                                     })
                                 }
                             >
-                                Documentation
+                                Dex
                             </Link>
                             <Link
                                 href="https://github.com/solana-foundation"

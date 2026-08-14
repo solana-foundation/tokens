@@ -84,8 +84,21 @@ export function Header() {
 
                 <nav aria-label="Main navigation" className="hidden items-center gap-6 sm:flex sm:gap-8">
                     <Link
-                        href="/dex"
+                        href="/market"
                         className="inline-flex h-10 items-center px-2 text-[length:var(--text-button-lg)] font-semibold leading-none text-text-medium transition-colors duration-150 hover:text-text-extra-high focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-text-extra-high/30 focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+                        onClick={() =>
+                            trackEvent('nav_link_clicked', {
+                                destination: 'market',
+                                link_url: '/market',
+                                source: 'header',
+                            })
+                        }
+                    >
+                        Markets
+                    </Link>
+                    <Link
+                        href="/dex"
+                        className="inline-flex h-9 items-center justify-center rounded-full bg-text-extra-high px-3.5 text-[length:var(--text-button-md)] font-semibold leading-none text-background transition-[colors,transform] duration-150 hover:bg-text-high active:scale-[0.96] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-text-extra-high/30 focus-visible:ring-offset-2 focus-visible:ring-offset-background"
                         onClick={() =>
                             trackEvent('nav_link_clicked', {
                                 destination: 'dex',
@@ -94,35 +107,7 @@ export function Header() {
                             })
                         }
                     >
-                        DEX
-                    </Link>
-                    <a
-                        href="https://docs.tokens.xyz"
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="inline-flex h-10 items-center px-2 text-[length:var(--text-button-lg)] font-semibold leading-none text-text-medium transition-colors duration-150 hover:text-text-extra-high focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-text-extra-high/30 focus-visible:ring-offset-2 focus-visible:ring-offset-background"
-                        onClick={() =>
-                            trackEvent('external_link_clicked', {
-                                link_type: 'docs',
-                                link_url: 'https://docs.tokens.xyz',
-                                source: 'header',
-                            })
-                        }
-                    >
-                        Docs
-                    </a>
-                    <Link
-                        href="/assets-api"
-                        className="inline-flex h-9 items-center justify-center rounded-full bg-text-extra-high px-3.5 text-[length:var(--text-button-md)] font-semibold leading-none text-background transition-[colors,transform] duration-150 hover:bg-text-high active:scale-[0.96] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-text-extra-high/30 focus-visible:ring-offset-2 focus-visible:ring-offset-background"
-                        onClick={() =>
-                            trackEvent('nav_link_clicked', {
-                                destination: 'assets_api',
-                                link_url: '/assets-api',
-                                source: 'header',
-                            })
-                        }
-                    >
-                        Assets API
+                        Dex
                     </Link>
                 </nav>
             </div>
