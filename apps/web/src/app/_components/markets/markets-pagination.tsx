@@ -23,7 +23,7 @@ export function MarketsPagination({ state }: { state: MarketsPaginationState }) 
                     Showing <span className="text-text-extra-high">{start}</span>–
                     <span className="text-text-extra-high">{end}</span> of{' '}
                     <span className="text-text-extra-high">
-                        {total !== undefined ? total.toLocaleString() : `${visibleCount.toLocaleString()}+`}
+                        {total !== undefined ? total.toLocaleString('en-US') : `${visibleCount.toLocaleString('en-US')}+`}
                     </span>{' '}
                     {itemLabel}
                 </div>
@@ -59,11 +59,11 @@ export function MarketsPagination({ state }: { state: MarketsPaginationState }) 
                         </Button>
 
                         <div className="text-[12px] text-text-low font-sans tabular-nums">
-                            Page <span className="text-text-extra-high">{(pageIndex + 1).toLocaleString()}</span>
+                            Page <span className="text-text-extra-high">{(pageIndex + 1).toLocaleString('en-US')}</span>
                             {total !== undefined && (
                                 <>
                                     {' '}
-                                    of <span className="text-text-extra-high">{pageCount.toLocaleString()}</span>
+                                    of <span className="text-text-extra-high">{pageCount.toLocaleString('en-US')}</span>
                                 </>
                             )}
                         </div>

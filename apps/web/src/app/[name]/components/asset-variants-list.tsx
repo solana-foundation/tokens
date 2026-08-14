@@ -87,12 +87,12 @@ function formatCompactCount(value: number | null | undefined): string {
     if (value == null || !Number.isFinite(value)) return '—';
     if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`;
     if (value >= 1_000) return `${(value / 1_000).toFixed(1)}K`;
-    return Math.round(value).toLocaleString();
+    return Math.round(value).toLocaleString('en-US');
 }
 
 function formatExecutionScore(value: number | null | undefined): string {
     if (value == null || !Number.isFinite(value)) return '—';
-    return Math.round(value).toLocaleString();
+    return Math.round(value).toLocaleString('en-US');
 }
 
 export function AssetVariantsList({

@@ -34,5 +34,5 @@ export function formatUsdCompact(value: number | null): string {
 }
 
 export function formatInteger(value: number): string {
-    return Math.round(value).toLocaleString();
+    return Math.round(value).toLocaleString('en-US');
 }

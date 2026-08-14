@@ -13,7 +13,7 @@ export function formatUsd(value: number | undefined | null): string {
 
 export function formatCount(value: number | undefined | null): string {
     if (value == null || Number.isNaN(value)) return '—';
-    return value.toLocaleString(undefined, { maximumFractionDigits: 0 });
+    return value.toLocaleString('en-US', { maximumFractionDigits: 0 });
 }
 
 export function formatPercent(value: number | undefined | null): string {

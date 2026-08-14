@@ -280,7 +280,7 @@ function formatPrice(price: number | null | undefined): string {
     if (price < 0.00001) return `$${price.toExponential(2)}`;
     if (price < 0.01) return `$${price.toFixed(6)}`;
     if (price < 1) return `$${price.toFixed(4)}`;
-    return `$${price.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+    return `$${price.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
 
 function TokenTablePriceCell({ token }: { token: Token }) {
@@ -360,7 +360,7 @@ function Volume24hHeaderTooltipContent() {
 
 function formatInteger(value: number | null | undefined): string {
     if (value == null || !Number.isFinite(value)) return '—';
-    return Math.round(value).toLocaleString();
+    return Math.round(value).toLocaleString('en-US');
 }
 
 function isTrendingVariant(variant: TokenTableVariantConfig): boolean {

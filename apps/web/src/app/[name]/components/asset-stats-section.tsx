@@ -276,7 +276,7 @@ function TradeMetricTooltipContent({
 
 function formatInteger(value: number | undefined | null): string {
     if (value == null || !Number.isFinite(value)) return '—';
-    return Math.round(value).toLocaleString();
+    return Math.round(value).toLocaleString('en-US');
 }
 
 const unixSecondsFormatter = new Intl.DateTimeFormat(undefined, {

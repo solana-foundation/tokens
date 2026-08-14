@@ -121,7 +121,7 @@ export function MarketExplorer() {
                 </button>
                 {data && (
                     <span>
-                        {data.rows.length} of {data.totalCount.toLocaleString()} ·{' '}
+                        {data.rows.length} of {data.totalCount.toLocaleString('en-US')} ·{' '}
                         {data.cached ? 'cached' : 'live'} ·{' '}
                         {new Date(data.fetchedAt).toLocaleTimeString()}
                     </span>
