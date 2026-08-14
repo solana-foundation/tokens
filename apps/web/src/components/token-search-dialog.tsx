@@ -300,6 +300,87 @@ function useTokenSearchData(open: boolean, query: string) {
     };
 }
 
+interface PairSearchHit {
+    chain: string;
+    pairAddress: string;
+    baseSymbol: string;
+    baseName: string;
+    baseAddress: string;
+    quoteSymbol: string;
+    dex: string | null;
+    priceUsd: number | null;
+    volume24hUSD: number | null;
+    liquidityUsd: number | null;
+    imageUrl: string | null;
+}
+
+/**
+ * Pool hits alongside the registry's asset hits, so a pasted contract address
+ * — on any chain, including tokens nobody has curated — resolves to something.
+ */
+function usePairSearch(query: string, enabled: boolean) {
+    const trimmed = query.trim();
+
+    return useQuery<PairSearchHit[]>({
+        queryKey: ['pair-search', trimmed],
+        queryFn: async ({ signal }) => {
+            const data = await Effect.runPromise(
+                apiJson<{ hits?: PairSearchHit[] }>({
+                    url: `/api/search/pairs?q=${encodeURIComponent(trimmed)}`,
+                }),
+                { signal },
+            );
+            return data.hits ?? [];
+        },
+        enabled: enabled && trimmed.length >= 2,
+        staleTime: 30_000,
+    });
+}
+
+function pairCommandValue(hit: PairSearchHit): string {
+    return [hit.baseSymbol, hit.baseName, hit.quoteSymbol, hit.baseAddress, hit.pairAddress, hit.chain]
+        .filter(value => Boolean(value?.trim()))
+        .join(' ');
+}
+
+function PairCommandRow({ hit, onSelect }: { hit: PairSearchHit; onSelect: (hit: PairSearchHit) => void }) {
+    return (
+        <CommandItem
+            value={pairCommandValue(hit)}
+            onSelect={() => onSelect(hit)}
+            className="flex items-center gap-3 rounded-2xl px-3 py-2"
+        >
+            {hit.imageUrl ? (
+                <Image
+                    src={hit.imageUrl}
+                    alt=""
+                    width={32}
+                    height={32}
+                    className="size-8 shrink-0 rounded-full bg-gray-50 object-cover"
+                    referrerPolicy="no-referrer"
+                    unoptimized
+                />
+            ) : (
+                <div className="flex size-8 shrink-0 items-center justify-center rounded-full bg-gray-100 text-[10px] font-semibold text-text-medium">
+                    {hit.baseSymbol.slice(0, 3)}
+                </div>
+            )}
+            <div className="flex flex-1 flex-col">
+                <div className="flex items-center gap-2">
+                    <span className="font-medium text-text-extra-high">
+                        {hit.baseSymbol} <span className="text-text-extra-low">/</span> {hit.quoteSymbol}
+                    </span>
+                    <span className="max-w-[180px] truncate text-sm text-text-low capitalize">{hit.chain}</span>
+                </div>
+                <div className="flex items-center gap-3 text-xs text-text-extra-low">
+                    {hit.priceUsd !== null && <span>{formatPrice(hit.priceUsd)}</span>}
+                    {hit.liquidityUsd ? <span>Liq: {formatLargeNumber(hit.liquidityUsd)}</span> : null}
+                </div>
+            </div>
+        </CommandItem>
+    );
+}
+
 function TokenCommandRow({ token, onSelect }: { token: Token; onSelect: (token: Token) => Promise<void> }) {
     const tokenDisplayName = cleanTokenName(token.name);
 
@@ -355,6 +436,22 @@ export function TokenSearchDialog({ open, onOpenChange }: TokenSearchDialogProps
         setRecentTokens,
     } = useTokenSearchData(open, query);
 
+    const { data: pairHits = [] } = usePairSearch(query, open);
+
+    function handleSelectPair(hit: PairSearchHit): void {
+        trackEvent('search_pair_selected', {
+            chain: hit.chain,
+            pair_address: hit.pairAddress,
+            token_symbol: hit.baseSymbol,
+            search_query: query,
+            source: 'cmdk_search',
+        });
+
+        onOpenChange(false);
+        setQuery('');
+        router.push(`/dex/${hit.chain}/${encodeURIComponent(hit.pairAddress)}`);
+    }
+
     async function handleSelectToken(token: Token): Promise<void> {
         const apiAssetId = token.assetId?.trim() || null;
         const match = getVariantByMint(token.address);
@@ -394,7 +491,11 @@ export function TokenSearchDialog({ open, onOpenChange }: TokenSearchDialogProps
 
     return (
         <CommandDialog open={open} onOpenChange={handleOpenChange}>
-            <CommandInput placeholder="Search tokens..." value={query} onValueChange={setQuery} />
+            <CommandInput
+                placeholder="Search by name, symbol or contract address..."
+                value={query}
+                onValueChange={setQuery}
+            />
 
             <CommandList className="h-[400px] max-h-[400px]">
                 {(() => {
@@ -453,6 +554,27 @@ export function TokenSearchDialog({ open, onOpenChange }: TokenSearchDialogProps
                                 <CommandGroup key="curated-search-results" heading={tokenGroupHeading}>
                                     {searchTokens.map(token => (
                                         <TokenCommandRow key={token.address} token={token} onSelect={handleSelectToken} />
+                                    ))}
+                                </CommandGroup>,
+                            );
+                        }
+
+                        if (pairHits.length > 0) {
+                            blocks.push(
+                                <CommandGroup
+                                    key="pair-search-results"
+                                    heading={
+                                        <CommandGroupHeading icon={<BarChart3 className="size-3" />}>
+                                            Pairs
+                                        </CommandGroupHeading>
+                                    }
+                                >
+                                    {pairHits.map(hit => (
+                                        <PairCommandRow
+                                            key={`${hit.chain}:${hit.pairAddress}`}
+                                            hit={hit}
+                                            onSelect={handleSelectPair}
+                                        />
                                     ))}
                                 </CommandGroup>,
                             );

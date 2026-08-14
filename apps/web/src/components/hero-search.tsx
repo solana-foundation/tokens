@@ -48,7 +48,7 @@ export function HeroSearch() {
                 className="w-full bg-white border-2 border-border-medium cursor-pointer rounded-full py-3.5 md:py-4.5 pl-12 md:pl-14 pr-4 md:pr-8 text-left text-text-extra-low hover:border-border-medium transition-[box-shadow,border-color,background-color] motion-reduce:transition-none focus:outline-none ring-none hover:ring-4 ring-border-light/50"
                 onClick={handleSearchClick}
             >
-                <span className="text-[15px] md:text-[17px]">Search tokens on Solana</span>
+                <span className="text-[15px] md:text-[17px]">Search by name, symbol or contract address</span>
             </button>
             <div className="flex items-center gap-1 absolute top-1/2 right-8 md:right-6 -translate-y-1/2">
                 <kbd className="bg-gray-100 rounded-sm p-1.5">
