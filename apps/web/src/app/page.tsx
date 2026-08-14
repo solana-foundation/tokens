@@ -13,15 +13,16 @@ import {
 } from '@/lib/curated-token-lists';
 import { createHomeHighlights, type HomeTabId } from '@/lib/home-highlights';
 import { fetchCuratedTokensFallback } from '@/lib/market-data/curated-fallback';
+import { fetchManualAssetsForList } from '@/lib/market-data/manual-assets';
 import { getTokenLogoURLWithSecondarySymbol } from '@/lib/logo-overrides';
 import type { Token } from '@/lib/types';
 import { type CuratedTokenListId } from '@tokens/asset-registry/compat';
 import { Skeleton } from '@tokens/ui/skeleton';
 
 export const metadata: Metadata = {
-    title: 'Tokens | Solana Liquidity & Token Aggregator',
+    title: 'Tokens | Multichain Liquidity & Token Aggregator',
     description:
-        'Aggregate liquidity and token data across Solana DEXs. Find the best prices, analyze token metrics, and discover new opportunities.',
+        'Aggregate liquidity and token data across Solana, Ethereum, Base, BNB Chain, Arbitrum and Stellar. Find the best prices, analyze token metrics, and discover new opportunities.',
 };
 
 interface AssetMarketSnapshot {
@@ -297,9 +298,12 @@ async function fetchCuratedTokens(listId: CuratedTokenListId): Promise<Token[]> 
     }
 
     const tokens = (data?.assets ?? []).map(assetResultToToken).filter((t): t is NonNullable<typeof t> => t !== null);
+    // Assets with no Solana mint are not in the registry at all, so they arrive
+    // from a public quote feed and join the list here. See manual-assets.ts.
+    const manual = await fetchManualAssetsForList(listId);
     const seen = new Set<string>();
     const unique: Token[] = [];
-    for (const token of tokens) {
+    for (const token of [...tokens, ...manual]) {
         const key = (token.assetId ?? '').trim() || token.address;
         if (seen.has(key)) continue;
         seen.add(key);
@@ -329,7 +333,7 @@ export default function Home({ searchParams }: HomePageProps) {
             <section className="mx-auto max-w-7xl px-6 pt-28 mt-12 pb-12">
                 <div className="mx-auto max-w-4xl text-center text-pretty">
                     <h1 className="text-balance text-[44px] leading-[1.02] md:text-[54px] font-medium text-text-extra-high">
-                        Tokens on Solana
+                        Tokens Everywhere
                     </h1>
                 </div>
 

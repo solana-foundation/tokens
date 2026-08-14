@@ -23,7 +23,8 @@ const SCANNER_HEADERS: Record<string, string> = {
 export interface ScannerFilter {
     left: string;
     operation: string;
-    right: string | number;
+    /** `in_range` takes a list; every other operation takes a scalar. */
+    right: string | number | readonly (string | number)[];
 }
 
 export interface ScannerQuery {
