@@ -157,14 +157,52 @@ export function DexExplorer({
         });
     }, [pairs, query, minLiquidity, minVolume, hideSuspect, sort]);
 
+    // A query that matches none of this chain's ranked pools is asked upstream
+    // instead of coming back empty: pasted contract addresses and pools outside
+    // the top pages are exactly what someone types here.
+    const [remotePairs, setRemotePairs] = useState<DexPair[]>([]);
+    const [isSearching, setIsSearching] = useState(false);
+    const needsRemoteSearch = visible.length === 0 && query.trim().length >= 2;
+
+    useEffect(() => {
+        if (!needsRemoteSearch) {
+            setRemotePairs([]);
+            return;
+        }
+
+        const controller = new AbortController();
+        const timer = setTimeout(async () => {
+            setIsSearching(true);
+            try {
+                const res = await fetch(
+                    `/api/dex/search?q=${encodeURIComponent(query.trim())}&chain=${chain}`,
+                    { signal: controller.signal },
+                );
+                const json = (await res.json()) as { pairs?: DexPair[] };
+                setRemotePairs(json.pairs ?? []);
+            } catch {
+                // An unreachable search leaves the empty-state message in place.
+            } finally {
+                if (!controller.signal.aborted) setIsSearching(false);
+            }
+        }, 250);
+
+        return () => {
+            controller.abort();
+            clearTimeout(timer);
+        };
+    }, [chain, needsRemoteSearch, query]);
+
+    const rows = visible.length > 0 ? visible : remotePairs;
+
     const totalLiquidity = visible.reduce((sum, pair) => sum + (pair.liquidityUsd ?? 0), 0);
     const totalVolume = visible.reduce((sum, pair) => sum + (pair.volume.h24 ?? 0), 0);
 
     return (
-        <div className="mx-auto w-full max-w-[1400px] px-6 py-10">
-            <header className="mb-6">
-                <h1 className="text-2xl font-semibold text-gray-900">DEX Pairs</h1>
-                <p className="mt-1 text-sm text-gray-500">
+        <div className="mx-auto w-full max-w-[1400px] px-6 pt-28 pb-16">
+            <header className="mb-8">
+                <h1 className="text-title-lg text-text-extra-high">DEX Pairs</h1>
+                <p className="mt-2 text-body-md text-text-medium">
                     Live pools across {CHAIN_LIST.length} networks, ranked by traded volume.
                 </p>
             </header>
@@ -176,10 +214,10 @@ export function DexExplorer({
                         type="button"
                         onClick={() => setChain(item.id)}
                         className={cn(
-                            'rounded-full px-4 py-1.5 text-sm font-medium transition-colors',
+                            'cursor-pointer rounded-full px-4 py-1.5 text-sm font-semibold transition-colors',
                             item.id === chain
-                                ? 'bg-gray-900 text-white'
-                                : 'bg-gray-100 text-gray-600 hover:bg-gray-200',
+                                ? 'bg-text-extra-high text-background'
+                                : 'bg-[#F2F3F5] text-text-medium hover:bg-[#E8EAED]',
                         )}
                     >
                         {item.label}
@@ -192,13 +230,13 @@ export function DexExplorer({
                     type="search"
                     value={query}
                     onChange={event => setQuery(event.target.value)}
-                    placeholder="Filter by token, pair, DEX or address"
-                    className="h-9 min-w-[280px] flex-1 rounded-lg border border-gray-200 px-3 text-sm text-gray-900 outline-none placeholder:text-gray-400 focus:border-gray-400"
+                    placeholder="Search by name, symbol, DEX or contract address"
+                    className="h-9 min-w-[280px] flex-1 rounded-full border border-border-light px-4 text-sm text-text-extra-high outline-none transition-colors placeholder:text-text-extra-low focus:border-border-medium"
                 />
                 <select
                     value={minLiquidity}
                     onChange={event => setMinLiquidity(Number(event.target.value))}
-                    className="h-9 rounded-lg border border-gray-200 px-2 text-sm text-gray-700 outline-none focus:border-gray-400"
+                    className="h-9 rounded-full border border-border-light px-3 text-sm text-text-medium outline-none transition-colors focus:border-border-medium"
                 >
                     {LIQUIDITY_FILTERS.map(option => (
                         <option key={option.value} value={option.value}>
@@ -209,7 +247,7 @@ export function DexExplorer({
                 <select
                     value={minVolume}
                     onChange={event => setMinVolume(Number(event.target.value))}
-                    className="h-9 rounded-lg border border-gray-200 px-2 text-sm text-gray-700 outline-none focus:border-gray-400"
+                    className="h-9 rounded-full border border-border-light px-3 text-sm text-text-medium outline-none transition-colors focus:border-border-medium"
                 >
                     {VOLUME_FILTERS.map(option => (
                         <option key={option.value} value={option.value}>
@@ -225,7 +263,7 @@ export function DexExplorer({
                             window: event.target.value as SortState['window'],
                         }))
                     }
-                    className="h-9 rounded-lg border border-gray-200 px-2 text-sm text-gray-700 outline-none focus:border-gray-400"
+                    className="h-9 rounded-full border border-border-light px-3 text-sm text-text-medium outline-none transition-colors focus:border-border-medium"
                     aria-label="Volume window"
                 >
                     {CHANGE_WINDOWS.map(window => (
@@ -236,7 +274,7 @@ export function DexExplorer({
                     ))}
                 </select>
                 <label
-                    className="flex h-9 select-none items-center gap-2 rounded-lg border border-gray-200 px-3 text-sm text-gray-600"
+                    className="flex h-9 select-none items-center gap-2 rounded-full border border-border-light px-3 text-sm text-text-medium"
                     title={`Pools whose 24h volume is ${SUSPECT_TURNOVER_RATIO}× their depth or more, which no tradable market sustains.`}
                 >
                     <input
@@ -251,16 +289,21 @@ export function DexExplorer({
                     type="button"
                     onClick={() => void load(chain)}
                     disabled={isLoading}
-                    className="h-9 rounded-lg border border-gray-200 px-3 text-sm font-medium text-gray-600 hover:bg-gray-50 disabled:opacity-50"
+                    className="h-9 rounded-full border border-border-light px-4 text-sm font-semibold text-text-medium transition-colors hover:bg-gray-50 disabled:opacity-50"
                 >
                     {isLoading ? 'Loading…' : 'Refresh'}
                 </button>
             </div>
 
-            <div className="mb-3 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-gray-500">
+            <div className="mb-3 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-text-extra-low">
                 <span>
-                    {visible.length} of {pairs.length} pairs
+                    {visible.length > 0
+                        ? `${visible.length} of ${pairs.length} pairs`
+                        : remotePairs.length > 0
+                          ? `${remotePairs.length} pairs found by search`
+                          : `${visible.length} of ${pairs.length} pairs`}
                 </span>
+                {isSearching && <span>Searching all chains…</span>}
                 <span>Liquidity {formatCompactUsd(totalLiquidity)}</span>
                 <span>24h volume {formatCompactUsd(totalVolume)}</span>
                 {suspectCount > 0 && (
@@ -270,14 +313,14 @@ export function DexExplorer({
             </div>
 
             {degraded && (
-                <p className="mb-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+                <p className="mb-3 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
                     The DEX indexer did not answer for this network — showing nothing rather than stale
                     numbers.
                 </p>
             )}
 
             {!degraded && pages.requested > 0 && pages.loaded < pages.requested && (
-                <p className="mb-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+                <p className="mb-3 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
                     Showing {pages.loaded} of {pages.requested} pages — the indexer rate-limited the rest,
                     so pools below these are missing rather than absent. Setting a CoinGecko API key
                     removes the limit.
@@ -285,12 +328,12 @@ export function DexExplorer({
             )}
 
             {error && (
-                <p className="mb-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+                <p className="mb-3 rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
                     {error}
                 </p>
             )}
 
-            <DexPairTable pairs={visible} sort={sort} onSortChange={setSort} />
+            <DexPairTable pairs={rows} sort={sort} onSortChange={setSort} />
         </div>
     );
 }

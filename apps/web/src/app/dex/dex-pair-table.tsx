@@ -1,10 +1,11 @@
 'use client';
 
+import Link from 'next/link';
+
 import { cn } from '@tokens/ui/cn';
 import { formatLargeNumber, formatPrice } from '@/lib/format';
 import type { DexPair } from '@/lib/market-data/dex-pairs';
-import { CHAINS } from '@/lib/market-data/chains';
-import { formatDepth, formatTurnover, isSuspectTurnover } from './dex-pair-health';
+import { formatDepth, formatDexName, formatTurnover, isSuspectTurnover } from './dex-pair-health';
 
 /**
  * The pair table. Column set follows what a pair explorer is read for —
@@ -48,17 +49,8 @@ function formatCount(value: number | null): string {
     return String(value);
 }
 
-/** DEX ids arrive slugged (`uniswap-v4-base`); this is only for display. */
-function formatDexName(dex: string | null): string {
-    if (!dex) return 'Unknown DEX';
-    return dex
-        .split('-')
-        .map(part => part.charAt(0).toUpperCase() + part.slice(1))
-        .join(' ');
-}
-
 function ChangeCell({ value }: { value: number | null }) {
-    if (value === null) return <span className="text-gray-400">—</span>;
+    if (value === null) return <span className="text-text-extra-low">—</span>;
     const sign = value >= 0 ? '+' : '';
     return (
         <span className={cn('tabular-nums', value >= 0 ? 'text-emerald-600' : 'text-red-600')}>
@@ -87,8 +79,8 @@ function SortHeader({
                 type="button"
                 onClick={onClick}
                 className={cn(
-                    'inline-flex items-center gap-1 uppercase tracking-wide transition-colors hover:text-gray-900',
-                    active ? 'text-gray-900' : 'text-gray-500',
+                    'inline-flex cursor-pointer items-center gap-1 font-semibold uppercase tracking-wide transition-colors hover:text-text-extra-high',
+                    active ? 'text-text-extra-high' : 'text-text-extra-low',
                 )}
             >
                 {label}
@@ -122,24 +114,24 @@ export function DexPairTable({
 
     if (pairs.length === 0) {
         return (
-            <p className="rounded-2xl border border-gray-200 bg-white px-4 py-10 text-center text-sm text-gray-500">
+            <p className="rounded-2xl border border-border-light bg-white px-4 py-10 text-center text-sm text-text-medium">
                 No pairs match these filters.
             </p>
         );
     }
 
     return (
-        <div className="overflow-x-auto rounded-2xl border border-gray-200 bg-white">
+        <div className="overflow-x-auto rounded-2xl border border-border-light bg-white">
             <table className="w-full min-w-[1080px] text-sm">
-                <thead className="border-b border-gray-100 bg-gray-50 text-xs">
+                <thead className="border-b border-border-extra-light bg-gray-50/80 text-xs">
                     <tr>
-                        <th className="w-10 px-3 py-3 text-left font-medium uppercase tracking-wide text-gray-500">
+                        <th className="w-10 px-3 py-3 text-left font-semibold uppercase tracking-wide text-text-extra-low">
                             #
                         </th>
-                        <th className="px-3 py-3 text-left font-medium uppercase tracking-wide text-gray-500">
+                        <th className="px-3 py-3 text-left font-semibold uppercase tracking-wide text-text-extra-low">
                             Pair
                         </th>
-                        <th className="px-3 py-3 text-right font-medium uppercase tracking-wide text-gray-500">
+                        <th className="px-3 py-3 text-right font-semibold uppercase tracking-wide text-text-extra-low">
                             Price
                         </th>
                         <SortHeader label="Age" active={sort.key === 'age'} desc={sort.desc} onClick={() => toggle('age')} />
@@ -178,23 +170,21 @@ export function DexPairTable({
                         />
                     </tr>
                 </thead>
-                <tbody className="divide-y divide-gray-100">
+                <tbody className="divide-y divide-border-extra-light">
                     {pairs.map((pair, index) => (
                         <tr key={`${pair.chain}:${pair.address}`} className="hover:bg-gray-50">
-                            <td className="px-3 py-3 text-gray-400 tabular-nums">{index + 1}</td>
+                            <td className="px-3 py-3 text-text-extra-low tabular-nums">{index + 1}</td>
                             <td className="px-3 py-3">
-                                <a
-                                    href={`${CHAINS[pair.chain].explorerUrl}/token/${pair.base.address}`}
-                                    target="_blank"
-                                    rel="noreferrer"
+                                <Link
+                                    href={`/dex/${pair.chain}/${encodeURIComponent(pair.address)}`}
                                     className="group flex items-center gap-2"
                                 >
-                                    <span className="font-semibold text-gray-900 group-hover:underline">
+                                    <span className="font-semibold text-text-extra-high group-hover:underline">
                                         {pair.base.symbol}
                                     </span>
-                                    <span className="text-gray-400">/</span>
-                                    <span className="text-gray-500">{pair.quote.symbol}</span>
-                                    <span className="ml-1 rounded-full bg-gray-100 px-2 py-0.5 text-[11px] font-medium text-gray-500">
+                                    <span className="text-text-extra-low">/</span>
+                                    <span className="text-text-medium">{pair.quote.symbol}</span>
+                                    <span className="ml-1 rounded-full bg-[#F2F3F5] px-2 py-0.5 text-[11px] font-semibold text-text-medium">
                                         {formatDexName(pair.dex)}
                                     </span>
                                     {isSuspectTurnover(pair) && (
@@ -205,22 +195,22 @@ export function DexPairTable({
                                             {formatTurnover(pair)}
                                         </span>
                                     )}
-                                </a>
+                                </Link>
                             </td>
-                            <td className="px-3 py-3 text-right tabular-nums text-gray-900">
+                            <td className="px-3 py-3 text-right tabular-nums text-[#2D2D2D] font-medium">
                                 {formatPrice(pair.priceUsd)}
                             </td>
-                            <td className="px-3 py-3 text-right tabular-nums text-gray-500">
+                            <td className="px-3 py-3 text-right tabular-nums text-text-low">
                                 {formatAge(pair.createdAt)}
                             </td>
-                            <td className="px-3 py-3 text-right tabular-nums text-gray-600">
+                            <td className="px-3 py-3 text-right tabular-nums text-text-medium">
                                 {formatCount(
                                     pair.buys24h === null && pair.sells24h === null
                                         ? null
                                         : (pair.buys24h ?? 0) + (pair.sells24h ?? 0),
                                 )}
                             </td>
-                            <td className="px-3 py-3 text-right tabular-nums text-gray-900">
+                            <td className="px-3 py-3 text-right tabular-nums text-[#2D2D2D] font-medium">
                                 {formatLargeNumber(pair.volume[sort.window])}
                             </td>
                             {CHANGE_WINDOWS.map(window => (
@@ -228,10 +218,10 @@ export function DexPairTable({
                                     <ChangeCell value={pair.priceChange[window]} />
                                 </td>
                             ))}
-                            <td className="px-3 py-3 text-right tabular-nums text-gray-900">
+                            <td className="px-3 py-3 text-right tabular-nums text-[#2D2D2D] font-medium">
                                 {formatDepth(pair.liquidityUsd)}
                             </td>
-                            <td className="px-3 py-3 text-right tabular-nums text-gray-600">
+                            <td className="px-3 py-3 text-right tabular-nums text-text-medium">
                                 {formatLargeNumber(pair.fdvUsd)}
                             </td>
                         </tr>

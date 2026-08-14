@@ -3,7 +3,7 @@ import { connection } from 'next/server';
 import { Suspense } from 'react';
 
 import { isChainId, type ChainId } from '@/lib/market-data/chains';
-import { fetchDexPairs } from '@/lib/market-data/dex-pairs';
+import { ensureDexSnapshot, readDexSnapshot } from '@/lib/market-data/dex-snapshot';
 import { DexExplorer } from './dex-explorer';
 
 export const metadata: Metadata = {
@@ -29,9 +29,10 @@ export default function DexPage({ searchParams }: DexPageProps) {
 }
 
 /**
- * Streams behind the shell. A cold five-page sweep of one chain takes several
- * seconds through GeckoTerminal's paced keyless tier, and blocking the whole
- * route on it would leave the tab blank for that long.
+ * Streams behind the shell. In the steady state the snapshot is already in
+ * memory and this resolves without touching the network; only the first render
+ * after a cold start waits for a ranking, and the shell is already painted by
+ * then.
  */
 async function DexSection({ searchParams }: { searchParams: DexPageProps['searchParams'] }) {
     const resolved = (await searchParams) ?? {};
@@ -43,7 +44,9 @@ async function DexSection({ searchParams }: { searchParams: DexPageProps['search
     // inside the TTL cache while trying to.
     await connection();
 
-    const { pairs, degraded, pagesLoaded, pagesRequested } = await fetchDexPairs(chain);
+    const warm = readDexSnapshot(chain);
+    const { pairs, degraded, pagesLoaded, pagesRequested } =
+        warm.pairs.length > 0 ? warm : await ensureDexSnapshot(chain);
 
     return (
         <DexExplorer

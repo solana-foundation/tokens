@@ -49,7 +49,7 @@ export function formatTurnover(pair: DexPair): string {
     const ratio = turnoverRatio(pair);
     if (ratio === null) return 'no depth';
     if (ratio >= 10_000) return `${ratio.toExponential(1)}×`;
-    return `${Math.round(ratio).toLocaleString()}×`;
+    return `${Math.round(ratio).toLocaleString('en-US')}×`;
 }
 
 /**
@@ -59,6 +59,15 @@ export function formatTurnover(pair: DexPair): string {
  * claim-of-zero this codebase already had to remove from the liquidity column.
  * A pool with seven millionths of a dollar in it reads "<$0.01" instead.
  */
+/** DEX ids arrive slugged (`uniswap-v4-base`); this is only for display. */
+export function formatDexName(dex: string | null): string {
+    if (!dex) return 'Unknown DEX';
+    return dex
+        .split('-')
+        .map(part => part.charAt(0).toUpperCase() + part.slice(1))
+        .join(' ');
+}
+
 export function formatDepth(value: number | null): string {
     if (value === null || !Number.isFinite(value)) return '—';
     if (value === 0) return '$0';
