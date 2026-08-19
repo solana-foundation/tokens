@@ -40,6 +40,14 @@ import {
   id = "projects/${data.google_project.this.project_id}/locations/${var.region}/queues/tokens-rollups-prd"
 }
 
+# The isolated assets jobs worker was created out-of-band on 2026-08-19 to
+# restore Cloud Scheduler /jobs/* handling (404ing since the 2026-08-14 assets
+# deploy set SERVICE_ROLE=api); Terraform adopts it here.
+import {
+  to = module.env.module.cloud_run_assets_jobs[0].google_cloud_run_v2_service.this
+  id = "projects/${data.google_project.this.project_id}/locations/${var.region}/services/tokens-assets-jobs-prd-us"
+}
+
 module "env" {
   source = "../../modules/env"
 
@@ -82,11 +90,12 @@ module "env" {
     "usage",
   ]
 
-  # Phase-two activation. Keep these false while the application revision is
-  # still a no-traffic candidate; otherwise Terraform can race the app deploy.
+  # Phase-two activation (see docs/operations/assets-db-resilience.md). The
+  # startup probe stays false until its own staged rollout; the worker flags
+  # match the live out-of-band cutover adopted via the import block above.
   enable_assets_db_startup_probe = false
   enable_assets_worker           = true
-  route_assets_jobs_to_worker    = false
+  route_assets_jobs_to_worker    = true
 
   enable_crons         = true
   enable_load_balancer = true
