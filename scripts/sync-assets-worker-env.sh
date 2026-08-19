@@ -59,10 +59,13 @@ secret_updates=$(
   ' "$source_config"
 )
 
+# --env-vars-file replaces the literal env-var set wholesale, which is exactly
+# the mirrored full set built above; the same invocation's --update-secrets
+# restores every secret ref. (--update-env-vars-file is not a gcloud flag.)
 gcloud run services update "$worker_service" \
   --project="$project" \
   --region="$region" \
-  --update-env-vars-file="$env_file" \
+  --env-vars-file="$env_file" \
   --update-secrets="$secret_updates" \
   --quiet >/dev/null
 
