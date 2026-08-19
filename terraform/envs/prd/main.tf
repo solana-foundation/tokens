@@ -85,7 +85,7 @@ module "env" {
   # Phase-two activation. Keep these false while the application revision is
   # still a no-traffic candidate; otherwise Terraform can race the app deploy.
   enable_assets_db_startup_probe = false
-  enable_assets_worker           = false
+  enable_assets_worker           = true
   route_assets_jobs_to_worker    = false
 
   enable_crons         = true
