@@ -125,6 +125,10 @@ describe('authenticateApiKey', () => {
         }
     });
 
+    it('grants execution:read by default (keys with materialized scopes rely on the 0014 backfill)', () => {
+        expect(DEFAULT_LEGACY_SCOPES).toContain('execution:read');
+    });
+
     it('dedupes and trims scopes', async () => {
         const { repo } = makeRepo({
             keyByHash: { ...ACTIVE_KEY, scopes: [' assets:read ', 'assets:read', 'assets:ohlcv:read'] },

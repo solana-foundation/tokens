@@ -25,6 +25,7 @@ export const DEFAULT_LEGACY_SCOPES: string[] = [
     'assets:risk:read',
     'assets:ohlcv:read',
     'assets:markets:read',
+    'execution:read',
 ];
 
 export interface ApiKeyByHashRow {

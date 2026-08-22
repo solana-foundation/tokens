@@ -3,7 +3,8 @@ title: Overview
 description: API v2 introduces community token lists — curated, project-owned lists served as composable plugins.
 ---
 
-API v2 is additive: every v1 endpoint keeps working unchanged. v2 currently covers **token lists**.
+API v2 is additive: every v1 endpoint keeps working unchanged. v2 currently covers **token lists**
+and **execution links**.
 
 ## Token lists ("lists as plugins")
 
@@ -20,3 +21,12 @@ model.
   so your UI can render appropriate caution.
 
 See [Lists endpoints](/docs/v2/endpoints/lists) for the full reference.
+
+## Execution links
+
+`GET /v2/execution/links` returns venue deep links for buying a token — the building block
+for a "Buy" call-to-action in any app. Callers choose which venues to show; we return our
+recommendation as `primary`. Reads require the `execution:read` scope, granted to all keys
+by default.
+
+See [Execution endpoints](/docs/v2/endpoints/execution) for the full reference.

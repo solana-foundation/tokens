@@ -1,0 +1,58 @@
+---
+title: Execution
+description: Venue deep links for adding a "buy X" action to your app.
+---
+
+All endpoints on this page are Platform API endpoints authenticated with `x-api-key` and
+require the `execution:read` scope (granted to all keys by default).
+
+## `GET /v2/execution/links`
+
+Deep links to swap venues for buying a token. Use it to power a "Buy" call-to-action:
+pick the venues you want to show, render them in any order, and treat `primary` as our
+recommendation. Links carry no quote — the venue computes the live price when your user
+lands there.
+
+The contract is kind-based: today every link has `kind: "swap"`; future kinds (perps,
+pools) will be added under the same shape. `meta.kinds` advertises what the deployment
+supports.
+
+- **Scope**: `execution:read`
+- **Query params**:
+  - `mint` — buy-side Solana mint. Exactly one of `mint` / `assetId` is required.
+  - `assetId` — canonical asset id or alias (e.g. `bitcoin`); resolves to the asset's
+    primary Solana variant. Unknown ids return `404`.
+  - `sellMint` (optional) — overrides the sell side. Defaults to SOL, or USDC when buying SOL.
+  - `venues` (optional) — comma-separated venue ids to include. Valid ids: `titan`,
+    `jupiter`, `dflow`, `sunrise`, `omfg`, `kamino`, `orca`, `raydium`, `byreal`.
+    Unknown ids return `400` listing the valid set.
+  - `kinds` (optional) — comma-separated link kinds. Currently only `swap`.
+  - `amount` (optional) — sell-side amount as a positive decimal string. Reserved:
+    currently accepted but not appended to any venue URL.
+
+```ts
+interface ExecutionLinksResponse {
+    buyMint: string;
+    sellMint: string | null;
+    asset: { assetId: string; symbol: string | null } | null; // registry match for the buy mint
+    primary: string | null; // our venue recommendation; null when filtered out
+    links: Array<{
+        id: string; // venue id, e.g. "titan"
+        name: string; // display name, e.g. "Titan"
+        kind: 'swap';
+        venueType: 'aggregator' | 'dex';
+        url: string;
+        iconUrl: string | null;
+    }>;
+    meta: { kinds: string[] }; // link kinds this deployment supports
+}
+```
+
+Some venues drop out per pair instead of erroring: symbol-based venues (Sunrise) are
+omitted when no display symbol can be resolved, and same-mint pairs are omitted where a
+venue can't express them.
+
+```bash
+curl -H "x-api-key: $API_KEY" \
+  "https://api.tokens.xyz/v2/execution/links?assetId=bitcoin&venues=titan,jupiter,orca"
+```
