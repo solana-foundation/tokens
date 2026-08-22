@@ -321,6 +321,16 @@
         "eslint": "^9.16.0",
       },
     },
+    "packages/execution-links": {
+      "name": "@tokens/execution-links",
+      "version": "0.0.0",
+      "dependencies": {
+        "@tokens/asset-registry": "workspace:*",
+      },
+      "devDependencies": {
+        "@tokens/typescript-config": "workspace:*",
+      },
+    },
     "packages/token-risk-helpers": {
       "name": "@tokens/token-risk-helpers",
       "version": "0.0.0",
@@ -1001,6 +1011,8 @@
     "@tokens/effect": ["@tokens/effect@workspace:packages/effect"],
 
     "@tokens/eslint-config": ["@tokens/eslint-config@workspace:packages/eslint-config"],
+
+    "@tokens/execution-links": ["@tokens/execution-links@workspace:packages/execution-links"],
 
     "@tokens/token-risk-helpers": ["@tokens/token-risk-helpers@workspace:packages/token-risk-helpers"],
 
