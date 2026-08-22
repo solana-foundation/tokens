@@ -15,6 +15,8 @@ interface TabNavigationProps<T = string> {
     onHover?: (index: number | null) => void;
     containerClassName?: string;
     wrapperClassName?: string;
+    /** Extra classes on the TabList (e.g. `gap-4` once tab padding is removed). */
+    listClassName?: string;
 }
 
 function getTabValue(id: unknown): string {
@@ -28,6 +30,7 @@ export function TabNavigation<T = string>({
     onHover: _onHover,
     containerClassName = 'w-full flex justify-start px-0 border-b border-border',
     wrapperClassName = 'p-0',
+    listClassName = 'w-max',
 }: TabNavigationProps<T>) {
     const activeValue = useMemo(() => {
         const activeTab = tabs[activeIndex] ?? tabs[0];
@@ -51,7 +54,7 @@ export function TabNavigation<T = string>({
         <div className={containerClassName}>
             <div className={wrapperClassName}>
                 <Tabs size="md" bordered={false} fullWidth value={activeValue} onValueChange={handleValueChange}>
-                    <TabList className="w-max">
+                    <TabList className={listClassName}>
                         {tabs.map(tab => (
                             <Tab key={getTabValue(tab.id)} value={getTabValue(tab.id)} className="whitespace-nowrap">
                                 {tab.label}

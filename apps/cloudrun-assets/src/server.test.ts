@@ -37,6 +37,8 @@ import type {
 import type { TrendingMarketRow, FreshTrendingMarketRow, TrendingReadsRepo } from './handlers/trendingReads';
 import type { FillQualityRow, FillQualityReadsRepo } from './handlers/fillQualityReads';
 import type { AssetCollectionMemberRow, AssetCollectionsReadsRepo } from './handlers/assetCollectionsReads';
+import type { TokenListsReadsRepo } from './handlers/tokenListsReads';
+import type { TokenListsMutationsDeps } from './handlers/tokenListsMutations';
 import type { CacheWarmDeps } from './handlers/cacheWarm';
 import type { AdminActionsDeps, AdminActionsRepo } from './handlers/adminActions';
 import { createApp, type ServerDeps } from './server';
@@ -317,6 +319,8 @@ function deps(overrides: Partial<ServerDeps> = {}): ServerDeps {
         trendingReadsRepo: overrides.trendingReadsRepo ?? emptyTrendingReadsRepo(),
         fillQualityReadsRepo: overrides.fillQualityReadsRepo ?? emptyFillQualityReadsRepo(),
         assetCollectionsReadsRepo: overrides.assetCollectionsReadsRepo ?? emptyAssetCollectionsReadsRepo(),
+        tokenListsReadsRepo: overrides.tokenListsReadsRepo ?? emptyTokenListsReadsRepo(),
+        tokenListsMutationsDeps: overrides.tokenListsMutationsDeps ?? emptyTokenListsMutationsDeps(),
         authToken: overrides.authToken ?? 'tok',
         ...(overrides.serviceRole ? { serviceRole: overrides.serviceRole } : {}),
         ...(overrides.checkDatabase ? { checkDatabase: overrides.checkDatabase } : {}),
@@ -3432,6 +3436,54 @@ function emptyAssetCollectionsReadsRepo(): AssetCollectionsReadsRepo {
         async getSummariesBySlugs() {
             return [];
         },
+    };
+}
+
+function emptyTokenListsReadsRepo(): TokenListsReadsRepo {
+    return {
+        async listPublished() {
+            return [];
+        },
+        async getBySlug() {
+            return null;
+        },
+        async listMembersBySlug() {
+            return [];
+        },
+        async listSlugsByMints() {
+            return [];
+        },
+    };
+}
+
+function emptyTokenListsMutationsDeps(): TokenListsMutationsDeps {
+    return {
+        repo: {
+            async getListBySlug() {
+                return null;
+            },
+            async insertList() {
+                throw new Error('not implemented');
+            },
+            async updateList() {
+                throw new Error('not implemented');
+            },
+            async deleteList() {
+                throw new Error('not implemented');
+            },
+            async upsertMember() {},
+            async removeMember() {
+                return false;
+            },
+            async hasActiveVariantForMint() {
+                return false;
+            },
+            async hasTokenForAddress() {
+                return false;
+            },
+        },
+        fetchTokenOverview: async () => null,
+        now: () => 0,
     };
 }
 

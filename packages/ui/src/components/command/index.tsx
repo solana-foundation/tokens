@@ -48,7 +48,7 @@ const CommandDialog = ({ children, shouldFilter = false, ...props }: CommandDial
                 >
                     <Command
                         shouldFilter={shouldFilter}
-                        className="[&_[cmdk-group-heading]]:px-2 [&_[cmdk-group-heading]]:font-medium [&_[cmdk-group-heading]]:text-muted-foreground [&_[cmdk-group]:not([hidden])_~[cmdk-group]]:pt-0 [&_[cmdk-group]]:px-2 [&_[cmdk-input-wrapper]_svg]:h-5 [&_[cmdk-input-wrapper]_svg]:w-5 [&_[cmdk-input]]:h-12 [&_[cmdk-item]]:px-2 [&_[cmdk-item]]:py-3 [&_[cmdk-item]_svg]:h-5 [&_[cmdk-item]_svg]:w-5"
+                        className="[&_[cmdk-group-heading]]:px-2 [&_[cmdk-group-heading]]:font-medium [&_[cmdk-group-heading]]:text-muted-foreground [&_[cmdk-group]:not([hidden])_~[cmdk-group]]:pt-0 [&_[cmdk-group]]:px-2 [&_[cmdk-input]]:h-12 [&_[cmdk-item]]:px-2 [&_[cmdk-item]]:py-3"
                     >
                         {children}
                     </Command>
@@ -68,7 +68,7 @@ const CommandDialog = ({ children, shouldFilter = false, ...props }: CommandDial
                 </VisuallyHidden>
                 <Command
                     shouldFilter={shouldFilter}
-                    className="[&_[cmdk-group-heading]]:px-2 [&_[cmdk-group-heading]]:font-medium [&_[cmdk-group-heading]]:text-muted-foreground [&_[cmdk-group]:not([hidden])_~[cmdk-group]]:pt-0 [&_[cmdk-group]]:px-2 [&_[cmdk-input-wrapper]_svg]:h-5 [&_[cmdk-input-wrapper]_svg]:w-5 [&_[cmdk-input]]:h-12 [&_[cmdk-item]]:px-2 [&_[cmdk-item]]:py-3 [&_[cmdk-item]_svg]:h-5 [&_[cmdk-item]_svg]:w-5"
+                    className="[&_[cmdk-group-heading]]:px-2 [&_[cmdk-group-heading]]:font-medium [&_[cmdk-group-heading]]:text-muted-foreground [&_[cmdk-group]:not([hidden])_~[cmdk-group]]:pt-0 [&_[cmdk-group]]:px-2 [&_[cmdk-input]]:h-12 [&_[cmdk-item]]:px-2 [&_[cmdk-item]]:py-3"
                 >
                     {children}
                 </Command>
@@ -77,23 +77,28 @@ const CommandDialog = ({ children, shouldFilter = false, ...props }: CommandDial
     );
 };
 
-const CommandInput = React.forwardRef<
-    React.ElementRef<typeof CommandPrimitive.Input>,
-    React.ComponentPropsWithoutRef<typeof CommandPrimitive.Input>
->(({ className, ...props }, ref) => (
-    // eslint-disable-next-line react/no-unknown-property
-    <div className="flex items-center border-b px-4 py-1" cmdk-input-wrapper="">
-        <Search className="mr-2 h-4 w-4 shrink-0 opacity-50" />
-        <CommandPrimitive.Input
-            ref={ref}
-            className={cn(
-                'flex h-11 w-full rounded-md bg-transparent py-3 text-sm outline-none placeholder:text-muted-foreground disabled:cursor-not-allowed disabled:opacity-50',
-                className,
-            )}
-            {...props}
-        />
-    </div>
-));
+interface CommandInputProps extends React.ComponentPropsWithoutRef<typeof CommandPrimitive.Input> {
+    /** Compact control rendered at the end of the command input. */
+    endAdornment?: React.ReactNode;
+}
+
+const CommandInput = React.forwardRef<React.ElementRef<typeof CommandPrimitive.Input>, CommandInputProps>(
+    ({ className, endAdornment, ...props }, ref) => (
+        // eslint-disable-next-line react/no-unknown-property
+        <div className="flex items-center border-b px-4 py-1" cmdk-input-wrapper="">
+            <Search className="mr-2 h-4 w-4 shrink-0 opacity-50" />
+            <CommandPrimitive.Input
+                ref={ref}
+                className={cn(
+                    'flex h-11 min-w-0 flex-1 rounded-md bg-transparent py-3 text-sm outline-none placeholder:text-muted-foreground disabled:cursor-not-allowed disabled:opacity-50',
+                    className,
+                )}
+                {...props}
+            />
+            {endAdornment && <div className="ml-2 shrink-0">{endAdornment}</div>}
+        </div>
+    ),
+);
 CommandInput.displayName = CommandPrimitive.Input.displayName;
 
 const CommandList = React.forwardRef<

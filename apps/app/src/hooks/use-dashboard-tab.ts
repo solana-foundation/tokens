@@ -6,6 +6,7 @@ import { useQueryState } from 'nuqs';
 export const DASHBOARD_TABS = [
     { label: 'Overview', id: 'overview' },
     { label: 'API Manager', id: 'api-manager' },
+    { label: 'Lists', id: 'lists' },
 ] as const;
 
 export type DashboardTabId = (typeof DASHBOARD_TABS)[number]['id'];
@@ -14,6 +15,7 @@ const DEFAULT_TAB: DashboardTabId = 'overview';
 
 function coerceDashboardTab(raw: string): DashboardTabId {
     if (raw === 'api-manager') return 'api-manager';
+    if (raw === 'lists') return 'lists';
     return 'overview';
 }
 

@@ -25,6 +25,7 @@ export const ADMIN_FNS: Record<string, AdminFnSpec> = {
     getVariantEditor: { service: 'admin', kind: 'query' },
     searchCanonicalAssets: { service: 'admin', kind: 'query' },
     previewMint: { service: 'admin', kind: 'query' },
+    adminListTokenLists: { service: 'admin', kind: 'query' },
 
     // cloudrun-admin mutations
     createCanonicalAsset: { service: 'admin', kind: 'mutation' },
@@ -38,6 +39,7 @@ export const ADMIN_FNS: Record<string, AdminFnSpec> = {
     moveVariantToCanonical: { service: 'admin', kind: 'mutation' },
     removeFromCategory: { service: 'admin', kind: 'mutation' },
     generateCanonicalLogoUploadUrl: { service: 'admin', kind: 'mutation' },
+    adminArchiveTokenList: { service: 'admin', kind: 'mutation' },
 
     // cloudrun-assets admin actions (awaited warms → long timeouts)
     adminCheckVariantMintForCanonical: { service: 'assets', kind: 'mutation', timeoutMs: 30_000 },

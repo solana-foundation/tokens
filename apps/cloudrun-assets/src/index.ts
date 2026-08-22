@@ -33,6 +33,8 @@ import {
     makePostgresOhlcvReadsRepo,
     makePostgresSanctumLstsRepo,
     makePostgresSeedRepo,
+    makePostgresTokenListsMutationsRepo,
+    makePostgresTokenListsReadsRepo,
     makePostgresTokensReadsRepo,
     makePostgresTrendingReadsRepo,
     makePostgresTrendingRepo,
@@ -291,6 +293,14 @@ const app = createApp({
     trendingReadsRepo: makePostgresTrendingReadsRepo(sql),
     fillQualityReadsRepo: makePostgresFillQualityReadsRepo(sql),
     assetCollectionsReadsRepo: makePostgresAssetCollectionsReadsRepo(sql),
+    tokenListsReadsRepo: makePostgresTokenListsReadsRepo(sql),
+    tokenListsMutationsDeps: {
+        repo: makePostgresTokenListsMutationsRepo(sql),
+        // Without a Birdeye key, mints unknown to the registry/tokens table
+        // simply resolve as unknown_mint instead of snapshotting metadata.
+        fetchTokenOverview: async mint => (cronDeps ? cronDeps.birdeye.fetchTokenOverview(mint) : null),
+        now: () => Date.now(),
+    },
     coingeckoReadsRepo: makePostgresCoingeckoReadsRepo(sql),
     stockReadsRepo: makePostgresStockReadsRepo(sql),
     ohlcvReadsRepo: makePostgresOhlcvReadsRepo(sql),

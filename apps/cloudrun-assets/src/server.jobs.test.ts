@@ -15,6 +15,8 @@ import type { TokensReadsRepo } from './handlers/tokensReads';
 import type { TrendingReadsRepo } from './handlers/trendingReads';
 import type { FillQualityReadsRepo } from './handlers/fillQualityReads';
 import type { AssetCollectionsReadsRepo } from './handlers/assetCollectionsReads';
+import type { TokenListsReadsRepo } from './handlers/tokenListsReads';
+import type { TokenListsMutationsDeps } from './handlers/tokenListsMutations';
 import type { CronDeps } from './handlers/crons';
 import { OidcAuthError, type VerifyOidc } from './oidc';
 import { createApp } from './server';
@@ -97,6 +99,26 @@ const noopTrendingReadsRepo: TrendingReadsRepo = {
 const noopFillQualityReadsRepo: FillQualityReadsRepo = {
     async findLatestByMints() { return []; },
 };
+const noopTokenListsReadsRepo: TokenListsReadsRepo = {
+    async listPublished() { return []; },
+    async getBySlug() { return null; },
+    async listMembersBySlug() { return []; },
+    async listSlugsByMints() { return []; },
+};
+const noopTokenListsMutationsDeps: TokenListsMutationsDeps = {
+    repo: {
+        async getListBySlug() { return null; },
+        async insertList() { throw new Error('not implemented'); },
+        async updateList() { throw new Error('not implemented'); },
+        async deleteList() { throw new Error('not implemented'); },
+        async upsertMember() {},
+        async removeMember() { return false; },
+        async hasActiveVariantForMint() { return false; },
+        async hasTokenForAddress() { return false; },
+    },
+    fetchTokenOverview: async () => null,
+    now: () => 0,
+};
 const noopAssetCollectionsReadsRepo: AssetCollectionsReadsRepo = {
     async listMembersBySlug() { return []; },
     async listMemberMintsBySlug() { return []; },
@@ -118,6 +140,8 @@ const baseDeps = {
     trendingReadsRepo: noopTrendingReadsRepo,
     fillQualityReadsRepo: noopFillQualityReadsRepo,
     assetCollectionsReadsRepo: noopAssetCollectionsReadsRepo,
+    tokenListsReadsRepo: noopTokenListsReadsRepo,
+    tokenListsMutationsDeps: noopTokenListsMutationsDeps,
 };
 
 const noopRepo: AssetsRepo = {

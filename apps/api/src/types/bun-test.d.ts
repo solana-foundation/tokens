@@ -7,19 +7,18 @@ declare module 'bun:test' {
     export const mock: {
         module(specifier: string, factory: () => unknown): void;
     };
-    export function expect<T>(value: T): {
+    interface Matchers {
         toBe(expected: unknown): void;
         toBeCloseTo(expected: number, numDigits?: number): void;
+        toBeDefined(): void;
+        toBeGreaterThan(expected: number): void;
+        toBeGreaterThanOrEqual(expected: number): void;
         toBeInstanceOf(expected: unknown): void;
         toBeLessThan(expected: number): void;
         toBeLessThanOrEqual(expected: number): void;
         toBeNull(): void;
-        toContain(expected: string): void;
+        toContain(expected: unknown): void;
         toEqual(expected: unknown): void;
-        not: {
-            toBe(expected: unknown): void;
-            toBeNull(): void;
-            toEqual(expected: unknown): void;
-        };
-    };
+    }
+    export function expect<T>(value: T): Matchers & { not: Matchers };
 }

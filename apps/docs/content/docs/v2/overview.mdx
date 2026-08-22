@@ -1,0 +1,22 @@
+---
+title: Overview
+description: API v2 introduces community token lists — curated, project-owned lists served as composable plugins.
+---
+
+API v2 is additive: every v1 endpoint keeps working unchanged. v2 currently covers **token lists**.
+
+## Token lists ("lists as plugins")
+
+A token list is a named, ordered set of Solana mints with an accountable curator. Our curated lists
+(`majors`, `currencies`, `rwas`, `etfs`, `metals`, `stocks`, `lsts`) are just the first lists; partner
+communities publish their own. Consuming apps explicitly name the lists they trust and compose them into
+one corpus — there is deliberately no global "all lists" union, because trust in a curator is the whole
+model.
+
+- **Anyone can read** any published list with an `assets:read` API key.
+- **Creating and editing lists is invite-only**: the team provisions `lists:write` on a partner
+  project's API key. Contact us to publish lists.
+- Lists may include mints outside our canonical registry; those tokens are flagged `verified: false`
+  so your UI can render appropriate caution.
+
+See [Lists endpoints](/docs/v2/endpoints/lists) for the full reference.

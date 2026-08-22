@@ -56,6 +56,17 @@ import type {
 import type { TrendingMarketRow, FreshTrendingMarketRow, TrendingReadsRepo } from './handlers/trendingReads';
 import type { FillQualityRow, FillQualityReadsRepo } from './handlers/fillQualityReads';
 import type { AssetCollectionMemberRow, AssetCollectionsReadsRepo } from './handlers/assetCollectionsReads';
+import type {
+    TokenListMemberRow,
+    TokenListRow,
+    TokenListSummaryRow,
+    TokenListsReadsRepo,
+} from './handlers/tokenListsReads';
+import {
+    SlugConflictError,
+    type TokenListMutationRow,
+    type TokenListsMutationsRepo,
+} from './handlers/tokenListsMutations';
 import type { CacheWarmAssetsRepo } from './handlers/cacheWarm';
 import { MintConflictError, VariantIdConflictError, type AdminActionsRepo } from './handlers/adminActions';
 import type { SeedRepo } from './handlers/crons.seed';
@@ -3269,6 +3280,200 @@ export function makePostgresAssetCollectionsReadsRepo(sql: Sql): AssetCollection
                 last_added_asset_id: r.last_added_asset_id,
                 last_added_at: r.last_added_at === null ? null : Number(r.last_added_at),
             }));
+        },
+    };
+}
+
+/** Shared SELECT shape for token_lists rows with epoch-ms timestamps and member counts. */
+const TOKEN_LIST_ROW_COLUMNS = `
+    tl.id,
+    tl.slug,
+    tl.owner_project_id,
+    tl.name,
+    tl.status,
+    (SELECT COUNT(*)::int FROM token_list_members m WHERE m.list_id = tl.id) AS member_count,
+    (EXTRACT(EPOCH FROM tl.created_at) * 1000)::bigint AS created_at,
+    (EXTRACT(EPOCH FROM tl.updated_at) * 1000)::bigint AS updated_at
+`;
+
+export function makePostgresTokenListsReadsRepo(sql: Sql): TokenListsReadsRepo {
+    return {
+        async listPublished(limit, offset) {
+            const rows = await sql<TokenListSummaryRow[]>`
+                SELECT tl.slug,
+                       tl.name,
+                       tl.owner_project_id,
+                       (SELECT COUNT(*)::int FROM token_list_members m WHERE m.list_id = tl.id) AS member_count,
+                       (EXTRACT(EPOCH FROM tl.updated_at) * 1000)::bigint AS updated_at
+                FROM token_lists tl
+                WHERE tl.status = 'published'
+                ORDER BY tl.updated_at DESC, tl.slug ASC
+                LIMIT ${limit} OFFSET ${offset}
+            `;
+            return rows;
+        },
+        async getBySlug(slug) {
+            const rows = await sql<TokenListRow[]>`
+                SELECT ${sql.unsafe(TOKEN_LIST_ROW_COLUMNS)} FROM token_lists tl WHERE tl.slug = ${slug}
+            `;
+            return rows[0] ?? null;
+        },
+        async listMembersBySlug(slug, limit, offset) {
+            // `verified` = an active registry variant exists for the mint and its
+            // asset was not hard-deleted (same tombstone rule as collections reads).
+            const rows = await sql<TokenListMemberRow[]>`
+                SELECT m.mint,
+                       m.rank,
+                       m.note,
+                       m.added_at,
+                       m.symbol,
+                       m.name,
+                       m.logo_uri,
+                       m.decimals,
+                       EXISTS (
+                           SELECT 1
+                           FROM asset_variants av
+                           WHERE av.mint = m.mint
+                             AND av.is_active = true
+                             AND NOT EXISTS (
+                                 SELECT 1 FROM asset_deletion_tombstones t WHERE t.asset_id = av.asset_id
+                             )
+                       ) AS verified
+                FROM token_list_members m
+                JOIN token_lists tl ON tl.id = m.list_id
+                WHERE tl.slug = ${slug}
+                ORDER BY m.rank ASC, m.mint ASC
+                LIMIT ${limit} OFFSET ${offset}
+            `;
+            return rows;
+        },
+        async listSlugsByMints(mints) {
+            if (mints.length === 0) return [];
+            const rows = await sql<{ mint: string; slug: string }[]>`
+                SELECT m.mint, tl.slug
+                FROM token_list_members m
+                JOIN token_lists tl ON tl.id = m.list_id AND tl.status = 'published'
+                WHERE m.mint IN ${sql([...mints])}
+                ORDER BY tl.slug ASC
+            `;
+            return rows;
+        },
+    };
+}
+
+/** Postgres unique-violation SQLSTATE. */
+const UNIQUE_VIOLATION = '23505';
+
+export function makePostgresTokenListsMutationsRepo(sql: Sql): TokenListsMutationsRepo {
+    async function getRowById(listId: string): Promise<TokenListMutationRow> {
+        const rows = await sql<TokenListMutationRow[]>`
+            SELECT ${sql.unsafe(TOKEN_LIST_ROW_COLUMNS)} FROM token_lists tl WHERE tl.id = ${listId}
+        `;
+        const row = rows[0];
+        if (!row) throw new Error(`token list disappeared mid-mutation: ${listId}`);
+        return row;
+    }
+
+    return {
+        async getListBySlug(slug) {
+            const rows = await sql<TokenListMutationRow[]>`
+                SELECT ${sql.unsafe(TOKEN_LIST_ROW_COLUMNS)} FROM token_lists tl WHERE tl.slug = ${slug}
+            `;
+            return rows[0] ?? null;
+        },
+        async insertList(args) {
+            const now = new Date(args.nowMs);
+            const id = randomId('tl');
+            try {
+                await sql`
+                    INSERT INTO token_lists (id, slug, owner_project_id, name, status, created_at, updated_at)
+                    VALUES (${id}, ${args.slug}, ${args.ownerProjectId}, ${args.name}, ${args.status}, ${now}, ${now})
+                `;
+            } catch (err) {
+                if ((err as { code?: string }).code === UNIQUE_VIOLATION) {
+                    throw new SlugConflictError(args.slug);
+                }
+                throw err;
+            }
+            return getRowById(id);
+        },
+        async updateList(listId, patch, nowMs) {
+            // Merge in JS against the current row — the handler holds the only
+            // write path and already verified ownership, so no lost-update risk
+            // worth a FOR UPDATE here.
+            const current = await getRowById(listId);
+            try {
+                await sql`
+                    UPDATE token_lists SET
+                        slug = ${patch.slug !== undefined ? patch.slug : current.slug},
+                        name = ${patch.name !== undefined ? patch.name : current.name},
+                        status = ${patch.status !== undefined ? patch.status : current.status},
+                        updated_at = ${new Date(nowMs)}
+                    WHERE id = ${listId}
+                `;
+            } catch (err) {
+                if ((err as { code?: string }).code === UNIQUE_VIOLATION) {
+                    throw new SlugConflictError(patch.slug ?? current.slug);
+                }
+                throw err;
+            }
+            return getRowById(listId);
+        },
+        async deleteList(listId) {
+            // token_list_members.list_id is ON DELETE CASCADE, so members go with it.
+            await sql`DELETE FROM token_lists WHERE id = ${listId}`;
+        },
+        async upsertMember(args) {
+            const rank = args.rank;
+            await sql`
+                INSERT INTO token_list_members (id, list_id, mint, rank, note, added_at, symbol, name, logo_uri, decimals)
+                VALUES (
+                    ${randomId('tlm')}, ${args.listId}, ${args.mint},
+                    COALESCE(${rank}, (
+                        SELECT COALESCE(MAX(rank), -1) + 1 FROM token_list_members WHERE list_id = ${args.listId}
+                    )),
+                    ${args.note}, ${args.addedAt},
+                    ${args.snapshot?.symbol ?? null}, ${args.snapshot?.name ?? null},
+                    ${args.snapshot?.logoUri ?? null}, ${args.snapshot?.decimals ?? null}
+                )
+                ON CONFLICT (list_id, mint) DO UPDATE SET
+                    rank = COALESCE(${rank}, token_list_members.rank),
+                    note = EXCLUDED.note,
+                    symbol = EXCLUDED.symbol,
+                    name = EXCLUDED.name,
+                    logo_uri = EXCLUDED.logo_uri,
+                    decimals = EXCLUDED.decimals
+            `;
+            // Discovery updatedAt must reflect member changes, not just metadata edits.
+            await sql`UPDATE token_lists SET updated_at = ${new Date(args.addedAt)} WHERE id = ${args.listId}`;
+        },
+        async removeMember(listId, mint, nowMs) {
+            const rows = await sql<{ id: string }[]>`
+                DELETE FROM token_list_members WHERE list_id = ${listId} AND mint = ${mint} RETURNING id
+            `;
+            if (rows.length === 0) return false;
+            await sql`UPDATE token_lists SET updated_at = ${new Date(nowMs)} WHERE id = ${listId}`;
+            return true;
+        },
+        async hasActiveVariantForMint(mint) {
+            const rows = await sql<{ exists: boolean }[]>`
+                SELECT EXISTS (
+                    SELECT 1
+                    FROM asset_variants av
+                    WHERE av.mint = ${mint}
+                      AND av.is_active = true
+                      AND NOT EXISTS (
+                          SELECT 1 FROM asset_deletion_tombstones t WHERE t.asset_id = av.asset_id
+                      )
+                ) AS exists
+            `;
+            return rows[0]?.exists === true;
+        },
+        async hasTokenForAddress(mint) {
+            const rows = await sql<{ exists: boolean }[]>`
+                SELECT EXISTS (SELECT 1 FROM tokens WHERE address = ${mint}) AS exists
+            `;
+            return rows[0]?.exists === true;
         },
     };
 }

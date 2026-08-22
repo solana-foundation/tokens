@@ -58,6 +58,7 @@ function makeDeps(overrides: Partial<ServerDeps> = {}): ServerDeps {
         reads: makeReadsRepo(),
         mutations: makeMutationsRepo(),
         hardDelete: makeHardDeleteRepo(),
+        tokenListsAdmin: { listAll: async () => [], archiveBySlug: async () => false },
         adminAllowlist: { clerkUserIds: new Set([ADMIN_ID]), emails: new Set<string>() },
         authToken: 'tok',
         ...overrides,

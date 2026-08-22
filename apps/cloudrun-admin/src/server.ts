@@ -14,6 +14,8 @@ import type { AdminReadsRepo } from './handlers/curatedTokensReads';
 import { dispatchErrorResponse } from '@tokens/cloudrun-shutdown/http-errors';
 import * as hardDeleteHandlers from './handlers/hardDelete';
 import type { HardDeleteRepo } from './handlers/hardDelete';
+import * as tokenListsAdminHandlers from './handlers/tokenListsAdmin';
+import type { TokenListsAdminRepo } from './handlers/tokenListsAdmin';
 import * as logoUploadsHandlers from './handlers/logoUploads';
 import type { LogoUploadSigner } from './handlers/logoUploads';
 
@@ -30,6 +32,7 @@ export interface ServerDeps {
     reads: AdminReadsRepo;
     mutations: AdminMutationsRepo;
     hardDelete: HardDeleteRepo;
+    tokenListsAdmin: TokenListsAdminRepo;
     /** GCS signed-PUT signer for logo uploads; absent → uploads unavailable. */
     logoSigner?: LogoUploadSigner;
     /** Admin allowlist (TOKENS_ADMIN_CLERK_USER_IDS ∪ TOKENS_ADMIN_EMAILS). */
@@ -101,6 +104,11 @@ export function createApp(deps: ServerDeps) {
         repo: deps.hardDelete,
         adminAllowlist: deps.adminAllowlist,
     };
+    const tokenListsAdminDeps: tokenListsAdminHandlers.TokenListsAdminDeps = {
+        repo: deps.tokenListsAdmin,
+        adminAllowlist: deps.adminAllowlist,
+        now: () => Date.now(),
+    };
 
     // Every handler (queries and mutations alike) calls requireAdmin(identity)
     // first — defense in depth on top of the Next.js proxy's own admin check.
@@ -112,6 +120,8 @@ export function createApp(deps: ServerDeps) {
     queries.getVariantEditor = (args, identity) => reads.getVariantEditor(readsDeps, args, identity);
     queries.searchCanonicalAssets = (args, identity) => reads.searchCanonicalAssets(readsDeps, args, identity);
     queries.previewMint = (args, identity) => reads.previewMint(readsDeps, args, identity);
+    queries.adminListTokenLists = (args, identity) =>
+        tokenListsAdminHandlers.adminListTokenLists(tokenListsAdminDeps, args, identity);
 
     const mutations: Record<string, Handler> = Object.create(null);
     mutations.createCanonicalAsset = (args, identity) =>
@@ -130,6 +140,8 @@ export function createApp(deps: ServerDeps) {
     mutations.removeFromCategory = (args, identity) =>
         mutationsHandlers.removeFromCategory(mutationsDeps, args, identity);
     mutations.hardDeleteAsset = (args, identity) => hardDeleteHandlers.hardDeleteAsset(hardDeleteDeps, args, identity);
+    mutations.adminArchiveTokenList = (args, identity) =>
+        tokenListsAdminHandlers.adminArchiveTokenList(tokenListsAdminDeps, args, identity);
     const logoUploadsDeps: logoUploadsHandlers.LogoUploadsDeps = {
         ...(deps.logoSigner ? { signer: deps.logoSigner } : {}),
         adminAllowlist: deps.adminAllowlist,

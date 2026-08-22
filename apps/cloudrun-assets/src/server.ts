@@ -67,6 +67,23 @@ import {
     type AssetCollectionsReadsRepo,
 } from './handlers/assetCollectionsReads';
 import {
+    getBySlug as tokenListsGetBySlug,
+    getMembers as tokenListsGetMembers,
+    getSlugsByMints as tokenListsGetSlugsByMints,
+    listPublished as tokenListsListPublished,
+    type TokenListsReadsRepo,
+} from './handlers/tokenListsReads';
+import {
+    addMembersBatch as tokenListsAddMembersBatch,
+    archiveList as tokenListsArchiveList,
+    createList as tokenListsCreateList,
+    deleteList as tokenListsDeleteList,
+    removeMember as tokenListsRemoveMember,
+    updateList as tokenListsUpdateList,
+    upsertMember as tokenListsUpsertMember,
+    type TokenListsMutationsDeps,
+} from './handlers/tokenListsMutations';
+import {
     getCoinById as coingeckoReadsGetCoinById,
     getPriceLatestByCoinId as coingeckoReadsGetPriceLatestByCoinId,
     getPriceLatestByCoinIds as coingeckoReadsGetPriceLatestByCoinIds,
@@ -152,6 +169,8 @@ export interface ServerDeps {
     trendingReadsRepo: TrendingReadsRepo;
     fillQualityReadsRepo: FillQualityReadsRepo;
     assetCollectionsReadsRepo: AssetCollectionsReadsRepo;
+    tokenListsReadsRepo: TokenListsReadsRepo;
+    tokenListsMutationsDeps: TokenListsMutationsDeps;
     coingeckoReadsRepo: CoingeckoReadsRepo;
     stockReadsRepo: StockReadsRepo;
     ohlcvReadsRepo: OhlcvReadsRepo;
@@ -228,6 +247,10 @@ const ATOMIC_RETRY_QUERY_NAMES = new Set([
     'assetCollectionsGetMembers',
     'assetCollectionsGetMemberMints',
     'assetCollectionsGetSummaries',
+    'tokenListsList',
+    'tokenListsGetBySlug',
+    'tokenListsGetMembers',
+    'tokenListsGetSlugsByMints',
     'coingeckoReadsGetCoinById',
     'coingeckoReadsListOhlcv',
     'coingeckoReadsGetPriceLatestByCoinId',
@@ -403,6 +426,10 @@ export function createApp(deps: ServerDeps) {
     queries.assetCollectionsGetMemberMints = args =>
         assetCollectionsGetMemberMints(deps.assetCollectionsReadsRepo, args);
     queries.assetCollectionsGetSummaries = args => assetCollectionsGetSummaries(deps.assetCollectionsReadsRepo, args);
+    queries.tokenListsList = args => tokenListsListPublished(deps.tokenListsReadsRepo, args);
+    queries.tokenListsGetBySlug = args => tokenListsGetBySlug(deps.tokenListsReadsRepo, args);
+    queries.tokenListsGetMembers = args => tokenListsGetMembers(deps.tokenListsReadsRepo, args);
+    queries.tokenListsGetSlugsByMints = args => tokenListsGetSlugsByMints(deps.tokenListsReadsRepo, args);
     queries.coingeckoReadsGetCoinById = args => coingeckoReadsGetCoinById(deps.coingeckoReadsRepo, args);
     queries.coingeckoReadsSearchCoins = args => coingeckoReadsSearchCoins(deps.coingeckoReadsRepo, args);
     queries.coingeckoReadsListOhlcv = args => coingeckoReadsListOhlcv(deps.coingeckoReadsRepo, args);
@@ -424,6 +451,16 @@ export function createApp(deps: ServerDeps) {
     const mutations: Record<string, Handler> = Object.create(null);
     mutations.setAssetDescriptionByAssetId = (args, identity) =>
         setAssetDescriptionByAssetId(deps.repo, args, identity);
+
+    // Community token lists. Ownership (owner_project_id) is enforced inside the
+    // handlers; the API route passes the caller's projectId from platform auth.
+    mutations.tokenListsCreate = args => tokenListsCreateList(deps.tokenListsMutationsDeps, args);
+    mutations.tokenListsUpdate = args => tokenListsUpdateList(deps.tokenListsMutationsDeps, args);
+    mutations.tokenListsArchive = args => tokenListsArchiveList(deps.tokenListsMutationsDeps, args);
+    mutations.tokenListsDelete = args => tokenListsDeleteList(deps.tokenListsMutationsDeps, args);
+    mutations.tokenListsUpsertMember = args => tokenListsUpsertMember(deps.tokenListsMutationsDeps, args);
+    mutations.tokenListsRemoveMember = args => tokenListsRemoveMember(deps.tokenListsMutationsDeps, args);
+    mutations.tokenListsAddMembersBatch = args => tokenListsAddMembersBatch(deps.tokenListsMutationsDeps, args);
 
     // Warm-on-miss cache warming (port of convex/cacheWarm.ts). Registered only
     // when the cron deps are wired; otherwise these names 404 like any unknown
