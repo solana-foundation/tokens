@@ -20,7 +20,7 @@
     "@tokens/effect": "workspace:*",
     "@tokens/token-risk-helpers": "workspace:*",
     "@upstash/redis": "^1.36.2",
-    "effect": "4.0.0-rc.108",
+    "effect": "4.0.0-rc.111",
     "ioredis": "^5.4.1",
     "next": "16.3.0",
     "react": "^19.2.3",
