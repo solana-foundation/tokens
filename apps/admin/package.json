@@ -21,7 +21,7 @@
     "@tanstack/react-table": "^8.21.3",
     "@tokens/ui": "workspace:*",
     "@vercel/oidc": "^3.8.4",
-    "next": "16.3.0",
+    "next": "16.3.1",
     "react": "^19.2.3",
     "react-dom": "^19.2.3",
     "sonner": "^2.0.7",
