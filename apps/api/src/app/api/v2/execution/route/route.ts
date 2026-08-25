@@ -1,15 +1,31 @@
 import { Effect } from 'effect';
 
 import { route } from '@/effect/next-route';
-import { COMPARISON_VERSION, QUOTE_PROVIDERS, summarizeComparison, type QuoteProvider } from '../evaluate/comparison';
+import {
+    COMPARISON_VERSION,
+    formatRawAmount,
+    QUOTE_PROVIDERS,
+    summarizeComparison,
+    type QuoteProvider,
+} from '../evaluate/comparison';
 import { serializeQuoteRows } from '../evaluate/serialize';
 import {
+    ALLOCATION_VERSION,
     ROUTING_VERSION,
+    type AllocationLeg,
+    type AllocationPlan,
     type AllocationStatus,
     type ExecutionRouteResponse,
     type RoutedVariant,
 } from './contract';
-import { buildVariantCurve } from './curve';
+import {
+    computeAllocation,
+    computeAllocationEdge,
+    type AllocatableVariant,
+    type AllocationBaseline,
+    type AllocationEngineResult,
+} from './allocation';
+import { buildVariantCurve, type VariantCurve } from './curve';
 import { buildProbeLadderUsd, selectVariants } from './variant-selection';
 import {
     executionQuotesLive,
@@ -113,6 +129,11 @@ export const GET = route(
             const targetUsd = yield* decodeTargetUsd(params.get('amountUsd'));
             const providers = yield* decodeProviders(params.get('providers'));
             const maxVariants = yield* decodeMaxVariants(params.get('maxVariants'));
+            const allocateRaw = (params.get('allocate') ?? 'true').trim().toLowerCase();
+            if (allocateRaw !== 'true' && allocateRaw !== 'false') {
+                return yield* Effect.fail(new BadRequestError({ message: 'allocate must be true or false' }));
+            }
+            const allocate = allocateRaw === 'true';
 
             // One batched market + fill-quality read over every variant mint;
             // this is where decimals, symbols, and the liquidity floor come from.
@@ -205,6 +226,7 @@ export const GET = route(
             const warnings: string[] = [];
             const summarizable = [];
             const variants: RoutedVariant[] = [];
+            const curveByMint = new Map<string, VariantCurve>();
             for (const [index, selected] of selection.selected.entries()) {
                 const result = fanoutResults[index] ?? null;
                 const serialized = result
@@ -219,6 +241,7 @@ export const GET = route(
                 if (!result) warnings.push(`variant_fanout_failed:${selected.variant.mint}`);
 
                 const curve = buildVariantCurve(serialized.quotes);
+                curveByMint.set(selected.variant.mint, curve);
                 variants.push({
                     variantId: selected.variant.variantId,
                     mint: selected.variant.mint,
@@ -249,14 +272,170 @@ export const GET = route(
             }
 
             const { providerStats } = summarizeComparison({ providers, entries: summarizable });
-            const allocationStatus: AllocationStatus = 'not_requested';
+
+            // --- Allocation over the parity pool ---
+            const pool: AllocatableVariant[] = variants
+                .filter(variant => variant.allocationEligible)
+                .map(variant => ({
+                    variantId: variant.variantId,
+                    mint: variant.mint,
+                    symbol: variant.symbol,
+                    decimals: variant.decimals,
+                    rank: variant.rank,
+                    points: curveByMint.get(variant.mint)?.points ?? [],
+                }));
+
+            let allocationStatus: AllocationStatus;
+            let engine: AllocationEngineResult | null = null;
+            if (!allocate) {
+                allocationStatus = 'not_requested';
+            } else if (pool.length === 0) {
+                allocationStatus = 'no_eligible_variants';
+            } else {
+                engine = computeAllocation({ targetUsd, variants: pool });
+                allocationStatus = engine && engine.legs.length > 0 ? 'ok' : 'insufficient_quotes';
+                if (allocationStatus !== 'ok') engine = null;
+            }
+
+            let allocation: AllocationPlan | null = null;
+            let verificationQuotes = 0;
+            if (engine) {
+                if (engine.unallocatedUsd > 0) warnings.push('target_exceeds_probed_depth');
+                for (const mint of engine.clampedMints) warnings.push(`curve_not_concave:${mint}`);
+                if (engine.pegSpreadBps !== null && engine.pegSpreadBps > 50) warnings.push('peg_divergence');
+
+                // Verification wave: one exact quote per leg, in parallel. The
+                // verified quote becomes the leg's reported numbers; a failed
+                // verification keeps the interpolation and says so.
+                const verifications = yield* Effect.all(
+                    engine.legs.map(leg =>
+                        executionQuotesLive({
+                            mint: leg.mint,
+                            side: 'buy',
+                            amounts: [String(leg.amountUsd)],
+                            tokenDecimals: leg.decimals,
+                            providers,
+                        }).pipe(Effect.catch(() => Effect.succeed(null))),
+                    ),
+                    { concurrency: engine.legs.length || 1 },
+                );
+                verificationQuotes = engine.legs.length * providers.length;
+
+                const unitDecimals = engine.outputUnitDecimals;
+                let totalOutUnitsRaw = 0n;
+                const legs: AllocationLeg[] = engine.legs.map((leg, index) => {
+                    const scale = 10n ** BigInt(unitDecimals - leg.decimals);
+                    const verification = verifications[index] ?? null;
+                    const verified = verification
+                        ? serializeQuoteRows({
+                              entries: verification.entries,
+                              side: 'buy',
+                              inputToken: { mint: verification.quoteMint, symbol: 'USDC', decimals: 6 },
+                              outputToken: { mint: leg.mint, symbol: leg.symbol, decimals: leg.decimals },
+                          }).quotes[0]
+                        : null;
+                    if (verified && verified.status === 'available') {
+                        const verifiedOutRaw = BigInt(verified.best.output.rawAmount);
+                        totalOutUnitsRaw += verifiedOutRaw * scale;
+                        const deltaRatio =
+                            leg.expectedOutRaw > 0n
+                                ? Number((verifiedOutRaw * 1_000_000n) / leg.expectedOutRaw - 1_000_000n) / 100
+                                : null;
+                        return {
+                            variantId: leg.variantId,
+                            mint: leg.mint,
+                            symbol: leg.symbol,
+                            amountUsd: String(leg.amountUsd),
+                            amountUsdRaw: (BigInt(leg.amountUsd) * 1_000_000n).toString(),
+                            shareOfTarget: Math.round((leg.amountUsd / targetUsd) * 10_000) / 10_000,
+                            provider: verified.best.provider,
+                            expectedOut: verified.best.output,
+                            effectivePrice: verified.best.effectivePrice,
+                            impactBps: leg.impactBps,
+                            router: verified.best.router,
+                            verification: {
+                                status: 'verified' as const,
+                                deltaBps: deltaRatio === null ? null : Math.round(deltaRatio * 100) / 100,
+                                quotedAt: verified.best.quotedAt,
+                            },
+                        };
+                    }
+                    warnings.push(`verification_unavailable:${leg.mint}`);
+                    totalOutUnitsRaw += leg.expectedOutUnitsRaw;
+                    return {
+                        variantId: leg.variantId,
+                        mint: leg.mint,
+                        symbol: leg.symbol,
+                        amountUsd: String(leg.amountUsd),
+                        amountUsdRaw: (BigInt(leg.amountUsd) * 1_000_000n).toString(),
+                        shareOfTarget: Math.round((leg.amountUsd / targetUsd) * 10_000) / 10_000,
+                        provider: leg.provider,
+                        expectedOut: {
+                            mint: leg.mint,
+                            symbol: leg.symbol,
+                            decimals: leg.decimals,
+                            amount: formatRawAmount(leg.expectedOutRaw.toString(), leg.decimals),
+                            rawAmount: leg.expectedOutRaw.toString(),
+                        },
+                        effectivePrice: null,
+                        impactBps: leg.impactBps,
+                        router: null,
+                        verification: {
+                            status: 'interpolated' as const,
+                            deltaBps: null,
+                            quotedAt: new Date().toISOString(),
+                        },
+                    };
+                });
+
+                const edgeFrom = (baseline: AllocationBaseline | null) => {
+                    if (!baseline) return null;
+                    const edge = computeAllocationEdge({
+                        planOutUnitsRaw: totalOutUnitsRaw,
+                        baselineOutUnitsRaw: baseline.outUnitsRaw,
+                        targetUsd,
+                    });
+                    if (!edge) return null;
+                    return {
+                        baselineVariantId: baseline.variantId,
+                        baselineMint: baseline.mint,
+                        baselineSymbol: baseline.symbol,
+                        outAmountDiffRaw: edge.outAmountDiffRaw.toString(),
+                        outAmountDiff: formatRawAmount(edge.outAmountDiffRaw.toString(), unitDecimals),
+                        bps: edge.bps,
+                        usd: edge.usd,
+                    };
+                };
+
+                allocation = {
+                    version: ALLOCATION_VERSION,
+                    targetUsd: String(targetUsd),
+                    allocatedUsd: String(engine.allocatedUsd),
+                    unallocatedUsd: String(engine.unallocatedUsd),
+                    chunkUsd: engine.chunkUsd,
+                    legs,
+                    outputUnit: { symbol: asset.symbol ?? asset.assetId, decimals: unitDecimals },
+                    totalExpectedOut:
+                        totalOutUnitsRaw > 0n
+                            ? {
+                                  amount: formatRawAmount(totalOutUnitsRaw.toString(), unitDecimals),
+                                  rawAmount: totalOutUnitsRaw.toString(),
+                              }
+                            : null,
+                    edge: {
+                        vsBestSingleVariant: edgeFrom(engine.bestSingleAtTarget),
+                        vsPrimaryVariant: edgeFrom(engine.primaryAtTarget),
+                    },
+                    pegSpreadBps: engine.pegSpreadBps,
+                };
+            }
 
             const response: ExecutionRouteResponse = {
                 assetId: asset.assetId,
                 providers,
                 variants,
                 allocationStatus,
-                allocation: null,
+                allocation,
                 meta: {
                     assetId: asset.assetId,
                     category: asset.category,
@@ -266,7 +445,7 @@ export const GET = route(
                     maxVariants,
                     selectedVariants: variants.length,
                     excludedVariants: selection.excluded,
-                    upstreamQuotes: variants.length * probeLadderUsd.length * providers.length,
+                    upstreamQuotes: variants.length * probeLadderUsd.length * providers.length + verificationQuotes,
                     providerStats,
                     tieBreak: QUOTE_PROVIDERS[0],
                     routingVersion: ROUTING_VERSION,

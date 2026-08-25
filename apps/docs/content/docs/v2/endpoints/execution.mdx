@@ -386,3 +386,97 @@ larger rung has no route at all:
 | `403` | Key lacks `execution:read` |
 | `404` | Mint is not a listed token |
 | `429` | Rate limited |
+
+## `GET /v2/execution/route`
+
+The asset-level execution product. Where `evaluate` answers *"which router for
+this exact mint"*, `route` answers the question aggregators structurally
+cannot: *"I want $5M of BTC exposure on Solana — how should I get it?"*
+Jupiter and Titan route within one mint. Only the registry knows that cbBTC,
+wBTC, and zBTC are the same exposure, so only this endpoint can split an order
+across them.
+
+```
+GET /v2/execution/route?assetId=bitcoin&amountUsd=5000000
+```
+
+Requires the `execution:read` scope. Responses are `cache-control: no-store`.
+
+### What it does
+
+1. **Selects variants.** The asset's variants are ranked (liquidity, activity,
+   curated order) and filtered: a liquidity floor of `max($50k, 1% of target)`,
+   a `maxVariants` cap (default 4, max 6). Every variant *not* quoted appears
+   in `meta.excludedVariants` with a reason.
+2. **Probes each variant** across a target-scaled ladder
+   `[T/125, T/25, T/5, T]` (floored at $1k). The top rung is the target
+   itself, so "best single variant" is an exact quote, never an extrapolation.
+   Each rung is a full `evaluate`-style row: both routers, winner, edge.
+3. **Builds a curve per variant** — impact derived against the variant's own
+   smallest successful rung, which makes Titan (no impact field) and Jupiter
+   comparable, and variants comparable to each other.
+4. **Allocates** (default on): a greedy split of the target across variants
+   with unit parity, chunk by chunk to whichever variant offers the most
+   output for the next dollar. Curves are clamped to concavity (greedy is then
+   provably optimal) and allocation **never exceeds a variant's largest
+   successfully probed size** — a plan built on extrapolated depth would be
+   speculation. Any unfillable remainder is reported as `unallocatedUsd`.
+5. **Verifies** each allocation leg with one fresh exact quote at its final
+   size. The verified quote becomes the leg's reported numbers, and
+   `verification.deltaBps` shows how far the interpolation was off. A failed
+   verification keeps the interpolated numbers with
+   `verification.status: 'interpolated'` and a warning — never silently.
+
+### Unit parity: who can be allocated
+
+| `parityBasis` | Meaning |
+| --- | --- |
+| `kind` | `native` / `wrapped` / `bridged` variants: provably the same unit of the underlying |
+| `issuer_assertion` | Tokenized equity, redeemable tiers only: 1 token = 1 share is the **issuer's claim**, not our data. Always accompanied by `equity_unit_parity_assumed` and `issuer_primary_market_not_quoted` warnings |
+| `none` | Compared, never allocated: ETF wrappers with different units (gold's GLD wrapper is ~1/10 oz), leveraged, baskets, accruing LSTs, non-redeemable pre-IPO claims |
+
+### Reading the plan
+
+- `allocation.legs[]` — the split, whole dollars, summing to the target
+  exactly. Each leg names its variant, provider, expected output, impact vs
+  the variant's own baseline, and the internal `router` that filled the
+  verification quote (Jupiter's `jupiterz` means RFQ liquidity).
+- `allocation.edge.vsBestSingleVariant` / `vsPrimaryVariant` — what the split
+  gains over sending the whole order to one mint, in bps and dollars. Both
+  baselines are exact quotes at the full target. Because a single-variant fill
+  is itself a feasible allocation, `vsBestSingleVariant` is non-negative by
+  construction.
+- `allocation.pegSpreadBps` + per-variant `curve.baseEffectivePrice` — the peg
+  honesty disclosure. The allocator maximizes tokens out, which naturally buys
+  the cheapest-priced variant; that *is* best execution, but a variant that is
+  cheap at baseline is cheap for a reason, and the caller inherits that peg
+  risk. Spreads above 50bps add a `peg_divergence` warning.
+- Outputs compare **net receipts**: Jupiter Ultra's `outAmount` is net of its
+  disclosed fee, so a router can have the better gross route and still lose.
+
+### Parameters
+
+| Param | Default | Notes |
+| --- | --- | --- |
+| `assetId` | required | Canonical asset id or alias (`bitcoin`, `btc`); 404 if unknown |
+| `amountUsd` | `1000000` | Whole dollars, `1`–`50000000`; single target, not repeatable |
+| `providers` | all | CSV filter, same semantics as `evaluate` |
+| `maxVariants` | `4` | 1–6; the cost lever |
+| `allocate` | `true` | `false` skips the allocation and its verification quotes |
+| `side` | `buy` | `sell` returns 400 — per-variant sells need `evaluate` |
+
+### Cost model
+
+`upstreamQuotes = variants × 4 rungs × providers (+ legs × providers for
+verification)` — echoed in `meta.upstreamQuotes`. The default bitcoin call is
+~40 quotes and 5–9s. This is a deliberate-analysis endpoint, not a
+per-keystroke one.
+
+### Errors
+
+| Status | When |
+| --- | --- |
+| `400` | Missing `assetId`; `side=sell`; target outside bounds; `maxVariants` outside 1–6; unknown `providers` value |
+| `403` | Key lacks `execution:read` |
+| `404` | Unknown `assetId` |
+| `429` | Rate limited |

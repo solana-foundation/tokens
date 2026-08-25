@@ -35,6 +35,11 @@ evidence, pre-trade sizing, and monitoring a router's performance on your flow.
 Jupiter's candidate comes from quote-only Swap V2, where Metis, JupiterZ, Dflow, and
 OKX compete before the fee-inclusive output is compared with Titan.
 
-Both require the `execution:read` scope, granted to all keys by default.
+`GET /v2/execution/route` is the asset-level product: given a canonical asset
+(`assetId=bitcoin`) and a size, it quotes the asset's variant mints, then
+splits the order across them for the best total fill — with the evidence and
+an edge-vs-single-variant number attached.
+
+All three require the `execution:read` scope, granted to all keys by default.
 
 See [Execution endpoints](/docs/v2/endpoints/execution) for the full reference.

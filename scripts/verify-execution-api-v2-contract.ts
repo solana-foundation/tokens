@@ -265,14 +265,76 @@ async function main(): Promise<void> {
     for (const entry of excluded) {
         assert(typeof entry.reason === 'string' && entry.reason.length > 0, 'excluded variants must carry reasons');
     }
-    assert(
-        routeMeta.upstreamQuotes ===
-            (routed.variants as unknown[]).length * ladder.length * (routed.providers as unknown[]).length,
-        'route upstreamQuotes must equal variants x rungs x providers before verification quotes',
+    const noAlloc = await getJson(
+        baseUrl,
+        apiKey,
+        'api/v2/execution/route?assetId=bitcoin&amountUsd=1000000&allocate=false',
     );
+    assertObject(noAlloc, 'route(bitcoin, allocate=false)');
+    assert(noAlloc.allocationStatus === 'not_requested', 'allocate=false must report not_requested');
+    assert(noAlloc.allocation === null, 'allocate=false must carry no plan');
+    assertObject(noAlloc.meta, 'route(bitcoin, allocate=false).meta');
+    const noAllocMeta = noAlloc.meta as Record<string, unknown>;
+    assert(
+        noAllocMeta.upstreamQuotes ===
+            (noAlloc.variants as unknown[]).length *
+                (noAllocMeta.probeLadderUsd as unknown[]).length *
+                (noAlloc.providers as unknown[]).length,
+        'without allocation, upstreamQuotes must equal variants x rungs x providers',
+    );
+    // Allocation invariants (bitcoin's variants are kind-parity, so with any
+    // usable curve the plan must exist unless upstream weather killed it).
+    assert(
+        ['ok', 'insufficient_quotes'].includes(routed.allocationStatus as string),
+        `bitcoin allocationStatus must be ok or insufficient_quotes, got ${routed.allocationStatus}`,
+    );
+    if (routed.allocationStatus === 'ok') {
+        assertObject(routed.allocation, 'route(bitcoin).allocation');
+        const plan = routed.allocation as Record<string, unknown>;
+        const legs = plan.legs as Record<string, unknown>[];
+        assert(Array.isArray(legs) && legs.length >= 1, 'an ok allocation must have at least one leg');
+        const legSum = legs.reduce((sum, leg) => sum + Number(leg.amountUsd), 0);
+        assert(
+            legSum === Number(plan.allocatedUsd),
+            `allocation legs must sum to allocatedUsd (${legSum} vs ${plan.allocatedUsd})`,
+        );
+        assert(
+            Number(plan.allocatedUsd) + Number(plan.unallocatedUsd) === Number(plan.targetUsd),
+            'allocatedUsd + unallocatedUsd must equal targetUsd exactly',
+        );
+        assert(Number(plan.unallocatedUsd) >= 0, 'unallocatedUsd must be non-negative');
+        for (const [index, leg] of legs.entries()) {
+            assert(Number(leg.amountUsd) > 0, `allocation legs[${index}] must be a positive amount`);
+            assertObject(leg.verification, `allocation legs[${index}].verification`);
+            const verification = leg.verification as Record<string, unknown>;
+            assert(
+                verification.status === 'verified' || verification.status === 'interpolated',
+                `legs[${index}].verification.status must be verified or interpolated`,
+            );
+        }
+        const edge = (plan.edge as Record<string, unknown>).vsBestSingleVariant as Record<string, unknown> | null;
+        if (edge) {
+            // Single-variant is a feasible allocation; losing to it means the
+            // allocator is wrong, not the market.
+            assert(
+                (edge.bps as number) >= -1,
+                `plan must not lose to the best single variant beyond rounding, got ${edge.bps}bps`,
+            );
+        }
+        // Cost echo covers probes plus verification.
+        assert(
+            routeMeta.upstreamQuotes ===
+                (routed.variants as unknown[]).length * ladder.length * (routed.providers as unknown[]).length +
+                    legs.length * (routed.providers as unknown[]).length,
+            'route upstreamQuotes must count probes plus verification quotes',
+        );
+    }
     console.log(
         `route(bitcoin): ${(routed.variants as unknown[]).length} variants x ${ladder.length} rungs, ` +
-            `${excluded.length} excluded, status=${routed.allocationStatus}`,
+            `${excluded.length} excluded, status=${routed.allocationStatus}` +
+            (routed.allocationStatus === 'ok'
+                ? `, ${((routed.allocation as Record<string, unknown>).legs as unknown[]).length} legs`
+                : ''),
     );
 
     // 11. Route errors.

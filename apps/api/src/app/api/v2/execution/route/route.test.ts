@@ -185,8 +185,9 @@ describe('GET /api/v2/execution/route', () => {
         expect(body.assetId).toBe('bitcoin');
         expect((body.variants).length).toBe(4);
         expect(body.meta.probeLadderUsd).toEqual([40_000, 200_000, 1_000_000, 5_000_000]);
-        // One fanout per selected variant, each carrying the full ladder.
-        expect((quoteCallMints).length).toBe(4);
+        // One probe fanout per selected variant plus one verification call per
+        // allocation leg (asserted precisely below once the plan is in hand).
+        expect(quoteCallMints.length).toBeGreaterThanOrEqual(4);
         for (const variant of body.variants as Record<string, unknown>[]) {
             expect((variant.quotes as unknown[]).length).toBe(4);
             expect(variant.parityBasis).toBe('kind');
@@ -196,13 +197,43 @@ describe('GET /api/v2/execution/route', () => {
             expect(curve.maxProvenSizeUsd).toBe(5_000_000);
         }
         expect(body.variants.map((variant: { rank: number }) => variant.rank)).toEqual([1, 2, 3, 4]);
-        expect(body.meta.upstreamQuotes).toBe(4 * 4 * 2);
         expect(body.meta.selectedVariants).toBe(4);
         // The other bitcoin variants surface as excluded, never silently dropped.
         const excludedMints = (body.meta.excludedVariants as { mint: string }[]).map(entry => entry.mint);
         expect(excludedMints.length).toBe(BITCOIN_MINTS.length - 4);
+
+        // Allocation defaults on: a plan whose legs sum to the target exactly.
+        expect(body.allocationStatus).toBe('ok');
+        const allocation = body.allocation as {
+            targetUsd: string;
+            allocatedUsd: string;
+            unallocatedUsd: string;
+            legs: { amountUsd: string; verification: { status: string } }[];
+            totalExpectedOut: { rawAmount: string } | null;
+            edge: { vsBestSingleVariant: { bps: number } | null };
+        };
+        expect(allocation.targetUsd).toBe('5000000');
+        const legSum = allocation.legs.reduce((sum, leg) => sum + Number(leg.amountUsd), 0);
+        expect(legSum + Number(allocation.unallocatedUsd)).toBe(5_000_000);
+        expect(Number(allocation.allocatedUsd)).toBe(legSum);
+        expect(allocation.totalExpectedOut).not.toBeNull();
+        // Every leg was re-verified with an exact quote (the stub always answers).
+        for (const leg of allocation.legs) expect(leg.verification.status).toBe('verified');
+        // Single-variant is a feasible allocation, so the plan never loses to it.
+        if (allocation.edge.vsBestSingleVariant) {
+            expect(allocation.edge.vsBestSingleVariant.bps).toBeGreaterThanOrEqual(0);
+        }
+        // Honest cost echo includes the verification wave.
+        expect(body.meta.upstreamQuotes).toBe(4 * 4 * 2 + allocation.legs.length * 2);
+        expect(quoteCallMints.length).toBe(4 + allocation.legs.length);
+    });
+
+    it('skips allocation when allocate=false', async () => {
+        const response = await request('/api/v2/execution/route?assetId=bitcoin&allocate=false');
+        const body = await response.json();
         expect(body.allocationStatus).toBe('not_requested');
         expect(body.allocation).toBeNull();
+        expect(body.meta.upstreamQuotes).toBe(body.variants.length * 4 * 2);
     });
 
     it('defaults the target to $1M with the matching ladder', async () => {
