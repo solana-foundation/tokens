@@ -453,7 +453,8 @@ describe('limitQuoteConcurrency', () => {
         let peak = 0;
         const client = {
             id: 'jupiter' as const,
-            async fetchQuote(_args: { inputMint: string; outputMint: string; amountRaw: string }) {
+            async fetchQuote(args: { inputMint: string; outputMint: string; amountRaw: string }) {
+                void args;
                 inFlight += 1;
                 peak = Math.max(peak, inFlight);
                 await new Promise(resolve => setTimeout(resolve, 5));
@@ -475,7 +476,8 @@ describe('limitQuoteConcurrency', () => {
         const limited = limitQuoteConcurrency(
             {
                 id: 'titan' as const,
-                async fetchQuote(_args: { inputMint: string; outputMint: string; amountRaw: string }): Promise<null> {
+                async fetchQuote(args: { inputMint: string; outputMint: string; amountRaw: string }): Promise<null> {
+                    void args;
                     throw new Error('boom');
                 },
             },

@@ -28,6 +28,7 @@ import {
 import { buildVariantCurve, type VariantCurve } from './curve';
 import { buildProbeLadderUsd, selectVariants } from './variant-selection';
 import {
+    executionQuoteTokenMetadata,
     executionQuotesLive,
     variantFillQualityGetLatestByMints,
     variantMarketsGetLatestByMints,
@@ -192,6 +193,36 @@ export const GET = route(
                         : null,
                 ]),
             );
+
+            // Market rows are the primary decimals source, but coverage is not
+            // universal — tokenized equities in particular can miss rows. Fall
+            // back to Jupiter token metadata (the same chain evaluate uses)
+            // for a bounded number of gaps, so an asset whose issuers lack
+            // market data still routes instead of excluding everything.
+            const missingDecimalMints = asset.variants
+                .map(variant => variant.mint)
+                .filter(mint => !Number.isInteger(displayByMint.get(mint)?.decimals ?? null));
+            if (missingDecimalMints.length > 0) {
+                const fallbacks = yield* Effect.all(
+                    missingDecimalMints.slice(0, 8).map(mint =>
+                        executionQuoteTokenMetadata({ mint }).pipe(Effect.catch(() => Effect.succeed(null))),
+                    ),
+                    { concurrency: 4 },
+                );
+                for (const [index, metadata] of fallbacks.entries()) {
+                    if (!metadata || !Number.isInteger(metadata.decimals)) continue;
+                    const mint = missingDecimalMints[index]!;
+                    const existing = displayByMint.get(mint) ?? null;
+                    displayByMint.set(mint, {
+                        symbol: existing?.symbol ?? metadata.symbol ?? null,
+                        name: existing?.name ?? metadata.name ?? null,
+                        decimals: metadata.decimals,
+                        price: existing?.price ?? null,
+                        liquidity: existing?.liquidity ?? null,
+                        volume24hUSD: existing?.volume24hUSD ?? null,
+                    });
+                }
+            }
 
             const selection = selectVariants({
                 asset,

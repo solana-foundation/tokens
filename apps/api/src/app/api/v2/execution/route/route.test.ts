@@ -31,6 +31,9 @@ const BITCOIN_MINTS = getAsset('bitcoin')!.variants.map(variant => variant.mint)
 /** Mints the market stub reports as liquid; everything else gets a null market row. */
 let liquidMints: string[] = [];
 let quoteCallMints: string[] = [];
+let metadataCallMints: string[] = [];
+/** Mints Jupiter token metadata can resolve when the market row is missing. */
+let metadataFallbackMints: string[] = [];
 /** Per-mint fanout responder; defaults to two clean rungs per requested amount. */
 let quoteResponder: ((mint: string, amounts: string[]) => unknown) | null = null;
 
@@ -111,6 +114,15 @@ function stubCloudRun(): void {
             const mints = (body.mints as string[]) ?? [];
             return Response.json(mints.map(mint => ({ mint, fillQuality: null })));
         }
+        if (url.includes('/query/executionQuoteTokenMetadata')) {
+            const mint = body.mint as string;
+            metadataCallMints.push(mint);
+            return Response.json(
+                metadataFallbackMints.includes(mint)
+                    ? { mint, symbol: `META${mint.slice(0, 3)}`, name: `Meta ${mint.slice(0, 6)}`, decimals: 8 }
+                    : null,
+            );
+        }
         if (url.includes('/query/executionQuotesLive')) {
             const mint = body.mint as string;
             const amounts = body.amounts as string[];
@@ -138,6 +150,8 @@ beforeEach(() => {
     __resetCloudRunClientForTesting();
     liquidMints = [...BITCOIN_MINTS];
     quoteCallMints = [];
+    metadataCallMints = [];
+    metadataFallbackMints = [];
     quoteResponder = null;
     stubCloudRun();
     console.log = () => undefined;
@@ -298,6 +312,23 @@ describe('GET /api/v2/execution/route', () => {
             // The failing mint may not rank into the top 4; the request must still succeed.
             expect(body.variants.length).toBeGreaterThan(0);
         }
+    });
+
+    it('falls back to Jupiter metadata for decimals when market rows are missing', async () => {
+        const skHynix = getAsset('sk-hynix')!;
+        const mints = skHynix.variants.map(variant => variant.mint);
+        // No market rows at all — the equity coverage gap — but Jupiter's
+        // token search knows the mints.
+        liquidMints = [];
+        metadataFallbackMints = mints;
+        const response = await request('/api/v2/execution/route?assetId=sk-hynix&amountUsd=100000');
+        expect(response.status).toBe(200);
+        const body = await response.json();
+        expect(metadataCallMints.length).toBeGreaterThan(0);
+        expect((body.variants as unknown[]).length).toBeGreaterThan(0);
+        expect(
+            (body.meta.excludedVariants as { reason: string }[]).filter(e => e.reason === 'missing_decimals').length,
+        ).toBe(0);
     });
 
     it('requires the execution:read scope', async () => {
