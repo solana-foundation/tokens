@@ -216,3 +216,51 @@ describe('parity divergence ejection (A)', () => {
         expect(result.ejected.length).toBe(2);
     });
 });
+
+describe('dust-leg suppression (E)', () => {
+    // B wins exactly the first $20k chunk (cheapest shallow region) and then
+    // loses every later marginal — the bitcoin-sweep dust pattern.
+    const dustPair = () => [
+        variant('A', 1, pointsFor({ sizes: LADDER, baseOutPerDollar: 0.001, impactBpsAt: () => 250 })),
+        variant(
+            'B',
+            2,
+            pointsFor({
+                sizes: LADDER,
+                baseOutPerDollar: 0.001,
+                impactBpsAt: s => (s <= 8_000 ? 0 : s <= 40_000 ? 400 : 9_900),
+            }),
+        ),
+    ];
+
+    it('folds a single-chunk leg into the best sibling with room', () => {
+        const result = computeAllocation({ targetUsd: 1_000_000, variants: dustPair() })!;
+        expect(result.minLegUsd).toBe(40_000);
+        // Without folding this is A $980k + B $20k; the $20k leg is one chunk
+        // of noise plus real per-leg execution overhead — folded into A.
+        expect(result.legs.length).toBe(1);
+        expect(result.legs[0]!.symbol).toBe('A');
+        expect(result.legs[0]!.amountUsd).toBe(1_000_000);
+        expect(result.allocatedUsd).toBe(1_000_000);
+    });
+
+    it('keeps the dust leg when no sibling has room', () => {
+        // A can only prove $200k of depth; B holds the rest and its own dust
+        // cannot move anywhere.
+        const a = variant('A', 1, pointsFor({ sizes: [8_000, 40_000, 200_000], baseOutPerDollar: 0.001, impactBpsAt: () => 0 }));
+        const b = variant('B', 2, pointsFor({ sizes: [8_000, 40_000], baseOutPerDollar: 0.00099, impactBpsAt: () => 0 }));
+        const result = computeAllocation({ targetUsd: 220_000, variants: [a, b] })!;
+        const bLeg = result.legs.find(leg => leg.symbol === 'B');
+        // B's $20k is below the floor but every other variant is cap-bound:
+        // keeping the dust beats under-allocating the target.
+        expect(bLeg).toBeDefined();
+        expect(result.allocatedUsd).toBe(220_000);
+    });
+
+    it('never folds a full-target single-variant plan', () => {
+        const only = variant('A', 1, pointsFor({ sizes: [1_000, 2_000, 10_000], baseOutPerDollar: 0.001, impactBpsAt: () => 0 }));
+        const result = computeAllocation({ targetUsd: 10_000, variants: [only] })!;
+        expect(result.legs.length).toBe(1);
+        expect(result.legs[0]!.amountUsd).toBe(10_000);
+    });
+});

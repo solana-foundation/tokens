@@ -462,6 +462,7 @@ export const GET = route(
                     allocatedUsd: String(engine.allocatedUsd),
                     unallocatedUsd: String(engine.unallocatedUsd),
                     chunkUsd: engine.chunkUsd,
+                    minLegUsd: engine.minLegUsd,
                     legs,
                     outputUnit: { symbol: asset.symbol ?? asset.assetId, decimals: unitDecimals },
                     totalExpectedOut:

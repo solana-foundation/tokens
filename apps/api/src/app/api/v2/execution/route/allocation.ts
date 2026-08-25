@@ -76,6 +76,8 @@ export interface EjectedVariant {
 
 export interface AllocationEngineResult {
     chunkUsd: number;
+    /** Legs below this were folded into siblings (unless nothing had room). */
+    minLegUsd: number;
     allocatedUsd: number;
     unallocatedUsd: number;
     outputUnitDecimals: number;
@@ -271,6 +273,60 @@ export function computeAllocation(args: {
         remaining -= bestStep;
     }
 
+    // --- Dust-leg suppression ---
+    // A leg that won only one chunk won a single marginal comparison — within
+    // quote noise — and carries fixed per-leg execution overhead (a separate
+    // transaction). Fold it into the best sibling with room; keep it only when
+    // nothing has room, because a dust leg still beats under-filling the
+    // target.
+    const minLegUsd = Math.min(chunkUsd * 2, args.targetUsd);
+    const dustVariants = pool
+        .filter(variant => variant.allocatedUsd > 0 && variant.allocatedUsd < minLegUsd)
+        .sort((a, b) => a.allocatedUsd - b.allocatedUsd);
+    for (const dust of dustVariants) {
+        const receivers = pool.filter(variant => variant !== dust && variant.allocatedUsd > 0);
+        const roomElsewhere = receivers.reduce(
+            (sum, variant) => sum + Math.max(0, variant.capUsd - variant.allocatedUsd),
+            0,
+        );
+        if (roomElsewhere < dust.allocatedUsd) continue;
+        let toMove = dust.allocatedUsd;
+        while (toMove > 0) {
+            let best: PreparedVariant | null = null;
+            let bestStep = 0;
+            let bestMarginal = 0n;
+            for (const variant of receivers) {
+                const capacity = variant.capUsd - variant.allocatedUsd;
+                if (capacity <= 0) continue;
+                const step = Math.min(chunkUsd, toMove, capacity);
+                const marginal = outputAt(variant, variant.allocatedUsd + step) - variant.outAtAllocated;
+                // Accepting zero-marginal moves is deliberate: the dollars are
+                // committed either way, and concentration beats a dust leg.
+                const better =
+                    best === null ||
+                    ratioGreater(marginal, BigInt(step), bestMarginal, BigInt(bestStep)) ||
+                    (marginal * BigInt(bestStep) === bestMarginal * BigInt(step) &&
+                        variant.source.rank < best.source.rank);
+                if (better) {
+                    best = variant;
+                    bestStep = step;
+                    bestMarginal = marginal;
+                }
+            }
+            if (best === null) break;
+            best.allocatedUsd += bestStep;
+            best.outAtAllocated += bestMarginal;
+            toMove -= bestStep;
+        }
+        if (toMove === 0) {
+            dust.allocatedUsd = 0;
+            dust.outAtAllocated = 0n;
+        }
+        // A partial move cannot happen (roomElsewhere was checked), but if a
+        // future edit breaks that, the invariant Σ legs == allocated still
+        // holds because the moved chunks were added to receivers.
+    }
+
     const legs: AllocationEngineLeg[] = pool
         .filter(variant => variant.allocatedUsd > 0)
         .sort((a, b) => b.allocatedUsd - a.allocatedUsd || a.source.rank - b.source.rank)
@@ -335,6 +391,7 @@ export function computeAllocation(args: {
 
     return {
         chunkUsd,
+        minLegUsd,
         allocatedUsd,
         unallocatedUsd: args.targetUsd - allocatedUsd,
         outputUnitDecimals,

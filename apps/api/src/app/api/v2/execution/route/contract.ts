@@ -147,6 +147,13 @@ export interface AllocationPlan {
     /** '0' unless probed depth ran out before the target was filled. */
     unallocatedUsd: string;
     chunkUsd: number;
+    /**
+     * Dust floor: legs below this (two chunks) are folded into siblings with
+     * room — a single-chunk win is within quote noise and costs a whole extra
+     * transaction. A below-floor leg can still appear when no sibling had
+     * capacity, because dust beats under-filling the target.
+     */
+    minLegUsd: number;
     legs: AllocationLeg[];
     /** All leg outputs are normalized to this unit before summing. */
     outputUnit: { symbol: string; decimals: number };
