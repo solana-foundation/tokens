@@ -29,7 +29,8 @@
         "postinstall": "node scripts/patch-liveline.mjs && node scripts/setup-git-hooks.mjs",
         "clean": "turbo run clean && rm -rf node_modules",
         "seed:tokens": "node scripts/seed-tokens.mjs",
-        "seed:ohlcv": "node scripts/seed-ohlcv.mjs"
+        "seed:ohlcv": "node scripts/seed-ohlcv.mjs",
+        "sweep:execution-route": "bun scripts/route-methodology-sweep.ts"
     },
     "dependencies": {
         "@clickhouse/client": "^1.23.1",
