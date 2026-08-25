@@ -37,7 +37,12 @@ function AllocationHeadline({ data }: { data: ExecutionRouteResponse }) {
     return (
         <div className="border-b border-border-extra-light bg-gray-50/40 px-4 py-3">
             <p className="text-[13px] text-text-high">
-                {edge && edge.bps > 0.5 ? (
+                {allocation.fellBackToSingleVariant ? (
+                    <>
+                        Re-quoting turned the split into a loss — recommending all-in{' '}
+                        <span className="font-medium text-text-extra-high">{allocation.legs[0]?.symbol}</span> instead
+                    </>
+                ) : edge && edge.bps > 0.5 ? (
                     <>
                         Splitting beats all-in{' '}
                         <span className="font-medium text-text-extra-high">{edge.baselineSymbol}</span> by{' '}
@@ -58,6 +63,11 @@ function AllocationHeadline({ data }: { data: ExecutionRouteResponse }) {
                     <span className="text-text-medium">
                         {' '}
                         · expected {allocation.totalExpectedOut.amount} {allocation.outputUnit.symbol}
+                    </span>
+                ) : null}
+                {allocation.repaired ? (
+                    <span className="ml-2 rounded-full bg-amber-50 px-2 py-0.5 text-[10px] font-medium text-amber-800">
+                        repaired: a collapsed re-quote was distrusted
                     </span>
                 ) : null}
             </p>
@@ -249,6 +259,12 @@ export function RouteResults({
                             <p className="text-amber-700">
                                 Variant base prices diverge by {data.allocation.pegSpreadBps.toFixed(0)} bps — a cheap
                                 variant is cheap for a reason, and the buyer inherits that peg risk.
+                            </p>
+                        ) : null}
+                        {data?.meta.warnings.some(warning => warning.startsWith('price_divergence_excluded:')) ? (
+                            <p className="text-amber-700">
+                                Some variants were excluded from the split because their unit price diverges too far
+                                from the pool — a different unit or a broken book, either way not summable.
                             </p>
                         ) : null}
                         {data?.meta.warnings.includes('equity_unit_parity_assumed') ? (

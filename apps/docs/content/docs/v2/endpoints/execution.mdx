@@ -431,9 +431,31 @@ Requires the `execution:read` scope. Responses are `cache-control: no-store`.
 
 | `parityBasis` | Meaning |
 | --- | --- |
-| `kind` | `native` / `wrapped` / `bridged` variants: provably the same unit of the underlying |
+| `kind` | `native` / `wrapped` / `bridged` / `spot` variants: the same unit of the underlying |
 | `issuer_assertion` | Tokenized equity, redeemable tiers only: 1 token = 1 share is the **issuer's claim**, not our data. Always accompanied by `equity_unit_parity_assumed` and `issuer_primary_market_not_quoted` warnings |
 | `none` | Compared, never allocated: ETF wrappers with different units (gold's GLD wrapper is ~1/10 oz), leveraged, baskets, accruing LSTs, non-redeemable pre-IPO claims |
+
+**Parity is also verified at runtime.** Variants of one asset must trade near
+one unit price, so every pool variant's base price is checked against the pool
+median; anything diverging more than 500bps is ejected — `allocationEligible:
+false`, `curve.parityDivergenceBps`, and a `price_divergence_excluded:<mint>`
+warning. A "1-oz" claim priced like a tenth of an ounce, a broken stablecoin
+book, and a pre-IPO wrapper at 11x are all the same defect: not something to
+sum with the siblings. `pegSpreadBps` then describes only the surviving pool.
+
+**Verification acts on the plan, not just the report.** A leg whose re-quote
+lands more than 500bps below the curve's expectation marks its variant as
+distrusted for the request; the allocation is re-derived without it (pure
+arithmetic; only the legs that moved are re-verified), disclosed as
+`allocation.repaired` plus `plan_repaired:<mint>` warnings. Exactly one repair
+per request. If the verified split still loses to the best single variant's
+exact full-target quote, the plan **is** that quote — one leg, disclosed as
+`allocation.fellBackToSingleVariant` — because a split that loses to not
+splitting is not a recommendation. Dust control: legs below `minLegUsd` (two
+chunks) are folded into siblings with room, since a single-chunk win is inside
+quote noise and costs a whole extra transaction. Single-leg plans on the
+baseline variant report `edge: null` — two quotes of the same thing minutes
+apart are noise, not an edge.
 
 ### Reading the plan
 

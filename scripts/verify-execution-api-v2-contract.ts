@@ -314,11 +314,37 @@ async function main(): Promise<void> {
         }
         const edge = (plan.edge as Record<string, unknown>).vsBestSingleVariant as Record<string, unknown> | null;
         if (edge) {
-            // Single-variant is a feasible allocation; losing to it means the
+            // Single-variant is a feasible allocation; after the repair and
+            // fallback passes, shipping a losing multi-leg split means the
             // allocator is wrong, not the market.
             assert(
                 (edge.bps as number) >= -1,
                 `plan must not lose to the best single variant beyond rounding, got ${edge.bps}bps`,
+            );
+        }
+        if (legs.length === 1) {
+            // A one-leg plan on the baseline variant must not grade itself.
+            const only = legs[0]!;
+            const baselineMint = edge ? (edge.baselineMint as string) : null;
+            assert(
+                baselineMint === null || baselineMint !== only.mint,
+                'single-leg plan on the baseline variant must report edge: null',
+            );
+        }
+        // Dust floor: every leg is at least minLegUsd unless cap-bound.
+        const minLegUsd = Number(plan.minLegUsd);
+        assert(Number.isFinite(minLegUsd) && minLegUsd > 0, 'allocation must disclose minLegUsd');
+        for (const [index, leg] of legs.entries()) {
+            if (Number(leg.amountUsd) >= minLegUsd) continue;
+            const legVariant = (routed.variants as Record<string, unknown>[]).find(
+                variant => variant.mint === leg.mint,
+            );
+            const cap = legVariant
+                ? ((legVariant.curve as Record<string, unknown>).maxProvenSizeUsd as number | null)
+                : null;
+            assert(
+                cap === Number(leg.amountUsd) || Number(plan.unallocatedUsd) === 0,
+                `legs[${index}] is below minLegUsd without being cap-bound`,
             );
         }
         // Cost echo covers probes plus verification.

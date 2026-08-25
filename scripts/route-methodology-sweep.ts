@@ -154,14 +154,22 @@ function checkExpectations(entry: PanelEntry, body: Json): string[] {
         }
     }
     if (SINGLE_VARIANT_ASSETS.has(entry.assetId)) {
+        const anyParity = variants.some(variant => variant.parityBasis !== 'none');
         if (status === 'ok') {
             const legs = (allocation?.legs as Json[]) ?? [];
             if (legs.length !== 1) fail(`single-variant asset produced ${legs.length} legs`);
             if (get(allocation, 'edge.vsBestSingleVariant') !== null) {
                 fail('single-variant plan must have null edge (D)');
             }
-        } else if (entry.assetId === 'silver' && status === 'no_eligible_variants') {
-            fail('silver spot variant still blocked from the parity pool (A)');
+        } else if (anyParity) {
+            // A parity variant with quotes must produce a plan; silver's only
+            // variant is an ETF wrapper (parityBasis 'none'), so for it the
+            // honest outcome IS no_eligible_variants — comparison shown,
+            // nothing summed. The baseline plan assumed silver had a spot
+            // variant; the registry says otherwise.
+            fail(`single parity variant blocked from the pool (status ${status})`);
+        } else if (status !== 'no_eligible_variants') {
+            fail(`all-derivative asset must report no_eligible_variants, got ${status}`);
         }
     }
     if (COLLAPSE_PRONE_ASSETS.has(entry.assetId) && allocation) {
