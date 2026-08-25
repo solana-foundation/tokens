@@ -32,6 +32,15 @@ const USDC_RAW_PER_DOLLAR = 1_000_000n;
  */
 export const PARITY_DIVERGENCE_MAX_BPS = 500;
 
+/**
+ * A verification re-quote this far below the curve's expectation is a
+ * collapse (a vanished RFQ fill, a drained book), not noise. A collapse
+ * contradicts the variant's own probe data, so the repair pass distrusts the
+ * whole variant for this request rather than patching one point — the
+ * remaining points are exactly the data the re-quote just disproved.
+ */
+export const COLLAPSE_THRESHOLD_BPS = -500;
+
 export interface AllocatableVariant {
     variantId: string;
     mint: string;

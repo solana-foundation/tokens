@@ -19,10 +19,12 @@ import {
     type RoutedVariant,
 } from './contract';
 import {
+    COLLAPSE_THRESHOLD_BPS,
     computeAllocation,
     computeAllocationEdge,
     type AllocatableVariant,
     type AllocationBaseline,
+    type AllocationEngineLeg,
     type AllocationEngineResult,
 } from './allocation';
 import { buildVariantCurve, type VariantCurve } from './curve';
@@ -332,8 +334,82 @@ export const GET = route(
             let allocation: AllocationPlan | null = null;
             let verificationQuotes = 0;
             if (engine) {
-                // Surface the parity gate's verdicts on the variants themselves.
-                for (const ejectedVariant of engine.ejected) {
+                // One exact re-quote per leg, keyed by (mint, size) so a repair
+                // pass whose legs did not move reuses the wave-1 result instead
+                // of paying for it twice.
+                const verifiedRowByKey = new Map<string, ReturnType<typeof serializeQuoteRows>['quotes'][number] | null>();
+                const legKey = (leg: AllocationEngineLeg) => `${leg.mint}:${leg.amountUsd}`;
+                const verifyWave = (waveLegs: AllocationEngineLeg[]) =>
+                    Effect.gen(function* () {
+                        const missing = waveLegs.filter(leg => !verifiedRowByKey.has(legKey(leg)));
+                        if (missing.length === 0) return;
+                        const results = yield* Effect.all(
+                            missing.map(leg =>
+                                executionQuotesLive({
+                                    mint: leg.mint,
+                                    side: 'buy',
+                                    amounts: [String(leg.amountUsd)],
+                                    tokenDecimals: leg.decimals,
+                                    providers,
+                                }).pipe(Effect.catch(() => Effect.succeed(null))),
+                            ),
+                            { concurrency: missing.length },
+                        );
+                        verificationQuotes += missing.length * providers.length;
+                        for (const [index, result] of results.entries()) {
+                            const leg = missing[index]!;
+                            const row = result
+                                ? (serializeQuoteRows({
+                                      entries: result.entries,
+                                      side: 'buy',
+                                      inputToken: { mint: result.quoteMint, symbol: 'USDC', decimals: 6 },
+                                      outputToken: { mint: leg.mint, symbol: leg.symbol, decimals: leg.decimals },
+                                  }).quotes[0] ?? null)
+                                : null;
+                            verifiedRowByKey.set(legKey(leg), row);
+                        }
+                    });
+                const verifiedDeltaBps = (leg: AllocationEngineLeg): number | null => {
+                    const row = verifiedRowByKey.get(legKey(leg));
+                    if (!row || row.status !== 'available' || leg.expectedOutRaw <= 0n) return null;
+                    const verifiedOutRaw = BigInt(row.best.output.rawAmount);
+                    return Number((verifiedOutRaw * 1_000_000n) / leg.expectedOutRaw - 1_000_000n) / 100;
+                };
+
+                yield* verifyWave(engine.legs);
+
+                // One-shot repair: a collapsed re-quote contradicts the
+                // variant's own probe curve, so the variant is distrusted for
+                // this request — ejected from the pool, allocation re-derived,
+                // only the changed legs re-verified. Exactly one repair — if a
+                // second variant collapses in the repaired plan, it ships with
+                // its honest delta rather than starting a loop.
+                let activeEngine: AllocationEngineResult = engine;
+                let repaired = false;
+                const collapsedLegs = engine.legs.filter(leg => {
+                    const delta = verifiedDeltaBps(leg);
+                    return delta !== null && delta < COLLAPSE_THRESHOLD_BPS;
+                });
+                if (collapsedLegs.length > 0) {
+                    const collapsedMints = new Set(collapsedLegs.map(leg => leg.mint));
+                    const repairedPool = pool.filter(poolVariant => !collapsedMints.has(poolVariant.mint));
+                    const repairedEngine =
+                        repairedPool.length > 0 ? computeAllocation({ targetUsd, variants: repairedPool }) : null;
+                    if (repairedEngine && repairedEngine.legs.length > 0) {
+                        activeEngine = repairedEngine;
+                        repaired = true;
+                        for (const leg of collapsedLegs) {
+                            warnings.push(`plan_repaired:${leg.mint}`);
+                            const routed = variants.find(variant => variant.mint === leg.mint);
+                            if (routed) routed.allocationEligible = false;
+                        }
+                        yield* verifyWave(repairedEngine.legs);
+                    }
+                }
+
+                // Surface the parity gate's verdicts (from the engine that
+                // actually produced the plan) on the variants themselves.
+                for (const ejectedVariant of activeEngine.ejected) {
                     warnings.push(`price_divergence_excluded:${ejectedVariant.mint}`);
                     const routed = variants.find(variant => variant.mint === ejectedVariant.mint);
                     if (routed) {
@@ -341,51 +417,23 @@ export const GET = route(
                         routed.curve.parityDivergenceBps = ejectedVariant.divergenceBps;
                     }
                 }
-                for (const [mint, divergence] of Object.entries(engine.divergenceBpsByMint)) {
+                for (const [mint, divergence] of Object.entries(activeEngine.divergenceBpsByMint)) {
                     const routed = variants.find(variant => variant.mint === mint);
                     if (routed) routed.curve.parityDivergenceBps = divergence;
                 }
-                if (engine.unallocatedUsd > 0) warnings.push('target_exceeds_probed_depth');
-                for (const mint of engine.clampedMints) warnings.push(`curve_not_concave:${mint}`);
-                if (engine.pegSpreadBps !== null && engine.pegSpreadBps > 50) warnings.push('peg_divergence');
+                if (activeEngine.unallocatedUsd > 0) warnings.push('target_exceeds_probed_depth');
+                for (const mint of activeEngine.clampedMints) warnings.push(`curve_not_concave:${mint}`);
+                if (activeEngine.pegSpreadBps !== null && activeEngine.pegSpreadBps > 50) warnings.push('peg_divergence');
 
-                // Verification wave: one exact quote per leg, in parallel. The
-                // verified quote becomes the leg's reported numbers; a failed
-                // verification keeps the interpolation and says so.
-                const verifications = yield* Effect.all(
-                    engine.legs.map(leg =>
-                        executionQuotesLive({
-                            mint: leg.mint,
-                            side: 'buy',
-                            amounts: [String(leg.amountUsd)],
-                            tokenDecimals: leg.decimals,
-                            providers,
-                        }).pipe(Effect.catch(() => Effect.succeed(null))),
-                    ),
-                    { concurrency: engine.legs.length || 1 },
-                );
-                verificationQuotes = engine.legs.length * providers.length;
-
-                const unitDecimals = engine.outputUnitDecimals;
+                const unitDecimals = activeEngine.outputUnitDecimals;
                 let totalOutUnitsRaw = 0n;
-                const legs: AllocationLeg[] = engine.legs.map((leg, index) => {
+                const legs: AllocationLeg[] = activeEngine.legs.map(leg => {
                     const scale = 10n ** BigInt(unitDecimals - leg.decimals);
-                    const verification = verifications[index] ?? null;
-                    const verified = verification
-                        ? serializeQuoteRows({
-                              entries: verification.entries,
-                              side: 'buy',
-                              inputToken: { mint: verification.quoteMint, symbol: 'USDC', decimals: 6 },
-                              outputToken: { mint: leg.mint, symbol: leg.symbol, decimals: leg.decimals },
-                          }).quotes[0]
-                        : null;
+                    const verified = verifiedRowByKey.get(legKey(leg)) ?? null;
                     if (verified && verified.status === 'available') {
                         const verifiedOutRaw = BigInt(verified.best.output.rawAmount);
                         totalOutUnitsRaw += verifiedOutRaw * scale;
-                        const deltaRatio =
-                            leg.expectedOutRaw > 0n
-                                ? Number((verifiedOutRaw * 1_000_000n) / leg.expectedOutRaw - 1_000_000n) / 100
-                                : null;
+                        const delta = verifiedDeltaBps(leg);
                         return {
                             variantId: leg.variantId,
                             mint: leg.mint,
@@ -400,7 +448,7 @@ export const GET = route(
                             router: verified.best.router,
                             verification: {
                                 status: 'verified' as const,
-                                deltaBps: deltaRatio === null ? null : Math.round(deltaRatio * 100) / 100,
+                                deltaBps: delta === null ? null : Math.round(delta * 100) / 100,
                                 quotedAt: verified.best.quotedAt,
                             },
                         };
@@ -459,10 +507,11 @@ export const GET = route(
                 allocation = {
                     version: ALLOCATION_VERSION,
                     targetUsd: String(targetUsd),
-                    allocatedUsd: String(engine.allocatedUsd),
-                    unallocatedUsd: String(engine.unallocatedUsd),
-                    chunkUsd: engine.chunkUsd,
-                    minLegUsd: engine.minLegUsd,
+                    allocatedUsd: String(activeEngine.allocatedUsd),
+                    unallocatedUsd: String(activeEngine.unallocatedUsd),
+                    chunkUsd: activeEngine.chunkUsd,
+                    minLegUsd: activeEngine.minLegUsd,
+                    repaired,
                     legs,
                     outputUnit: { symbol: asset.symbol ?? asset.assetId, decimals: unitDecimals },
                     totalExpectedOut:
@@ -473,10 +522,10 @@ export const GET = route(
                               }
                             : null,
                     edge: {
-                        vsBestSingleVariant: edgeFrom(engine.bestSingleAtTarget),
-                        vsPrimaryVariant: edgeFrom(engine.primaryAtTarget),
+                        vsBestSingleVariant: edgeFrom(activeEngine.bestSingleAtTarget),
+                        vsPrimaryVariant: edgeFrom(activeEngine.primaryAtTarget),
                     },
-                    pegSpreadBps: engine.pegSpreadBps,
+                    pegSpreadBps: activeEngine.pegSpreadBps,
                 };
             }
 

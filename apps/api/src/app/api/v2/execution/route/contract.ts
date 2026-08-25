@@ -154,6 +154,16 @@ export interface AllocationPlan {
      * capacity, because dust beats under-filling the target.
      */
     minLegUsd: number;
+    /**
+     * True when a collapsed verification (re-quote > 500bps below the curve's
+     * expectation) triggered the one-shot repair: the collapsed variant is
+     * distrusted for this request — its own re-quote contradicted its probe
+     * curve — ejected from the pool, and the allocation re-derived with only
+     * the changed legs re-verified. Accompanied by plan_repaired:<mint>
+     * warnings. Exactly one repair per request — a second collapse ships with
+     * its honest delta instead of starting a loop.
+     */
+    repaired: boolean;
     legs: AllocationLeg[];
     /** All leg outputs are normalized to this unit before summing. */
     outputUnit: { symbol: string; decimals: number };

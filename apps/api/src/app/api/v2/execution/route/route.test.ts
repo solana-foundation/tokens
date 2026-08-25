@@ -384,6 +384,48 @@ describe('GET /api/v2/execution/route', () => {
         expect(allocation.edge.vsPrimaryVariant).toBeNull();
     });
 
+    it('repairs the plan when a verification re-quote collapses (B)', async () => {
+        // Probe quotes are healthy everywhere; the verification re-quote
+        // (recognizable as a single-amount call) on one variant returns 95%
+        // fewer tokens — the vanished-RFQ pattern from the sweep.
+        const bitcoinMints = [...BITCOIN_MINTS];
+        let collapsedMint: string | null = null;
+        quoteResponder = (mint, amounts) => {
+            const fanout = defaultFanout(mint, amounts) as { entries: { candidates: { outAmountRaw: string }[] }[] };
+            if (amounts.length === 1 && (collapsedMint === null || collapsedMint === mint)) {
+                collapsedMint ??= mint;
+                for (const entry of fanout.entries) {
+                    for (const candidate of entry.candidates) {
+                        candidate.outAmountRaw = String(BigInt(candidate.outAmountRaw) / 20n);
+                    }
+                }
+            }
+            return fanout;
+        };
+        liquidMints = bitcoinMints;
+        const response = await request('/api/v2/execution/route?assetId=bitcoin&amountUsd=1000000');
+        expect(response.status).toBe(200);
+        const body = await response.json();
+        expect(body.allocationStatus).toBe('ok');
+        const allocation = body.allocation as {
+            repaired: boolean;
+            legs: { mint: string; verification: { deltaBps: number | null } }[];
+            edge: { vsBestSingleVariant: { bps: number } | null };
+        };
+        expect(allocation.repaired).toBe(true);
+        expect(
+            (body.meta.warnings as string[]).some(warning => warning === `plan_repaired:${collapsedMint}`),
+        ).toBe(true);
+        // The collapsed variant's injected point starves it: no surviving leg
+        // carries a collapsed delta.
+        for (const leg of allocation.legs) {
+            expect(leg.verification.deltaBps === null || leg.verification.deltaBps >= -500).toBe(true);
+        }
+        // Cost echo covers probes + both verification waves exactly.
+        const probes = (body.variants as unknown[]).length * 4 * 2;
+        expect(body.meta.upstreamQuotes).toBeGreaterThan(probes);
+    });
+
     it('requires the execution:read scope', async () => {
         const response = await request('/api/v2/execution/route?assetId=bitcoin', ['assets:read']);
         expect(response.status).toBe(403);
