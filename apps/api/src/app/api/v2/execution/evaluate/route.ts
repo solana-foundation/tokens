@@ -3,21 +3,13 @@ import { Effect } from 'effect';
 import { route } from '@/effect/next-route';
 import {
     COMPARISON_VERSION,
-    computeEdge,
     formatRawAmount,
     QUOTE_PROVIDERS,
-    rankQuotes,
     summarizeComparison,
-    type PriceImpactSource,
     type QuoteProvider,
-    type SummarizableEntry,
 } from './comparison';
-import type {
-    ExecutionBestQuote,
-    ExecutionEvaluationResponse,
-    ExecutionProviderQuote,
-    ExecutionQuoteRow,
-} from './contract';
+import type { ExecutionEvaluationResponse } from './contract';
+import { serializeQuoteRows } from './serialize';
 import {
     executionQuoteTokenMetadata,
     executionQuotesLive,
@@ -213,135 +205,11 @@ export const GET = route(
                     ? { mint, symbol, decimals: tokenDecimals }
                     : { mint: result.quoteMint, symbol: 'USDC', decimals: 6 };
 
-            /**
-             * One provider's answer. `rank` and `isBest` make the relationship
-             * to the hoisted `best` explicit, so callers (and the contract test)
-             * never have to infer it from array position.
-             */
-            const serializeQuote = (
-                candidate: (typeof result.entries)[number]['candidates'][number],
-                rank: number | null,
-                isBest: boolean,
-            ): ExecutionProviderQuote => {
-                if (candidate.status === 'unavailable') {
-                    return {
-                        provider: candidate.provider,
-                        status: candidate.status,
-                        reason: candidate.reason,
-                        rank: null,
-                        isBest: false,
-                        input: null,
-                        output: null,
-                        effectivePrice: null,
-                        priceImpactPct: null,
-                        priceImpactSource: 'unavailable' as PriceImpactSource,
-                        route: candidate.route,
-                        contextSlot: null,
-                        router: null,
-                        mode: null,
-                        fees: null,
-                        quotedAt: candidate.quotedAt,
-                    };
-                }
-                const inAmount = formatRawAmount(candidate.inAmountRaw, inputToken.decimals);
-                const outAmount = formatRawAmount(candidate.outAmountRaw, outputToken.decimals);
-                const inNumeric = Number(inAmount);
-                return {
-                    provider: candidate.provider,
-                    status: candidate.status,
-                    rank,
-                    isBest,
-                    input: { ...inputToken, amount: inAmount, rawAmount: candidate.inAmountRaw },
-                    output: { ...outputToken, amount: outAmount, rawAmount: candidate.outAmountRaw },
-                    // Output per unit of input: the comparable unit price.
-                    effectivePrice:
-                        Number.isFinite(inNumeric) && inNumeric > 0
-                            ? String(Number(outAmount) / inNumeric)
-                            : null,
-                    priceImpactPct: candidate.priceImpactPct,
-                    // Distinguishes "provider reported zero" from "provider
-                    // reports nothing" — Titan has no impact field at all.
-                    priceImpactSource: (candidate.priceImpactPct === null
-                        ? 'unavailable'
-                        : 'provider') as PriceImpactSource,
-                    route: candidate.route,
-                    contextSlot: candidate.contextSlot,
-                    router: candidate.router,
-                    mode: candidate.mode,
-                    fees: candidate.fees,
-                    quotedAt: candidate.quotedAt,
-                };
-            };
-
-            const summarizable: SummarizableEntry[] = [];
-            const quotes: ExecutionQuoteRow[] = result.entries.map((entry): ExecutionQuoteRow => {
-                const availableCandidates = entry.candidates.filter(
-                    (candidate): candidate is Extract<typeof candidate, { status: 'available' }> =>
-                        candidate.status === 'available',
-                );
-                const ranked = rankQuotes(
-                    availableCandidates.map(candidate => ({
-                        provider: candidate.provider as QuoteProvider,
-                        outAmountRaw: candidate.outAmountRaw,
-                    })),
-                );
-                const rankByProvider = new Map(ranked.map((quote, index) => [quote.provider, index + 1]));
-                const winner = ranked[0]?.provider ?? null;
-
-                const edge = computeEdge({
-                    ranked,
-                    outputDecimals: outputToken.decimals,
-                    side,
-                    requestRawAmount: entry.request.rawAmount,
-                });
-
-                // Ranked best-first, so providerQuotes[1] is the runner-up;
-                // unavailable providers trail with rank null.
-                const providerQuotes = [...entry.candidates]
-                    .sort((a, b) => {
-                        const left = rankByProvider.get(a.provider as QuoteProvider) ?? Number.MAX_SAFE_INTEGER;
-                        const right = rankByProvider.get(b.provider as QuoteProvider) ?? Number.MAX_SAFE_INTEGER;
-                        return left - right;
-                    })
-                    .map(candidate =>
-                        serializeQuote(
-                            candidate,
-                            rankByProvider.get(candidate.provider as QuoteProvider) ?? null,
-                            candidate.status === 'available' && candidate.provider === winner,
-                        ),
-                    );
-
-                summarizable.push({
-                    request: { unit: entry.request.unit, amount: entry.request.amount },
-                    availableProviders: availableCandidates.map(candidate => candidate.provider as QuoteProvider),
-                    unavailableProviders: entry.candidates
-                        .filter(candidate => candidate.status === 'unavailable')
-                        .map(candidate => candidate.provider as QuoteProvider),
-                    winner,
-                    edgeBps: edge?.bps ?? null,
-                });
-
-                const best = providerQuotes.find((quote): quote is ExecutionBestQuote => quote.isBest) ?? null;
-                // No winner means nothing quoted, whatever the upstream entry
-                // claimed — report it as unavailable rather than emitting an
-                // "available" row with a null best that callers must guard.
-                if (entry.status === 'unavailable' || best === null) {
-                    return {
-                        request: entry.request,
-                        status: 'unavailable',
-                        reason: entry.status === 'unavailable' ? entry.reason : 'error',
-                        best: null,
-                        edge: null,
-                        providerQuotes,
-                    };
-                }
-                return {
-                    request: entry.request,
-                    status: entry.status,
-                    best,
-                    edge,
-                    providerQuotes,
-                };
+            const { quotes, summarizable } = serializeQuoteRows({
+                entries: result.entries,
+                side,
+                inputToken,
+                outputToken,
             });
 
             const available = quotes.filter(quote => quote.status === 'available').length;

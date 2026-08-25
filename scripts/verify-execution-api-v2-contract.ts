@@ -219,6 +219,71 @@ async function main(): Promise<void> {
     );
     console.log('evaluate(errors): 400 envelopes verified');
 
+    // 10. Route: cross-variant comparison over a canonical asset.
+    const routed = await getJson(baseUrl, apiKey, 'api/v2/execution/route?assetId=bitcoin&amountUsd=1000000');
+    assertObject(routed, 'route(bitcoin)');
+    assert(routed.assetId === 'bitcoin', 'route must echo the canonical assetId');
+    assert(Array.isArray(routed.variants) && routed.variants.length >= 1, 'route must select at least one variant');
+    assertObject(routed.meta, 'route(bitcoin).meta');
+    const routeMeta = routed.meta as Record<string, unknown>;
+    assert(Array.isArray(routeMeta.probeLadderUsd), 'route meta must list the probe ladder');
+    const ladder = routeMeta.probeLadderUsd as number[];
+    assert(
+        ladder[ladder.length - 1] === 1_000_000,
+        'the probe ladder must include the target itself as its top rung',
+    );
+    const routeRanks: number[] = [];
+    for (const [index, rawVariant] of (routed.variants as unknown[]).entries()) {
+        const path = `route(bitcoin).variants[${index}]`;
+        assertObject(rawVariant, path);
+        const variant = rawVariant as Record<string, unknown>;
+        assert(typeof variant.mint === 'string', `${path}.mint must be a string`);
+        assert(typeof variant.rank === 'number', `${path}.rank must be a number`);
+        routeRanks.push(variant.rank as number);
+        assert(
+            variant.parityBasis === 'kind',
+            `${path}.parityBasis must be 'kind' for bitcoin (wrapped/bridged variants)`,
+        );
+        // Every selected variant carries one row per probe rung, using the
+        // exact evaluate row shape (re-assert the core invariants per row).
+        assert(Array.isArray(variant.quotes), `${path}.quotes must be an array`);
+        assert(
+            (variant.quotes as unknown[]).length === ladder.length,
+            `${path} must carry one quote row per probe rung`,
+        );
+        assertObject(variant.curve, `${path}.curve`);
+        const curve = variant.curve as Record<string, unknown>;
+        assert(Array.isArray(curve.rungs) && (curve.rungs as unknown[]).length === ladder.length,
+            `${path}.curve must have one rung per probe size`);
+    }
+    assert(
+        routeRanks.every((rank, index) => rank === index + 1),
+        'route variants must be in gapless 1..n rank order',
+    );
+    const excluded = routeMeta.excludedVariants as Record<string, unknown>[];
+    assert(Array.isArray(excluded), 'route meta must list excluded variants');
+    for (const entry of excluded) {
+        assert(typeof entry.reason === 'string' && entry.reason.length > 0, 'excluded variants must carry reasons');
+    }
+    assert(
+        routeMeta.upstreamQuotes ===
+            (routed.variants as unknown[]).length * ladder.length * (routed.providers as unknown[]).length,
+        'route upstreamQuotes must equal variants x rungs x providers before verification quotes',
+    );
+    console.log(
+        `route(bitcoin): ${(routed.variants as unknown[]).length} variants x ${ladder.length} rungs, ` +
+            `${excluded.length} excluded, status=${routed.allocationStatus}`,
+    );
+
+    // 11. Route errors.
+    const unknownRouteAsset = await getRaw(baseUrl, apiKey, 'api/v2/execution/route?assetId=not-an-asset');
+    assert(unknownRouteAsset.status === 404, `unknown assetId must 404, got ${unknownRouteAsset.status}`);
+    const sellSide = await getRaw(baseUrl, apiKey, 'api/v2/execution/route?assetId=bitcoin&side=sell');
+    assert(sellSide.status === 400, `side=sell must 400, got ${sellSide.status}`);
+    const badMax = await getRaw(baseUrl, apiKey, 'api/v2/execution/route?assetId=bitcoin&maxVariants=7');
+    assert(badMax.status === 400, `maxVariants above the cap must 400, got ${badMax.status}`);
+    console.log('route(errors): 400/404 envelopes verified');
+
     console.log('v2 execution API contract OK');
 }
 
