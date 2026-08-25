@@ -5,8 +5,6 @@ import { Badge } from '@solana/design-system/badge';
 import { CodeBlock } from '@solana/design-system/code-block';
 import { Tab, TabList, TabPanel, Tabs } from '@solana/design-system/tabs';
 
-import type { ExecutionEvaluationResponse } from '@/hooks/queries/use-execution-evaluation';
-
 /** Matches the api-manager playground so both surfaces read the same. */
 const CODE_BLOCK_CLASS_NAME = '[&_.overflow-x-auto]:text-xs [&_.overflow-x-auto]:leading-6';
 const CODE_MAX_HEIGHT_PX = 520;
@@ -24,7 +22,7 @@ export interface EndpointRequestState {
     status: number | 'error';
 }
 
-function buildFetchSnippet(requestPath: string): string {
+export function buildEvaluateFetchSnippet(requestPath: string): string {
     return [
         'const API_KEY = "<YOUR_API_KEY>";',
         '',
@@ -52,20 +50,49 @@ function buildFetchSnippet(requestPath: string): string {
     ].join('\n');
 }
 
+export function buildRouteFetchSnippet(requestPath: string): string {
+    return [
+        'const API_KEY = "<YOUR_API_KEY>";',
+        '',
+        `const response = await fetch(\`${PUBLIC_API_ORIGIN}${requestPath}\`, {`,
+        '  headers: {',
+        '    "x-api-key": API_KEY,',
+        '    "accept": "application/json",',
+        '  },',
+        '});',
+        '',
+        'const { allocation, variants, meta } = await response.json();',
+        '',
+        '// The plan: how to split the order across variants right now.',
+        'if (allocation) {',
+        '  for (const leg of allocation.legs) {',
+        '    console.log(leg.symbol, `$${leg.amountUsd}`, leg.provider, leg.expectedOut?.amount);',
+        '  }',
+        '  const edge = allocation.edge.vsBestSingleVariant;',
+        '  if (edge) console.log(`beats all-in ${edge.baselineSymbol} by ${edge.bps}bps (+$${edge.usd})`);',
+        '}',
+        '',
+        '// The evidence: every variant, every probed size, both routers.',
+        'console.log(variants.length, "variants quoted,", meta.upstreamQuotes, "upstream quotes");',
+        '',
+    ].join('\n');
+}
+
 /**
  * Shows the exact request this page is making, so the panel doubles as the
  * endpoint's documentation. The path is passed in rather than rebuilt here —
  * it comes from the same builder the fetch uses.
  */
 export function EndpointRequestPanel({
-    requestPath,
-    data,
+    snippet,
+    responseJson,
     isPending,
     isError,
     lastRequest,
 }: {
-    requestPath: string;
-    data: ExecutionEvaluationResponse | null;
+    snippet: string;
+    /** The last response body, or null before the first request. */
+    responseJson: unknown;
     isPending: boolean;
     isError: boolean;
     lastRequest: EndpointRequestState | null;
@@ -82,9 +109,9 @@ export function EndpointRequestPanel({
     const statusVariant = isPending || !lastRequest ? 'default' : isError ? 'danger' : 'success';
 
     const responseBody = React.useMemo(() => {
-        if (!data) return '// Run a request to see the response.';
-        return JSON.stringify(data, null, 2);
-    }, [data]);
+        if (responseJson === null || responseJson === undefined) return '// Run a request to see the response.';
+        return JSON.stringify(responseJson, null, 2);
+    }, [responseJson]);
 
     return (
         <section className="rounded-[24px] border border-border-medium bg-white p-4 shadow-[0_8px_40px_rgba(0,0,0,0.03)]">
@@ -117,7 +144,7 @@ export function EndpointRequestPanel({
                 <TabPanel value="code" className="pt-0">
                     <CodeBlock
                         ariaLabel="Evaluation request code"
-                        code={buildFetchSnippet(requestPath)}
+                        code={snippet}
                         language="javascript"
                         maxHeight={CODE_MAX_HEIGHT_PX}
                         className={CODE_BLOCK_CLASS_NAME}

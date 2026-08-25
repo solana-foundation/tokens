@@ -26,7 +26,14 @@ import {
     useExecutionEvaluation,
     type ExecutionQuoteSide,
 } from '@/hooks/queries/use-execution-evaluation';
-import { EndpointRequestPanel, type EndpointRequestState } from './endpoint-request-panel';
+import {
+    buildEvaluateFetchSnippet,
+    buildRouteFetchSnippet,
+    EndpointRequestPanel,
+    type EndpointRequestState,
+} from './endpoint-request-panel';
+import { RouteResults } from './route-results';
+import { buildRouteRequestPath, useExecutionRoute } from '@/hooks/queries/use-execution-route';
 import { CURATED_LIST_ORDER_WITHOUT_LSTS, type CuratedTokenListIdWithoutLsts } from '@/lib/curated-token-lists';
 import { cleanTokenName } from '@/lib/logo-overrides';
 import { trackEvent } from '@/lib/posthog-client';
@@ -211,8 +218,26 @@ function normalizeAmountInput(raw: string): string | null {
     return Number(normalized) > 0 ? normalized : null;
 }
 
+/**
+ * Assets worth routing across: at least two variants in the registry. Sorted
+ * by variant count so the assets where splitting matters most lead the list.
+ */
+function buildRoutableAssetOptions(): Array<{ assetId: string; label: string; variantCount: number }> {
+    return listAssets()
+        .filter(asset => asset.variants.length >= 2)
+        .map(asset => ({
+            assetId: asset.assetId,
+            label: `${asset.name ?? asset.assetId}${asset.symbol ? ` ($${asset.symbol})` : ''}`,
+            variantCount: asset.variants.length,
+        }))
+        .sort((a, b) => b.variantCount - a.variantCount || a.label.localeCompare(b.label));
+}
+
+type PlaygroundMode = 'mint' | 'asset';
+
 /** Exact-mint, uncached Titan and Jupiter quote playground. */
 export function EvaluationPlayground() {
+    const [mode, setMode] = React.useState<PlaygroundMode>('mint');
     const [selectedMint, setSelectedMint] = React.useState('cbbtcf3aa214zXHbiAZQwf4122FBYbraNdFqgw4iMij');
     const [side, setSide] = React.useState<ExecutionQuoteSide>('buy');
     const [amountInput, setAmountInput] = React.useState('');
@@ -221,6 +246,12 @@ export function EvaluationPlayground() {
     const [submittedCustom, setSubmittedCustom] = React.useState<string | null>(null);
     const { data, execute, isError, isPending, reset } = useExecutionEvaluation();
     const [lastRequest, setLastRequest] = React.useState<EndpointRequestState | null>(null);
+    const [selectedAssetId, setSelectedAssetId] = React.useState('bitcoin');
+    const [targetInput, setTargetInput] = React.useState('1,000,000');
+    const [targetError, setTargetError] = React.useState<string | null>(null);
+    const routeQuery = useExecutionRoute();
+    const [routeLastRequest, setRouteLastRequest] = React.useState<EndpointRequestState | null>(null);
+    const assetOptions = React.useMemo(buildRoutableAssetOptions, []);
     const baseOptionGroups = React.useMemo(buildMintOptionGroups, []);
     const metadataQueries = useQueries({
         queries: CURATED_LIST_ORDER_WITHOUT_LSTS.map(listId => ({
@@ -312,6 +343,43 @@ export function EvaluationPlayground() {
     }, [amountInput, side]);
     const requestPath = buildEvaluateRequestPath({ mint: selectedMint, side, amounts: pendingAmounts });
 
+    const normalizedTarget = normalizeAmountInput(targetInput);
+    const routeRequestPath = buildRouteRequestPath({
+        assetId: selectedAssetId,
+        amountUsd: normalizedTarget ?? '1000000',
+    });
+
+    const onRouteSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
+        event.preventDefault();
+        if (!normalizedTarget || normalizedTarget.includes('.')) {
+            setTargetError('Enter a whole-dollar target.');
+            return;
+        }
+        setTargetError(null);
+        trackEvent('execution_route_requested', {
+            asset_id: selectedAssetId,
+            target_usd: Number(normalizedTarget),
+        });
+        const startedAt = performance.now();
+        const response = await routeQuery.execute({ assetId: selectedAssetId, amountUsd: normalizedTarget });
+        setRouteLastRequest({
+            durationMs: Math.round(performance.now() - startedAt),
+            status: response ? 200 : 'error',
+        });
+        if (response) {
+            trackEvent('execution_route_completed', {
+                asset_id: selectedAssetId,
+                target_usd: Number(normalizedTarget),
+                allocation_status: response.allocationStatus,
+                selected_variants: response.meta.selectedVariants,
+                leg_count: response.allocation?.legs.length ?? 0,
+                edge_vs_best_single_bps: response.allocation?.edge.vsBestSingleVariant?.bps ?? null,
+                upstream_quotes: response.meta.upstreamQuotes,
+                request_latency_ms: Math.round(performance.now() - startedAt),
+            });
+        }
+    };
+
     const onSubmit = (event: React.FormEvent<HTMLFormElement>) => {
         event.preventDefault();
         const custom = normalizeAmountInput(amountInput);
@@ -336,8 +404,114 @@ export function EvaluationPlayground() {
                     two side by side would just make the table scroll. */}
                 <div className="grid grid-cols-1 gap-6 xl:grid-cols-[minmax(0,1fr)_380px] xl:items-start">
                     <div className="min-w-0 space-y-6">
+                        <div className="inline-flex rounded-full border border-border-medium bg-gray-50 p-1">
+                            {(
+                                [
+                                    ['mint', 'Single mint'],
+                                    ['asset', 'Route an asset'],
+                                ] as const
+                            ).map(([value, label]) => (
+                                <button
+                                    key={value}
+                                    type="button"
+                                    aria-pressed={mode === value}
+                                    className={`min-w-28 rounded-full px-4 py-2 text-[13px] font-medium transition-[background-color,color,box-shadow,transform] duration-150 ease-out active:scale-[0.97] motion-reduce:transition-none ${
+                                        mode === value
+                                            ? 'bg-white text-text-extra-high shadow-sm'
+                                            : 'text-text-medium hover:text-text-high'
+                                    }`}
+                                    onClick={() => setMode(value)}
+                                >
+                                    {label}
+                                </button>
+                            ))}
+                        </div>
+
+                        {mode === 'asset' ? (
+                            <form
+                                className="rounded-2xl border border-border-light bg-white p-4 shadow-[0_8px_40px_rgba(0,0,0,0.03)]"
+                                onSubmit={onRouteSubmit}
+                            >
+                                <label
+                                    htmlFor="execution-route-asset"
+                                    className="mb-2 block text-[11px] font-normal text-text-medium"
+                                >
+                                    Canonical asset
+                                </label>
+                                <Select value={selectedAssetId} onValueChange={setSelectedAssetId}>
+                                    <SelectTrigger
+                                        id="execution-route-asset"
+                                        className="h-[44px] border-border-medium bg-white text-left text-text-extra-high shadow-none focus:ring-border-medium"
+                                    >
+                                        <SelectValue placeholder="Select an asset" />
+                                    </SelectTrigger>
+                                    <SelectContent className="rounded-xl border-border-light">
+                                        {assetOptions.map(option => (
+                                            <SelectItem key={option.assetId} value={option.assetId} className="py-2">
+                                                {option.label}
+                                                <span className="ml-2 text-[10px] text-text-extra-low">
+                                                    {option.variantCount} variants
+                                                </span>
+                                            </SelectItem>
+                                        ))}
+                                    </SelectContent>
+                                </Select>
+
+                                <label
+                                    htmlFor="execution-route-target"
+                                    className="mt-4 mb-2 block text-[11px] font-normal text-text-medium"
+                                >
+                                    Order size (USD)
+                                </label>
+                                <div className="flex flex-col gap-2 sm:flex-row">
+                                    <div className="relative flex-1">
+                                        <span className="pointer-events-none absolute top-1/2 left-3 -translate-y-1/2 text-body-md text-text-medium">
+                                            $
+                                        </span>
+                                        <Input
+                                            id="execution-route-target"
+                                            inputMode="numeric"
+                                            placeholder="5,000,000"
+                                            className="pl-7 tabular-nums"
+                                            value={targetInput}
+                                            aria-invalid={targetError !== null}
+                                            onChange={event => {
+                                                setTargetInput(event.target.value);
+                                                setTargetError(null);
+                                            }}
+                                        />
+                                    </div>
+                                    <Button
+                                        type="submit"
+                                        className="min-w-36"
+                                        disabled={routeQuery.isPending || !targetInput.trim()}
+                                    >
+                                        <RefreshCw
+                                            className={
+                                                routeQuery.isPending ? 'animate-spin motion-reduce:animate-none' : ''
+                                            }
+                                        />
+                                        {routeQuery.isPending
+                                            ? 'Routing…'
+                                            : routeQuery.data
+                                              ? 'Re-route'
+                                              : 'Get the route'}
+                                    </Button>
+                                </div>
+                                {targetError ? <p className="mt-2 text-[11px] text-red-700">{targetError}</p> : null}
+                            </form>
+                        ) : null}
+
+                        {mode === 'asset' ? (
+                            <RouteResults
+                                data={routeQuery.data}
+                                isPending={routeQuery.isPending}
+                                isError={routeQuery.isError}
+                            />
+                        ) : null}
+
                         <form
-                            className="rounded-2xl border border-border-light bg-white p-4 shadow-[0_8px_40px_rgba(0,0,0,0.03)]"
+                            className={`rounded-2xl border border-border-light bg-white p-4 shadow-[0_8px_40px_rgba(0,0,0,0.03)] ${mode === 'asset' ? 'hidden' : ''}`}
                             onSubmit={onSubmit}
                         >
                             <fieldset>
@@ -442,25 +616,37 @@ export function EvaluationPlayground() {
                             {amountError ? <p className="mt-2 text-[11px] text-red-700">{amountError}</p> : null}
                         </form>
 
-                        <QuoteComparisonTable
-                            data={data}
-                            isPending={isPending}
-                            isError={isError}
-                            requestedAmounts={requestedAmounts}
-                            customAmount={submittedCustom}
-                            side={side}
-                        />
+                        {mode === 'mint' ? (
+                            <QuoteComparisonTable
+                                data={data}
+                                isPending={isPending}
+                                isError={isError}
+                                requestedAmounts={requestedAmounts}
+                                customAmount={submittedCustom}
+                                side={side}
+                            />
+                        ) : null}
                     </div>
 
                     {/* Sticky so the request stays in view while the curve scrolls. */}
                     <div className="min-w-0 xl:sticky xl:top-8">
-                        <EndpointRequestPanel
-                            requestPath={requestPath}
-                            data={data}
-                            isPending={isPending}
-                            isError={isError}
-                            lastRequest={lastRequest}
-                        />
+                        {mode === 'asset' ? (
+                            <EndpointRequestPanel
+                                snippet={buildRouteFetchSnippet(routeRequestPath)}
+                                responseJson={routeQuery.data}
+                                isPending={routeQuery.isPending}
+                                isError={routeQuery.isError}
+                                lastRequest={routeLastRequest}
+                            />
+                        ) : (
+                            <EndpointRequestPanel
+                                snippet={buildEvaluateFetchSnippet(requestPath)}
+                                responseJson={data}
+                                isPending={isPending}
+                                isError={isError}
+                                lastRequest={lastRequest}
+                            />
+                        )}
                     </div>
                 </div>
             </div>
