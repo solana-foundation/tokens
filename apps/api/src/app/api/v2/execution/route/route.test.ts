@@ -426,6 +426,70 @@ describe('GET /api/v2/execution/route', () => {
         expect(body.meta.upstreamQuotes).toBeGreaterThan(probes);
     });
 
+    it('falls back to the single best variant when the split loses after verification (C)', async () => {
+        // Two curves that genuinely split at probe time; every verification
+        // re-quote comes back 200bps worse (real drift, above the collapse
+        // threshold so no repair fires). The verified split then loses to the
+        // best single variant's exact probe quote — ship that instead.
+        const [steep, flat] = BITCOIN_MINTS;
+        const perDollar = (mint: string, amountUsd: number): number => {
+            if (mint === flat) return 995;
+            if (amountUsd <= 40_000) return 1_000;
+            return 1_000 - (300 * (amountUsd - 40_000)) / 960_000;
+        };
+        quoteResponder = (mint, amounts) => {
+            const drift = amounts.length === 1 ? 0.98 : 1;
+            return {
+                providers: ['jupiter', 'titan'],
+                mint,
+                side: 'buy',
+                quoteMint: USDC,
+                entries: amounts.map(amount => {
+                    const inRaw = `${amount}000000`;
+                    const out = String(Math.round(Number(amount) * perDollar(mint, Number(amount)) * drift));
+                    const jupiter = availableCandidate('jupiter', inRaw, out);
+                    return {
+                        request: { unit: 'usd', amount, rawAmount: inRaw },
+                        status: 'available',
+                        provider: 'jupiter',
+                        inAmountRaw: inRaw,
+                        outAmountRaw: out,
+                        priceImpactPct: 0.01,
+                        route: [],
+                        contextSlot: null,
+                        router: 'metis',
+                        mode: 'ultra',
+                        fees: null,
+                        quotedAt: jupiter.quotedAt,
+                        candidates: [jupiter],
+                    };
+                }),
+            };
+        };
+        liquidMints = [steep!, flat!];
+        const response = await request('/api/v2/execution/route?assetId=bitcoin&amountUsd=1000000');
+        expect(response.status).toBe(200);
+        const body = await response.json();
+        const allocation = body.allocation as {
+            fellBackToSingleVariant: boolean;
+            legs: { mint: string; amountUsd: string; verification: { status: string } }[];
+            edge: { vsBestSingleVariant: unknown };
+            allocatedUsd: string;
+            unallocatedUsd: string;
+        };
+        expect(allocation.fellBackToSingleVariant).toBe(true);
+        expect(allocation.legs.length).toBe(1);
+        // The fallback leg is the flat variant's exact full-target probe quote.
+        expect(allocation.legs[0]!.mint).toBe(flat);
+        expect(allocation.legs[0]!.amountUsd).toBe('1000000');
+        expect(allocation.legs[0]!.verification.status).toBe('verified');
+        expect(allocation.allocatedUsd).toBe('1000000');
+        expect(allocation.unallocatedUsd).toBe('0');
+        // Single leg on the baseline variant: edge is null by D.
+        expect(allocation.edge.vsBestSingleVariant).toBeNull();
+        expect(body.meta.warnings).toContain('plan_fell_back_to_single_variant');
+    });
+
     it('requires the execution:read scope', async () => {
         const response = await request('/api/v2/execution/route?assetId=bitcoin', ['assets:read']);
         expect(response.status).toBe(403);

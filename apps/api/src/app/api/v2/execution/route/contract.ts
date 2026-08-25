@@ -164,6 +164,14 @@ export interface AllocationPlan {
      * its honest delta instead of starting a loop.
      */
     repaired: boolean;
+    /**
+     * True when the verified split still lost to the best single variant's
+     * exact full-target quote, so the plan was replaced by one leg on that
+     * variant (its probe quote, already real). A split that loses to not
+     * splitting is not a recommendation. Accompanied by the
+     * plan_fell_back_to_single_variant warning.
+     */
+    fellBackToSingleVariant: boolean;
     legs: AllocationLeg[];
     /** All leg outputs are normalized to this unit before summing. */
     outputUnit: { symbol: string; decimals: number };

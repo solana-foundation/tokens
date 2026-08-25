@@ -481,14 +481,68 @@ export const GET = route(
                     };
                 });
 
+                // C: a verified split that loses to simply buying the best
+                // single variant is not a recommendation. Replace it with one
+                // leg on that variant, built from its exact full-target probe
+                // quote (a real quote, so the leg reads as verified).
+                let fellBackToSingleVariant = false;
+                let finalLegs = legs;
+                let finalTotalOutUnitsRaw = totalOutUnitsRaw;
+                let allocatedUsd = activeEngine.allocatedUsd;
+                let unallocatedUsd = activeEngine.unallocatedUsd;
+                const bestSingle = activeEngine.bestSingleAtTarget;
+                if (bestSingle && legs.length > 1) {
+                    const verifiedEdge = computeAllocationEdge({
+                        planOutUnitsRaw: totalOutUnitsRaw,
+                        baselineOutUnitsRaw: bestSingle.outUnitsRaw,
+                        targetUsd,
+                    });
+                    if (verifiedEdge && verifiedEdge.bps < 0) {
+                        const baselineVariant = variants.find(variant => variant.mint === bestSingle.mint);
+                        const baselineRow = baselineVariant?.quotes.find(
+                            row => row.status === 'available' && Number(row.request.amount) === targetUsd,
+                        );
+                        if (baselineVariant && baselineRow && baselineRow.status === 'available') {
+                            fellBackToSingleVariant = true;
+                            warnings.push('plan_fell_back_to_single_variant');
+                            const targetRung = baselineVariant.curve.rungs.find(
+                                rung => rung.sizeUsd === targetUsd,
+                            );
+                            finalLegs = [
+                                {
+                                    variantId: baselineVariant.variantId,
+                                    mint: baselineVariant.mint,
+                                    symbol: baselineVariant.symbol,
+                                    amountUsd: String(targetUsd),
+                                    amountUsdRaw: (BigInt(targetUsd) * 1_000_000n).toString(),
+                                    shareOfTarget: 1,
+                                    provider: baselineRow.best.provider,
+                                    expectedOut: baselineRow.best.output,
+                                    effectivePrice: baselineRow.best.effectivePrice,
+                                    impactBps: targetRung?.impactBps ?? null,
+                                    router: baselineRow.best.router,
+                                    verification: {
+                                        status: 'verified' as const,
+                                        deltaBps: null,
+                                        quotedAt: baselineRow.best.quotedAt,
+                                    },
+                                },
+                            ];
+                            finalTotalOutUnitsRaw = bestSingle.outUnitsRaw;
+                            allocatedUsd = targetUsd;
+                            unallocatedUsd = 0;
+                        }
+                    }
+                }
+
                 const edgeFrom = (baseline: AllocationBaseline | null) => {
                     if (!baseline) return null;
                     // A single-leg plan on the baseline variant would compare
                     // two quotes of the same thing minutes apart — noise, not
                     // an edge. Cross-variant comparisons stay meaningful.
-                    if (legs.length === 1 && legs[0]!.mint === baseline.mint) return null;
+                    if (finalLegs.length === 1 && finalLegs[0]!.mint === baseline.mint) return null;
                     const edge = computeAllocationEdge({
-                        planOutUnitsRaw: totalOutUnitsRaw,
+                        planOutUnitsRaw: finalTotalOutUnitsRaw,
                         baselineOutUnitsRaw: baseline.outUnitsRaw,
                         targetUsd,
                     });
@@ -507,18 +561,19 @@ export const GET = route(
                 allocation = {
                     version: ALLOCATION_VERSION,
                     targetUsd: String(targetUsd),
-                    allocatedUsd: String(activeEngine.allocatedUsd),
-                    unallocatedUsd: String(activeEngine.unallocatedUsd),
+                    allocatedUsd: String(allocatedUsd),
+                    unallocatedUsd: String(unallocatedUsd),
                     chunkUsd: activeEngine.chunkUsd,
                     minLegUsd: activeEngine.minLegUsd,
                     repaired,
-                    legs,
+                    fellBackToSingleVariant,
+                    legs: finalLegs,
                     outputUnit: { symbol: asset.symbol ?? asset.assetId, decimals: unitDecimals },
                     totalExpectedOut:
-                        totalOutUnitsRaw > 0n
+                        finalTotalOutUnitsRaw > 0n
                             ? {
-                                  amount: formatRawAmount(totalOutUnitsRaw.toString(), unitDecimals),
-                                  rawAmount: totalOutUnitsRaw.toString(),
+                                  amount: formatRawAmount(finalTotalOutUnitsRaw.toString(), unitDecimals),
+                                  rawAmount: finalTotalOutUnitsRaw.toString(),
                               }
                             : null,
                     edge: {
