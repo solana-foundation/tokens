@@ -435,6 +435,10 @@ export const GET = route(
 
                 const edgeFrom = (baseline: AllocationBaseline | null) => {
                     if (!baseline) return null;
+                    // A single-leg plan on the baseline variant would compare
+                    // two quotes of the same thing minutes apart — noise, not
+                    // an edge. Cross-variant comparisons stay meaningful.
+                    if (legs.length === 1 && legs[0]!.mint === baseline.mint) return null;
                     const edge = computeAllocationEdge({
                         planOutUnitsRaw: totalOutUnitsRaw,
                         baselineOutUnitsRaw: baseline.outUnitsRaw,

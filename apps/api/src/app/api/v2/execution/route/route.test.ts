@@ -366,6 +366,24 @@ describe('GET /api/v2/execution/route', () => {
         ).toBe(0);
     });
 
+    it('reports null edges for a single-leg plan on the baseline variant (D)', async () => {
+        const ethereum = getAsset('ethereum')!;
+        liquidMints = ethereum.variants.map(variant => variant.mint);
+        const response = await request('/api/v2/execution/route?assetId=ethereum&amountUsd=1000000');
+        expect(response.status).toBe(200);
+        const body = await response.json();
+        expect(body.allocationStatus).toBe('ok');
+        const allocation = body.allocation as {
+            legs: unknown[];
+            edge: { vsBestSingleVariant: unknown; vsPrimaryVariant: unknown };
+        };
+        expect(allocation.legs.length).toBe(1);
+        // A one-leg plan on the baseline variant compares two quotes of the
+        // same thing minutes apart — that is noise, not an edge.
+        expect(allocation.edge.vsBestSingleVariant).toBeNull();
+        expect(allocation.edge.vsPrimaryVariant).toBeNull();
+    });
+
     it('requires the execution:read scope', async () => {
         const response = await request('/api/v2/execution/route?assetId=bitcoin', ['assets:read']);
         expect(response.status).toBe(403);
