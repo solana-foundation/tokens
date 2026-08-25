@@ -164,6 +164,9 @@ function normalizeQuote(
                 contextSlotRaw !== null && Number.isSafeInteger(contextSlotRaw) && contextSlotRaw > 0
                     ? contextSlotRaw
                     : null,
+            router: null,
+            mode: null,
+            fees: null,
         };
         if (!winner || BigInt(candidate.outAmountRaw) > BigInt(winner.outAmountRaw)) winner = candidate;
     }

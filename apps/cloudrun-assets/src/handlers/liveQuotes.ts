@@ -40,12 +40,27 @@ export interface ExecutionRouteStep {
     feeMint: string | null;
 }
 
+export interface ExactQuoteFees {
+    feeBps: number | null;
+    feeMint: string | null;
+    platformFee: {
+        amountRaw: string | null;
+        feeBps: number | null;
+        feeMint: string | null;
+    } | null;
+}
+
 export interface ExactQuote {
     inAmountRaw: string;
     outAmountRaw: string;
     priceImpactPct: number | null;
     route: ExecutionRouteStep[];
     contextSlot: number | null;
+    /** Provider-internal routing engine, e.g. Jupiter's metis or jupiterz. */
+    router: string | null;
+    /** Provider quote mode, e.g. Jupiter Swap V2's ultra mode. */
+    mode: string | null;
+    fees: ExactQuoteFees | null;
 }
 
 export interface JupiterTokenMetadata {
@@ -66,13 +81,17 @@ export interface ExactQuoteClient {
     }): Promise<ExactQuote | null>;
 }
 
-export interface JupiterExactQuoteClient extends ExactQuoteClient {
+export interface JupiterSwapV2QuoteClient extends ExactQuoteClient {
     id: 'jupiter';
+}
+
+export interface JupiterTokenMetadataClient {
     fetchTokenMetadata(mint: string): Promise<JupiterTokenMetadata | null>;
 }
 
 export interface LiveQuoteDeps {
-    jupiterQuoteSource: JupiterExactQuoteClient;
+    jupiterTokenMetadataSource: JupiterTokenMetadataClient;
+    jupiterQuoteSource?: JupiterSwapV2QuoteClient;
     titanQuoteSource?: ExactQuoteClient;
     now: () => number;
 }
@@ -95,7 +114,8 @@ export function quoteReasonOf(error: unknown): QuoteUnavailableReason {
         if (carried && QUOTE_UNAVAILABLE_REASONS.includes(carried)) return carried;
 
         const tag = (error as { _tag?: unknown })._tag;
-        if (tag === 'UpstreamDataError') return 'malformed';
+        if (tag === 'UpstreamDataError' || tag === 'JsonParseError') return 'malformed';
+        if (tag === 'FetchFailedError' && (error as { cause?: unknown }).cause === 'timeout') return 'timeout';
         if (tag === 'RequestTimeoutError' || tag === 'TimeoutException') return 'timeout';
         if (tag === 'UpstreamHttpError') {
             const status = (error as { status?: unknown }).status;
@@ -122,6 +142,9 @@ export type ExecutionQuoteCandidate =
           priceImpactPct: number | null;
           route: ExecutionRouteStep[];
           contextSlot: number | null;
+          router: string | null;
+          mode: string | null;
+          fees: ExactQuoteFees | null;
           quotedAt: string;
       }
     | {
@@ -133,6 +156,9 @@ export type ExecutionQuoteCandidate =
           priceImpactPct: null;
           route: [];
           contextSlot: null;
+          router: null;
+          mode: null;
+          fees: null;
           quotedAt: string;
       };
 
@@ -146,6 +172,9 @@ export type ExecutionQuoteEntry =
           priceImpactPct: number | null;
           route: ExecutionRouteStep[];
           contextSlot: number | null;
+          router: string | null;
+          mode: string | null;
+          fees: ExactQuoteFees | null;
           quotedAt: string;
           candidates: ExecutionQuoteCandidate[];
       }
@@ -159,6 +188,9 @@ export type ExecutionQuoteEntry =
           priceImpactPct: null;
           route: [];
           contextSlot: null;
+          router: null;
+          mode: null;
+          fees: null;
           quotedAt: string;
           candidates: ExecutionQuoteCandidate[];
       };
@@ -176,7 +208,7 @@ export async function executionQuoteTokenMetadata(deps: LiveQuoteDeps, args: unk
     if (typeof args !== 'object' || args === null) throw new InvalidArgsError('args must be an object');
     const mint = (args as { mint?: unknown }).mint;
     if (typeof mint !== 'string' || !mint.trim()) throw new InvalidArgsError('mint must be a string');
-    return deps.jupiterQuoteSource.fetchTokenMetadata(mint.trim());
+    return deps.jupiterTokenMetadataSource.fetchTokenMetadata(mint.trim());
 }
 
 function parseSide(raw: unknown): ExecutionQuoteSide {
@@ -220,6 +252,9 @@ function unavailableCandidate(
         priceImpactPct: null,
         route: [],
         contextSlot: null,
+        router: null,
+        mode: null,
+        fees: null,
         quotedAt,
     };
 }
@@ -244,6 +279,9 @@ async function fetchCandidate(
             priceImpactPct: quote.priceImpactPct,
             route: quote.route,
             contextSlot: quote.contextSlot,
+            router: quote.router,
+            mode: quote.mode,
+            fees: quote.fees,
             quotedAt,
         };
     } catch (error) {
@@ -353,6 +391,9 @@ export async function executionQuotesLive(deps: LiveQuoteDeps, args: unknown): P
                     priceImpactPct: null,
                     route: [] as [],
                     contextSlot: null,
+                    router: null,
+                    mode: null,
+                    fees: null,
                     quotedAt,
                     candidates: providers.map(provider => unavailableCandidate(provider, quotedAt, 'timeout')),
                 });
@@ -405,6 +446,9 @@ export async function executionQuotesLive(deps: LiveQuoteDeps, args: unknown): P
                             priceImpactPct: null,
                             route: [] as [],
                             contextSlot: null,
+                            router: null,
+                            mode: null,
+                            fees: null,
                             quotedAt: candidates[0]!.quotedAt,
                             candidates,
                         };
@@ -418,6 +462,9 @@ export async function executionQuotesLive(deps: LiveQuoteDeps, args: unknown): P
                         priceImpactPct: winner.priceImpactPct,
                         route: winner.route,
                         contextSlot: winner.contextSlot,
+                        router: winner.router,
+                        mode: winner.mode,
+                        fees: winner.fees,
                         quotedAt: winner.quotedAt,
                         candidates,
                     };

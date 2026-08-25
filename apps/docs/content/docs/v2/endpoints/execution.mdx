@@ -70,9 +70,8 @@ Quotes are fetched at request time — nothing is cached or sampled.
 - **Router selection.** Route each order to whoever is actually best at that
   size. The winner changes with size, so a per-asset default leaves money on the
   table.
-- **Best-execution evidence.** Timestamped, slot-stamped quotes from multiple
-  venues at decision time are the artifact a desk needs to show it did not
-  overpay.
+- **Best-execution evidence.** Timestamped quotes, plus provider chain context
+  where available, are the artifact a desk needs to show it did not overpay.
 - **Pre-trade sizing.** Walk the ladder to find where impact turns over before
   you send the order.
 - **Router monitoring.** Track `providerStats.wins` and `summary.medianEdgeBps`
@@ -106,6 +105,10 @@ These rules are the contract; pin behavior on them rather than on observed data.
 
 - Both sides are **exact-in**: we fix the input and compare what each router
   returns, so outputs are directly comparable with no normalization.
+- Jupiter uses quote-only Swap V2 `/order` with no taker or optional routing
+  parameters. Metis, JupiterZ, Dflow, and OKX compete inside Jupiter; the
+  fee-inclusive `outAmount` from the winning internal router is what competes
+  against Titan.
 - The winner is the **greatest `output.rawAmount`**. Ties go to the provider
   named by `meta.tieBreak` (`jupiter`).
 - `providerQuotes` is ranked best-first, so `providerQuotes[1]` is the
@@ -130,9 +133,9 @@ These rules are the contract; pin behavior on them rather than on observed data.
   uncontested sizes would report a confident `0 bps` that really means "only one
   router answered". `wins` likewise counts only contested sizes; a size where a
   router was alone is counted in `soleQuotes`.
-- Quotes within one response are fetched milliseconds apart, so `contextSlot`
-  will differ between providers. They are not atomic, and they are not
-  comparable across two separate API calls.
+- Quotes within one response are fetched milliseconds apart. They are not
+  atomic or comparable across two separate API calls. `contextSlot` is retained
+  when a provider supplies it; Jupiter Swap V2 currently does not.
 
 ### Per-provider semantics
 
@@ -141,11 +144,22 @@ over:
 
 | | Jupiter | Titan |
 | --- | --- | --- |
-| `priceImpactPct` | reported | **not reported** |
+| `priceImpactPct` | reported from Swap V2 `priceImpact` | **not reported** |
 | `priceImpactSource` | `provider` | `unavailable` |
 | Route steps | venue labels per hop | venue labels per hop |
-| `contextSlot` | reported | reported when present |
-| Slippage used | 50 bps | 50 bps |
+| Internal `router` | Metis, JupiterZ, Dflow, OKX, or a future id | not reported |
+| `fees` | total and platform fee details when supplied | not reported |
+| `contextSlot` | not currently reported by Swap V2 | reported when present |
+| Slippage behavior | Jupiter automatic settings | 50 bps |
+
+Jupiter's `priceImpact` is returned in signed percentage points. The endpoint
+exposes its magnitude in the existing decimal-ratio `priceImpactPct` field, so
+`-98.46` upstream becomes `0.9846` and displays as `98.46%`. The deprecated
+Swap V2 `priceImpactPct` field is not used.
+
+The live evaluator never falls back to Swap V1. The separate dark depth sampler
+still uses its existing Jupiter V1 client, but those sampled curves are not read
+or substituted by this endpoint.
 
 Branch on `priceImpactSource` (or on `priceImpactPct === null`), never on the
 provider name — a router that starts reporting impact should not need a client
@@ -230,6 +244,17 @@ interface ProviderQuote {
         feeMint: string | null;
     }>;
     contextSlot: number | null;
+    router: string | null;        // Jupiter internal router; null for Titan
+    mode: string | null;          // normally "ultra" for Jupiter
+    fees: {
+        feeBps: number | null;
+        feeMint: string | null;
+        platformFee: {
+            amountRaw: string | null;
+            feeBps: number | null;
+            feeMint: string | null;
+        } | null;
+    } | null;
     quotedAt: string;
 }
 

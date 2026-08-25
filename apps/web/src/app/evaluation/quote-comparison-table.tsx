@@ -15,7 +15,11 @@ import type {
     ExecutionQuoteSide,
     PriceImpactSource,
 } from '@/hooks/queries/use-execution-evaluation';
-import { formatPriceImpactRatio, fullPriceImpactRatio } from '@/lib/execution-quote-format';
+import {
+    formatExecutionRouterLabel,
+    formatPriceImpactRatio,
+    fullPriceImpactRatio,
+} from '@/lib/execution-quote-format';
 
 function formatRequestedAmount(amount: string, side: ExecutionQuoteSide): string {
     const numeric = Number(amount);
@@ -39,6 +43,39 @@ function formatTokenAmount(amount: string): string {
 
 function providerLabel(provider: ExecutionQuoteProvider): string {
     return provider === 'titan' ? 'Titan' : 'Jupiter';
+}
+
+function feeMintLabel(candidate: Extract<ExecutionProviderQuote, { status: 'available' }>, mint: string | null): string {
+    if (!mint) return 'Unknown mint';
+    if (mint === candidate.input.mint) return candidate.input.symbol;
+    if (mint === candidate.output.mint) return candidate.output.symbol;
+    return `${mint.slice(0, 4)}…${mint.slice(-4)}`;
+}
+
+function FeeValue({ candidate }: { candidate: Extract<ExecutionProviderQuote, { status: 'available' }> }) {
+    const fees = candidate.fees;
+    if (!fees) {
+        return (
+            <Tooltip content="This provider did not report fee details for the quote." side="top" align="end">
+                <span className="cursor-help">—</span>
+            </Tooltip>
+        );
+    }
+    const feeMint = feeMintLabel(candidate, fees.feeMint);
+    const summary = `${fees.feeBps === null ? 'Fee reported' : `${fees.feeBps} bps`} · ${feeMint}`;
+    const details = [
+        `Total fee: ${fees.feeBps === null ? 'Not provided' : `${fees.feeBps} bps`}`,
+        `Fee mint: ${fees.feeMint ?? 'Not provided'}${fees.feeMint ? ` (${feeMint})` : ''}`,
+        `Platform fee: ${fees.platformFee?.feeBps === null || fees.platformFee?.feeBps === undefined ? 'Not provided' : `${fees.platformFee.feeBps} bps`}`,
+        `Platform fee mint: ${fees.platformFee?.feeMint ?? 'Not provided'}`,
+        `Platform fee amount: ${fees.platformFee?.amountRaw === null || fees.platformFee?.amountRaw === undefined ? 'Not provided' : `${fees.platformFee.amountRaw} raw units`}`,
+        'Jupiter’s quoted output already reflects its quoted fee treatment.',
+    ].join('\n');
+    return (
+        <Tooltip content={details} side="top" align="end">
+            <span className="cursor-help whitespace-nowrap tabular-nums">{summary}</span>
+        </Tooltip>
+    );
 }
 
 function ProviderBadge({ provider }: { provider: ExecutionQuoteProvider }) {
@@ -185,16 +222,24 @@ function CandidateComparison({ candidates }: { candidates: ExecutionProviderQuot
             }}
         >
             <div className="overflow-x-auto rounded-xl border border-border-medium bg-white">
-                <table className="w-full min-w-[760px] border-collapse text-left">
+                <table className="w-full min-w-[1040px] border-collapse text-left">
                     <thead>
                         <tr className="border-b border-border-extra-light bg-gray-50/70">
-                            {['Provider', 'Status', 'Quoted output', 'Impact', 'Route', 'Context slot', 'Time'].map(
-                                (label, index) => (
-                                    <th key={label} className={`px-3 py-2 text-[10px] font-medium text-text-extra-low ${index >= 2 ? 'text-right' : ''}`}>
+                            {[
+                                ['Provider', false],
+                                ['Router', false],
+                                ['Status', false],
+                                ['Quoted output', true],
+                                ['Impact', true],
+                                ['Fees', true],
+                                ['Route', true],
+                                ['Context slot', true],
+                                ['Time', true],
+                            ].map(([label, right]) => (
+                                    <th key={String(label)} className={`px-3 py-2 text-[10px] font-medium text-text-extra-low ${right ? 'text-right' : ''}`}>
                                         {label}
                                     </th>
-                                ),
-                            )}
+                                ))}
                         </tr>
                     </thead>
                     <tbody className="divide-y divide-border-light">
@@ -203,6 +248,19 @@ function CandidateComparison({ candidates }: { candidates: ExecutionProviderQuot
                             return (
                                 <tr key={candidate.provider}>
                                     <td className="px-3 py-3"><ProviderBadge provider={candidate.provider} /></td>
+                                    <td className="px-3 py-3 text-[11px] font-medium text-text-high">
+                                        {candidate.status === 'available' ? (
+                                            <Tooltip
+                                                content={candidate.mode ? `Jupiter quote mode: ${candidate.mode}` : 'No internal router reported.'}
+                                                side="top"
+                                                align="start"
+                                            >
+                                                <span className={candidate.router ? 'cursor-help' : ''}>
+                                                    {formatExecutionRouterLabel(candidate.router)}
+                                                </span>
+                                            </Tooltip>
+                                        ) : '—'}
+                                    </td>
                                     <td className="px-3 py-3 text-[11px] text-text-medium">
                                         {candidate.status === 'available' ? (
                                             isWinner ? (
@@ -223,6 +281,9 @@ function CandidateComparison({ candidates }: { candidates: ExecutionProviderQuot
                                                     source={candidate.priceImpactSource}
                                                 />
                                             </td>
+                                            <td className="px-3 py-3 text-right text-[11px] text-text-medium">
+                                                <FeeValue candidate={candidate} />
+                                            </td>
                                             <td className="max-w-[190px] px-3 py-3 text-right text-[11px] text-text-medium">
                                                 <Tooltip content={routeDetails(candidate.route, candidate.contextSlot)} side="top" align="end">
                                                     <span className="inline-block max-w-[180px] cursor-help truncate align-bottom">
@@ -236,7 +297,7 @@ function CandidateComparison({ candidates }: { candidates: ExecutionProviderQuot
                                             </td>
                                         </>
                                     ) : (
-                                        <td colSpan={5} className="px-3 py-3 text-right text-[11px] text-text-extra-low">This provider could not return a fresh quote.</td>
+                                        <td colSpan={6} className="px-3 py-3 text-right text-[11px] text-text-extra-low">This provider could not return a fresh quote.</td>
                                     )}
                                 </tr>
                             );
@@ -315,7 +376,12 @@ export function QuoteComparisonTable({
                                                           <div className="flex items-center justify-end gap-2">
                                                               <ProviderBadge provider={row.best.provider} />
                                                               <Tooltip content={routeDetails(row.best.route, row.best.contextSlot)} side="top" align="end">
-                                                                  <span className="inline-block max-w-[150px] cursor-help truncate align-bottom">{routeLabel(row.best.route, row.best.provider)}</span>
+                                                                  <span className="inline-block max-w-[180px] cursor-help truncate align-bottom">
+                                                                      {row.best.router
+                                                                          ? `${formatExecutionRouterLabel(row.best.router)} · `
+                                                                          : ''}
+                                                                      {routeLabel(row.best.route, row.best.provider)}
+                                                                  </span>
                                                               </Tooltip>
                                                           </div>
                                                           <button
@@ -351,13 +417,15 @@ export function QuoteComparisonTable({
             <div className="border-t border-border-extra-light p-4">
                 <Alert className="rounded-xl border-border-light bg-gray-50/80 px-4 py-3 text-text-medium">
                     <Info className="size-4 text-text-low" aria-hidden />
-                    <AlertTitle className="text-[12px] font-medium text-text-high">{isError || allUnavailable ? 'Quotes unavailable' : 'Live comparison details'}</AlertTitle>
+                    <AlertTitle className="text-[12px] font-medium text-text-high">
+                        {isError || allUnavailable ? 'Quotes unavailable' : 'Titan + Jupiter Swap V2 · Live comparison'}
+                    </AlertTitle>
                     <AlertDescription className="space-y-1 text-[11px] text-text-low">
                         {data && !isPending ? <ComparisonSummary meta={data.meta} /> : null}
                         {isError ? <p>Titan and Jupiter could not provide fresh quotes. No previous quote was substituted.</p> : null}
                         {unavailable.length > 0 ? <p>No quote found right now for: <span className="font-medium text-text-high">{unavailable.map(row => formatRequestedAmount(row.request.amount, side)).join(', ')}</span>.</p> : null}
                         {titanUnavailable.length > 0 ? <p>Titan could not provide quotes for: <span className="font-medium text-text-high">{titanUnavailable.map(row => formatRequestedAmount(row.request.amount, side)).join(', ')}</span>. Jupiter results are shown without substitution.</p> : null}
-                        <p>Live quotes from Titan and Jupiter for the selected mint. The highest quoted output is shown for each amount. Outputs and routes can change before execution. These are quotes, not an execution guarantee.</p>
+                        <p>Jupiter quotes use Swap V2’s fee-inclusive best result across its available routing engines. The highest quoted output between Titan and Jupiter is shown for each amount. Outputs and routes can change before execution. These are quotes, not an execution guarantee.</p>
                     </AlertDescription>
                 </Alert>
             </div>

@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 
-import { makeClickhouseClient, makeJupiterExactQuoteClient } from './clients';
+import { makeClickhouseClient, makeJupiterSwapV2QuoteClient, makeJupiterTokenMetadataClient } from './clients';
 
 const BASE_OPTS = {
     url: 'http://clickhouse.invalid',
@@ -83,7 +83,7 @@ describe('fetchSolanaMintSnapshots (clickhouse-api gateway)', () => {
     });
 });
 
-describe('makeJupiterExactQuoteClient', () => {
+describe('Jupiter live evaluation clients', () => {
     test('resolves exact token metadata from the Jupiter token index', async () => {
         const originalFetch = globalThis.fetch;
         let requestUrl = '';
@@ -93,9 +93,9 @@ describe('makeJupiterExactQuoteClient', () => {
                 { id: 'another-mint', name: 'Other', symbol: 'OTHER', decimals: 9 },
                 { id: 'TOKEN', name: 'Sandisk - Backpack Securities', symbol: 'SNDK', decimals: 6 },
             ]);
-        }) as typeof fetch;
+        }) as unknown as typeof fetch;
         try {
-            const client = makeJupiterExactQuoteClient({ baseUrl: 'https://lite-api.jup.test' });
+            const client = makeJupiterTokenMetadataClient({ baseUrl: 'https://lite-api.jup.test' });
             expect(await client.fetchTokenMetadata('TOKEN')).toEqual({
                 mint: 'TOKEN',
                 name: 'Sandisk - Backpack Securities',
@@ -108,7 +108,7 @@ describe('makeJupiterExactQuoteClient', () => {
         }
     });
 
-    test('preserves raw amounts, provider impact, route plan, and pro authentication', async () => {
+    test('uses quote-only Swap V2 and preserves router, fees, raw amounts, and normalized impact', async () => {
         const originalFetch = globalThis.fetch;
         let requestUrl = '';
         let requestHeaders = new Headers();
@@ -118,11 +118,18 @@ describe('makeJupiterExactQuoteClient', () => {
             return Response.json({
                 inAmount: '10000000000',
                 outAmount: '123456789012345678',
-                priceImpactPct: '0.42',
-                contextSlot: 123456789,
+                priceImpact: -98.46,
+                priceImpactPct: '999',
+                router: 'future-router',
+                mode: 'ultra',
+                transaction: null,
+                feeBps: 10,
+                feeMint: 'USDC',
+                platformFee: { amount: '1000000', feeBps: 10, feeMint: 'USDC' },
                 routePlan: [
                     {
-                        percent: 100,
+                        percent: 0.32,
+                        bps: 32,
                         swapInfo: {
                             ammKey: 'amm',
                             label: 'Meteora DLMM',
@@ -130,34 +137,47 @@ describe('makeJupiterExactQuoteClient', () => {
                             outputMint: 'TOKEN',
                             inAmount: '10000000000',
                             outAmount: '123456789012345678',
-                            feeAmount: '0',
-                            feeMint: 'USDC',
                         },
                     },
                 ],
             });
-        }) as typeof fetch;
+        }) as unknown as typeof fetch;
         try {
-            const client = makeJupiterExactQuoteClient({ baseUrl: 'https://api.jup.test', apiKey: 'secret' });
+            const client = makeJupiterSwapV2QuoteClient({ baseUrl: 'https://api.jup.test', apiKey: 'secret' });
             const quote = await client.fetchQuote({ inputMint: 'USDC', outputMint: 'TOKEN', amountRaw: '10000000000' });
-            expect(requestUrl).toContain('amount=10000000000');
+            const parsedUrl = new URL(requestUrl);
+            expect(parsedUrl.pathname).toBe('/swap/v2/order');
+            expect(Object.fromEntries(parsedUrl.searchParams)).toEqual({
+                inputMint: 'USDC',
+                outputMint: 'TOKEN',
+                amount: '10000000000',
+            });
+            expect(parsedUrl.searchParams.has('taker')).toBeFalse();
+            expect(parsedUrl.searchParams.has('slippageBps')).toBeFalse();
             expect(requestHeaders.get('x-api-key')).toBe('secret');
             expect(quote).toEqual({
                 inAmountRaw: '10000000000',
                 outAmountRaw: '123456789012345678',
-                priceImpactPct: 0.42,
-                contextSlot: 123456789,
+                priceImpactPct: Math.abs(-98.46) / 100,
+                contextSlot: null,
+                router: 'future-router',
+                mode: 'ultra',
+                fees: {
+                    feeBps: 10,
+                    feeMint: 'USDC',
+                    platformFee: { amountRaw: '1000000', feeBps: 10, feeMint: 'USDC' },
+                },
                 route: [
                     {
                         ammKey: 'amm',
                         label: 'Meteora DLMM',
-                        percent: 100,
+                        percent: 0.32,
                         inputMint: 'USDC',
                         outputMint: 'TOKEN',
                         inAmountRaw: '10000000000',
                         outAmountRaw: '123456789012345678',
-                        feeAmountRaw: '0',
-                        feeMint: 'USDC',
+                        feeAmountRaw: null,
+                        feeMint: null,
                     },
                 ],
             });
@@ -171,8 +191,81 @@ describe('makeJupiterExactQuoteClient', () => {
         globalThis.fetch = (async () =>
             new Response('{"errorCode":"COULD_NOT_FIND_ANY_ROUTE"}', { status: 400 })) as unknown as typeof fetch;
         try {
-            const client = makeJupiterExactQuoteClient({ baseUrl: 'https://lite-api.jup.test' });
+            const client = makeJupiterSwapV2QuoteClient({ baseUrl: 'https://api.jup.test', apiKey: 'secret' });
             expect(await client.fetchQuote({ inputMint: 'USDC', outputMint: 'TOKEN', amountRaw: '1' })).toBeNull();
+        } finally {
+            globalThis.fetch = originalFetch;
+        }
+    });
+
+    test('rejects missing configuration before making a request', () => {
+        expect(() => makeJupiterSwapV2QuoteClient({ apiKey: '   ' })).toThrow('JUPITER_API_KEY is required');
+    });
+
+    test('classifies malformed raw amounts without falling back to Swap V1', async () => {
+        const originalFetch = globalThis.fetch;
+        let requestUrl = '';
+        globalThis.fetch = (async input => {
+            requestUrl = String(input);
+            return Response.json({ inAmount: '1', outAmount: 'not-an-integer', priceImpact: -1 });
+        }) as typeof fetch;
+        try {
+            const client = makeJupiterSwapV2QuoteClient({ baseUrl: 'https://api.jup.test', apiKey: 'secret' });
+            await expect(client.fetchQuote({ inputMint: 'USDC', outputMint: 'TOKEN', amountRaw: '1' })).rejects.toMatchObject({
+                quoteReason: 'malformed',
+            });
+            expect(requestUrl).toContain('/swap/v2/order?');
+            expect(requestUrl).not.toContain('/swap/v1/quote');
+        } finally {
+            globalThis.fetch = originalFetch;
+        }
+    });
+
+    test('does not retry authentication failures', async () => {
+        const originalFetch = globalThis.fetch;
+        let calls = 0;
+        globalThis.fetch = (async () => {
+            calls += 1;
+            return new Response('{"error":"unauthorized"}', { status: 401 });
+        }) as unknown as typeof fetch;
+        try {
+            const client = makeJupiterSwapV2QuoteClient({ baseUrl: 'https://api.jup.test', apiKey: 'bad-key' });
+            await expect(client.fetchQuote({ inputMint: 'USDC', outputMint: 'TOKEN', amountRaw: '1' })).rejects.toMatchObject({
+                _tag: 'UpstreamHttpError',
+                status: 401,
+            });
+            expect(calls).toBe(1);
+        } finally {
+            globalThis.fetch = originalFetch;
+        }
+    });
+
+    test('retries a transient server failure and keeps the exact input amount', async () => {
+        const originalFetch = globalThis.fetch;
+        let calls = 0;
+        globalThis.fetch = (async () => {
+            calls += 1;
+            if (calls === 1) return new Response('{"error":"busy"}', { status: 503 });
+            return Response.json({
+                inAmount: '9007199254740993',
+                outAmount: '900719925474099312345',
+                priceImpact: -0.1,
+                router: 'jupiterz',
+                mode: 'ultra',
+                transaction: null,
+                routePlan: [],
+            });
+        }) as unknown as typeof fetch;
+        try {
+            const client = makeJupiterSwapV2QuoteClient({ baseUrl: 'https://api.jup.test', apiKey: 'secret' });
+            await expect(
+                client.fetchQuote({ inputMint: 'USDC', outputMint: 'TOKEN', amountRaw: '9007199254740993' }),
+            ).resolves.toMatchObject({
+                inAmountRaw: '9007199254740993',
+                outAmountRaw: '900719925474099312345',
+                router: 'jupiterz',
+            });
+            expect(calls).toBe(2);
         } finally {
             globalThis.fetch = originalFetch;
         }

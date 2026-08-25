@@ -7,7 +7,7 @@ import {
     formatRawAmount,
     type ExactQuote,
     type ExactQuoteClient,
-    type JupiterExactQuoteClient,
+    type JupiterSwapV2QuoteClient,
     type LiveQuoteDeps,
     type QuoteUnavailableReason,
 } from './liveQuotes';
@@ -35,21 +35,30 @@ function exactQuote(amountRaw: string, outAmountRaw = '123456789012345678'): Exa
             },
         ],
         contextSlot: 123,
+        router: 'metis',
+        mode: 'ultra',
+        fees: {
+            feeBps: 10,
+            feeMint: USDC,
+            platformFee: { amountRaw: null, feeBps: 10, feeMint: USDC },
+        },
     };
 }
 
 function deps(
-    handler: JupiterExactQuoteClient['fetchQuote'],
+    handler: JupiterSwapV2QuoteClient['fetchQuote'],
     now: () => number = () => 1_700_000_000_000,
     titanHandler?: ExactQuoteClient['fetchQuote'],
 ): LiveQuoteDeps {
     return {
-        jupiterQuoteSource: {
-            id: 'jupiter',
-            fetchQuote: handler,
+        jupiterTokenMetadataSource: {
             async fetchTokenMetadata(mint) {
                 return { mint, symbol: 'cbBTC', name: 'Coinbase Wrapped BTC', decimals: 8 };
             },
+        },
+        jupiterQuoteSource: {
+            id: 'jupiter',
+            fetchQuote: handler,
         },
         ...(titanHandler ? { titanQuoteSource: { id: 'titan' as const, fetchQuote: titanHandler } } : {}),
         now,
@@ -105,6 +114,13 @@ describe('executionQuotesLive', () => {
             outAmountRaw: '123456789012345678',
             priceImpactPct: 0.42,
             contextSlot: 123,
+            router: 'metis',
+            mode: 'ultra',
+            fees: {
+                feeBps: 10,
+                feeMint: USDC,
+                platformFee: { amountRaw: null, feeBps: 10, feeMint: USDC },
+            },
             quotedAt: '2023-11-14T22:13:20.000Z',
         });
         expect(result.entries[0]?.candidates.map(candidate => candidate.provider)).toEqual(['jupiter', 'titan']);
@@ -241,6 +257,35 @@ describe('executionQuotesLive', () => {
         ]);
     });
 
+    it('degrades missing Jupiter configuration to an explicit Titan-only result', async () => {
+        const d = deps(
+            async () => {
+                throw new Error('unconfigured Jupiter must not be called');
+            },
+            () => 1_700_000_000_000,
+            async args => ({
+                ...exactQuote(args.amountRaw, '101'),
+                priceImpactPct: null,
+                router: null,
+                mode: null,
+                fees: null,
+            }),
+        );
+        delete d.jupiterQuoteSource;
+
+        const result = await executionQuotesLive(d, {
+            mint: MINT,
+            side: 'buy',
+            amounts: ['10'],
+            tokenDecimals: 8,
+        });
+        expect(result.entries[0]).toMatchObject({ status: 'available', provider: 'titan', outAmountRaw: '101' });
+        expect(result.entries[0]?.candidates).toMatchObject([
+            { provider: 'jupiter', status: 'unavailable', reason: 'error' },
+            { provider: 'titan', status: 'available', router: null, mode: null, fees: null },
+        ]);
+    });
+
     it('formats integer strings without precision loss', () => {
         expect(formatRawAmount('123456789012345678', 8)).toBe('1234567890.12345678');
     });
@@ -341,6 +386,8 @@ describe('executionQuotesLive failure classification', () => {
             { thrown: new DOMException('too slow', 'TimeoutError'), expected: 'timeout' },
             { thrown: { _tag: 'UpstreamHttpError', status: 403 }, expected: 'auth' },
             { thrown: { _tag: 'UpstreamDataError' }, expected: 'malformed' },
+            { thrown: { _tag: 'JsonParseError' }, expected: 'malformed' },
+            { thrown: { _tag: 'FetchFailedError', cause: 'timeout' }, expected: 'timeout' },
             { thrown: new Error('who knows'), expected: 'error' },
         ];
 

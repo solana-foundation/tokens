@@ -54,7 +54,14 @@ function availableEntry(amount: string, rawAmount: string) {
                 feeMint: USDC,
             },
         ],
-        contextSlot: 123,
+        contextSlot: null,
+        router: 'metis',
+        mode: 'ultra',
+        fees: {
+            feeBps: 10,
+            feeMint: USDC,
+            platformFee: { amountRaw: null, feeBps: 10, feeMint: USDC },
+        },
         quotedAt: '2026-08-22T12:34:56.000Z',
     } as const;
     return {
@@ -77,7 +84,14 @@ function availableEntry(amount: string, rawAmount: string) {
                 feeMint: USDC,
             },
         ],
-        contextSlot: 123,
+        contextSlot: null,
+        router: 'metis',
+        mode: 'ultra',
+        fees: {
+            feeBps: 10,
+            feeMint: USDC,
+            platformFee: { amountRaw: null, feeBps: 10, feeMint: USDC },
+        },
         quotedAt: '2026-08-22T12:34:56.000Z',
         candidates: [
             candidate,
@@ -90,6 +104,9 @@ function availableEntry(amount: string, rawAmount: string) {
                 priceImpactPct: null,
                 route: [],
                 contextSlot: null,
+                router: null,
+                mode: null,
+                fees: null,
                 quotedAt: '2026-08-22T12:34:56.000Z',
             },
         ],
@@ -278,6 +295,9 @@ describe('GET /api/v2/execution/evaluate', () => {
             priceImpactPct: entry.best.priceImpactPct,
             priceImpactSource: entry.best.priceImpactSource,
             contextSlot: entry.best.contextSlot,
+            router: entry.best.router,
+            mode: entry.best.mode,
+            fees: entry.best.fees,
             quotedAt: entry.best.quotedAt,
         }).toEqual({
             provider: 'jupiter',
@@ -293,9 +313,18 @@ describe('GET /api/v2/execution/evaluate', () => {
             },
             priceImpactPct: 0.42,
             priceImpactSource: 'provider',
-            contextSlot: 123,
+            contextSlot: null,
+            router: 'metis',
+            mode: 'ultra',
+            fees: {
+                feeBps: 10,
+                feeMint: USDC,
+                platformFee: { amountRaw: null, feeBps: 10, feeMint: USDC },
+            },
             quotedAt: '2026-08-22T12:34:56.000Z',
         });
+        expect(entry.best.transaction).toBe(undefined);
+        expect(entry.best.requestId).toBe(undefined);
         // The hoisted winner is the same object as its providerQuotes entry.
         expect(entry.best).toEqual(entry.providerQuotes.find((quote: { isBest: boolean }) => quote.isBest));
         expect(
@@ -448,6 +477,9 @@ describe('GET /api/v2/execution/evaluate', () => {
                     priceImpactPct: null,
                     route: [],
                     contextSlot: null,
+                    router: null,
+                    mode: null,
+                    fees: null,
                     quotedAt: '2026-08-22T12:34:56.000Z',
                     candidates: [
                         {
@@ -459,6 +491,9 @@ describe('GET /api/v2/execution/evaluate', () => {
                             priceImpactPct: null,
                             route: [],
                             contextSlot: null,
+                            router: null,
+                            mode: null,
+                            fees: null,
                             quotedAt: '2026-08-22T12:34:56.000Z',
                         },
                         {
@@ -470,6 +505,9 @@ describe('GET /api/v2/execution/evaluate', () => {
                             priceImpactPct: null,
                             route: [],
                             contextSlot: null,
+                            router: null,
+                            mode: null,
+                            fees: null,
                             quotedAt: '2026-08-22T12:34:56.000Z',
                         },
                     ],
@@ -491,6 +529,9 @@ describe('GET /api/v2/execution/evaluate', () => {
             expect(quote.input).toBeNull();
             expect(quote.rank).toBeNull();
             expect(quote.isBest).toBe(false);
+            expect(quote.router).toBeNull();
+            expect(quote.mode).toBeNull();
+            expect(quote.fees).toBeNull();
         }
         // Reasons are per-provider and must not be collapsed: a bad API key
         // (auth) and a genuinely illiquid size (no_route) are different bugs.

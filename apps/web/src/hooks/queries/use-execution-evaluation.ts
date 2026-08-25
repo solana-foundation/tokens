@@ -16,6 +16,7 @@ export type {
     ExecutionEvaluationMeta,
     ExecutionEvaluationResponse,
     ExecutionProviderQuote,
+    ExecutionQuoteFees,
     ExecutionQuoteAmount,
     ExecutionQuoteRequest,
     ExecutionQuoteRow,

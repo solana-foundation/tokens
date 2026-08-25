@@ -237,6 +237,9 @@ export const GET = route(
                         priceImpactSource: 'unavailable' as PriceImpactSource,
                         route: candidate.route,
                         contextSlot: null,
+                        router: null,
+                        mode: null,
+                        fees: null,
                         quotedAt: candidate.quotedAt,
                     };
                 }
@@ -263,6 +266,9 @@ export const GET = route(
                         : 'provider') as PriceImpactSource,
                     route: candidate.route,
                     contextSlot: candidate.contextSlot,
+                    router: candidate.router,
+                    mode: candidate.mode,
+                    fees: candidate.fees,
                     quotedAt: candidate.quotedAt,
                 };
             };

@@ -48,6 +48,16 @@ export interface ExecutionQuoteRequest {
     rawAmount: string;
 }
 
+export interface ExecutionQuoteFees {
+    feeBps: number | null;
+    feeMint: string | null;
+    platformFee: {
+        amountRaw: string | null;
+        feeBps: number | null;
+        feeMint: string | null;
+    } | null;
+}
+
 /** One provider's answer at one size. `rank` is 1-based among available. */
 export type ExecutionProviderQuote =
     | {
@@ -62,6 +72,9 @@ export type ExecutionProviderQuote =
           priceImpactSource: PriceImpactSource;
           route: readonly ExecutionRouteStep[];
           contextSlot: number | null;
+          router: string | null;
+          mode: string | null;
+          fees: ExecutionQuoteFees | null;
           quotedAt: string;
       }
     | {
@@ -77,6 +90,9 @@ export type ExecutionProviderQuote =
           priceImpactSource: PriceImpactSource;
           route: readonly ExecutionRouteStep[];
           contextSlot: null;
+          router: null;
+          mode: null;
+          fees: null;
           quotedAt: string;
       };
 

@@ -31,6 +31,19 @@ const RouteStepSchema = Schema.Struct({
 
 const ProviderSchema = Schema.Literals(['jupiter', 'titan']);
 const ReasonSchema = Schema.Literals(['no_route', 'timeout', 'auth', 'malformed', 'error']);
+const FeesSchema = Schema.NullOr(
+    Schema.Struct({
+        feeBps: Schema.NullOr(Schema.Number),
+        feeMint: Schema.NullOr(Schema.String),
+        platformFee: Schema.NullOr(
+            Schema.Struct({
+                amountRaw: Schema.NullOr(RawAmount),
+                feeBps: Schema.NullOr(Schema.Number),
+                feeMint: Schema.NullOr(Schema.String),
+            }),
+        ),
+    }),
+);
 
 /**
  * Available and unavailable candidates are separate members rather than one
@@ -46,6 +59,9 @@ const CandidateSchema = Schema.Union([
         priceImpactPct: Schema.NullOr(Schema.Number),
         route: Schema.Array(RouteStepSchema),
         contextSlot: Schema.NullOr(Schema.Number),
+        router: Schema.NullOr(Schema.String),
+        mode: Schema.NullOr(Schema.String),
+        fees: FeesSchema,
         quotedAt: Schema.String,
     }),
     Schema.Struct({
@@ -57,6 +73,9 @@ const CandidateSchema = Schema.Union([
         priceImpactPct: Schema.Null,
         route: Schema.Array(RouteStepSchema),
         contextSlot: Schema.Null,
+        router: Schema.Null,
+        mode: Schema.Null,
+        fees: Schema.Null,
         quotedAt: Schema.String,
     }),
 ]);
@@ -82,6 +101,9 @@ const EntrySchema = Schema.Union([
         priceImpactPct: Schema.NullOr(Schema.Number),
         route: Schema.Array(RouteStepSchema),
         contextSlot: Schema.NullOr(Schema.Number),
+        router: Schema.NullOr(Schema.String),
+        mode: Schema.NullOr(Schema.String),
+        fees: FeesSchema,
         quotedAt: Schema.String,
         candidates: Schema.Array(CandidateSchema),
     }),
@@ -95,6 +117,9 @@ const EntrySchema = Schema.Union([
         priceImpactPct: Schema.Null,
         route: Schema.Array(RouteStepSchema),
         contextSlot: Schema.Null,
+        router: Schema.Null,
+        mode: Schema.Null,
+        fees: Schema.Null,
         quotedAt: Schema.String,
         candidates: Schema.Array(CandidateSchema),
     }),

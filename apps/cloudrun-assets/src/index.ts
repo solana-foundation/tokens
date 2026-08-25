@@ -6,8 +6,9 @@ import {
     makeBirdeyeOhlcvClient,
     makeClickhouseClient,
     makeCoingeckoClient,
-    makeJupiterExactQuoteClient,
     makeJupiterQuoteClient,
+    makeJupiterSwapV2QuoteClient,
+    makeJupiterTokenMetadataClient,
     makePreStocksClient,
     makeRwaXyzClient,
     makeSanctumClient,
@@ -257,6 +258,11 @@ if (titanWsUrl && titanApiKey) {
 }
 
 const jupiterApiKey = process.env.JUPITER_API_KEY?.trim();
+if (!jupiterApiKey) {
+    console.warn(
+        '[cloudrun-assets] JUPITER_API_KEY not set — Jupiter Swap V2 comparison disabled; Lite token metadata remains available',
+    );
+}
 
 // Titan REST (live quote comparison) is configured independently of the
 // WebSocket depth client: different transport, different auth mechanism.
@@ -295,7 +301,8 @@ if (!titanRestApiKey) {
 
 // Live comparison is separate from the sampled depth source and its WebSocket.
 const liveQuoteDeps: LiveQuoteDeps = {
-    jupiterQuoteSource: makeJupiterExactQuoteClient(jupiterApiKey ? { apiKey: jupiterApiKey } : {}),
+    jupiterTokenMetadataSource: makeJupiterTokenMetadataClient(jupiterApiKey ? { apiKey: jupiterApiKey } : {}),
+    ...(jupiterApiKey ? { jupiterQuoteSource: makeJupiterSwapV2QuoteClient({ apiKey: jupiterApiKey }) } : {}),
     ...(titanRestQuoteSource ? { titanQuoteSource: titanRestQuoteSource } : {}),
     now: () => Date.now(),
 };
