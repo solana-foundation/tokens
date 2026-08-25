@@ -24,6 +24,14 @@ import type { CurvePoint } from './curve';
 const RATIO_SCALE = 1_000_000n;
 const USDC_RAW_PER_DOLLAR = 1_000_000n;
 
+/**
+ * Runtime unit-parity gate: variants of one asset must trade near one unit
+ * price. A base price further than this from the pool median is a different
+ * unit (gold's 1/10-oz ETF wrapper), a broken book, or pre-IPO pricing chaos —
+ * in every case not something to sum with the siblings.
+ */
+export const PARITY_DIVERGENCE_MAX_BPS = 500;
+
 export interface AllocatableVariant {
     variantId: string;
     mint: string;
@@ -59,6 +67,13 @@ export interface AllocationBaseline {
     outUnitsRaw: bigint;
 }
 
+export interface EjectedVariant {
+    mint: string;
+    symbol: string;
+    /** |basePrice / poolMedian − 1| in bps. */
+    divergenceBps: number;
+}
+
 export interface AllocationEngineResult {
     chunkUsd: number;
     allocatedUsd: number;
@@ -74,6 +89,10 @@ export interface AllocationEngineResult {
     pegSpreadBps: number | null;
     /** Mints whose curves needed a concavity clamp. */
     clampedMints: string[];
+    /** Pool variants ejected by the parity-divergence gate (never allocated). */
+    ejected: EjectedVariant[];
+    /** Base-price divergence vs the pool median for every surviving variant. */
+    divergenceBpsByMint: Record<string, number>;
 }
 
 interface PreparedVariant {
@@ -153,6 +172,62 @@ export function computeAllocation(args: {
         };
     });
 
+    // --- Runtime unit-parity gate: base-price clustering ---
+    // Directionless divergence between two base prices in bps (2dp): always
+    // the larger over the smaller, so "10x too cheap" and "10x too expensive"
+    // both read as 90,000bps rather than 9,000 vs 90,000.
+    const divergenceBps = (a: PreparedVariant, b: PreparedVariant): number => {
+        const aOverB = a.effNum * b.effDen;
+        const bOverA = b.effNum * a.effDen;
+        const [hi, lo] = aOverB >= bOverA ? [aOverB, bOverA] : [bOverA, aOverB];
+        if (lo === 0n) return Number.POSITIVE_INFINITY;
+        const ratio = (hi * RATIO_SCALE) / lo;
+        return Math.round(Number(ratio - RATIO_SCALE)) / 100;
+    };
+    const ejected: EjectedVariant[] = [];
+    const divergenceBpsByMint: Record<string, number> = {};
+    let pool: PreparedVariant[] = prepared;
+    if (prepared.length === 2) {
+        // Two variants cannot tell us which one is the outlier, so the gate
+        // loosens to 2x and the tie-break prefers an exact target-rung quote,
+        // then the better pre-filter rank.
+        const [first, second] = prepared;
+        const mutual = divergenceBps(first!, second!);
+        divergenceBpsByMint[first!.source.mint] = mutual;
+        divergenceBpsByMint[second!.source.mint] = mutual;
+        if (mutual > 2 * PARITY_DIVERGENCE_MAX_BPS) {
+            const hasTarget = (variant: PreparedVariant) =>
+                variant.source.points.some(point => point.sizeUsd === args.targetUsd);
+            const keepFirst =
+                hasTarget(first!) !== hasTarget(second!)
+                    ? hasTarget(first!)
+                    : first!.source.rank <= second!.source.rank;
+            const loser = keepFirst ? second! : first!;
+            ejected.push({ mint: loser.source.mint, symbol: loser.source.symbol, divergenceBps: mutual });
+            pool = prepared.filter(variant => variant !== loser);
+            delete divergenceBpsByMint[loser.source.mint];
+        }
+    } else if (prepared.length >= 3) {
+        const byPrice = [...prepared].sort((a, b) =>
+            ratioGreater(a.effNum, a.effDen, b.effNum, b.effDen) ? 1 : -1,
+        );
+        // The median element is its own reference (divergence 0), so at least
+        // one variant always survives the gate.
+        const median = byPrice[Math.floor(byPrice.length / 2)]!;
+        pool = [];
+        for (const variant of prepared) {
+            const deviation = divergenceBps(variant, median);
+            if (deviation > PARITY_DIVERGENCE_MAX_BPS) {
+                ejected.push({ mint: variant.source.mint, symbol: variant.source.symbol, divergenceBps: deviation });
+            } else {
+                divergenceBpsByMint[variant.source.mint] = deviation;
+                pool.push(variant);
+            }
+        }
+    } else {
+        divergenceBpsByMint[prepared[0]!.source.mint] = 0;
+    }
+
     const chunkUsd = Math.max(10_000, Math.ceil(args.targetUsd / 50));
     let remaining = args.targetUsd;
 
@@ -160,7 +235,7 @@ export function computeAllocation(args: {
         let best: PreparedVariant | null = null;
         let bestStep = 0;
         let bestMarginal = 0n;
-        for (const variant of prepared) {
+        for (const variant of pool) {
             const capacity = variant.capUsd - variant.allocatedUsd;
             if (capacity <= 0) continue;
             const step = Math.min(chunkUsd, remaining, capacity);
@@ -196,7 +271,7 @@ export function computeAllocation(args: {
         remaining -= bestStep;
     }
 
-    const legs: AllocationEngineLeg[] = prepared
+    const legs: AllocationEngineLeg[] = pool
         .filter(variant => variant.allocatedUsd > 0)
         .sort((a, b) => b.allocatedUsd - a.allocatedUsd || a.source.rank - b.source.rank)
         .map(variant => {
@@ -236,20 +311,21 @@ export function computeAllocation(args: {
         };
     };
     let bestSingleAtTarget: AllocationBaseline | null = null;
-    for (const variant of prepared) {
+    for (const variant of pool) {
         const baseline = baselineOf(variant);
         if (baseline && (bestSingleAtTarget === null || baseline.outUnitsRaw > bestSingleAtTarget.outUnitsRaw)) {
             bestSingleAtTarget = baseline;
         }
     }
-    const primaryAtTarget = baselineOf(prepared.find(variant => variant.source.rank === 1));
+    const primaryAtTarget = baselineOf(pool.find(variant => variant.source.rank === 1) ?? pool[0]);
 
     // Peg spread: max pairwise divergence of base effective prices.
+    // Peg spread over the surviving pool: residual risk, not handled outliers.
     let pegSpreadBps: number | null = null;
-    if (prepared.length >= 2) {
-        let maxVariant = prepared[0]!;
-        let minVariant = prepared[0]!;
-        for (const variant of prepared.slice(1)) {
+    if (pool.length >= 2) {
+        let maxVariant = pool[0]!;
+        let minVariant = pool[0]!;
+        for (const variant of pool.slice(1)) {
             if (ratioGreater(variant.effNum, variant.effDen, maxVariant.effNum, maxVariant.effDen)) maxVariant = variant;
             if (ratioGreater(minVariant.effNum, minVariant.effDen, variant.effNum, variant.effDen)) minVariant = variant;
         }
@@ -267,7 +343,9 @@ export function computeAllocation(args: {
         bestSingleAtTarget,
         primaryAtTarget,
         pegSpreadBps,
-        clampedMints: prepared.filter(variant => variant.clamped).map(variant => variant.source.mint),
+        clampedMints: pool.filter(variant => variant.clamped).map(variant => variant.source.mint),
+        ejected,
+        divergenceBpsByMint,
     };
 }
 

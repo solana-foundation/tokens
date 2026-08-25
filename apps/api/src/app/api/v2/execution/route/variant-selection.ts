@@ -17,12 +17,15 @@ import {
 import type { ExcludedVariant, ParityBasis, VariantExclusionReason } from './contract';
 
 /**
- * Kinds with provable 1:1 exposure to the underlying. Everything else either
- * accrues (yield/lst), levers (leveraged), blends (basket), tracks a
- * different unit (etf — gold's GLD wrapper is ~1/10 oz), or has no
- * conversion-ratio data at all.
+ * Kinds with 1:1 exposure to the underlying. `spot` (commodity claims like
+ * XAUT/PAXG, nominally one unit each) is admitted because the allocator now
+ * verifies parity at runtime via base-price clustering — a "1-oz" variant
+ * priced like a tenth of an ounce gets ejected by the data, not by a static
+ * list. Everything else either accrues (yield/lst), levers (leveraged),
+ * blends (basket), tracks a different unit (etf), or has no conversion-ratio
+ * data at all.
  */
-const UNIT_PARITY_KINDS = new Set(['native', 'wrapped', 'bridged']);
+const UNIT_PARITY_KINDS = new Set(['native', 'wrapped', 'bridged', 'spot']);
 
 /** Issuer-asserted 1 token = 1 share; redeemability is the only equivalence marker we have. */
 const REDEEMABLE_STOCK_TIERS = new Set(['share_redeemable', 'cash_redeemable']);

@@ -165,3 +165,54 @@ describe('computeAllocationEdge', () => {
         ).toBeNull();
     });
 });
+
+describe('parity divergence ejection (A)', () => {
+    it('ejects a 10x-priced sibling from the pool and reports it', () => {
+        // Three 1-oz golds at ~0.0003 oz/$ and one 1/10-oz ETF wrapper whose
+        // token is 10x the price (10x fewer tokens per dollar).
+        const oneOz = (id: string, rank: number, base: number) =>
+            variant(id, rank, pointsFor({ sizes: LADDER, baseOutPerDollar: base, impactBpsAt: s => s / 10_000 }));
+        const result = computeAllocation({
+            targetUsd: 1_000_000,
+            variants: [
+                oneOz('XAUT', 1, 0.0003),
+                oneOz('PAXG', 2, 0.000299),
+                oneOz('XAUM', 3, 0.000301),
+                oneOz('GLDw', 4, 0.00003),
+            ],
+        })!;
+        expect(result.ejected.map(entry => entry.mint)).toEqual(['GLDwMint']);
+        expect(result.ejected[0]!.divergenceBps).toBeGreaterThan(80_000);
+        expect(result.legs.some(leg => leg.mint === 'GLDwMint')).toBe(false);
+        // Peg spread reports the surviving pool, not the handled outlier.
+        expect(result.pegSpreadBps).not.toBeNull();
+        expect(result.pegSpreadBps!).toBeLessThan(500);
+        // Survivors carry their (small) divergence for disclosure.
+        expect(result.divergenceBpsByMint['XAUTMint']).toBeLessThan(500);
+    });
+
+    it('keeps a two-variant pair inside the mutual tolerance', () => {
+        const a = variant('A', 1, pointsFor({ sizes: LADDER, baseOutPerDollar: 0.001, impactBpsAt: () => 0 }));
+        const b = variant('B', 2, pointsFor({ sizes: LADDER, baseOutPerDollar: 0.00095, impactBpsAt: () => 0 }));
+        const result = computeAllocation({ targetUsd: 1_000_000, variants: [a, b] })!;
+        expect(result.ejected).toEqual([]);
+    });
+
+    it('with two variants far apart, ejects the lower-ranked one', () => {
+        // 50% apart: cannot tell which is broken; rank breaks the tie.
+        const a = variant('A', 1, pointsFor({ sizes: LADDER, baseOutPerDollar: 0.001, impactBpsAt: () => 0 }));
+        const b = variant('B', 2, pointsFor({ sizes: LADDER, baseOutPerDollar: 0.0005, impactBpsAt: () => 0 }));
+        const result = computeAllocation({ targetUsd: 1_000_000, variants: [a, b] })!;
+        expect(result.ejected.map(entry => entry.mint)).toEqual(['BMint']);
+        expect(result.legs.every(leg => leg.mint === 'AMint')).toBe(true);
+    });
+
+    it('never ejects everything: the median element always survives', () => {
+        const a = variant('A', 1, pointsFor({ sizes: LADDER, baseOutPerDollar: 0.001, impactBpsAt: () => 0 }));
+        const b = variant('B', 2, pointsFor({ sizes: LADDER, baseOutPerDollar: 0.1, impactBpsAt: () => 0 }));
+        const c = variant('C', 3, pointsFor({ sizes: LADDER, baseOutPerDollar: 0.00001, impactBpsAt: () => 0 }));
+        const result = computeAllocation({ targetUsd: 100_000, variants: [a, b, c] })!;
+        expect(result.legs.length).toBeGreaterThan(0);
+        expect(result.ejected.length).toBe(2);
+    });
+});

@@ -86,6 +86,15 @@ export interface RoutedVariant {
         rungs: VariantCurveRung[];
         /** Largest successfully quoted size; allocation never exceeds it. */
         maxProvenSizeUsd: number | null;
+        /**
+         * Base-price divergence vs the allocation pool's median, bps
+         * (directionless). Above the parity gate (500bps) the variant is
+         * ejected from the pool — `allocationEligible: false` plus a
+         * `price_divergence_excluded:<mint>` warning — because a sibling at a
+         * different unit price is a different unit, a broken book, or both.
+         * Null when the variant never entered the pool.
+         */
+        parityDivergenceBps: number | null;
     };
 }
 

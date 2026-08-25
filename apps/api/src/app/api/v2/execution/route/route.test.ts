@@ -314,6 +314,41 @@ describe('GET /api/v2/execution/route', () => {
         }
     });
 
+    it('ejects a price-divergent spot sibling from the allocation pool', async () => {
+        const gold = getAsset('gold')!;
+        const spotMints = gold.variants.filter(variant => variant.kind === 'spot').map(variant => variant.mint);
+        liquidMints = gold.variants.map(variant => variant.mint);
+        // One spot variant quotes 10x fewer tokens per dollar — a different
+        // unit or a broken book; either way not summable with the siblings.
+        const divergent = spotMints[0]!;
+        quoteResponder = (mint, amounts) => {
+            const fanout = defaultFanout(mint, amounts) as { entries: { candidates: { outAmountRaw: string }[] }[] };
+            if (mint === divergent) {
+                for (const entry of fanout.entries) {
+                    for (const candidate of entry.candidates) {
+                        candidate.outAmountRaw = String(BigInt(candidate.outAmountRaw) / 10n);
+                    }
+                }
+            }
+            return fanout;
+        };
+        const response = await request('/api/v2/execution/route?assetId=gold&amountUsd=1000000');
+        expect(response.status).toBe(200);
+        const body = await response.json();
+        expect(body.allocationStatus).toBe('ok');
+        expect(body.meta.warnings).toContain(`price_divergence_excluded:${divergent}`);
+        const ejectedVariant = (body.variants as Record<string, unknown>[]).find(v => v.mint === divergent);
+        if (ejectedVariant) {
+            expect(ejectedVariant.allocationEligible).toBe(false);
+            const curve = ejectedVariant.curve as { parityDivergenceBps: number };
+            expect(curve.parityDivergenceBps).toBeGreaterThan(500);
+        }
+        const legs = (body.allocation as { legs: { mint: string }[] }).legs;
+        expect(legs.some(leg => leg.mint === divergent)).toBe(false);
+        // Surviving peg spread reflects the pool, not the handled outlier.
+        expect((body.allocation as { pegSpreadBps: number | null }).pegSpreadBps ?? 0).toBeLessThan(500);
+    });
+
     it('falls back to Jupiter metadata for decimals when market rows are missing', async () => {
         const skHynix = getAsset('sk-hynix')!;
         const mints = skHynix.variants.map(variant => variant.mint);

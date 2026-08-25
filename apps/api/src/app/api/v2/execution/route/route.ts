@@ -291,6 +291,7 @@ export const GET = route(
                         baseEffectivePrice: curve.baseEffectivePrice,
                         rungs: curve.rungs,
                         maxProvenSizeUsd: curve.maxProvenSizeUsd,
+                        parityDivergenceBps: null,
                     },
                 });
             }
@@ -331,6 +332,19 @@ export const GET = route(
             let allocation: AllocationPlan | null = null;
             let verificationQuotes = 0;
             if (engine) {
+                // Surface the parity gate's verdicts on the variants themselves.
+                for (const ejectedVariant of engine.ejected) {
+                    warnings.push(`price_divergence_excluded:${ejectedVariant.mint}`);
+                    const routed = variants.find(variant => variant.mint === ejectedVariant.mint);
+                    if (routed) {
+                        routed.allocationEligible = false;
+                        routed.curve.parityDivergenceBps = ejectedVariant.divergenceBps;
+                    }
+                }
+                for (const [mint, divergence] of Object.entries(engine.divergenceBpsByMint)) {
+                    const routed = variants.find(variant => variant.mint === mint);
+                    if (routed) routed.curve.parityDivergenceBps = divergence;
+                }
                 if (engine.unallocatedUsd > 0) warnings.push('target_exceeds_probed_depth');
                 for (const mint of engine.clampedMints) warnings.push(`curve_not_concave:${mint}`);
                 if (engine.pegSpreadBps !== null && engine.pegSpreadBps > 50) warnings.push('peg_divergence');

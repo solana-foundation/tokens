@@ -31,10 +31,13 @@ describe('parityBasisOf', () => {
         for (const variant of bitcoin.variants) {
             expect(parityBasisOf(variant)).toBe('kind');
         }
-        const gold = getAsset('gold');
-        if (gold) {
-            const etf = gold.variants.find(variant => variant.kind === 'etf');
-            if (etf) expect(parityBasisOf(etf)).toBe('none');
+        const gold = getAsset('gold')!;
+        const etf = gold.variants.find(variant => variant.kind === 'etf');
+        if (etf) expect(parityBasisOf(etf)).toBe('none');
+        // Spot commodity claims are parity — the runtime price-clustering
+        // gate, not a static list, catches a mispriced "1-oz" sibling.
+        for (const spot of gold.variants.filter(variant => variant.kind === 'spot')) {
+            expect(parityBasisOf(spot)).toBe('kind');
         }
     });
 
