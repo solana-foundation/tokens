@@ -62,7 +62,8 @@ import type { TrendingCronDeps } from './handlers/crons.trending';
 import type { ClickhouseExtrasCronDeps } from './handlers/crons.clickhouse.extras';
 import type { PrestocksCronDeps } from './handlers/crons.prestocks';
 import type { DepthCronDeps } from './handlers/crons.depth';
-import type { DepthSampleDeps, LiveQuoteDeps } from './handlers/liveQuotes';
+import { limitQuoteConcurrency, type DepthSampleDeps, type LiveQuoteDeps } from './handlers/liveQuotes';
+import { createConcurrencyLimiter } from './concurrencyLimiter';
 import { makeGoogleOidcVerifier } from './oidc';
 import { createApp, type ServiceRole } from './server';
 
@@ -300,10 +301,22 @@ if (!titanRestApiKey) {
 }
 
 // Live comparison is separate from the sampled depth source and its WebSocket.
+// Per-provider in-flight caps sized for the cross-variant fanout (up to
+// 6 variants x 2 concurrent amounts): enough parallelism to fill a wide
+// request, low enough that one request cannot 429-storm a provider.
+const jupiterQuoteLimiter = createConcurrencyLimiter(6);
+const titanQuoteLimiter = createConcurrencyLimiter(8);
 const liveQuoteDeps: LiveQuoteDeps = {
     jupiterTokenMetadataSource: makeJupiterTokenMetadataClient(jupiterApiKey ? { apiKey: jupiterApiKey } : {}),
-    ...(jupiterApiKey ? { jupiterQuoteSource: makeJupiterSwapV2QuoteClient({ apiKey: jupiterApiKey }) } : {}),
-    ...(titanRestQuoteSource ? { titanQuoteSource: titanRestQuoteSource } : {}),
+    ...(jupiterApiKey
+        ? {
+              jupiterQuoteSource: limitQuoteConcurrency(
+                  makeJupiterSwapV2QuoteClient({ apiKey: jupiterApiKey }),
+                  jupiterQuoteLimiter,
+              ),
+          }
+        : {}),
+    ...(titanRestQuoteSource ? { titanQuoteSource: limitQuoteConcurrency(titanRestQuoteSource, titanQuoteLimiter) } : {}),
     now: () => Date.now(),
 };
 const depthSampleDeps: DepthSampleDeps = {

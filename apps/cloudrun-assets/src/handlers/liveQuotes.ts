@@ -1,4 +1,5 @@
 import { InvalidArgsError } from './assets';
+import type { ConcurrencyLimiter } from '../concurrencyLimiter';
 import {
     DEPTH_USDC_QUOTE_MINT,
     sampleMintLadder,
@@ -87,6 +88,19 @@ export interface JupiterSwapV2QuoteClient extends ExactQuoteClient {
 
 export interface JupiterTokenMetadataClient {
     fetchTokenMetadata(mint: string): Promise<JupiterTokenMetadata | null>;
+}
+
+/**
+ * Cap in-flight quote calls per provider. Per-instance and best-effort — a
+ * burst that lands on two Cloud Run instances is not globally limited — but it
+ * keeps one wide fanout from turning into a 429 storm against a single
+ * provider. A shed request degrades to an unavailable rung, never a failure.
+ */
+export function limitQuoteConcurrency<T extends ExactQuoteClient>(client: T, limit: ConcurrencyLimiter): T {
+    return {
+        ...client,
+        fetchQuote: (args: Parameters<ExactQuoteClient['fetchQuote']>[0]) => limit(() => client.fetchQuote(args)),
+    };
 }
 
 export interface LiveQuoteDeps {

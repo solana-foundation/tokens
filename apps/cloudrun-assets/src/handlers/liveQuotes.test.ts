@@ -10,8 +10,10 @@ import {
     type JupiterSwapV2QuoteClient,
     type LiveQuoteDeps,
     type QuoteUnavailableReason,
+    limitQuoteConcurrency,
 } from './liveQuotes';
 import type { DepthQuote, DepthQuoteClient } from './crons.depth';
+import { createConcurrencyLimiter } from '../concurrencyLimiter';
 
 const MINT = 'cbbtcf3aa214zXHbiAZQwf4122FBYbraNdFqgw4iMij';
 const USDC = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
@@ -442,5 +444,43 @@ describe('executionQuotesLive failure classification', () => {
         );
         expect(seen[0]).toBeGreaterThan(0);
         expect(seen[0]).toBeLessThanOrEqual(6_000);
+    });
+});
+
+describe('limitQuoteConcurrency', () => {
+    it('caps in-flight fetchQuote calls without dropping any', async () => {
+        let inFlight = 0;
+        let peak = 0;
+        const client = {
+            id: 'jupiter' as const,
+            async fetchQuote(_args: { inputMint: string; outputMint: string; amountRaw: string }) {
+                inFlight += 1;
+                peak = Math.max(peak, inFlight);
+                await new Promise(resolve => setTimeout(resolve, 5));
+                inFlight -= 1;
+                return null;
+            },
+        };
+        const limited = limitQuoteConcurrency(client, createConcurrencyLimiter(2));
+        const results = await Promise.all(
+            Array.from({ length: 8 }, () =>
+                limited.fetchQuote({ inputMint: 'a', outputMint: 'b', amountRaw: '1' }),
+            ),
+        );
+        expect(results).toHaveLength(8);
+        expect(peak).toBeLessThanOrEqual(2);
+    });
+
+    it('propagates rejections through the limiter', async () => {
+        const limited = limitQuoteConcurrency(
+            {
+                id: 'titan' as const,
+                async fetchQuote(_args: { inputMint: string; outputMint: string; amountRaw: string }): Promise<null> {
+                    throw new Error('boom');
+                },
+            },
+            createConcurrencyLimiter(1),
+        );
+        await expect(limited.fetchQuote({ inputMint: 'a', outputMint: 'b', amountRaw: '1' })).rejects.toThrow('boom');
     });
 });

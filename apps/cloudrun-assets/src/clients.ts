@@ -1415,13 +1415,19 @@ export function makeJupiterSwapV2QuoteClient(opts: MakeJupiterSwapV2QuoteOptions
                 `${baseUrl}/swap/v2/order?inputMint=${encodeURIComponent(args.inputMint)}` +
                 `&outputMint=${encodeURIComponent(args.outputMint)}` +
                 `&amount=${encodeURIComponent(args.amountRaw)}`;
+            // The timeout is per-attempt, so the caller's budget is split across
+            // attempts (as titanRestClient does) — otherwise a retried quote can
+            // take retries x budget and overshoot the fanout deadline it was given.
+            const maxRetries = 1;
+            const budgetMs = Math.max(1, Math.floor(args.timeoutMs ?? 15_000));
+            const attemptTimeoutMs = Math.max(1_000, Math.floor(budgetMs / (maxRetries + 1)));
             const json = await Effect.runPromise(
                 fetchJsonWithRetry<Record<string, unknown> | null>({
                     url,
                     service: 'jupiter',
                     init: { headers },
-                    maxRetries: 2,
-                    timeout: `${Math.max(1, Math.floor(args.timeoutMs ?? 15_000))} millis`,
+                    maxRetries,
+                    timeout: `${attemptTimeoutMs} millis`,
                     schema: JupiterSwapV2OrderEnvelopeSchema,
                     decodeMode: 'fail',
                     recoverHttpError: error =>
