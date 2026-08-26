@@ -1,12 +1,15 @@
 'use client';
 
 import * as React from 'react';
-import { Info } from 'lucide-react';
+import { ChevronDown, Info } from 'lucide-react';
 
 import { Tooltip } from '@solana/design-system/tooltip';
 import { Alert, AlertDescription, AlertTitle } from '@tokens/ui/alert';
 
+import type { ExecutionQuoteRow } from '@/hooks/queries/use-execution-evaluation';
 import type { ExecutionRouteResponse, RoutedVariant } from '@/hooks/queries/use-execution-route';
+import { formatExecutionRouterLabel } from '@/lib/execution-quote-format';
+import { CandidateComparison, providerLabel } from './candidate-comparison';
 
 /** Mirrors the API's impact grading thresholds for at-a-glance reading. */
 function impactTone(impactBps: number | null): string {
@@ -168,8 +171,142 @@ function AllocationLegsTable({ data }: { data: ExecutionRouteResponse }) {
     );
 }
 
+function Chip({ tone = 'neutral', children }: { tone?: 'neutral' | 'good' | 'warn'; children: React.ReactNode }) {
+    const palette = {
+        neutral: 'bg-gray-100 text-text-high',
+        good: 'bg-green-50 text-green-800',
+        warn: 'bg-amber-50 text-amber-800',
+    }[tone];
+    return (
+        <span className={`rounded-full px-2 py-0.5 text-[10px] font-medium tabular-nums ${palette}`}>{children}</span>
+    );
+}
+
+function Field({ label, children }: { label: string; children: React.ReactNode }) {
+    return (
+        <div>
+            <dt className="text-[10px] text-text-extra-low">{label}</dt>
+            <dd className="text-[11px] text-text-high tabular-nums">{children}</dd>
+        </div>
+    );
+}
+
+/**
+ * Every router that answered for this variant, counted across the whole size
+ * ladder. The headline row only shows each rung's winner, so an RFQ that quoted
+ * but lost is invisible without this.
+ */
+function routerTally(rows: ExecutionQuoteRow[]): {
+    quoted: Array<{ key: string; count: number; wins: number }>;
+    failed: Array<{ key: string; count: number }>;
+} {
+    const quoted = new Map<string, { count: number; wins: number }>();
+    const failed = new Map<string, number>();
+    for (const row of rows) {
+        for (const quote of row.providerQuotes) {
+            if (quote.status === 'available') {
+                const key = `${providerLabel(quote.provider)} · ${formatExecutionRouterLabel(quote.router)}`;
+                const entry = quoted.get(key) ?? { count: 0, wins: 0 };
+                entry.count += 1;
+                if (quote.isBest) entry.wins += 1;
+                quoted.set(key, entry);
+            } else {
+                const key = `${providerLabel(quote.provider)}: ${quote.reason}`;
+                failed.set(key, (failed.get(key) ?? 0) + 1);
+            }
+        }
+    }
+    return {
+        quoted: [...quoted.entries()]
+            .map(([key, value]) => ({ key, ...value }))
+            .sort((a, b) => b.wins - a.wins || b.count - a.count),
+        failed: [...failed.entries()].map(([key, count]) => ({ key, count })).sort((a, b) => b.count - a.count),
+    };
+}
+
+/** Everything the API knew about one variant: parity facts, routers, per-rung quotes. */
+function VariantDetail({ variant, colSpan }: { variant: RoutedVariant; colSpan: number }) {
+    const tally = routerTally(variant.quotes);
+    return (
+        <tr className="bg-gray-50/40">
+            <td colSpan={colSpan} className="px-4 py-4">
+                <dl className="grid grid-cols-2 gap-x-6 gap-y-2 sm:grid-cols-4 lg:grid-cols-7">
+                    <Field label="Kind">{variant.kind}</Field>
+                    <Field label="Parity basis">
+                        {variant.parityBasis === 'none' ? (
+                            <Tooltip
+                                content="Never summed with siblings: derivative kind, non-redeemable claim, or unknown unit."
+                                side="top"
+                            >
+                                <span className="cursor-help text-amber-700">none</span>
+                            </Tooltip>
+                        ) : (
+                            variant.parityBasis.replaceAll('_', ' ')
+                        )}
+                    </Field>
+                    <Field label="Base price">{variant.curve.baseEffectivePrice ?? '—'}</Field>
+                    <Field label="Proven depth">
+                        {variant.curve.maxProvenSizeUsd === null ? '—' : formatUsd(variant.curve.maxProvenSizeUsd)}
+                    </Field>
+                    <Field label="Peg divergence">
+                        {variant.curve.parityDivergenceBps === null
+                            ? '—'
+                            : `${variant.curve.parityDivergenceBps.toFixed(1)} bps`}
+                    </Field>
+                    <Field label="Tier">{variant.stockVariantTier ?? '—'}</Field>
+                    <Field label="Mint">
+                        <span title={variant.mint}>
+                            {variant.mint.slice(0, 4)}…{variant.mint.slice(-4)}
+                        </span>
+                    </Field>
+                </dl>
+
+                <div className="mt-3 flex flex-wrap items-center gap-1.5">
+                    <span className="text-[10px] text-text-extra-low">Routers that answered:</span>
+                    {tally.quoted.length === 0 ? <Chip tone="warn">none</Chip> : null}
+                    {tally.quoted.map(entry => (
+                        <Chip key={entry.key} tone={entry.wins > 0 ? 'good' : 'neutral'}>
+                            {entry.key} ×{entry.count}
+                            {entry.wins > 0 ? ` · won ${entry.wins}` : ''}
+                        </Chip>
+                    ))}
+                    {tally.failed.map(entry => (
+                        <Chip key={entry.key} tone="warn">
+                            {entry.key} ×{entry.count}
+                        </Chip>
+                    ))}
+                </div>
+
+                <div className="mt-3 space-y-3">
+                    {variant.quotes.map(row => (
+                        <div
+                            key={row.request.rawAmount}
+                            className="overflow-hidden rounded-xl border border-border-light bg-white"
+                        >
+                            <div className="flex items-baseline justify-between border-b border-border-extra-light px-3 py-2">
+                                <span className="text-[11px] font-medium text-text-extra-high tabular-nums">
+                                    {formatUsd(Number(row.request.amount))}
+                                </span>
+                                <span className="text-[10px] text-text-low">
+                                    {row.status === 'available'
+                                        ? `won by ${providerLabel(row.best.provider)} · ${formatExecutionRouterLabel(row.best.router)}`
+                                        : `no quote (${row.reason})`}
+                                </span>
+                            </div>
+                            <CandidateComparison candidates={row.providerQuotes} />
+                        </div>
+                    ))}
+                </div>
+            </td>
+        </tr>
+    );
+}
+
 function VariantMatrix({ data }: { data: ExecutionRouteResponse }) {
     const sizes = data.meta.probeLadderUsd;
+    const [expandedMint, setExpandedMint] = React.useState<string | null>(null);
+    // Variant label + one column per rung + liquidity + the toggle.
+    const colSpan = sizes.length + 3;
     return (
         <div className="overflow-x-auto border-t border-border-extra-light">
             <table className="w-full min-w-[720px] border-collapse text-left">
@@ -186,64 +323,218 @@ function VariantMatrix({ data }: { data: ExecutionRouteResponse }) {
                                 {formatUsd(sizeUsd)}
                             </th>
                         ))}
-                        <th className="px-3 py-2.5 pr-4 text-right text-[11px] font-medium text-text-extra-low">
+                        <th className="px-3 py-2.5 text-right text-[11px] font-medium text-text-extra-low">
                             Liquidity
+                        </th>
+                        <th className="py-2.5 pl-3 pr-4 text-right text-[11px] font-medium text-text-extra-low">
+                            Quotes
                         </th>
                     </tr>
                 </thead>
                 <tbody className="divide-y divide-border-extra-light">
-                    {data.variants.map((variant: RoutedVariant) => (
-                        <tr key={variant.mint}>
-                            <td className="py-2.5 pl-4 pr-3">
-                                <span className="text-[13px] font-medium text-text-extra-high">{variant.symbol}</span>
-                                <span className="ml-2 text-[10px] text-text-extra-low">
-                                    #{variant.rank}
-                                    {variant.issuer ? ` · ${variant.issuer}` : ''}
-                                    {!variant.allocationEligible ? ' · not allocatable' : ''}
-                                </span>
-                            </td>
-                            {sizes.map(sizeUsd => {
-                                const rung = variant.curve.rungs.find(r => r.sizeUsd === sizeUsd);
-                                const impact = rung?.impactBps ?? null;
-                                return (
-                                    <td
-                                        key={sizeUsd}
-                                        className={`px-3 py-2.5 text-right text-[12px] tabular-nums ${impactTone(impact)}`}
-                                    >
-                                        {impact === null ? (
-                                            <Tooltip
-                                                content={
-                                                    rung?.reason === 'no_route'
-                                                        ? 'No route found at this size — the market genuinely lacks depth here.'
-                                                        : 'Quotes failed at this size (provider error or rate limit) — depth is unknown, not proven absent.'
-                                                }
-                                                side="top"
+                    {data.variants.map((variant: RoutedVariant) => {
+                        const isExpanded = expandedMint === variant.mint;
+                        return (
+                            <React.Fragment key={variant.mint}>
+                                <tr>
+                                    <td className="py-2.5 pl-4 pr-3">
+                                        <span className="text-[13px] font-medium text-text-extra-high">
+                                            {variant.symbol}
+                                        </span>
+                                        <span className="ml-2 text-[10px] text-text-extra-low">
+                                            #{variant.rank}
+                                            {variant.issuer ? ` · ${variant.issuer}` : ''}
+                                            {!variant.allocationEligible ? ' · not allocatable' : ''}
+                                        </span>
+                                    </td>
+                                    {sizes.map(sizeUsd => {
+                                        const rung = variant.curve.rungs.find(r => r.sizeUsd === sizeUsd);
+                                        const impact = rung?.impactBps ?? null;
+                                        return (
+                                            <td
+                                                key={sizeUsd}
+                                                className={`px-3 py-2.5 text-right text-[12px] tabular-nums ${impactTone(impact)}`}
                                             >
-                                                <span className="cursor-help">—</span>
-                                            </Tooltip>
+                                                {impact === null ? (
+                                                    <Tooltip
+                                                        content={
+                                                            rung?.reason === 'no_route'
+                                                                ? 'No route found at this size — the market genuinely lacks depth here.'
+                                                                : 'Quotes failed at this size (provider error or rate limit) — depth is unknown, not proven absent.'
+                                                        }
+                                                        side="top"
+                                                    >
+                                                        <span className="cursor-help">—</span>
+                                                    </Tooltip>
+                                                ) : (
+                                                    `${impact.toFixed(impact >= 100 ? 0 : 1)} bps`
+                                                )}
+                                            </td>
+                                        );
+                                    })}
+                                    <td className="px-3 py-2.5 text-right text-[12px] text-text-medium tabular-nums">
+                                        {variant.market?.liquidity ? (
+                                            formatUsd(variant.market.liquidity)
                                         ) : (
-                                            `${impact.toFixed(impact >= 100 ? 0 : 1)} bps`
+                                            <Tooltip
+                                                content="No market snapshot for this mint — token details were resolved via metadata instead."
+                                                side="top"
+                                                align="end"
+                                            >
+                                                <span className="cursor-help text-text-extra-low">n/a</span>
+                                            </Tooltip>
                                         )}
                                     </td>
-                                );
-                            })}
-                            <td className="px-3 py-2.5 pr-4 text-right text-[12px] text-text-medium tabular-nums">
-                                {variant.market?.liquidity ? (
-                                    formatUsd(variant.market.liquidity)
-                                ) : (
-                                    <Tooltip
-                                        content="No market snapshot for this mint — token details were resolved via metadata instead."
-                                        side="top"
-                                        align="end"
-                                    >
-                                        <span className="cursor-help text-text-extra-low">n/a</span>
-                                    </Tooltip>
-                                )}
-                            </td>
-                        </tr>
-                    ))}
+                                    <td className="py-2.5 pl-3 pr-4 text-right">
+                                        <button
+                                            type="button"
+                                            aria-expanded={isExpanded}
+                                            onClick={() => setExpandedMint(isExpanded ? null : variant.mint)}
+                                            className="inline-flex items-center gap-1 rounded-full border border-border-light px-2 py-0.5 text-[10px] font-medium text-text-medium hover:bg-gray-50"
+                                        >
+                                            {isExpanded ? 'Hide' : 'Every quote'}
+                                            <ChevronDown className={`size-3 ${isExpanded ? 'rotate-180' : ''}`} />
+                                        </button>
+                                    </td>
+                                </tr>
+                                {isExpanded ? <VariantDetail variant={variant} colSpan={colSpan} /> : null}
+                            </React.Fragment>
+                        );
+                    })}
                 </tbody>
             </table>
+        </div>
+    );
+}
+
+/**
+ * The judgment inputs behind the plan: the gates this request ran under, what
+ * the providers actually delivered, and every raw warning. Collapsed by
+ * default because it is testing detail, not a customer-facing summary.
+ */
+function PlanDiagnostics({ data }: { data: ExecutionRouteResponse }) {
+    const [isOpen, setIsOpen] = React.useState(false);
+    const { meta, allocation } = data;
+    const overlap = allocation?.legIndependence;
+    return (
+        <div className="border-t border-border-extra-light">
+            <button
+                type="button"
+                aria-expanded={isOpen}
+                onClick={() => setIsOpen(!isOpen)}
+                className="flex w-full items-center justify-between px-4 py-2.5 text-left hover:bg-gray-50/60"
+            >
+                <span className="text-[11px] font-medium text-text-medium">
+                    Diagnostics · {meta.tuning.profile} gates · {meta.upstreamQuotes} upstream quotes
+                    {meta.warnings.length > 0 ? ` · ${meta.warnings.length} warnings` : ''}
+                </span>
+                <ChevronDown className={`size-3.5 text-text-low ${isOpen ? 'rotate-180' : ''}`} />
+            </button>
+            {isOpen ? (
+                <div className="space-y-4 bg-gray-50/40 px-4 py-4">
+                    <div>
+                        <p className="mb-1.5 text-[10px] font-medium text-text-extra-low">
+                            Thresholds this request ran under
+                        </p>
+                        <dl className="grid grid-cols-2 gap-x-6 gap-y-2 sm:grid-cols-3 lg:grid-cols-5">
+                            <Field label="Profile">{meta.tuning.profile}</Field>
+                            <Field label="Parity gate">{meta.tuning.parityDivergenceMaxBps} bps</Field>
+                            <Field label="Collapse threshold">{meta.tuning.collapseThresholdBps} bps</Field>
+                            <Field label="Peg warn">{meta.tuning.pegWarnBps} bps</Field>
+                            <Field label="Market closed ×2">
+                                {meta.tuning.marketClosedMultiplierApplied ? (
+                                    <span className="text-amber-700">applied</span>
+                                ) : (
+                                    'no'
+                                )}
+                            </Field>
+                        </dl>
+                    </div>
+
+                    <div>
+                        <p className="mb-1.5 text-[10px] font-medium text-text-extra-low">Provider delivery</p>
+                        <dl className="grid grid-cols-2 gap-x-6 gap-y-2 sm:grid-cols-3 lg:grid-cols-5">
+                            {Object.entries(meta.providerStats).map(([provider, stat]) => (
+                                <Field key={provider} label={providerLabel(provider as 'jupiter' | 'titan')}>
+                                    {stat.quoted} quoted · {stat.unavailable} failed · won {stat.wins} · sole{' '}
+                                    {stat.soleQuotes}
+                                </Field>
+                            ))}
+                            <Field label="Probe ladder">{meta.probeLadderUsd.map(formatUsd).join(' · ')}</Field>
+                            <Field label="Variants">
+                                {meta.selectedVariants} of max {meta.maxVariants}
+                            </Field>
+                        </dl>
+                    </div>
+
+                    {allocation ? (
+                        <div>
+                            <p className="mb-1.5 text-[10px] font-medium text-text-extra-low">Plan internals</p>
+                            <dl className="grid grid-cols-2 gap-x-6 gap-y-2 sm:grid-cols-3 lg:grid-cols-5">
+                                <Field label="Chunk size">{formatUsd(allocation.chunkUsd)}</Field>
+                                <Field label="Dust floor">{formatUsd(allocation.minLegUsd)}</Field>
+                                <Field label="Totals basis">{allocation.edge.basis.replaceAll('_', ' ')}</Field>
+                                <Field label="Share stability">
+                                    {allocation.shareStability === 'firm' ? (
+                                        allocation.shareStability
+                                    ) : (
+                                        <span className="text-amber-700">{allocation.shareStability}</span>
+                                    )}
+                                </Field>
+                                <Field label="Blended impact">
+                                    {allocation.blendedImpactBps === null
+                                        ? '—'
+                                        : `${allocation.blendedImpactBps.toFixed(2)} bps · ${allocation.blendedImpactGrade ?? ''}`}
+                                </Field>
+                                <Field label="Peg spread">
+                                    {allocation.pegSpreadBps === null
+                                        ? '—'
+                                        : `${allocation.pegSpreadBps.toFixed(1)} bps`}
+                                </Field>
+                                <Field label="Repaired">{allocation.repaired ? 'yes' : 'no'}</Field>
+                                <Field label="Fell back to single">
+                                    {allocation.fellBackToSingleVariant ? 'yes' : 'no'}
+                                </Field>
+                                <Field label="Routing version">{meta.routingVersion}</Field>
+                            </dl>
+                        </div>
+                    ) : null}
+
+                    {overlap && !overlap.independent ? (
+                        <div>
+                            <p className="mb-1.5 text-[10px] font-medium text-text-extra-low">
+                                Leg overlap (why the edge is an upper bound)
+                            </p>
+                            <div className="flex flex-wrap gap-1.5">
+                                {overlap.passThrough.map(entry => (
+                                    <Chip key={`${entry.legMint}-${entry.viaVariantMint}`} tone="warn">
+                                        {entry.legMint.slice(0, 4)}… routes through {entry.viaVariantMint.slice(0, 4)}…
+                                    </Chip>
+                                ))}
+                                {overlap.sharedPools.map(pool => (
+                                    <Chip key={pool.ammKey} tone="warn">
+                                        {pool.label ?? pool.ammKey.slice(0, 6)} shared by{' '}
+                                        {pool.legMints.map(mint => mint.slice(0, 4)).join(' + ')}
+                                    </Chip>
+                                ))}
+                            </div>
+                        </div>
+                    ) : null}
+
+                    {meta.warnings.length > 0 ? (
+                        <div>
+                            <p className="mb-1.5 text-[10px] font-medium text-text-extra-low">Raw warnings</p>
+                            <div className="flex flex-wrap gap-1.5">
+                                {meta.warnings.map(warning => (
+                                    <Chip key={warning} tone="warn">
+                                        {warning}
+                                    </Chip>
+                                ))}
+                            </div>
+                        </div>
+                    ) : null}
+                </div>
+            ) : null}
         </div>
     );
 }
@@ -265,6 +556,7 @@ export function RouteResults({
                     <AllocationHeadline data={data} />
                     {data.allocation ? <AllocationLegsTable data={data} /> : null}
                     <VariantMatrix data={data} />
+                    <PlanDiagnostics data={data} />
                 </>
             ) : (
                 <div className="px-4 py-10 text-center text-[12px] text-text-low">
