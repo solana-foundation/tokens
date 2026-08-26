@@ -26,12 +26,7 @@ import {
     useExecutionEvaluation,
     type ExecutionQuoteSide,
 } from '@/hooks/queries/use-execution-evaluation';
-import {
-    buildEvaluateFetchSnippet,
-    buildRouteFetchSnippet,
-    EndpointRequestPanel,
-    type EndpointRequestState,
-} from './endpoint-request-panel';
+import { EndpointRequestPanel, type EndpointRequestState } from './endpoint-request-panel';
 import { RouteResults } from './route-results';
 import { RouteSplitVisual } from './route-split-visual';
 import { buildRouteRequestPath, useExecutionRoute } from '@/hooks/queries/use-execution-route';
@@ -472,7 +467,7 @@ export function EvaluationPlayground() {
                 {/* One column of results, one of the request that produced them.
                     Splits at xl only: the table needs ~980px, so below that the
                     two side by side would just make the table scroll. */}
-                <div className="grid grid-cols-1 gap-6 xl:grid-cols-[minmax(0,1fr)_380px] xl:items-start">
+                <div className="grid grid-cols-1 gap-6 xl:grid-cols-[minmax(0,1fr)_420px] xl:items-start">
                     <div className="min-w-0 space-y-6">
                         <div className="inline-flex rounded-full border border-border-medium bg-gray-50 p-1">
                             {(
@@ -745,7 +740,7 @@ export function EvaluationPlayground() {
                                     }
                                 />
                                 <EndpointRequestPanel
-                                    snippet={buildRouteFetchSnippet(routeRequestPath)}
+                                    requestPath={routeRequestPath}
                                     responseJson={routeQuery.data}
                                     isPending={routeQuery.isPending}
                                     isError={routeQuery.isError}
@@ -754,7 +749,7 @@ export function EvaluationPlayground() {
                             </>
                         ) : (
                             <EndpointRequestPanel
-                                snippet={buildEvaluateFetchSnippet(requestPath)}
+                                requestPath={requestPath}
                                 responseJson={data}
                                 isPending={isPending}
                                 isError={isError}

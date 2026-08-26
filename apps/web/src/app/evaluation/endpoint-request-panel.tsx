@@ -9,10 +9,22 @@ import { Tab, TabList, TabPanel, Tabs } from '@solana/design-system/tabs';
 const CODE_BLOCK_CLASS_NAME = '[&_.overflow-x-auto]:text-xs [&_.overflow-x-auto]:leading-6';
 const CODE_MAX_HEIGHT_PX = 520;
 /**
- * Snippets show the public API host, while this page's own request goes to its
- * same-origin proxy so the browser never holds a key.
+ * The composed URL shows the public API host, while this page's own request
+ * goes to its same-origin proxy so the browser never holds a key.
  */
 const PUBLIC_API_ORIGIN = 'https://api.tokens.xyz';
+
+/** What each query param does, shared by both execution endpoints. */
+const PARAM_DOCS: Record<string, string> = {
+    assetId: 'Canonical asset id or alias — resolves to every variant we quote',
+    mint: 'The exact Solana mint to quote',
+    side: 'buy quotes USDC → token; sell quotes token → USDC',
+    amountUsd: 'Order size in USDC, whole dollars',
+    tokenAmount: "Sell size in the token's own units",
+    providers: 'Comma-separated subset of jupiter, titan',
+    maxVariants: 'Cap on how many variants get probed (1–6)',
+    allocate: 'false returns the comparison without computing a split',
+};
 
 export interface EndpointRequestState {
     /** Wall-clock of the last completed request. */
@@ -20,78 +32,42 @@ export interface EndpointRequestState {
     status: number | 'error';
 }
 
-export function buildEvaluateFetchSnippet(requestPath: string): string {
-    return [
-        'const API_KEY = "<YOUR_API_KEY>";',
-        '',
-        `const response = await fetch(\`${PUBLIC_API_ORIGIN}${requestPath}\`, {`,
-        '  headers: {',
-        '    "x-api-key": API_KEY,',
-        '    "accept": "application/json",',
-        '  },',
-        '});',
-        '',
-        'const { quotes, meta } = await response.json();',
-        '',
-        '// Who won each size, and by how much it mattered.',
-        'for (const quote of quotes) {',
-        '  if (quote.status !== "available") continue;',
-        '  console.log(',
-        '    quote.request.amount,',
-        '    quote.best.provider,',
-        '    quote.edge ? `+${quote.edge.bps}bps (+$${quote.edge.usd})` : "uncontested",',
-        '  );',
-        '}',
-        '',
-        'console.log(meta.summary.bestProvider, meta.summary.medianEdgeBps);',
-        '',
-    ].join('\n');
+interface ComposedParam {
+    key: string;
+    values: string[];
+    doc: string | undefined;
 }
 
-export function buildRouteFetchSnippet(requestPath: string): string {
-    return [
-        'const API_KEY = "<YOUR_API_KEY>";',
-        '',
-        `const response = await fetch(\`${PUBLIC_API_ORIGIN}${requestPath}\`, {`,
-        '  headers: {',
-        '    "x-api-key": API_KEY,',
-        '    "accept": "application/json",',
-        '  },',
-        '});',
-        '',
-        'const { allocation, variants, meta } = await response.json();',
-        '',
-        '// The plan: how to split the order across variants right now.',
-        'if (allocation) {',
-        '  for (const leg of allocation.legs) {',
-        '    console.log(leg.symbol, `$${leg.amountUsd}`, leg.provider, leg.expectedOut?.amount);',
-        '  }',
-        '  const edge = allocation.edge.vsBestSingleVariant;',
-        '  if (edge) console.log(`beats all-in ${edge.baselineSymbol} by ${edge.bps}bps (+$${edge.usd})`);',
-        '}',
-        '',
-        '// The evidence: every variant, every probed size, both routers.',
-        'console.log(variants.length, "variants quoted,", meta.upstreamQuotes, "upstream quotes");',
-        '',
-    ].join('\n');
+function composeRequest(requestPath: string): { path: string; params: ComposedParam[] } {
+    const [path, query = ''] = requestPath.split('?');
+    const grouped = new Map<string, string[]>();
+    for (const [key, value] of new URLSearchParams(query)) {
+        grouped.set(key, [...(grouped.get(key) ?? []), value]);
+    }
+    return {
+        path: path!,
+        params: [...grouped].map(([key, values]) => ({ key, values, doc: PARAM_DOCS[key] })),
+    };
 }
 
-/** Shows the exact request this page is making (path from the fetch's own builder). */
+/** The endpoint this page is calling, broken into its parts, plus the raw response. */
 export function EndpointRequestPanel({
-    snippet,
+    requestPath,
     responseJson,
     isPending,
     isError,
     lastRequest,
 }: {
-    snippet: string;
+    /** Path + query exactly as the page's own fetch builds it. */
+    requestPath: string;
     /** The last response body, or null before the first request. */
     responseJson: unknown;
     isPending: boolean;
     isError: boolean;
     lastRequest: EndpointRequestState | null;
 }) {
-    const [activeTab, setActiveTab] = React.useState('code');
+    const [activeTab, setActiveTab] = React.useState('endpoint');
+    const { path, params } = React.useMemo(() => composeRequest(requestPath), [requestPath]);
 
     const statusLabel = isPending
         ? 'Running…'
@@ -108,7 +84,7 @@ export function EndpointRequestPanel({
     }, [responseJson]);
 
     return (
-        <section className="rounded-[24px] border border-border-medium bg-white p-4 shadow-[0_8px_40px_rgba(0,0,0,0.03)]">
+        <section>
             <div className="mb-3">
                 <h2 className="text-title-sm text-text-extra-high">The request</h2>
                 <p className="mt-0.5 text-[11px] text-text-extra-low">
@@ -120,7 +96,7 @@ export function EndpointRequestPanel({
             <Tabs size="md" bordered={false} fullWidth value={activeTab} onValueChange={setActiveTab}>
                 <div className="mb-3 flex items-center justify-between gap-2">
                     <TabList className="w-max">
-                        <Tab value="code">Code</Tab>
+                        <Tab value="endpoint">Endpoint</Tab>
                         <Tab value="response">Response</Tab>
                     </TabList>
                     <div className="flex shrink-0 items-center gap-1.5">
@@ -135,14 +111,85 @@ export function EndpointRequestPanel({
                     </div>
                 </div>
 
-                <TabPanel value="code" className="pt-0">
-                    <CodeBlock
-                        ariaLabel="Evaluation request code"
-                        code={snippet}
-                        language="javascript"
-                        maxHeight={CODE_MAX_HEIGHT_PX}
-                        className={CODE_BLOCK_CLASS_NAME}
-                    />
+                <TabPanel value="endpoint" className="pt-0">
+                    <div className="space-y-4">
+                        <div>
+                            <div className="flex flex-wrap items-baseline gap-2">
+                                <span className="rounded bg-gray-1400 px-1.5 py-0.5 font-mono text-[10px] font-semibold text-white">
+                                    GET
+                                </span>
+                                <code className="break-all font-mono text-[12px] text-text-extra-high">{path}</code>
+                            </div>
+                            <p className="mt-1.5 break-all font-mono text-[11px] leading-5 text-text-low">
+                                <span className="text-text-extra-low">{PUBLIC_API_ORIGIN}</span>
+                                {path}
+                                {params.length > 0 ? (
+                                    <>
+                                        <span className="text-text-extra-low">?</span>
+                                        {params.flatMap((param, index) =>
+                                            param.values.map((value, valueIndex) => (
+                                                <React.Fragment key={`${param.key}-${valueIndex}`}>
+                                                    {index + valueIndex > 0 ? (
+                                                        <span className="text-text-extra-low">&amp;</span>
+                                                    ) : null}
+                                                    <span className="text-text-medium">{param.key}</span>
+                                                    <span className="text-text-extra-low">=</span>
+                                                    <span className="text-text-extra-high">{value}</span>
+                                                </React.Fragment>
+                                            )),
+                                        )}
+                                    </>
+                                ) : null}
+                            </p>
+                        </div>
+
+                        {params.length > 0 ? (
+                            <dl className="divide-y divide-border-extra-light border-y border-border-extra-light">
+                                {params.map(param => (
+                                    <div key={param.key} className="grid grid-cols-[minmax(0,7rem)_1fr] gap-3 py-2">
+                                        <dt className="font-mono text-[11px] text-text-high">{param.key}</dt>
+                                        <dd className="min-w-0">
+                                            <div className="flex flex-wrap gap-1">
+                                                {param.values.map((value, index) => (
+                                                    <code
+                                                        key={index}
+                                                        className="rounded bg-gray-100 px-1.5 py-0.5 font-mono text-[11px] text-text-extra-high tabular-nums"
+                                                    >
+                                                        {value}
+                                                    </code>
+                                                ))}
+                                                {param.values.length > 1 ? (
+                                                    <span className="self-center text-[10px] text-text-extra-low">
+                                                        repeated {param.values.length}×
+                                                    </span>
+                                                ) : null}
+                                            </div>
+                                            {param.doc ? (
+                                                <p className="mt-1 text-[11px] leading-4 text-text-low">{param.doc}</p>
+                                            ) : null}
+                                        </dd>
+                                    </div>
+                                ))}
+                            </dl>
+                        ) : null}
+
+                        <div>
+                            <p className="mb-1.5 text-[10px] font-medium uppercase tracking-[0.08em] text-text-extra-low">
+                                Headers
+                            </p>
+                            <dl className="space-y-1">
+                                {[
+                                    ['x-api-key', '<YOUR_API_KEY>'],
+                                    ['accept', 'application/json'],
+                                ].map(([key, value]) => (
+                                    <div key={key} className="flex flex-wrap items-baseline gap-2">
+                                        <dt className="font-mono text-[11px] text-text-high">{key}</dt>
+                                        <dd className="font-mono text-[11px] text-text-low">{value}</dd>
+                                    </div>
+                                ))}
+                            </dl>
+                        </div>
+                    </div>
                 </TabPanel>
                 <TabPanel value="response" className="pt-0">
                     <CodeBlock
