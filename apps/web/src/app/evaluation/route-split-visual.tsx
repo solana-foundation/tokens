@@ -9,6 +9,7 @@ import { usePrimaryVariantColors } from '../assets-api/demos/use-primary-variant
 import type { ExecutionRouteResponse } from '@/hooks/queries/use-execution-route';
 import { formatExecutionRouterLabel } from '@/lib/execution-quote-format';
 import { getMintLogoOverride, getTokenLogoURLWithSecondarySymbol } from '@/lib/logo-overrides';
+import { normalizeLogoSrc } from '@/lib/normalize-logo-src';
 
 const STACK_EASE = [0.32, 0.72, 0, 1] as const;
 const STACK_TRANSITION = { duration: 0.24, ease: STACK_EASE };
@@ -38,6 +39,8 @@ interface SplitModel {
     assetName: string;
     assetSymbol: string;
     assetLogoUrl: string;
+    /** Local canonical mark, used when the API image fails to load. */
+    assetFallbackLogoUrl: string;
     totalLabel: string;
     targetLabel: string;
     legs: SplitLeg[];
@@ -70,9 +73,14 @@ function buildSplitModel(args: {
         // no override, the distinctive remote logo leads (legs must be
         // tellable apart) and a symbol-level local mark backs it up, then a
         // letter avatar.
-        const remoteLogo = args.logoByMint.get(leg.mint) ?? '';
-        const mintOverride = getMintLogoOverride(leg.mint) ?? '';
-        const symbolFallback = getTokenLogoURLWithSecondarySymbol(leg.symbol, args.asset?.symbol, undefined) ?? '';
+        // The API absolutizes its own /logos/* against a loopback origin in
+        // dev, which the browser cannot render — normalizeLogoSrc rewrites
+        // those to same-origin paths.
+        const remoteLogo = normalizeLogoSrc(args.logoByMint.get(leg.mint) ?? '');
+        const mintOverride = normalizeLogoSrc(getMintLogoOverride(leg.mint) ?? '');
+        const symbolFallback = normalizeLogoSrc(
+            getTokenLogoURLWithSecondarySymbol(leg.symbol, args.asset?.symbol, undefined) ?? '',
+        );
         const primaryLogo = mintOverride || remoteLogo || symbolFallback;
         const fallbackLogo = mintOverride ? remoteLogo : symbolFallback;
         return {
@@ -105,7 +113,10 @@ function buildSplitModel(args: {
         assetName: args.asset?.name ?? args.data.assetId,
         assetSymbol: args.asset?.symbol ?? args.data.assetId,
         // The canonical card shows the asset's own image from the API return.
-        assetLogoUrl: args.asset?.logoUrl ?? '',
+        assetLogoUrl: normalizeLogoSrc(args.asset?.logoUrl ?? ''),
+        assetFallbackLogoUrl: normalizeLogoSrc(
+            getTokenLogoURLWithSecondarySymbol(args.asset?.symbol, undefined, undefined) ?? '',
+        ),
         totalLabel: allocation.totalExpectedOut
             ? `${Number(allocation.totalExpectedOut.amount).toLocaleString('en-US', { maximumFractionDigits: 6 })} ${allocation.outputUnit.symbol}`
             : '—',
@@ -416,7 +427,12 @@ function CanonicalRow({
             aria-expanded={expanded}
         >
             <div className="flex translate-y-[-1px] items-center gap-3.5">
-                <AssetIcon key={model.assetLogoUrl} src={model.assetLogoUrl} symbol={model.assetSymbol} />
+                <AssetIcon
+                    key={`${model.assetLogoUrl}|${model.assetFallbackLogoUrl}`}
+                    src={model.assetLogoUrl}
+                    fallbackSrc={model.assetFallbackLogoUrl}
+                    symbol={model.assetSymbol}
+                />
                 <div className="min-w-0 flex-1">
                     <div className="truncate text-[15px] font-medium leading-6 text-white">{model.assetName}</div>
                     <div className="mt-1.5 w-2/3">
@@ -475,14 +491,17 @@ function LegRow({ leg, contentOpacity }: { leg: SplitLeg; contentOpacity: number
     );
 }
 
-function AssetIcon({ src, symbol }: { src: string; symbol: string }) {
-    const [failed, setFailed] = React.useState(false);
-    if (src && !failed) {
+function AssetIcon({ src, fallbackSrc, symbol }: { src: string; fallbackSrc: string; symbol: string }) {
+    const candidates = [...new Set([src, fallbackSrc].filter(Boolean))];
+    const [candidateIndex, setCandidateIndex] = React.useState(0);
+    const activeSrc = candidates[candidateIndex];
+    if (activeSrc) {
         return (
             <img
-                src={src}
+                key={activeSrc}
+                src={activeSrc}
                 alt=""
-                onError={() => setFailed(true)}
+                onError={() => setCandidateIndex(index => index + 1)}
                 className="size-[42px] shrink-0 rounded-[14px] border-2 border-black/90 bg-white object-cover"
             />
         );
