@@ -6,8 +6,10 @@ import {
     ALLOCATOR_TUNING,
     computeAllocation,
     computeAllocationEdge,
+    gradeBlendedImpact,
     isUsMarketOpen,
     resolveTuningProfile,
+    shareConfidenceOf,
     type AllocatableVariant,
 } from './allocation';
 
@@ -339,5 +341,124 @@ describe('tuning profiles (P2)', () => {
             tuning: ALLOCATOR_TUNING.commodity,
         })!;
         expect(asCommodity.ejected).toEqual([]);
+    });
+});
+
+describe('shareConfidenceOf (measured curve shapes)', () => {
+    // The exact rungs observed across 5 identical bitcoin $1M pings 20s apart.
+    const CBBTC = [
+        { sizeUsd: 8_000, impactBps: 0 },
+        { sizeUsd: 40_000, impactBps: 1.08 },
+        { sizeUsd: 200_000, impactBps: 2.41 },
+        { sizeUsd: 1_000_000, impactBps: 55.04 },
+    ];
+    const WBTC_CALM = [
+        { sizeUsd: 8_000, impactBps: 0 },
+        { sizeUsd: 40_000, impactBps: 1.01 },
+        { sizeUsd: 200_000, impactBps: 3.29 },
+        { sizeUsd: 1_000_000, impactBps: 65.96 },
+    ];
+    // Ping 3: the same variant's top rung blew out to 176bps — the shape that
+    // moved $240k between legs.
+    const WBTC_SPIKED = [
+        { sizeUsd: 8_000, impactBps: 0 },
+        { sizeUsd: 40_000, impactBps: 1.26 },
+        { sizeUsd: 200_000, impactBps: 3.68 },
+        { sizeUsd: 1_000_000, impactBps: 176.34 },
+    ];
+
+    it('separates the spiked ping from the calm ones at the same leg size', () => {
+        // Ping 3 put a $400k leg at ~90bps of local impact; the calm pings put
+        // the same size near ~30bps. That absolute difference is the signal.
+        expect(shareConfidenceOf({ points: WBTC_SPIKED, legUsd: 400_000 })).toBe('soft');
+        expect(shareConfidenceOf({ points: WBTC_CALM, legUsd: 400_000 })).toBe('firm');
+        expect(shareConfidenceOf({ points: CBBTC, legUsd: 400_000 })).toBe('firm');
+    });
+
+    it('is firm in the shallow region even on a variant that spikes later', () => {
+        // A $20k leg is decided long before the volatile region.
+        expect(shareConfidenceOf({ points: WBTC_SPIKED, legUsd: 20_000 })).toBe('firm');
+    });
+
+    it('calls a coverage-gapped variant soft regardless of curve shape', () => {
+        // The measured dominant driver: cbBTC lost two rungs to rate limiting
+        // and its whole $840k share moved to a sibling on the next ping.
+        expect(shareConfidenceOf({ points: CBBTC, legUsd: 400_000, depthUncertain: true })).toBe('soft');
+        expect(shareConfidenceOf({ points: CBBTC, legUsd: 400_000, depthUncertain: false })).toBe('firm');
+    });
+
+    it('marks a near-tie boundary soft and a cliff-protected leg firm', () => {
+        // The measured signature: two similar variants (marginals equalized by
+        // greedy) swap dollars every ping, while a variant whose curve cliffs
+        // right after its allocation holds the same size every time.
+        const twinA = variant(
+            'A',
+            1,
+            pointsFor({ sizes: LADDER, baseOutPerDollar: 0.001, impactBpsAt: s => s / 20_000 }),
+        );
+        const twinB = variant(
+            'B',
+            2,
+            pointsFor({ sizes: LADDER, baseOutPerDollar: 0.001, impactBpsAt: s => s / 20_000 }),
+        );
+        const cliff = variant(
+            'C',
+            3,
+            pointsFor({
+                sizes: LADDER,
+                baseOutPerDollar: 0.001,
+                impactBpsAt: s => (s <= 40_000 ? 0.7 : 8_000),
+            }),
+        );
+        const result = computeAllocation({ targetUsd: 1_000_000, variants: [twinA, twinB, cliff] })!;
+        const bySymbol = new Map(result.legs.map(leg => [leg.symbol, leg]));
+        // Identical twins compete at an arbitrary boundary.
+        expect(bySymbol.get('A')?.shareConfidence).toBe('soft');
+        expect(bySymbol.get('B')?.shareConfidence).toBe('soft');
+        // A cliff leaves a wide marginal gap, so its size is not a near-tie.
+        const cliffLeg = bySymbol.get('C');
+        if (cliffLeg) expect(cliffLeg.shareConfidence).toBe('firm');
+    });
+
+    it('is firm with no curve to judge', () => {
+        expect(shareConfidenceOf({ points: [], legUsd: 1_000 })).toBe('firm');
+        expect(shareConfidenceOf({ points: [{ sizeUsd: 1_000, impactBps: 0 }], legUsd: 1_000 })).toBe('firm');
+    });
+
+    it('flags a leg sized inside a cliff', () => {
+        const flatThenCliff = [
+            { sizeUsd: 8_000, impactBps: 0 },
+            { sizeUsd: 40_000, impactBps: 0 },
+            { sizeUsd: 200_000, impactBps: 900 },
+        ];
+        expect(shareConfidenceOf({ points: flatThenCliff, legUsd: 150_000 })).toBe('soft');
+    });
+
+    it('propagates confidence onto engine legs', () => {
+        const spiky = variant(
+            'S',
+            1,
+            pointsFor({
+                sizes: LADDER,
+                baseOutPerDollar: 0.001,
+                impactBpsAt: s => (s >= 1_000_000 ? 900 : s / 20_000),
+            }),
+        );
+        const calm = variant('C', 2, pointsFor({ sizes: LADDER, baseOutPerDollar: 0.00099, impactBpsAt: () => 5 }));
+        const result = computeAllocation({ targetUsd: 1_000_000, variants: [spiky, calm] })!;
+        for (const leg of result.legs) {
+            expect(['firm', 'soft']).toContain(leg.shareConfidence);
+        }
+    });
+});
+
+describe('gradeBlendedImpact', () => {
+    it('maps the standard bands', () => {
+        expect(gradeBlendedImpact(4.27)).toBe('excellent');
+        expect(gradeBlendedImpact(11.26)).toBe('good');
+        // The observed ethereum $5M case: past fair, previously unflagged.
+        expect(gradeBlendedImpact(174.68)).toBe('poor');
+        expect(gradeBlendedImpact(5_949)).toBe('avoid');
+        expect(gradeBlendedImpact(Number.NaN)).toBe('avoid');
     });
 });

@@ -114,12 +114,23 @@ function checkExpectations(entry: PanelEntry, body: Json): string[] {
     }
 
     // --- Universal invariants ---
+    // The response must never contradict the probes it spent.
+    if (meta.selectedVariants !== variants.length) {
+        fail(`meta.selectedVariants ${String(meta.selectedVariants)} != variants.length ${variants.length}`);
+    }
+    if (status === 'no_eligible_variants' && variants.length > 0) {
+        const anyParity = variants.some(variant => variant.parityBasis !== 'none');
+        if (anyParity) {
+            fail('no_eligible_variants despite parity variants being probed (expected insufficient_quotes)');
+        }
+    }
     if (allocation) {
         const legs = (allocation.legs as Json[]) ?? [];
         const legSum = legs.reduce((sum, leg) => sum + Number(leg.amountUsd), 0);
         const target = Number(allocation.targetUsd);
         const unallocated = Number(allocation.unallocatedUsd);
-        if (legSum + unallocated !== target) fail(`legs (${legSum}) + unallocated (${unallocated}) != target (${target})`);
+        if (legSum + unallocated !== target)
+            fail(`legs (${legSum}) + unallocated (${unallocated}) != target (${target})`);
 
         // E: no dust legs unless cap-bound.
         const floorUsd = Math.ceil(target / 100);
@@ -142,8 +153,7 @@ function checkExpectations(entry: PanelEntry, body: Json): string[] {
         // starting a loop.
         for (const leg of legs) {
             const delta = get(leg, 'verification.deltaBps') as number | null;
-            const disclosed =
-                allocation.repaired === true || warnings.includes(`collapse_unrepairable:${leg.mint}`);
+            const disclosed = allocation.repaired === true || warnings.includes(`collapse_unrepairable:${leg.mint}`);
             if (delta !== null && delta < collapseBps && !disclosed) {
                 fail(`leg ${leg.symbol} collapsed ${delta}bps with no repair and no unrepairable disclosure`);
             }
@@ -183,13 +193,28 @@ function checkExpectations(entry: PanelEntry, body: Json): string[] {
         if (peg !== null && peg > 2 * parityGateBps) {
             fail(`surviving pegSpreadBps ${peg} exceeds 2x the published ${parityGateBps}bps median gate`);
         }
+        // #1: share stability must agree with the legs and its warning.
+        const stability = allocation.shareStability as string | undefined;
+        const legConfidences = legs.map(leg => leg.shareConfidence as string);
+        if (!stability || !['firm', 'mixed', 'soft'].includes(stability)) {
+            fail(`shareStability missing or invalid: ${String(stability)}`);
+        } else {
+            const softCount = legConfidences.filter(c => c === 'soft').length;
+            const expected = softCount === 0 ? 'firm' : softCount === legs.length ? 'soft' : 'mixed';
+            if (stability !== expected) fail(`shareStability ${stability} disagrees with legs (${expected})`);
+            if ((stability !== 'firm') !== warnings.includes('shares_may_move')) {
+                fail(`shares_may_move warning disagrees with shareStability ${stability}`);
+            }
+        }
         // #3: every plan declares its blended impact, and extreme values warn.
         const blended = allocation.blendedImpactBps as number | null | undefined;
         if (blended === undefined) {
             fail('allocation missing blendedImpactBps');
-        } else if (blended !== null && (blended > 500) !== warnings.includes('extreme_impact')) {
-            fail(`extreme_impact warning disagrees with blendedImpactBps ${blended}`);
+        } else if (blended !== null && blended > 150 !== warnings.includes('extreme_impact')) {
+            fail(`extreme_impact warning disagrees with blendedImpactBps ${blended} (gate: >150bps = poor)`);
         }
+        const grade = allocation.blendedImpactGrade as string | null | undefined;
+        if (blended !== null && grade === undefined) fail('allocation missing blendedImpactGrade');
     }
 
     // --- Per-asset expectations ---
@@ -266,17 +291,120 @@ function checkExpectations(entry: PanelEntry, body: Json): string[] {
     return violations;
 }
 
-function parseArgs(): { mode: 'baseline' | 'check'; outDir: string } {
+type SweepMode = 'baseline' | 'check' | 'stability';
+
+interface SweepArgs {
+    mode: SweepMode;
+    outDir: string;
+    /** stability mode: how many times to repeat the same request. */
+    pings: number;
+    gapSeconds: number;
+    assetId: string;
+    amountUsd: number;
+}
+
+function parseArgs(): SweepArgs {
     const args = process.argv.slice(2);
-    const modeIndex = args.indexOf('--mode');
-    const mode = modeIndex >= 0 ? args[modeIndex + 1] : 'baseline';
-    if (mode !== 'baseline' && mode !== 'check') {
-        console.error(`Unknown --mode ${mode}; expected baseline or check`);
+    const flag = (name: string): string | undefined => {
+        const index = args.indexOf(name);
+        return index >= 0 ? args[index + 1] : undefined;
+    };
+    const mode = (flag('--mode') ?? 'baseline') as SweepMode;
+    if (mode !== 'baseline' && mode !== 'check' && mode !== 'stability') {
+        console.error(`Unknown --mode ${mode}; expected baseline, check, or stability`);
         process.exit(2);
     }
-    const outIndex = args.indexOf('--out');
-    const outDir = outIndex >= 0 ? args[outIndex + 1]! : `/tmp/route-sweep-${mode}`;
-    return { mode, outDir };
+    return {
+        mode,
+        outDir: flag('--out') ?? `/tmp/route-sweep-${mode}`,
+        pings: Number(flag('--pings') ?? 5),
+        gapSeconds: Number(flag('--gap-seconds') ?? 20),
+        assetId: flag('--asset') ?? 'bitcoin',
+        amountUsd: Number(flag('--amount') ?? 1_000_000),
+    };
+}
+
+function stats(values: number[]): { mean: number; stdev: number; min: number; max: number } {
+    const mean = values.reduce((sum, value) => sum + value, 0) / values.length;
+    const variance = values.reduce((sum, value) => sum + (value - mean) ** 2, 0) / Math.max(1, values.length - 1);
+    return { mean, stdev: Math.sqrt(variance), min: Math.min(...values), max: Math.max(...values) };
+}
+
+/**
+ * Repeat one request N times and report how much the plan moves. Built for the
+ * question "are the leg shares stable across pings?" — the answer measured on
+ * bitcoin $1M was no (±$92k stdev) while the totals held within 5.7bps.
+ */
+async function runStability(baseUrl: string, apiKey: string, args: SweepArgs, outDir: string): Promise<void> {
+    const url = `${baseUrl}/api/v2/execution/route?assetId=${args.assetId}&amountUsd=${args.amountUsd}`;
+    const shares = new Map<string, number[]>();
+    const edges: number[] = [];
+    const blended: number[] = [];
+    const deltas: number[] = [];
+    const stabilityLabels: string[] = [];
+
+    console.log(
+        `\nstability: ${args.assetId} @ $${args.amountUsd.toLocaleString('en-US')} x${args.pings} pings, ${args.gapSeconds}s apart\n`,
+    );
+    for (let ping = 1; ping <= args.pings; ping += 1) {
+        const response = await fetch(url, { headers: { 'x-api-key': apiKey, accept: 'application/json' } });
+        const body = (await response.json()) as Json;
+        writeFileSync(join(outDir, `ping-${ping}.json`), JSON.stringify(body, null, 2));
+        const allocation = (body.allocation as Json | null) ?? null;
+        if (!response.ok || !allocation) {
+            console.log(`  ping ${ping}: ${response.status} ${String(body.allocationStatus ?? '')}`);
+        } else {
+            const legs = (allocation.legs as Json[]) ?? [];
+            for (const leg of legs) {
+                const list = shares.get(leg.symbol as string) ?? [];
+                list.push(Number(leg.amountUsd));
+                shares.set(leg.symbol as string, list);
+            }
+            const edge = get(allocation, 'edge.vsBestSingleVariant.bps') as number | undefined;
+            if (typeof edge === 'number') edges.push(edge);
+            if (typeof allocation.blendedImpactBps === 'number') blended.push(allocation.blendedImpactBps);
+            for (const leg of legs) {
+                const delta = get(leg, 'verification.deltaBps') as number | null;
+                if (typeof delta === 'number') deltas.push(delta);
+            }
+            stabilityLabels.push(String(allocation.shareStability ?? '?'));
+            const summary = legs
+                .map(
+                    leg =>
+                        `${leg.symbol}:${Math.round(Number(leg.amountUsd) / 1000)}k(${String(leg.shareConfidence).charAt(0)})`,
+                )
+                .join(' / ');
+            console.log(
+                `  ping ${ping}: ${summary} | edge=${edge ?? 'null'}bps blended=${String(allocation.blendedImpactBps)} stability=${String(allocation.shareStability)}`,
+            );
+        }
+        if (ping < args.pings) await new Promise(resolve => setTimeout(resolve, args.gapSeconds * 1_000));
+    }
+
+    console.log('\n  per-leg share movement:');
+    for (const [symbol, values] of shares) {
+        const s = stats(values);
+        console.log(
+            `    ${symbol.padEnd(8)} n=${values.length} mean $${Math.round(s.mean / 1000)}k stdev $${Math.round(s.stdev / 1000)}k range $${Math.round((s.max - s.min) / 1000)}k`,
+        );
+    }
+    if (edges.length > 1) {
+        const s = stats(edges);
+        console.log(`  edge   : mean ${s.mean.toFixed(2)}bps stdev ${s.stdev.toFixed(2)} range ${s.min}-${s.max}`);
+    }
+    if (blended.length > 1) {
+        const s = stats(blended);
+        console.log(`  blended: mean ${s.mean.toFixed(2)}bps stdev ${s.stdev.toFixed(2)} range ${s.min}-${s.max}`);
+    }
+    if (deltas.length > 0) {
+        const s = stats(deltas);
+        const negatives = deltas.filter(value => value < 0);
+        console.log(
+            `  verify deltas: n=${deltas.length} mean ${s.mean.toFixed(2)}bps stdev ${s.stdev.toFixed(2)} min ${s.min} max ${s.max} negatives=${negatives.length}`,
+        );
+    }
+    console.log(`  stability labels: ${stabilityLabels.join(', ')}`);
+    console.log(`\nresponses saved to ${outDir}`);
 }
 
 async function main(): Promise<void> {
@@ -286,8 +414,14 @@ async function main(): Promise<void> {
         console.error('API_BASE_URL and API_KEY are required');
         process.exit(2);
     }
-    const { mode, outDir } = parseArgs();
+    const parsed = parseArgs();
+    const { mode, outDir } = parsed;
     mkdirSync(outDir, { recursive: true });
+
+    if (mode === 'stability') {
+        await runStability(baseUrl, apiKey, parsed, outDir);
+        return;
+    }
 
     const rows: SweepRow[] = [];
     const allViolations: string[] = [];

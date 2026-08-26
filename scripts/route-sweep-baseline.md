@@ -79,3 +79,37 @@ two survivors on opposite sides of the median); `allocation.blendedImpactBps`
 + `extreme_impact` warning for catastrophic-but-optimal plans (the HOOD case);
 per-rung failure `reason` distinguishing "no route" from "quotes failed —
 depth unknown". Live bitcoin: blended impact 12.11bps, no warning — correct.
+
+## Stability findings (2026-08-26) — the multi-ping question
+
+`--mode stability` measures the same request repeated. Bitcoin $1M x5, 20s apart:
+
+| Ping | cbBTC | WBTC | xBTC | edge | blended |
+|---|---|---|---|---|---|
+| 1 | $500k | $440k | $60k | 48.21bps | 11.26 |
+| 2 | $620k | $320k | $60k | 38.91bps | 14.29 |
+| 3 | $740k | $200k | $60k | 34.45bps | 24.90 |
+| 4 | $580k | $360k | $60k | 44.27bps | 13.07 |
+| 5 | $540k | $400k | $60k | 46.43bps | 10.46 |
+
+Shares swing ±$92k stdev / $240k peak-to-peak; the **total holds within
+5.7bps** and all 15 verify deltas were positive (mean +19.5). So: totals firm,
+shares soft — now stated by the API rather than left for the caller to
+discover.
+
+**Three mechanisms, found in this order:**
+1. *Curve steepness* — WBTC's $1M rung swinging 66→176bps. Real, but a slope
+   RATIO cannot detect it: every BTC variant's top segment is 27–71x steeper
+   than its prior segment (convexity is universal there). Absolute local
+   impact works.
+2. *Coverage gaps* — a run where cbBTC lost two rungs to rate limiting handed
+   its entire $840k share to WBTC. Detected from the rung `reason` field.
+3. **Marginal near-ties — the dominant, structural one.** Greedy equalizes
+   marginal output across legs at the optimum, so any interior split has
+   near-equal competing marginals *by construction* and ordinary quote noise
+   moves the boundary. Signature in the data: cbBTC/WBTC (interior) swapped
+   $220–240k every ping, while xBTC held exactly $60k because its curve cliffs
+   right after that size, leaving a marginal gap noise cannot cross.
+
+All three feed `shareConfidence` / `shareStability`; the third is why most
+multi-leg plans correctly report `soft`.

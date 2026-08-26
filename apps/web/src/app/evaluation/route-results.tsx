@@ -111,6 +111,15 @@ function AllocationLegsTable({ data }: { data: ExecutionRouteResponse }) {
                             </td>
                             <td className="px-3 py-2.5 text-right text-[13px] text-text-high tabular-nums">
                                 ${Number(leg.amountUsd).toLocaleString('en-US')}
+                                {leg.shareConfidence === 'soft' ? (
+                                    <Tooltip
+                                        content="This size was decided in a steep part of the curve — it may move on a re-ask. The leg's expected output is still a verified quote."
+                                        side="top"
+                                        align="end"
+                                    >
+                                        <span className="ml-1 cursor-help text-[10px] text-amber-700">~</span>
+                                    </Tooltip>
+                                ) : null}
                             </td>
                             <td className="px-3 py-2.5 text-right text-[12px] text-text-medium tabular-nums">
                                 {(leg.shareOfTarget * 100).toFixed(1)}%

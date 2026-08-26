@@ -25,6 +25,7 @@ import {
     type AllocationBaseline,
     type AllocationEngineLeg,
     type AllocationEngineResult,
+    gradeBlendedImpact,
     resolveTuningProfile,
 } from './allocation';
 import { buildVariantCurve, type VariantCurve } from './curve';
@@ -339,14 +340,30 @@ export const GET = route(
                     decimals: variant.decimals,
                     rank: variant.rank,
                     points: curveByMint.get(variant.mint)?.points ?? [],
+                    // A rung lost to a quote error (not a real no-route) means
+                    // this variant's proven depth understates the market, and
+                    // a retry could reshape the split.
+                    depthUncertain: variant.curve.rungs.some(
+                        rung => rung.impactBps === null && rung.reason !== null && rung.reason !== 'no_route',
+                    ),
                 }));
 
+            // Status must distinguish "this asset cannot be routed" from "the
+            // quotes failed, try again" — a variant with unit parity but no
+            // usable curve is the SECOND case, and conflating them told
+            // callers an asset was unroutable when the rungs had merely been
+            // rate-limited.
+            const parityCandidates = variants.filter(variant => variant.parityBasis !== 'none');
             let allocationStatus: AllocationStatus;
             let engine: AllocationEngineResult | null = null;
             if (!allocate) {
                 allocationStatus = 'not_requested';
-            } else if (pool.length === 0) {
+            } else if (parityCandidates.length === 0) {
+                // No variant could ever be summed with its siblings.
                 allocationStatus = 'no_eligible_variants';
+            } else if (pool.length === 0) {
+                // Parity existed, but nothing quoted a usable curve.
+                allocationStatus = 'insufficient_quotes';
             } else {
                 engine = computeAllocation({ targetUsd, variants: pool, tuning });
                 allocationStatus = engine && engine.legs.length > 0 ? 'ok' : 'insufficient_quotes';
@@ -480,6 +497,7 @@ export const GET = route(
                             effectivePrice: verified.best.effectivePrice,
                             impactBps: leg.impactBps,
                             router: verified.best.router,
+                            shareConfidence: leg.shareConfidence,
                             verification: {
                                 status: 'verified' as const,
                                 deltaBps: delta === null ? null : Math.round(delta * 100) / 100,
@@ -506,6 +524,7 @@ export const GET = route(
                         effectivePrice: null,
                         impactBps: leg.impactBps,
                         router: null,
+                        shareConfidence: leg.shareConfidence,
                         verification: {
                             status: 'interpolated' as const,
                             deltaBps: null,
@@ -697,6 +716,9 @@ export const GET = route(
                                     effectivePrice: baselineRow.best.effectivePrice,
                                     impactBps: targetRung?.impactBps ?? null,
                                     router: baselineRow.best.router,
+                                    // An exact full-target quote: nothing was
+                                    // sized by a marginal decision.
+                                    shareConfidence: 'firm' as const,
                                     verification: {
                                         status: 'verified' as const,
                                         deltaBps: null,
@@ -734,9 +756,23 @@ export const GET = route(
                         const ratio = (finalTotalOutUnitsRaw * 1_000_000n) / baselineUnitsRaw;
                         const impact = Number(1_000_000n - ratio) / 100;
                         blendedImpactBps = impact > 0 ? Math.round(impact * 100) / 100 : 0;
-                        if (blendedImpactBps > 500) warnings.push('extreme_impact');
                     }
                 }
+                const blendedImpactGrade = blendedImpactBps === null ? null : gradeBlendedImpact(blendedImpactBps);
+                // Graded, not a single cliff: 'poor' (>150bps) is already
+                // worth saying out loud — the measured ethereum $5M case sat
+                // at 174bps and slipped past the old 500bps gate entirely.
+                if (blendedImpactGrade === 'poor' || blendedImpactGrade === 'avoid') {
+                    warnings.push('extreme_impact');
+                }
+
+                // Share stability: worst-of the legs. The total is firm; the
+                // sizes may move on a re-ask when a leg was decided in a steep
+                // region of its curve.
+                const softLegs = finalLegs.filter(leg => leg.shareConfidence === 'soft').length;
+                const shareStability: 'firm' | 'mixed' | 'soft' =
+                    softLegs === 0 ? 'firm' : softLegs === finalLegs.length ? 'soft' : 'mixed';
+                if (shareStability !== 'firm') warnings.push('shares_may_move');
 
                 const edgeFrom = (baseline: AllocationBaseline | null) => {
                     if (!baseline) return null;
@@ -786,6 +822,8 @@ export const GET = route(
                     },
                     pegSpreadBps: activeEngine.pegSpreadBps,
                     blendedImpactBps,
+                    blendedImpactGrade,
+                    shareStability,
                     legIndependence,
                 };
             }

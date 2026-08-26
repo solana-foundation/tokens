@@ -475,10 +475,21 @@ apart are noise, not an edge.
   risk. Spreads above 50bps add a `peg_divergence` warning.
 - Outputs compare **net receipts**: Jupiter Ultra's `outAmount` is net of its
   disclosed fee, so a router can have the better gross route and still lose.
-- `allocation.blendedImpactBps` — whole-plan impact: the plan's expected total
-  vs what the same dollars would buy at each leg variant's own baseline price.
-  Above ~500bps the `extreme_impact` warning fires: even the best available
-  split absorbs severe impact and the size may simply not fit the asset yet.
+- `allocation.blendedImpactBps` / `blendedImpactGrade` — whole-plan impact: the
+  plan's expected total vs what the same dollars would buy at each leg
+  variant's own baseline price, graded on the standard bands (≤10 excellent,
+  ≤50 good, ≤150 fair, ≤500 poor, else avoid). The `extreme_impact` warning
+  fires from `poor` upward: even the best available split is absorbing serious
+  impact and a smaller order would fill materially better.
+- **Totals are firm; leg sizes are guidance.** `allocation.shareStability`
+  ('firm' | 'mixed' | 'soft', with per-leg `shareConfidence`) reports whether
+  the split rests on stable parts of the variants' curves. Measured: five
+  identical bitcoin $1M requests 20 seconds apart moved **$240k** between two
+  legs (±$92k stdev) while the plan total stayed within 5.7bps and every
+  verification delta was positive — one variant's top rung swung 66→176bps and
+  re-shaped the split. When `shareStability !== 'firm'` (warning
+  `shares_may_move`), re-request immediately before executing rather than
+  acting on sizes quoted minutes earlier.
 - When a collapsed leg has no alternative variant to move to, the repair pass
   cannot fire; the leg ships with its honest verification delta and a
   `collapse_unrepairable:<mint>` warning instead of silence.
@@ -543,4 +554,10 @@ comparison, but coverage and the restricted-requote upgrade both suffer.
 | `400` | Missing `assetId`; `side=sell`; target outside bounds; `maxVariants` outside 1–6; unknown `providers` value |
 | `403` | Key lacks `execution:read` |
 | `404` | Unknown `assetId` |
+
+`allocationStatus` distinguishes two failure modes deliberately:
+`no_eligible_variants` means nothing about this asset can be summed with its
+siblings (all derivative kinds, no unit parity) — a property of the asset;
+`insufficient_quotes` means parity variants were probed but no usable curve
+came back (no route at any rung, or upstream quote failures) — retry-able.
 | `429` | Rate limited |

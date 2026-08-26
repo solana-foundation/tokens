@@ -70,6 +70,78 @@ export const ALLOCATOR_TUNING: Record<string, TuningProfile> = {
  */
 export const MARKET_CLOSED_PARITY_MULTIPLIER = 2;
 
+/**
+ * Above this interpolated impact, the marginal dollar's fate is decided in a
+ * region where quotes move fast, so the leg's exact SIZE is guidance rather
+ * than a firm number.
+ *
+ * Measured motivation: across 5 identical bitcoin $1M requests 20s apart the
+ * cbBTC/WBTC split moved $240k peak-to-peak while the plan total stayed
+ * within 5.7bps. The driver was one probe point — WBTC's $1M rung swinging
+ * 66 → 176bps.
+ *
+ * Note on method: a slope RATIO cannot separate these cases. Measuring the
+ * observed curves, every BTC variant's top segment is 27–71x steeper than its
+ * prior segment (convexity is universal at the top rung), calm and spiked
+ * alike. Absolute steepness is what distinguishes them: the spiked ping put
+ * the leg at ~90bps of local impact where the calm pings sat near ~30bps.
+ */
+export const SHARE_SOFT_IMPACT_BPS = 60;
+
+/**
+ * How close two legs' next-dollar marginals must be for the boundary between
+ * them to count as a near-tie (fraction of the larger marginal).
+ *
+ * This is the dominant mechanism, and it is structural rather than a market
+ * accident: greedy allocation equalizes marginal output across legs at the
+ * optimum, so for any interior split the competing marginals are nearly equal
+ * BY CONSTRUCTION — and then ordinary quote noise moves the boundary. The
+ * measured signature: across repeated bitcoin $1M pings, cbBTC and WBTC (both
+ * interior, marginals equalized) swung $220-240k between them every time,
+ * while xBTC held exactly $60k because its curve cliffs immediately after
+ * that size, leaving a wide marginal gap that noise cannot cross.
+ */
+export const SHARE_MARGINAL_TIE_TOLERANCE = 0.02;
+
+export type ShareConfidence = 'firm' | 'soft';
+
+/**
+ * Is the marginal decision that sized this leg resting on a volatile part of
+ * the curve? Evaluates the variant's own interpolated impact at the leg size:
+ * deep in a steep region, a small change in the next probe moves the split a
+ * lot, so the share is soft. The plan TOTAL stays firm regardless, because
+ * verification re-quotes every leg at its final size.
+ */
+export function shareConfidenceOf(args: {
+    points: ReadonlyArray<{ sizeUsd: number; impactBps: number }>;
+    legUsd: number;
+    /** Any rung lost to a quote error/rate limit rather than a real no-route. */
+    depthUncertain?: boolean;
+    /** This leg's next-dollar marginal is within a hair of a rival leg's. */
+    marginalNearTie?: boolean;
+}): ShareConfidence {
+    // The two mechanisms actually observed moving shares between pings:
+    // an arbitrary boundary with a rival leg (marginals equalized at the
+    // optimum), and coverage gaps that understate a variant's proven depth.
+    if (args.marginalNearTie || args.depthUncertain) return 'soft';
+    if (args.points.length === 0) return 'firm';
+    // Residual: a leg deep in a steep region is sensitive even without a rival.
+    return impactAt(args.points, args.legUsd) > SHARE_SOFT_IMPACT_BPS ? 'soft' : 'firm';
+}
+
+export const BLENDED_IMPACT_GRADES = ['excellent', 'good', 'fair', 'poor', 'avoid'] as const;
+export type BlendedImpactGrade = (typeof BLENDED_IMPACT_GRADES)[number];
+
+/** Same bands the variant ranking uses, applied to whole-plan impact. */
+export function gradeBlendedImpact(blendedImpactBps: number): BlendedImpactGrade {
+    if (!Number.isFinite(blendedImpactBps)) return 'avoid';
+    if (blendedImpactBps <= 10) return 'excellent';
+    if (blendedImpactBps <= 50) return 'good';
+    if (blendedImpactBps <= 150) return 'fair';
+    if (blendedImpactBps <= 500) return 'poor';
+    return 'avoid';
+}
+
 /** NYSE regular session, 9:30–16:00 ET, Mon–Fri. Holidays deliberately ignored (conservative: treated as open). */
 export function isUsMarketOpen(now: Date): boolean {
     const parts = new Intl.DateTimeFormat('en-US', {
@@ -117,6 +189,13 @@ export interface AllocatableVariant {
     rank: number;
     /** Successful probe rungs, ascending by size (from buildVariantCurve). */
     points: CurvePoint[];
+    /**
+     * True when a rung failed for a reason other than 'no_route' (a quote
+     * error or rate limit), so this variant's proven depth is an artifact of
+     * coverage rather than the market. Measured: a run where cbBTC lost two
+     * rungs to rate limiting handed its entire $840k share to WBTC.
+     */
+    depthUncertain?: boolean;
 }
 
 export interface AllocationEngineLeg {
@@ -125,6 +204,8 @@ export interface AllocationEngineLeg {
     symbol: string;
     decimals: number;
     amountUsd: number;
+    /** Whether the marginal decision that sized this leg is on stable curve. */
+    shareConfidence: ShareConfidence;
     /** Interpolated expected output in the variant's own decimals. */
     expectedOutRaw: bigint;
     /** The same output normalized to outputUnitDecimals. */
@@ -409,6 +490,33 @@ export function computeAllocation(args: {
         // holds because the moved chunks were added to receivers.
     }
 
+    // Next-dollar marginal per leg: the quantity greedy equalizes. Legs whose
+    // marginals sit within a hair of each other share an arbitrary boundary.
+    const marginalPerDollar = (variant: PreparedVariant): number => {
+        const capacity = variant.capUsd - variant.allocatedUsd;
+        const step = Math.min(chunkUsd, Math.max(1, capacity));
+        if (capacity <= 0) return 0;
+        const delta = outputAt(variant, variant.allocatedUsd + step) - variant.outAtAllocated;
+        return delta <= 0n ? 0 : Number(delta) / step;
+    };
+    const allocated = pool.filter(variant => variant.allocatedUsd > 0);
+    const marginalByMint = new Map(allocated.map(variant => [variant.source.mint, marginalPerDollar(variant)]));
+    const nearTieMints = new Set<string>();
+    for (const variant of allocated) {
+        const own = marginalByMint.get(variant.source.mint) ?? 0;
+        if (own <= 0) continue;
+        for (const other of allocated) {
+            if (other === variant) continue;
+            const rival = marginalByMint.get(other.source.mint) ?? 0;
+            if (rival <= 0) continue;
+            const larger = Math.max(own, rival);
+            if (Math.abs(own - rival) / larger <= SHARE_MARGINAL_TIE_TOLERANCE) {
+                nearTieMints.add(variant.source.mint);
+                break;
+            }
+        }
+    }
+
     const legs: AllocationEngineLeg[] = pool
         .filter(variant => variant.allocatedUsd > 0)
         .sort((a, b) => b.allocatedUsd - a.allocatedUsd || a.source.rank - b.source.rank)
@@ -424,6 +532,12 @@ export function computeAllocation(args: {
                 symbol: variant.source.symbol,
                 decimals: variant.source.decimals,
                 amountUsd: variant.allocatedUsd,
+                shareConfidence: shareConfidenceOf({
+                    points: variant.impactPoints,
+                    legUsd: variant.allocatedUsd,
+                    depthUncertain: variant.source.depthUncertain,
+                    marginalNearTie: nearTieMints.has(variant.source.mint),
+                }),
                 expectedOutRaw: expectedOutUnitsRaw / scale,
                 expectedOutUnitsRaw,
                 impactBps: Math.round(impactAt(variant.impactPoints, variant.allocatedUsd) * 100) / 100,

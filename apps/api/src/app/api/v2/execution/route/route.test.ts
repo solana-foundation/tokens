@@ -775,6 +775,105 @@ describe('GET /api/v2/execution/route', () => {
         expect(body.meta.warnings).toContain('extreme_impact');
     });
 
+    it('reports insufficient_quotes (not no_eligible_variants) when curves fail', async () => {
+        // Parity variants were selected and probed; every rung failed. The
+        // observed usd@$2M bug reported no_eligible_variants here, telling
+        // callers the asset was unroutable when they should simply retry.
+        quoteResponder = (mint, amounts) => ({
+            providers: ['jupiter', 'titan'],
+            mint,
+            side: 'buy',
+            quoteMint: USDC,
+            entries: amounts.map(amount => ({
+                request: { unit: 'usd', amount, rawAmount: `${amount}000000` },
+                status: 'unavailable',
+                reason: 'error',
+                provider: null,
+                inAmountRaw: null,
+                outAmountRaw: null,
+                priceImpactPct: null,
+                route: [],
+                contextSlot: null,
+                router: null,
+                mode: null,
+                fees: null,
+                quotedAt: '2026-08-26T00:00:00.000Z',
+                candidates: [
+                    {
+                        provider: 'jupiter',
+                        status: 'unavailable',
+                        reason: 'error',
+                        inAmountRaw: null,
+                        outAmountRaw: null,
+                        priceImpactPct: null,
+                        route: [],
+                        contextSlot: null,
+                        router: null,
+                        mode: null,
+                        fees: null,
+                        quotedAt: '2026-08-26T00:00:00.000Z',
+                    },
+                ],
+            })),
+        });
+        const response = await request('/api/v2/execution/route?assetId=bitcoin&amountUsd=1000000');
+        expect(response.status).toBe(200);
+        const body = await response.json();
+        expect(body.allocationStatus).toBe('insufficient_quotes');
+        // The response must not contradict the probes it actually spent.
+        expect((body.variants as unknown[]).length).toBeGreaterThan(0);
+        expect(body.meta.selectedVariants).toBe((body.variants as unknown[]).length);
+        expect(body.allocation).toBeNull();
+    });
+
+    it('labels soft leg shares and grades blended impact', async () => {
+        const [primary, secondary] = BITCOIN_MINTS;
+        // Both curves are steep at size, so legs land above the soft
+        // threshold and blended impact grades past 'fair'.
+        const perDollar = (amountUsd: number): number =>
+            amountUsd <= 40_000 ? 1_000 : 1_000 - (200 * (amountUsd - 40_000)) / 960_000;
+        quoteResponder = (mint, amounts) => ({
+            providers: ['jupiter', 'titan'],
+            mint,
+            side: 'buy',
+            quoteMint: USDC,
+            entries: amounts.map(amount => {
+                const inRaw = `${amount}000000`;
+                const out = String(Math.round(Number(amount) * perDollar(Number(amount))));
+                const jupiter = availableCandidate('jupiter', inRaw, out);
+                return {
+                    request: { unit: 'usd', amount, rawAmount: inRaw },
+                    status: 'available',
+                    provider: 'jupiter',
+                    inAmountRaw: inRaw,
+                    outAmountRaw: out,
+                    priceImpactPct: 0.02,
+                    route: [],
+                    contextSlot: null,
+                    router: 'metis',
+                    mode: 'ultra',
+                    fees: null,
+                    quotedAt: jupiter.quotedAt,
+                    candidates: [jupiter],
+                };
+            }),
+        });
+        liquidMints = [primary!, secondary!];
+        const response = await request('/api/v2/execution/route?assetId=bitcoin&amountUsd=1000000');
+        const body = await response.json();
+        const allocation = body.allocation as {
+            legs: { shareConfidence: string }[];
+            shareStability: string;
+            blendedImpactGrade: string | null;
+        };
+        for (const leg of allocation.legs) expect(['firm', 'soft']).toContain(leg.shareConfidence);
+        expect(['firm', 'mixed', 'soft']).toContain(allocation.shareStability);
+        if (allocation.shareStability !== 'firm') {
+            expect(body.meta.warnings).toContain('shares_may_move');
+        }
+        expect(allocation.blendedImpactGrade).not.toBeNull();
+    });
+
     it('requires the execution:read scope', async () => {
         const response = await request('/api/v2/execution/route?assetId=bitcoin', ['assets:read']);
         expect(response.status).toBe(403);

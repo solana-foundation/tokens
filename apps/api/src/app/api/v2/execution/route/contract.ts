@@ -132,6 +132,15 @@ export interface AllocationLeg {
     impactBps: number | null;
     /** Provider-internal router that filled the verification quote (e.g. Jupiter's jupiterz RFQ). */
     router: string | null;
+    /**
+     * How much to trust this leg's SIZE. 'soft' means the marginal dollar was
+     * decided in a steep part of the variant's curve, where a small change in
+     * the next quote moves the split materially — measured: 5 identical
+     * bitcoin $1M requests 20s apart moved $240k between two legs. The plan's
+     * TOTAL stays firm either way, because every leg is re-quoted at its final
+     * size. Treat soft sizes as guidance and re-request before executing.
+     */
+    shareConfidence: 'firm' | 'soft';
     verification: AllocationLegVerification;
 }
 
@@ -207,6 +216,14 @@ export interface AllocationPlan {
      * absorbing severe impact — the size may not fit the asset yet.
      */
     blendedImpactBps: number | null;
+    /** blendedImpactBps against the standard bands: ≤10 excellent, ≤50 good, ≤150 fair, ≤500 poor, else avoid. */
+    blendedImpactGrade: 'excellent' | 'good' | 'fair' | 'poor' | 'avoid' | null;
+    /**
+     * Worst-of the legs' shareConfidence: 'firm' (all firm), 'soft' (all
+     * soft), or 'mixed'. Anything but 'firm' also raises the
+     * shares_may_move warning.
+     */
+    shareStability: 'firm' | 'mixed' | 'soft';
     /**
      * Are the legs actually additive? Legs are priced with independent
      * quotes, but a leg whose route hops THROUGH another leg's variant
