@@ -84,10 +84,26 @@ function buildSplitModel(args: {
     const unallocated = Number(allocation.unallocatedUsd);
     const variantByMint = new Map(args.data.variants.map(variant => [variant.mint, variant]));
 
+    // What the tokens received are actually worth right now, at each
+    // variant's own market price — distinct from the dollars put in.
+    const legValueUsd = new Map<string, number>();
+    for (const leg of allocation.legs) {
+        const price = variantByMint.get(leg.mint)?.market?.price ?? null;
+        const tokens = leg.expectedOut ? Number(leg.expectedOut.amount) : null;
+        if (price !== null && tokens !== null && Number.isFinite(price) && Number.isFinite(tokens)) {
+            legValueUsd.set(leg.mint, tokens * price);
+        }
+    }
+    const everyLegValued = allocation.legs.every(leg => legValueUsd.has(leg.mint));
+    const totalValueUsd = everyLegValued
+        ? allocation.legs.reduce((sum, leg) => sum + (legValueUsd.get(leg.mint) ?? 0), 0)
+        : null;
+
     const legs: SplitLeg[] = allocation.legs.map(leg => {
         const variant = variantByMint.get(leg.mint);
         const provider = leg.provider === 'titan' ? 'Titan' : leg.provider === 'jupiter' ? 'Jupiter' : '—';
         const router = leg.router ? ` · ${formatExecutionRouterLabel(leg.router)}` : '';
+        const valueUsd = legValueUsd.get(leg.mint) ?? null;
         // Tolerate a response cached before leg.route existed.
         const hops = (leg.route ?? [])
             .map(step => step.label ?? 'unknown venue')
@@ -107,6 +123,13 @@ function buildSplitModel(args: {
                           : 'not reported',
             },
             { label: 'Price', value: leg.effectivePrice ? `${leg.effectivePrice} ${leg.symbol}/USDC` : '—' },
+            {
+                label: 'Market value',
+                value:
+                    valueUsd === null
+                        ? 'no market price for this mint'
+                        : `${formatUsdExact(valueUsd)} @ ${formatUsdExact(variant?.market?.price ?? Number.NaN)}/${leg.symbol}`,
+            },
             { label: 'Impact', value: leg.impactBps === null ? '—' : `${leg.impactBps.toFixed(2)} bps` },
             {
                 label: 'Verified',
@@ -144,7 +167,10 @@ function buildSplitModel(args: {
             fallbackLogoUrl: fallbackLogo !== primaryLogo ? fallbackLogo : '',
             weight: Number(leg.amountUsd) / (target || 1),
             amountLabel: formatUsdExact(Number(leg.amountUsd)),
-            receivedLabel: formatTokenAmount(leg.expectedOut?.amount, leg.symbol),
+            receivedLabel:
+                valueUsd === null
+                    ? formatTokenAmount(leg.expectedOut?.amount, leg.symbol)
+                    : `${formatTokenAmount(leg.expectedOut?.amount, leg.symbol)} · ${formatUsdExact(valueUsd)}`,
             shareLabel: `${Math.round(leg.shareOfTarget * 1000) / 10}%`,
             detailRows,
             muted: false,
@@ -178,7 +204,10 @@ function buildSplitModel(args: {
             getTokenLogoURLWithSecondarySymbol(args.asset?.symbol, undefined, undefined) ?? '',
         ),
         targetLabel: formatUsdExact(target),
-        receivedLabel: formatTokenAmount(allocation.totalExpectedOut?.amount, allocation.outputUnit.symbol),
+        receivedLabel:
+            totalValueUsd === null
+                ? formatTokenAmount(allocation.totalExpectedOut?.amount, allocation.outputUnit.symbol)
+                : `${formatTokenAmount(allocation.totalExpectedOut?.amount, allocation.outputUnit.symbol)} · ${formatUsdExact(totalValueUsd)}`,
         legs,
     };
 }
