@@ -203,6 +203,14 @@ export function makeTitanRestQuoteClient(options: TitanRestClientOptions): Exact
                 userPublicKey,
                 slippageBps: '50',
             });
+            // Restricted re-quotes (leg-overlap fix). Effect-verified live:
+            // Titan REST honors excludeDexes as CSV of exact venue labels.
+            // Callers must still effect-verify the returned steps — a
+            // restriction the server ignores must never be assumed applied.
+            if (args.restrictions?.excludeDexes?.length) {
+                params.set('excludeDexes', args.restrictions.excludeDexes.join(','));
+            }
+            if (args.restrictions?.onlyDirectRoutes) params.set('onlyDirectRoutes', 'true');
             const url = `${baseUrl}${QUOTE_PATH}?${params}`;
 
             for (let attempt = 0; attempt <= maxRetries; attempt += 1) {

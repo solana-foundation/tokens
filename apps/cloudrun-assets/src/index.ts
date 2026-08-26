@@ -62,7 +62,7 @@ import type { TrendingCronDeps } from './handlers/crons.trending';
 import type { ClickhouseExtrasCronDeps } from './handlers/crons.clickhouse.extras';
 import type { PrestocksCronDeps } from './handlers/crons.prestocks';
 import type { DepthCronDeps } from './handlers/crons.depth';
-import { limitQuoteConcurrency, type DepthSampleDeps, type LiveQuoteDeps } from './handlers/liveQuotes';
+import { limitQuoteConcurrency, paceQuoteStarts, type DepthSampleDeps, type LiveQuoteDeps } from './handlers/liveQuotes';
 import { createConcurrencyLimiter } from './concurrencyLimiter';
 import { makeGoogleOidcVerifier } from './oidc';
 import { createApp, type ServiceRole } from './server';
@@ -310,8 +310,10 @@ const liveQuoteDeps: LiveQuoteDeps = {
     jupiterTokenMetadataSource: makeJupiterTokenMetadataClient(jupiterApiKey ? { apiKey: jupiterApiKey } : {}),
     ...(jupiterApiKey
         ? {
+              // Paced to Jupiter's ~10 req/s paid-tier budget (observed via
+              // x-ratelimit headers), then capped in-flight.
               jupiterQuoteSource: limitQuoteConcurrency(
-                  makeJupiterSwapV2QuoteClient({ apiKey: jupiterApiKey }),
+                  paceQuoteStarts(makeJupiterSwapV2QuoteClient({ apiKey: jupiterApiKey }), 120),
                   jupiterQuoteLimiter,
               ),
           }

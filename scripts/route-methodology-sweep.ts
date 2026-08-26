@@ -146,6 +146,15 @@ function checkExpectations(entry: PanelEntry, body: Json): string[] {
         if (allocation.repaired === true && !warnings.some(w => w.startsWith('plan_repaired:'))) {
             fail('repaired plan missing plan_repaired warning');
         }
+        // P1: the totals must declare their basis, and a restricted basis
+        // must be accompanied by its disclosure warning.
+        const basis = get(allocation, 'edge.basis');
+        if (basis !== 'independent_quotes' && basis !== 'restricted_requotes') {
+            fail(`edge.basis missing or invalid: ${String(basis)}`);
+        }
+        if (basis === 'restricted_requotes' && !warnings.includes('legs_restricted_requoted')) {
+            fail('restricted_requotes basis without legs_restricted_requoted warning');
+        }
         // P0: leg overlap must be disclosed, and the field must agree with
         // the warning.
         const independence = allocation.legIndependence as Json | undefined;

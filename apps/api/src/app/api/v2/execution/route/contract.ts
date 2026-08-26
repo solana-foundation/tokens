@@ -177,6 +177,15 @@ export interface AllocationPlan {
     outputUnit: { symbol: string; decimals: number };
     totalExpectedOut: { amount: string; rawAmount: string } | null;
     edge: {
+        /**
+         * What the totals are made of. 'independent_quotes': each leg priced
+         * alone — an upper bound whenever legs share liquidity.
+         * 'restricted_requotes': overlapping legs were re-quoted with routes
+         * that provably avoid their siblings (effect-verified), making the
+         * total a conservative executable estimate — restricted Jupiter
+         * quotes are Metis-only (no RFQ), which biases the safe direction.
+         */
+        basis: 'independent_quotes' | 'restricted_requotes';
         /** Plan vs the single best variant's exact quote at the full target. */
         vsBestSingleVariant: AllocationEdge | null;
         /** Plan vs what a naive caller would trade: the rank-1 variant. */

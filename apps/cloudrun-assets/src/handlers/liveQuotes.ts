@@ -71,6 +71,18 @@ export interface JupiterTokenMetadata {
     decimals: number;
 }
 
+/**
+ * Routing restrictions for a restricted re-quote (the leg-overlap fix).
+ * Effect-verified levers only: Titan honors excludeDexes as CSV of exact
+ * venue labels; Jupiter's only guaranteed intermediate-free lever is
+ * onlyDirectRoutes on its classic quote endpoint (its excludeDexes reroutes
+ * but siblings reappear via other venues).
+ */
+export interface QuoteRestrictions {
+    onlyDirectRoutes?: boolean;
+    excludeDexes?: string[];
+}
+
 export interface ExactQuoteClient {
     id: ExecutionQuoteProvider;
     fetchQuote(args: {
@@ -79,6 +91,7 @@ export interface ExactQuoteClient {
         amountRaw: string;
         /** Per-call deadline so the caller can enforce its own budget. */
         timeoutMs?: number;
+        restrictions?: QuoteRestrictions;
     }): Promise<ExactQuote | null>;
 }
 
@@ -100,6 +113,27 @@ export function limitQuoteConcurrency<T extends ExactQuoteClient>(client: T, lim
     return {
         ...client,
         fetchQuote: (args: Parameters<ExactQuoteClient['fetchQuote']>[0]) => limit(() => client.fetchQuote(args)),
+    };
+}
+
+/**
+ * Space out fetchQuote starts so a burst never exceeds the provider's
+ * per-second budget (Jupiter's paid tier allows ~10 req/s; probe +
+ * verification + restricted waves can otherwise land ~20 calls in a second
+ * and turn the tail of every request into 429s). Composes with
+ * limitQuoteConcurrency: the limiter caps in-flight, this paces starts.
+ */
+export function paceQuoteStarts<T extends ExactQuoteClient>(client: T, minIntervalMs: number): T {
+    let nextSlot = 0;
+    return {
+        ...client,
+        fetchQuote: async (args: Parameters<ExactQuoteClient['fetchQuote']>[0]) => {
+            const now = Date.now();
+            const slot = Math.max(now, nextSlot);
+            nextSlot = slot + minIntervalMs;
+            if (slot > now) await new Promise(resolve => setTimeout(resolve, slot - now));
+            return client.fetchQuote(args);
+        },
     };
 }
 
@@ -277,7 +311,13 @@ async function fetchCandidate(
     deps: LiveQuoteDeps,
     client: ExactQuoteClient | undefined,
     provider: ExecutionQuoteProvider,
-    args: { inputMint: string; outputMint: string; amountRaw: string; timeoutMs?: number },
+    args: {
+        inputMint: string;
+        outputMint: string;
+        amountRaw: string;
+        timeoutMs?: number;
+        restrictions?: QuoteRestrictions;
+    },
 ): Promise<ExecutionQuoteCandidate> {
     // No client configured is an operational gap, not a market answer.
     if (!client) return unavailableCandidate(provider, new Date(deps.now()).toISOString(), 'error');
@@ -327,6 +367,7 @@ export async function executionQuotesLive(deps: LiveQuoteDeps, args: unknown): P
         tokenDecimals?: unknown;
         timeoutMs?: unknown;
         providers?: unknown;
+        restrictions?: unknown;
     };
     if (typeof a.mint !== 'string' || !a.mint.trim()) throw new InvalidArgsError('mint must be a string');
     const side = parseSide(a.side);
@@ -353,6 +394,21 @@ export async function executionQuotesLive(deps: LiveQuoteDeps, args: unknown): P
         seenRaw.add(request.rawAmount);
         requests.push(request);
     }
+    const restrictionsRaw =
+        a.restrictions !== null && typeof a.restrictions === 'object'
+            ? (a.restrictions as Record<string, { onlyDirectRoutes?: unknown; excludeDexes?: unknown }>)
+            : {};
+    const restrictionsFor = (provider: ExecutionQuoteProvider): QuoteRestrictions | undefined => {
+        const raw = restrictionsRaw[provider];
+        if (!raw || typeof raw !== 'object') return undefined;
+        const excludeDexes = Array.isArray(raw.excludeDexes)
+            ? raw.excludeDexes.filter((label): label is string => typeof label === 'string' && label.length > 0)
+            : undefined;
+        const onlyDirectRoutes = raw.onlyDirectRoutes === true ? true : undefined;
+        if (!onlyDirectRoutes && (!excludeDexes || excludeDexes.length === 0)) return undefined;
+        return { onlyDirectRoutes, excludeDexes };
+    };
+
     if (requests.length === 0) throw new InvalidArgsError('at least one amount is required');
     if (requests.length > MAX_QUOTE_AMOUNTS) throw new InvalidArgsError('at most 9 unique amounts are allowed');
 
@@ -422,19 +478,19 @@ export async function executionQuotesLive(deps: LiveQuoteDeps, args: unknown): P
         entries.push(
             ...(await Promise.all(
                 batch.map(async request => {
-                    const quoteArgs = {
-                        inputMint,
-                        outputMint,
-                        amountRaw: request.rawAmount,
-                        timeoutMs: providerTimeoutMs,
-                    };
                     const candidates = await Promise.all(
                         providers.map(provider =>
                             fetchCandidate(
                                 deps,
                                 provider === 'jupiter' ? deps.jupiterQuoteSource : deps.titanQuoteSource,
                                 provider,
-                                quoteArgs,
+                                {
+                                    inputMint,
+                                    outputMint,
+                                    amountRaw: request.rawAmount,
+                                    timeoutMs: providerTimeoutMs,
+                                    restrictions: restrictionsFor(provider),
+                                },
                             ),
                         ),
                     );

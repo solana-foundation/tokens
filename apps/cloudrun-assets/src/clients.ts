@@ -1408,9 +1408,76 @@ export function makeJupiterSwapV2QuoteClient(opts: MakeJupiterSwapV2QuoteOptions
     const baseUrl = (opts.baseUrl ?? 'https://api.jup.ag').replace(/\/+$/, '');
     const headers: Record<string, string> = { Accept: 'application/json', 'x-api-key': apiKey };
 
+    async function fetchClassicRestrictedQuote(args: {
+        inputMint: string;
+        outputMint: string;
+        amountRaw: string;
+        timeoutMs?: number;
+        restrictions?: { onlyDirectRoutes?: boolean; excludeDexes?: string[] };
+    }): Promise<ExactQuote | null> {
+        const params = new URLSearchParams({
+            inputMint: args.inputMint,
+            outputMint: args.outputMint,
+            amount: args.amountRaw,
+            slippageBps: '50',
+        });
+        if (args.restrictions?.onlyDirectRoutes) params.set('onlyDirectRoutes', 'true');
+        if (args.restrictions?.excludeDexes?.length) {
+            params.set('excludeDexes', args.restrictions.excludeDexes.join(','));
+        }
+        // Two retries: the restricted wave fires right after the verification
+        // burst on the same per-key rate limit, and the 429 window was
+        // observed to outlast a single backoff. Bounded — at most 3 attempts
+        // for at most a handful of restricted legs. Budget split across attempts.
+        const maxRetries = 2;
+        const budgetMs = Math.max(1, Math.floor(args.timeoutMs ?? 15_000));
+        const attemptTimeoutMs = Math.max(1_000, Math.floor(budgetMs / (maxRetries + 1)));
+        const json = await Effect.runPromise(
+            fetchJsonWithRetry<Record<string, unknown> | null>({
+                url: `${baseUrl}/swap/v1/quote?${params}`,
+                service: 'jupiter',
+                init: { headers },
+                maxRetries,
+                timeout: `${attemptTimeoutMs} millis`,
+                schema: JupiterQuoteEnvelopeSchema,
+                decodeMode: 'fail',
+                recoverHttpError: error => (error.status === 400 ? { value: null, outcome: 'no_route' } : null),
+            }),
+        );
+        if (!json) return null;
+        const inAmountRaw = toPositiveIntegerString(json.inAmount);
+        const outAmountRaw = toPositiveIntegerString(json.outAmount);
+        if (!inAmountRaw || !outAmountRaw || inAmountRaw !== args.amountRaw) {
+            const error = new Error('Jupiter classic quote has invalid raw amounts') as Error & {
+                quoteReason: 'malformed';
+            };
+            error.quoteReason = 'malformed';
+            throw error;
+        }
+        return {
+            inAmountRaw,
+            outAmountRaw,
+            priceImpactPct: jupiterFiniteNumber(json.priceImpactPct),
+            route: parseJupiterRoutePlan(json.routePlan),
+            contextSlot: toFinitePositiveNumber(json.contextSlot),
+            router: 'metis',
+            mode: 'classic_restricted',
+            fees: null,
+        };
+    }
+
     return {
         id: 'jupiter',
         async fetchQuote(args): Promise<ExactQuote | null> {
+            // Restricted re-quotes use the CLASSIC quote endpoint: Ultra's
+            // /order silently drops restriction params (effect-verified), and
+            // its excludeDexes is Metis-only. The classic endpoint honors
+            // onlyDirectRoutes — the one guaranteed intermediate-free lever —
+            // and excludeDexes. Restricted quotes are Metis-only (no RFQ
+            // liquidity), i.e. structurally conservative: the safe direction.
+            if (args.restrictions?.onlyDirectRoutes || args.restrictions?.excludeDexes?.length) {
+                return fetchClassicRestrictedQuote(args);
+            }
             const url =
                 `${baseUrl}/swap/v2/order?inputMint=${encodeURIComponent(args.inputMint)}` +
                 `&outputMint=${encodeURIComponent(args.outputMint)}` +

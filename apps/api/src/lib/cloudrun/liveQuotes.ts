@@ -162,6 +162,13 @@ export type ExecutionQuotesLiveArgs = {
     timeoutMs?: number;
     /** Narrow the provider set to trade comparison breadth for cost. */
     providers?: ('jupiter' | 'titan')[];
+    /**
+     * Per-provider routing restrictions for restricted re-quotes (the
+     * leg-overlap fix). Callers must effect-verify the returned routes.
+     */
+    restrictions?: Partial<
+        Record<'jupiter' | 'titan', { onlyDirectRoutes?: boolean; excludeDexes?: string[] }>
+    >;
 };
 
 /**

@@ -438,13 +438,9 @@ export const GET = route(
                 if (marketClosedMultiplierApplied) warnings.push('market_closed_spread_tolerance');
 
                 const unitDecimals = activeEngine.outputUnitDecimals;
-                let totalOutUnitsRaw = 0n;
                 const legs: AllocationLeg[] = activeEngine.legs.map(leg => {
-                    const scale = 10n ** BigInt(unitDecimals - leg.decimals);
                     const verified = verifiedRowByKey.get(legKey(leg)) ?? null;
                     if (verified && verified.status === 'available') {
-                        const verifiedOutRaw = BigInt(verified.best.output.rawAmount);
-                        totalOutUnitsRaw += verifiedOutRaw * scale;
                         const delta = verifiedDeltaBps(leg);
                         return {
                             variantId: leg.variantId,
@@ -466,7 +462,6 @@ export const GET = route(
                         };
                     }
                     warnings.push(`verification_unavailable:${leg.mint}`);
-                    totalOutUnitsRaw += leg.expectedOutUnitsRaw;
                     return {
                         variantId: leg.variantId,
                         mint: leg.mint,
@@ -493,19 +488,165 @@ export const GET = route(
                     };
                 });
 
+                const decimalsByMint = new Map(variants.map(variant => [variant.mint, variant.decimals]));
+                const legStepsOf = (leg: AllocationLeg) => {
+                    const verified = verifiedRowByKey.get(`${leg.mint}:${Number(leg.amountUsd)}`);
+                    if (verified && verified.status === 'available') return verified.best.route;
+                    const probeRow = variants
+                        .find(variant => variant.mint === leg.mint)
+                        ?.quotes.find(row => row.status === 'available' && row.request.amount === leg.amountUsd);
+                    return probeRow && probeRow.status === 'available' ? probeRow.best.route : [];
+                };
+                const totalOf = (planLegs: AllocationLeg[]) =>
+                    planLegs.reduce((sum, leg) => {
+                        if (!leg.expectedOut) return sum;
+                        const scale = 10n ** BigInt(unitDecimals - (decimalsByMint.get(leg.mint) ?? unitDecimals));
+                        return sum + BigInt(leg.expectedOut.rawAmount) * scale;
+                    }, 0n);
+
+                // Leg-independence: every leg's route is already in hand
+                // (verified row, falling back to the probe rung when
+                // verification failed) — overlap detection costs nothing.
+                let legIndependence = analyzeLegIndependence({
+                    legs: legs.map(leg => ({ mint: leg.mint, steps: legStepsOf(leg) })),
+                });
+
+                // P1: overlapping legs get ONE restricted re-quote each —
+                // Jupiter via its classic endpoint with onlyDirectRoutes (the
+                // guaranteed intermediate-free lever), Titan via excludeDexes
+                // on the offending venue labels (effect-verified live). The
+                // result is only trusted after effect-verification: the
+                // returned route must actually avoid every sibling mint.
+                let workingLegs = legs;
+                let edgeBasis: 'independent_quotes' | 'restricted_requotes' = 'independent_quotes';
+                if (!legIndependence.independent && legs.length > 1) {
+                    const legMints = new Set(legs.map(leg => leg.mint));
+                    const implicatedMints = new Set([
+                        ...legIndependence.passThrough.map(entry => entry.legMint),
+                        ...legIndependence.sharedPools.flatMap(pool => pool.legMints),
+                    ]);
+                    const implicated = legs.filter(leg => implicatedMints.has(leg.mint));
+                    const offendingLabels = (leg: AllocationLeg): string[] => [
+                        ...new Set(
+                            legStepsOf(leg)
+                                .filter(step =>
+                                    [step.inputMint, step.outputMint].some(
+                                        mint => mint !== null && mint !== leg.mint && legMints.has(mint),
+                                    ),
+                                )
+                                .map(step => step.label)
+                                .filter((label): label is string => label !== null && label.length > 0),
+                        ),
+                    ];
+                    // Breathing room: the restricted wave follows the
+                    // verification burst on the same per-key upstream limits,
+                    // and a first-attempt 429 was observed to persist past one
+                    // backoff. One second inside a 60s budget is cheap.
+                    yield* Effect.sleep('1 second');
+                    const restrictedResults = yield* Effect.all(
+                        implicated.map(leg =>
+                            executionQuotesLive({
+                                mint: leg.mint,
+                                side: 'buy',
+                                amounts: [String(Number(leg.amountUsd))],
+                                tokenDecimals: decimalsByMint.get(leg.mint) ?? 9,
+                                providers,
+                                restrictions: {
+                                    jupiter: { onlyDirectRoutes: true },
+                                    titan: { excludeDexes: offendingLabels(leg) },
+                                },
+                            }).pipe(Effect.catch(() => Effect.succeed(null))),
+                        ),
+                        { concurrency: implicated.length || 1 },
+                    );
+                    verificationQuotes += implicated.length * providers.length;
+
+                    const restrictedByMint = new Map<string, (typeof legs)[number]>();
+                    let allClean = true;
+                    for (const [index, result] of restrictedResults.entries()) {
+                        const leg = implicated[index]!;
+                        const decimals = decimalsByMint.get(leg.mint) ?? 9;
+                        const row = result
+                            ? (serializeQuoteRows({
+                                  entries: result.entries,
+                                  side: 'buy',
+                                  inputToken: { mint: result.quoteMint, symbol: 'USDC', decimals: 6 },
+                                  outputToken: { mint: leg.mint, symbol: leg.symbol, decimals },
+                              }).quotes[0] ?? null)
+                            : null;
+                        if (!row || row.status !== 'available') {
+                            allClean = false;
+                            break;
+                        }
+                        // Effect-verification: a restriction the server ignored
+                        // must never be treated as applied. Providers differ in
+                        // lever strength (Titan's excludeDexes can reroute back
+                        // through the sibling via another venue; Jupiter's
+                        // direct-only cannot), so take the best CLEAN candidate
+                        // rather than the overall winner.
+                        const isClean = (route: readonly (typeof row.best.route)[number][]) =>
+                            !route.some(step =>
+                                [step.inputMint, step.outputMint].some(
+                                    mint => mint !== null && mint !== leg.mint && legMints.has(mint),
+                                ),
+                            );
+                        const cleanQuote = row.providerQuotes.find(
+                            (quote): quote is Extract<typeof quote, { status: 'available' }> =>
+                                quote.status === 'available' && isClean(quote.route),
+                        );
+                        if (!cleanQuote) {
+                            allClean = false;
+                            break;
+                        }
+                        const engineLeg = activeEngine.legs.find(
+                            candidate => candidate.mint === leg.mint && String(candidate.amountUsd) === leg.amountUsd,
+                        );
+                        const deltaVsCurve =
+                            engineLeg && engineLeg.expectedOutRaw > 0n
+                                ? Number(
+                                      (BigInt(cleanQuote.output.rawAmount) * 1_000_000n) /
+                                          engineLeg.expectedOutRaw -
+                                          1_000_000n,
+                                  ) / 100
+                                : null;
+                        restrictedByMint.set(leg.mint, {
+                            ...leg,
+                            provider: cleanQuote.provider,
+                            expectedOut: cleanQuote.output,
+                            effectivePrice: cleanQuote.effectivePrice,
+                            router: cleanQuote.router,
+                            verification: {
+                                status: 'verified' as const,
+                                deltaBps: deltaVsCurve === null ? null : Math.round(deltaVsCurve * 100) / 100,
+                                quotedAt: cleanQuote.quotedAt,
+                            },
+                        });
+                    }
+                    if (allClean && restrictedByMint.size === implicated.length) {
+                        workingLegs = legs.map(leg => restrictedByMint.get(leg.mint) ?? leg);
+                        edgeBasis = 'restricted_requotes';
+                        // The plan now reflects routes that avoid the siblings.
+                        legIndependence = { independent: true, passThrough: [], sharedPools: [] };
+                        warnings.push('legs_restricted_requoted');
+                    }
+                }
+                if (!legIndependence.independent) warnings.push('legs_share_liquidity');
+
                 // C: a verified split that loses to simply buying the best
                 // single variant is not a recommendation. Replace it with one
                 // leg on that variant, built from its exact full-target probe
-                // quote (a real quote, so the leg reads as verified).
+                // quote (a real quote, so the leg reads as verified). Judged on
+                // the FINAL totals — restricted re-quotes lower the plan total,
+                // and a split that only wins on optimistic numbers must not ship.
                 let fellBackToSingleVariant = false;
-                let finalLegs = legs;
-                let finalTotalOutUnitsRaw = totalOutUnitsRaw;
+                let finalLegs = workingLegs;
+                let finalTotalOutUnitsRaw = totalOf(workingLegs);
                 let allocatedUsd = activeEngine.allocatedUsd;
                 let unallocatedUsd = activeEngine.unallocatedUsd;
                 const bestSingle = activeEngine.bestSingleAtTarget;
-                if (bestSingle && legs.length > 1) {
+                if (bestSingle && workingLegs.length > 1) {
                     const verifiedEdge = computeAllocationEdge({
-                        planOutUnitsRaw: totalOutUnitsRaw,
+                        planOutUnitsRaw: finalTotalOutUnitsRaw,
                         baselineOutUnitsRaw: bestSingle.outUnitsRaw,
                         targetUsd,
                     });
@@ -543,31 +684,11 @@ export const GET = route(
                             finalTotalOutUnitsRaw = bestSingle.outUnitsRaw;
                             allocatedUsd = targetUsd;
                             unallocatedUsd = 0;
+                            // A single-leg plan is trivially independent.
+                            legIndependence = { independent: true, passThrough: [], sharedPools: [] };
                         }
                     }
                 }
-
-                // Leg-independence: every leg's route is already in hand
-                // (verified row, falling back to the probe rung when
-                // verification failed) — overlap detection costs nothing.
-                const legIndependence = analyzeLegIndependence({
-                    legs: finalLegs.map(leg => {
-                        const verified = verifiedRowByKey.get(`${leg.mint}:${Number(leg.amountUsd)}`);
-                        if (verified && verified.status === 'available') {
-                            return { mint: leg.mint, steps: verified.best.route };
-                        }
-                        const probeRow = variants
-                            .find(variant => variant.mint === leg.mint)
-                            ?.quotes.find(
-                                row => row.status === 'available' && row.request.amount === leg.amountUsd,
-                            );
-                        return {
-                            mint: leg.mint,
-                            steps: probeRow && probeRow.status === 'available' ? probeRow.best.route : [],
-                        };
-                    }),
-                });
-                if (!legIndependence.independent) warnings.push('legs_share_liquidity');
 
                 const edgeFrom = (baseline: AllocationBaseline | null) => {
                     if (!baseline) return null;
@@ -611,6 +732,7 @@ export const GET = route(
                               }
                             : null,
                     edge: {
+                        basis: edgeBasis,
                         vsBestSingleVariant: edgeFrom(activeEngine.bestSingleAtTarget),
                         vsPrimaryVariant: edgeFrom(activeEngine.primaryAtTarget),
                     },

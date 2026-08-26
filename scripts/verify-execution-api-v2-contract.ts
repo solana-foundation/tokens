@@ -347,12 +347,16 @@ async function main(): Promise<void> {
                 `legs[${index}] is below minLegUsd without being cap-bound`,
             );
         }
-        // Cost echo covers probes plus verification.
+        // Cost echo covers probes plus every verification wave (initial,
+        // repair, restricted re-quotes) — waves vary with market weather, so
+        // assert the structure: at least one verification per leg, and every
+        // wave is a whole number of per-provider calls.
+        const providerCount = (routed.providers as unknown[]).length;
+        const probeQuotes = (routed.variants as unknown[]).length * ladder.length * providerCount;
+        const verificationQuotes = (routeMeta.upstreamQuotes as number) - probeQuotes;
         assert(
-            routeMeta.upstreamQuotes ===
-                (routed.variants as unknown[]).length * ladder.length * (routed.providers as unknown[]).length +
-                    legs.length * (routed.providers as unknown[]).length,
-            'route upstreamQuotes must count probes plus verification quotes',
+            verificationQuotes >= legs.length * providerCount && verificationQuotes % providerCount === 0,
+            `route upstreamQuotes must count probes plus whole verification waves (got ${routeMeta.upstreamQuotes}, probes ${probeQuotes}, legs ${legs.length})`,
         );
     }
     console.log(

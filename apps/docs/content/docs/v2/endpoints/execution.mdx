@@ -481,10 +481,18 @@ apart are noise, not an edge.
 - `allocation.legIndependence` — are the legs actually additive? Legs are
   priced with independent quotes, but a leg whose route hops *through* another
   leg's variant (`passThrough`) or shares a pool with it (`sharedPools`)
-  consumes liquidity its sibling also uses. When `independent: false` (warning
-  `legs_share_liquidity`), treat the edge as an **upper bound** and execute
-  the largest leg first — later legs will fill slightly worse than quoted.
-  The response names exactly which legs collide and via what.
+  consumes liquidity its sibling also uses. When overlap is detected, the
+  endpoint issues **one restricted re-quote per overlapping leg** — Jupiter
+  via its classic quote endpoint with `onlyDirectRoutes` (a single hop cannot
+  have an intermediate mint), Titan via `excludeDexes` on the offending venue
+  labels — and only trusts the result after verifying the returned route
+  actually avoids every sibling. On success `edge.basis` is
+  `restricted_requotes` (warning `legs_restricted_requoted`): the totals are a
+  conservative executable estimate, since restricted Jupiter quotes are
+  Metis-only and lose RFQ liquidity by construction. If restriction fails —
+  the sibling reappears via another venue, or the re-quote errors —
+  `edge.basis` stays `independent_quotes` with `legs_share_liquidity`: treat
+  the edge as an **upper bound** and execute the largest leg first.
 
 ### Parameters
 
@@ -508,9 +516,15 @@ cross-variant exit liquidity without any splitting on your part.
 ### Cost model
 
 `upstreamQuotes = variants × 4 rungs × providers (+ legs × providers for
-verification)` — echoed in `meta.upstreamQuotes`. The default bitcoin call is
-~40 quotes and 5–9s. This is a deliberate-analysis endpoint, not a
-per-keystroke one.
+verification, + overlapping legs × providers for restricted re-quotes)` —
+echoed in `meta.upstreamQuotes`. The default bitcoin call is ~40 quotes and
+5–9s. This is a deliberate-analysis endpoint, not a per-keystroke one.
+
+Operational note: the Jupiter API key's rate tier must cover this fanout. A
+tier limited to ~10 requests per 10s window (observed on the current key via
+`x-ratelimit-*` headers) cannot serve a single route call's ~22 Jupiter
+quotes — rungs degrade honestly to `unavailable/error` and Titan carries the
+comparison, but coverage and the restricted-requote upgrade both suffer.
 
 ### Errors
 

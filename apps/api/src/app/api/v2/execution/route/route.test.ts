@@ -31,6 +31,7 @@ const BITCOIN_MINTS = getAsset('bitcoin')!.variants.map(variant => variant.mint)
 /** Mints the market stub reports as liquid; everything else gets a null market row. */
 let liquidMints: string[] = [];
 let quoteCallMints: string[] = [];
+let quoteArgsList: Record<string, unknown>[] = [];
 let metadataCallMints: string[] = [];
 /** Mints Jupiter token metadata can resolve when the market row is missing. */
 let metadataFallbackMints: string[] = [];
@@ -127,6 +128,7 @@ function stubCloudRun(): void {
             const mint = body.mint as string;
             const amounts = body.amounts as string[];
             quoteCallMints.push(mint);
+            quoteArgsList.push(body);
             return Response.json(quoteResponder ? quoteResponder(mint, amounts) : defaultFanout(mint, amounts));
         }
         throw new Error(`Unexpected fetch: ${url}`);
@@ -150,6 +152,7 @@ beforeEach(() => {
     __resetCloudRunClientForTesting();
     liquidMints = [...BITCOIN_MINTS];
     quoteCallMints = [];
+    quoteArgsList = [];
     metadataCallMints = [];
     metadataFallbackMints = [];
     quoteResponder = null;
@@ -606,6 +609,105 @@ describe('GET /api/v2/execution/route', () => {
         expect(body.allocationStatus).toBe('not_requested');
         expect(body.meta.warnings).toContain('equity_unit_parity_assumed');
         expect(body.meta.tuning.profile).toBe('equity');
+    });
+
+    it('upgrades to restricted re-quotes when restrictions provably clean the routes (P1)', async () => {
+        const [primary, secondary] = BITCOIN_MINTS;
+        const perDollar = (mint: string, amountUsd: number): number =>
+            mint === secondary ? 995 : amountUsd <= 40_000 ? 1_000 : 1_000 - (300 * (amountUsd - 40_000)) / 960_000;
+        const seenRestrictions: unknown[] = [];
+        quoteResponder = (mint, amounts) => {
+            const restricted = (quoteArgsList.at(-1) as { restrictions?: unknown } | undefined)?.restrictions;
+            if (restricted) seenRestrictions.push(restricted);
+            const dirtyRoute = [
+                {
+                    ammKey: 'poolUSDCprimary',
+                    label: 'Whirlpool',
+                    percent: 100,
+                    inputMint: USDC,
+                    outputMint: primary,
+                    inAmountRaw: '1',
+                    outAmountRaw: '1',
+                    feeAmountRaw: null,
+                    feeMint: null,
+                },
+                {
+                    ammKey: 'poolPrimarySecondary',
+                    label: 'Meteora DLMM',
+                    percent: 100,
+                    inputMint: primary,
+                    outputMint: secondary,
+                    inAmountRaw: '1',
+                    outAmountRaw: '1',
+                    feeAmountRaw: null,
+                    feeMint: null,
+                },
+            ];
+            const cleanRoute = [
+                {
+                    ammKey: 'directPool',
+                    label: 'Phoenix',
+                    percent: 100,
+                    inputMint: USDC,
+                    outputMint: mint,
+                    inAmountRaw: '1',
+                    outAmountRaw: '1',
+                    feeAmountRaw: null,
+                    feeMint: null,
+                },
+            ];
+            return {
+                providers: ['jupiter', 'titan'],
+                mint,
+                side: 'buy',
+                quoteMint: USDC,
+                entries: amounts.map(amount => {
+                    const inRaw = `${amount}000000`;
+                    // Same price restricted or not — this test isolates route
+                    // cleanness; the C-fallback interaction is covered above.
+                    const factor = 1;
+                    const out = String(Math.round(Number(amount) * perDollar(mint, Number(amount)) * factor));
+                    const route = mint === secondary && !restricted ? dirtyRoute : cleanRoute;
+                    const jupiter = {
+                        ...availableCandidate('jupiter', inRaw, out),
+                        route,
+                    } as Record<string, unknown>;
+                    return {
+                        request: { unit: 'usd', amount, rawAmount: inRaw },
+                        status: 'available',
+                        provider: 'jupiter',
+                        inAmountRaw: inRaw,
+                        outAmountRaw: out,
+                        priceImpactPct: 0.01,
+                        route,
+                        contextSlot: null,
+                        router: 'metis',
+                        mode: 'ultra',
+                        fees: null,
+                        quotedAt: '2026-08-25T12:00:00.000Z',
+                        candidates: [jupiter],
+                    };
+                }),
+            };
+        };
+        liquidMints = [primary!, secondary!];
+        const response = await request('/api/v2/execution/route?assetId=bitcoin&amountUsd=1000000');
+        expect(response.status).toBe(200);
+        const body = await response.json();
+        const allocation = body.allocation as {
+            legs: { mint: string }[];
+            edge: { basis: string };
+            legIndependence: { independent: boolean };
+        };
+        expect(allocation.legs.length).toBeGreaterThan(1);
+        // The restricted wave carried per-provider restrictions upstream...
+        expect(seenRestrictions.length).toBeGreaterThan(0);
+        expect(JSON.stringify(seenRestrictions[0])).toContain('onlyDirectRoutes');
+        // ...and the clean effect-verified routes upgrade the basis.
+        expect(allocation.edge.basis).toBe('restricted_requotes');
+        expect(allocation.legIndependence.independent).toBe(true);
+        expect(body.meta.warnings).toContain('legs_restricted_requoted');
+        expect(body.meta.warnings).not.toContain('legs_share_liquidity');
     });
 
     it('requires the execution:read scope', async () => {

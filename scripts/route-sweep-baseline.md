@@ -44,3 +44,14 @@ their probe rungs (RFQ fill present at probe time, absent at verify time).
 Magnitudes are demo-Titan-inflated; the structural fixes are what the check
 mode asserts. Warning vocabulary added by v2: `price_divergence_excluded:`,
 `plan_repaired:`, `plan_fell_back_to_single_variant`.
+
+## Operational finding (2026-08-25, route-hardening phase)
+
+The Jupiter key's rate tier is **10 requests per ~10s window** (measured:
+10 consecutive 200s then 429s, `x-ratelimit-remaining` counting down, shared
+bucket across `/swap/v2/order` and `/swap/v1/quote`). One `/route` call needs
+~22 Jupiter quotes, so Jupiter coverage inside sweeps has been silently
+partial all along (rungs degrading to `error`), and live restricted re-quotes
+(`edge.basis: 'restricted_requotes'`) rarely complete on this tier despite
+pacing + retries. The machinery is verified by effect-tests; the tier upgrade
+belongs on the prod-keys gate checklist alongside the Titan production URL.
