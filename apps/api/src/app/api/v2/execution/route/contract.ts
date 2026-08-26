@@ -184,6 +184,21 @@ export interface AllocationPlan {
     };
     /** Max pairwise divergence of baseEffectivePrice among pool variants, bps. */
     pegSpreadBps: number | null;
+    /**
+     * Are the legs actually additive? Legs are priced with independent
+     * quotes, but a leg whose route hops THROUGH another leg's variant
+     * (passThrough) or shares a pool with it (sharedPools) consumes liquidity
+     * the sibling leg also uses — executing both fills slightly worse than
+     * quoted, so the edge is an upper bound. Accompanied by the
+     * legs_share_liquidity warning when not independent. Pool matching only
+     * uses real pool ids (demo Titan masks them); mint-level pass-through
+     * works everywhere.
+     */
+    legIndependence: {
+        independent: boolean;
+        passThrough: Array<{ legMint: string; viaVariantMint: string }>;
+        sharedPools: Array<{ ammKey: string; label: string | null; legMints: string[] }>;
+    };
 }
 
 export type AllocationStatus = 'ok' | 'not_requested' | 'no_eligible_variants' | 'insufficient_quotes';

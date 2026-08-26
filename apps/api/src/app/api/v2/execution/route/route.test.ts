@@ -490,6 +490,90 @@ describe('GET /api/v2/execution/route', () => {
         expect(body.meta.warnings).toContain('plan_fell_back_to_single_variant');
     });
 
+    it('discloses leg overlap when one leg routes through another leg variant', async () => {
+        const [primary, secondary] = BITCOIN_MINTS;
+        // Curves that genuinely split: primary steepens at size, secondary is
+        // flat but priced a hair under — both end up with legs.
+        const perDollar = (mint: string, amountUsd: number): number =>
+            mint === secondary ? 995 : amountUsd <= 40_000 ? 1_000 : 1_000 - (300 * (amountUsd - 40_000)) / 960_000;
+        quoteResponder = (mint, amounts) => {
+            const fanout = {
+                providers: ['jupiter', 'titan'],
+                mint,
+                side: 'buy',
+                quoteMint: USDC,
+                entries: amounts.map(amount => {
+                    const inRaw = `${amount}000000`;
+                    const out = String(Math.round(Number(amount) * perDollar(mint, Number(amount))));
+                    const jupiter = { ...availableCandidate('jupiter', inRaw, out) } as Record<string, unknown>;
+                    return {
+                        request: { unit: 'usd', amount, rawAmount: inRaw },
+                        status: 'available',
+                        provider: 'jupiter',
+                        inAmountRaw: inRaw,
+                        outAmountRaw: out,
+                        priceImpactPct: 0.01,
+                        route: [],
+                        contextSlot: null,
+                        router: 'metis',
+                        mode: 'ultra',
+                        fees: null,
+                        quotedAt: '2026-08-25T12:00:00.000Z',
+                        candidates: [jupiter],
+                    };
+                }),
+            } as unknown as { entries: { candidates: Record<string, unknown>[] }[] };
+            // The secondary variant's routes hop through the primary variant —
+            // the live bitcoin shape.
+            if (mint === secondary) {
+                for (const entry of fanout.entries) {
+                    for (const candidate of entry.candidates) {
+                        candidate.route = [
+                            {
+                                ammKey: 'poolUSDCprimary',
+                                label: 'Whirlpool',
+                                percent: 100,
+                                inputMint: USDC,
+                                outputMint: primary,
+                                inAmountRaw: '1',
+                                outAmountRaw: '1',
+                                feeAmountRaw: null,
+                                feeMint: null,
+                            },
+                            {
+                                ammKey: 'poolPrimarySecondary',
+                                label: 'Meteora DLMM',
+                                percent: 100,
+                                inputMint: primary,
+                                outputMint: secondary,
+                                inAmountRaw: '1',
+                                outAmountRaw: '1',
+                                feeAmountRaw: null,
+                                feeMint: null,
+                            },
+                        ];
+                    }
+                }
+            }
+            return fanout;
+        };
+        liquidMints = [primary!, secondary!];
+        const response = await request('/api/v2/execution/route?assetId=bitcoin&amountUsd=1000000');
+        expect(response.status).toBe(200);
+        const body = await response.json();
+        const allocation = body.allocation as {
+            legs: { mint: string }[];
+            legIndependence: { independent: boolean; passThrough: { legMint: string; viaVariantMint: string }[] };
+        };
+        // The crafted curves guarantee a genuine split.
+        expect(allocation.legs.length).toBeGreaterThan(1);
+        expect(allocation.legIndependence.independent).toBe(false);
+        expect(allocation.legIndependence.passThrough).toEqual([
+            { legMint: secondary, viaVariantMint: primary },
+        ]);
+        expect(body.meta.warnings).toContain('legs_share_liquidity');
+    });
+
     it('requires the execution:read scope', async () => {
         const response = await request('/api/v2/execution/route?assetId=bitcoin', ['assets:read']);
         expect(response.status).toBe(403);

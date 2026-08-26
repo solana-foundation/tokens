@@ -138,6 +138,22 @@ function checkExpectations(entry: PanelEntry, body: Json): string[] {
         if (allocation.repaired === true && !warnings.some(w => w.startsWith('plan_repaired:'))) {
             fail('repaired plan missing plan_repaired warning');
         }
+        // P0: leg overlap must be disclosed, and the field must agree with
+        // the warning.
+        const independence = allocation.legIndependence as Json | undefined;
+        if (independence) {
+            const overlapping =
+                ((independence.passThrough as unknown[]) ?? []).length > 0 ||
+                ((independence.sharedPools as unknown[]) ?? []).length > 0;
+            if (overlapping !== !(independence.independent as boolean)) {
+                fail('legIndependence.independent disagrees with its own evidence');
+            }
+            if (overlapping && !warnings.includes('legs_share_liquidity')) {
+                fail('overlapping legs without legs_share_liquidity warning');
+            }
+        } else if (legs.length > 0) {
+            fail('allocation missing legIndependence');
+        }
         // A: surviving peg spread must be within the divergence gate.
         const peg = allocation.pegSpreadBps as number | null;
         if (peg !== null && peg > PARITY_DIVERGENCE_MAX_BPS) {

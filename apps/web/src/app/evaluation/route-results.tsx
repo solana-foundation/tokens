@@ -261,6 +261,12 @@ export function RouteResults({
                                 variant is cheap for a reason, and the buyer inherits that peg risk.
                             </p>
                         ) : null}
+                        {data?.meta.warnings.includes('legs_share_liquidity') ? (
+                            <p className="text-amber-700">
+                                Some legs share liquidity (one leg&apos;s route passes through another leg&apos;s
+                                token or pools) — the edge is an upper bound. Execute the largest leg first.
+                            </p>
+                        ) : null}
                         {data?.meta.warnings.some(warning => warning.startsWith('price_divergence_excluded:')) ? (
                             <p className="text-amber-700">
                                 Some variants were excluded from the split because their unit price diverges too far

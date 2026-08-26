@@ -28,6 +28,7 @@ import {
     type AllocationEngineResult,
 } from './allocation';
 import { buildVariantCurve, type VariantCurve } from './curve';
+import { analyzeLegIndependence } from './leg-independence';
 import { buildProbeLadderUsd, selectVariants } from './variant-selection';
 import {
     executionQuoteTokenMetadata,
@@ -535,6 +536,28 @@ export const GET = route(
                     }
                 }
 
+                // Leg-independence: every leg's route is already in hand
+                // (verified row, falling back to the probe rung when
+                // verification failed) — overlap detection costs nothing.
+                const legIndependence = analyzeLegIndependence({
+                    legs: finalLegs.map(leg => {
+                        const verified = verifiedRowByKey.get(`${leg.mint}:${Number(leg.amountUsd)}`);
+                        if (verified && verified.status === 'available') {
+                            return { mint: leg.mint, steps: verified.best.route };
+                        }
+                        const probeRow = variants
+                            .find(variant => variant.mint === leg.mint)
+                            ?.quotes.find(
+                                row => row.status === 'available' && row.request.amount === leg.amountUsd,
+                            );
+                        return {
+                            mint: leg.mint,
+                            steps: probeRow && probeRow.status === 'available' ? probeRow.best.route : [],
+                        };
+                    }),
+                });
+                if (!legIndependence.independent) warnings.push('legs_share_liquidity');
+
                 const edgeFrom = (baseline: AllocationBaseline | null) => {
                     if (!baseline) return null;
                     // A single-leg plan on the baseline variant would compare
@@ -581,6 +604,7 @@ export const GET = route(
                         vsPrimaryVariant: edgeFrom(activeEngine.primaryAtTarget),
                     },
                     pegSpreadBps: activeEngine.pegSpreadBps,
+                    legIndependence,
                 };
             }
 

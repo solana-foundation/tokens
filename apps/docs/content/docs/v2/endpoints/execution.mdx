@@ -475,6 +475,16 @@ apart are noise, not an edge.
   risk. Spreads above 50bps add a `peg_divergence` warning.
 - Outputs compare **net receipts**: Jupiter Ultra's `outAmount` is net of its
   disclosed fee, so a router can have the better gross route and still lose.
+- Every quote (both endpoints, both routers) is requested with a baked-in
+  `slippageBps=50` tolerance — quoted outputs already assume up to 0.5%
+  slippage headroom.
+- `allocation.legIndependence` — are the legs actually additive? Legs are
+  priced with independent quotes, but a leg whose route hops *through* another
+  leg's variant (`passThrough`) or shares a pool with it (`sharedPools`)
+  consumes liquidity its sibling also uses. When `independent: false` (warning
+  `legs_share_liquidity`), treat the edge as an **upper bound** and execute
+  the largest leg first — later legs will fill slightly worse than quoted.
+  The response names exactly which legs collide and via what.
 
 ### Parameters
 
@@ -486,6 +496,14 @@ apart are noise, not an edge.
 | `maxVariants` | `4` | 1–6; the cost lever |
 | `allocate` | `true` | `false` skips the allocation and its verification quotes |
 | `side` | `buy` | `sell` returns 400 — per-variant sells need `evaluate` |
+
+### Selling
+
+`/route` is buy-only. Selling a position is a single-variant question — you
+hold a specific token, and `GET /v2/execution/evaluate?mint=<yourMint>&side=sell&tokenAmount=…`
+compares both routers on the exit. Note that aggregators already route
+*through* sibling variants internally on exits, so a single-mint sell taps
+cross-variant exit liquidity without any splitting on your part.
 
 ### Cost model
 
