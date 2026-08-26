@@ -74,19 +74,30 @@ export function buildVariantCurve(rows: readonly ExecutionQuoteRow[]): VariantCu
     const rungs: VariantCurveRung[] = rows.map(row => {
         const sizeUsd = Number(row.request.amount);
         const point = impactBySize.get(sizeUsd) ?? null;
+        // Failure classification: 'no_route' only when EVERY provider said
+        // no route (real market absence). Any other failure means the quotes
+        // failed and depth at this size is unknown, not absent.
+        let reason: string | null = null;
+        if (!point) {
+            const reasons = row.providerQuotes
+                .filter(quote => quote.status === 'unavailable')
+                .map(quote => (quote as { reason?: string }).reason ?? 'error');
+            reason =
+                reasons.length > 0 && reasons.every(r => r === 'no_route')
+                    ? 'no_route'
+                    : (reasons.find(r => r !== 'no_route') ?? 'error');
+        }
         return {
             sizeUsd,
             impactBps: point?.impactBps ?? null,
             provider: point?.provider ?? null,
+            reason,
         };
     });
 
-    const baseRow = rows.find(
-        row => row.status === 'available' && Number(row.request.amount) === base?.sizeUsd,
-    );
+    const baseRow = rows.find(row => row.status === 'available' && Number(row.request.amount) === base?.sizeUsd);
     return {
-        baseEffectivePrice:
-            baseRow && baseRow.status === 'available' ? baseRow.best.effectivePrice : null,
+        baseEffectivePrice: baseRow && baseRow.status === 'available' ? baseRow.best.effectivePrice : null,
         points,
         rungs,
         maxProvenSizeUsd: points.length > 0 ? points[points.length - 1]!.sizeUsd : null,

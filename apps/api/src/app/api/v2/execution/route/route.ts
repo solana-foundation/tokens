@@ -76,7 +76,14 @@ function decodeMaxVariants(raw: string | null): Effect.Effect<number, BadRequest
 
 function decodeProviders(raw: string | null): Effect.Effect<QuoteProvider[], BadRequestError> {
     if (raw === null) return Effect.succeed([...QUOTE_PROVIDERS]);
-    const requested = [...new Set(raw.split(',').map(value => value.trim()).filter(Boolean))];
+    const requested = [
+        ...new Set(
+            raw
+                .split(',')
+                .map(value => value.trim())
+                .filter(Boolean),
+        ),
+    ];
     if (requested.length === 0) {
         return Effect.fail(new BadRequestError({ message: 'providers must name at least one provider' }));
     }
@@ -215,9 +222,11 @@ export const GET = route(
                 .filter(mint => !Number.isInteger(displayByMint.get(mint)?.decimals ?? null));
             if (missingDecimalMints.length > 0) {
                 const fallbacks = yield* Effect.all(
-                    missingDecimalMints.slice(0, 8).map(mint =>
-                        executionQuoteTokenMetadata({ mint }).pipe(Effect.catch(() => Effect.succeed(null))),
-                    ),
+                    missingDecimalMints
+                        .slice(0, 8)
+                        .map(mint =>
+                            executionQuoteTokenMetadata({ mint }).pipe(Effect.catch(() => Effect.succeed(null))),
+                        ),
                     { concurrency: 4 },
                 );
                 for (const [index, metadata] of fallbacks.entries()) {
@@ -276,7 +285,11 @@ export const GET = route(
                           entries: result.entries,
                           side: 'buy',
                           inputToken: { mint: result.quoteMint, symbol: 'USDC', decimals: 6 },
-                          outputToken: { mint: selected.variant.mint, symbol: selected.symbol, decimals: selected.decimals },
+                          outputToken: {
+                              mint: selected.variant.mint,
+                              symbol: selected.symbol,
+                              decimals: selected.decimals,
+                          },
                       })
                     : { quotes: [], summarizable: [] };
                 summarizable.push(...serialized.summarizable);
@@ -346,7 +359,10 @@ export const GET = route(
                 // One exact re-quote per leg, keyed by (mint, size) so a repair
                 // pass whose legs did not move reuses the wave-1 result instead
                 // of paying for it twice.
-                const verifiedRowByKey = new Map<string, ReturnType<typeof serializeQuoteRows>['quotes'][number] | null>();
+                const verifiedRowByKey = new Map<
+                    string,
+                    ReturnType<typeof serializeQuoteRows>['quotes'][number] | null
+                >();
                 const legKey = (leg: AllocationEngineLeg) => `${leg.mint}:${leg.amountUsd}`;
                 const verifyWave = (waveLegs: AllocationEngineLeg[]) =>
                     Effect.gen(function* () {
@@ -403,7 +419,9 @@ export const GET = route(
                     const collapsedMints = new Set(collapsedLegs.map(leg => leg.mint));
                     const repairedPool = pool.filter(poolVariant => !collapsedMints.has(poolVariant.mint));
                     const repairedEngine =
-                        repairedPool.length > 0 ? computeAllocation({ targetUsd, variants: repairedPool, tuning }) : null;
+                        repairedPool.length > 0
+                            ? computeAllocation({ targetUsd, variants: repairedPool, tuning })
+                            : null;
                     if (repairedEngine && repairedEngine.legs.length > 0) {
                         activeEngine = repairedEngine;
                         repaired = true;
@@ -413,6 +431,14 @@ export const GET = route(
                             if (routed) routed.allocationEligible = false;
                         }
                         yield* verifyWave(repairedEngine.legs);
+                    } else {
+                        // Nothing left to recommend once the collapsed variant
+                        // is distrusted: the collapsed leg ships with its
+                        // honest delta, and the response says why repair
+                        // could not fire.
+                        for (const leg of collapsedLegs) {
+                            warnings.push(`collapse_unrepairable:${leg.mint}`);
+                        }
                     }
                 }
 
@@ -604,8 +630,7 @@ export const GET = route(
                         const deltaVsCurve =
                             engineLeg && engineLeg.expectedOutRaw > 0n
                                 ? Number(
-                                      (BigInt(cleanQuote.output.rawAmount) * 1_000_000n) /
-                                          engineLeg.expectedOutRaw -
+                                      (BigInt(cleanQuote.output.rawAmount) * 1_000_000n) / engineLeg.expectedOutRaw -
                                           1_000_000n,
                                   ) / 100
                                 : null;
@@ -658,9 +683,7 @@ export const GET = route(
                         if (baselineVariant && baselineRow && baselineRow.status === 'available') {
                             fellBackToSingleVariant = true;
                             warnings.push('plan_fell_back_to_single_variant');
-                            const targetRung = baselineVariant.curve.rungs.find(
-                                rung => rung.sizeUsd === targetUsd,
-                            );
+                            const targetRung = baselineVariant.curve.rungs.find(rung => rung.sizeUsd === targetUsd);
                             finalLegs = [
                                 {
                                     variantId: baselineVariant.variantId,
@@ -687,6 +710,31 @@ export const GET = route(
                             // A single-leg plan is trivially independent.
                             legIndependence = { independent: true, passThrough: [], sharedPools: [] };
                         }
+                    }
+                }
+
+                // Whole-plan impact: what the plan's dollars would have
+                // bought at each leg variant's own baseline price vs what the
+                // plan actually expects. The plan analogue of a leg's impact.
+                let blendedImpactBps: number | null = null;
+                {
+                    let baselineUnitsRaw = 0n;
+                    let baselineComplete = finalLegs.length > 0;
+                    for (const leg of finalLegs) {
+                        const base = curveByMint.get(leg.mint)?.points[0];
+                        const legDecimals = decimalsByMint.get(leg.mint);
+                        if (!base || legDecimals === undefined) {
+                            baselineComplete = false;
+                            break;
+                        }
+                        const scale = 10n ** BigInt(unitDecimals - legDecimals);
+                        baselineUnitsRaw += (BigInt(leg.amountUsdRaw) * base.outRaw * scale) / base.inRaw;
+                    }
+                    if (baselineComplete && baselineUnitsRaw > 0n && finalTotalOutUnitsRaw > 0n) {
+                        const ratio = (finalTotalOutUnitsRaw * 1_000_000n) / baselineUnitsRaw;
+                        const impact = Number(1_000_000n - ratio) / 100;
+                        blendedImpactBps = impact > 0 ? Math.round(impact * 100) / 100 : 0;
+                        if (blendedImpactBps > 500) warnings.push('extreme_impact');
                     }
                 }
 
@@ -737,6 +785,7 @@ export const GET = route(
                         vsPrimaryVariant: edgeFrom(activeEngine.primaryAtTarget),
                     },
                     pegSpreadBps: activeEngine.pegSpreadBps,
+                    blendedImpactBps,
                     legIndependence,
                 };
             }

@@ -71,6 +71,13 @@ function AllocationHeadline({ data }: { data: ExecutionRouteResponse }) {
                     </span>
                 ) : null}
             </p>
+            {allocation.blendedImpactBps !== null && allocation.blendedImpactBps > 500 ? (
+                <p className="mt-1 text-[12px] font-medium text-red-700">
+                    Even this best-available plan absorbs ~
+                    {allocation.blendedImpactBps.toLocaleString('en-US', { maximumFractionDigits: 0 })} bps of impact —
+                    this size may not fit this asset yet. Consider a smaller order.
+                </p>
+            ) : null}
         </div>
     );
 }
@@ -195,7 +202,14 @@ function VariantMatrix({ data }: { data: ExecutionRouteResponse }) {
                                         className={`px-3 py-2.5 text-right text-[12px] tabular-nums ${impactTone(impact)}`}
                                     >
                                         {impact === null ? (
-                                            <Tooltip content="No route found at this size" side="top">
+                                            <Tooltip
+                                                content={
+                                                    rung?.reason === 'no_route'
+                                                        ? 'No route found at this size — the market genuinely lacks depth here.'
+                                                        : 'Quotes failed at this size (provider error or rate limit) — depth is unknown, not proven absent.'
+                                                }
+                                                side="top"
+                                            >
                                                 <span className="cursor-help">—</span>
                                             </Tooltip>
                                         ) : (
@@ -205,7 +219,17 @@ function VariantMatrix({ data }: { data: ExecutionRouteResponse }) {
                                 );
                             })}
                             <td className="px-3 py-2.5 pr-4 text-right text-[12px] text-text-medium tabular-nums">
-                                {variant.market?.liquidity ? formatUsd(variant.market.liquidity) : '—'}
+                                {variant.market?.liquidity ? (
+                                    formatUsd(variant.market.liquidity)
+                                ) : (
+                                    <Tooltip
+                                        content="No market snapshot for this mint — token details were resolved via metadata instead."
+                                        side="top"
+                                        align="end"
+                                    >
+                                        <span className="cursor-help text-text-extra-low">n/a</span>
+                                    </Tooltip>
+                                )}
                             </td>
                         </tr>
                     ))}
@@ -263,8 +287,8 @@ export function RouteResults({
                         ) : null}
                         {data?.meta.warnings.includes('legs_share_liquidity') ? (
                             <p className="text-amber-700">
-                                Some legs share liquidity (one leg&apos;s route passes through another leg&apos;s
-                                token or pools) — the edge is an upper bound. Execute the largest leg first.
+                                Some legs share liquidity (one leg&apos;s route passes through another leg&apos;s token
+                                or pools) — the edge is an upper bound. Execute the largest leg first.
                             </p>
                         ) : null}
                         {data?.meta.warnings.some(warning => warning.startsWith('price_divergence_excluded:')) ? (

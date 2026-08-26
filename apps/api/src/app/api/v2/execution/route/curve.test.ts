@@ -48,14 +48,13 @@ describe('buildVariantCurve', () => {
     });
 
     it('keeps failed rungs in the response with null impact', () => {
-        const rows = [
-            availableRow(10_000, '10000000000', '1000000000'),
-            unavailableRow(5_000_000, '5000000000000'),
-        ];
+        const rows = [availableRow(10_000, '10000000000', '1000000000'), unavailableRow(5_000_000, '5000000000000')];
         const curve = buildVariantCurve(rows);
         expect(curve.rungs).toEqual([
-            { sizeUsd: 10_000, impactBps: 0, provider: 'jupiter' },
-            { sizeUsd: 5_000_000, impactBps: null, provider: null },
+            { sizeUsd: 10_000, impactBps: 0, provider: 'jupiter', reason: null },
+            // The fixture row has no provider quotes, so the failure defaults
+            // to 'error' — depth unknown, not proven absent.
+            { sizeUsd: 5_000_000, impactBps: null, provider: null, reason: 'error' },
         ]);
         expect(curve.maxProvenSizeUsd).toBe(10_000);
     });

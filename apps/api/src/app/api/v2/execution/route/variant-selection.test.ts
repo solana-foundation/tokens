@@ -11,7 +11,14 @@ function healthyDisplays(mints: readonly string[], liquidity = 5_000_000): Map<s
     return new Map(
         mints.map(mint => [
             mint,
-            { symbol: mint.slice(0, 4), name: mint.slice(0, 8), decimals: 8, price: 1, liquidity, volume24hUSD: 1_000_000 },
+            {
+                symbol: mint.slice(0, 4),
+                name: mint.slice(0, 8),
+                decimals: 8,
+                price: 1,
+                liquidity,
+                volume24hUSD: 1_000_000,
+            },
         ]),
     );
 }
@@ -108,9 +115,9 @@ describe('selectVariants', () => {
             maxVariants: 6,
         });
         expect(selection.selected.some(entry => entry.variant.mint === thin)).toBe(false);
-        expect(
-            selection.excluded.some(entry => entry.mint === thin && entry.reason === 'below_liquidity_floor'),
-        ).toBe(true);
+        expect(selection.excluded.some(entry => entry.mint === thin && entry.reason === 'below_liquidity_floor')).toBe(
+            true,
+        );
     });
 
     it('excludes variants whose decimals cannot be resolved', () => {
@@ -128,9 +135,9 @@ describe('selectVariants', () => {
             targetUsd: 1_000_000,
             maxVariants: 6,
         });
-        expect(
-            selection.excluded.some(entry => entry.mint === unknown && entry.reason === 'missing_decimals'),
-        ).toBe(true);
+        expect(selection.excluded.some(entry => entry.mint === unknown && entry.reason === 'missing_decimals')).toBe(
+            true,
+        );
     });
 });
 

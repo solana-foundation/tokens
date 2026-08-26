@@ -38,8 +38,16 @@ const LADDER = [8_000, 40_000, 200_000, 1_000_000];
 describe('computeAllocation', () => {
     it('splits toward the flatter curve and beats the best single variant', () => {
         // A: cheap at small size, steep impact. B: slightly worse base, flat curve.
-        const a = variant('cbBTC', 1, pointsFor({ sizes: LADDER, baseOutPerDollar: 0.00001, impactBpsAt: s => s / 2_000 }));
-        const b = variant('wBTC', 2, pointsFor({ sizes: LADDER, baseOutPerDollar: 0.0000099, impactBpsAt: s => s / 20_000 }));
+        const a = variant(
+            'cbBTC',
+            1,
+            pointsFor({ sizes: LADDER, baseOutPerDollar: 0.00001, impactBpsAt: s => s / 2_000 }),
+        );
+        const b = variant(
+            'wBTC',
+            2,
+            pointsFor({ sizes: LADDER, baseOutPerDollar: 0.0000099, impactBpsAt: s => s / 20_000 }),
+        );
         const result = computeAllocation({ targetUsd: 1_000_000, variants: [a, b] })!;
 
         expect(result.allocatedUsd).toBe(1_000_000);
@@ -97,7 +105,11 @@ describe('computeAllocation', () => {
 
     it('degenerates to a single leg when one variant dominates everywhere', () => {
         const strong = variant('A', 1, pointsFor({ sizes: LADDER, baseOutPerDollar: 0.001, impactBpsAt: () => 0 }));
-        const weak = variant('B', 2, pointsFor({ sizes: LADDER, baseOutPerDollar: 0.0005, impactBpsAt: s => s / 1_000 }));
+        const weak = variant(
+            'B',
+            2,
+            pointsFor({ sizes: LADDER, baseOutPerDollar: 0.0005, impactBpsAt: s => s / 1_000 }),
+        );
         const result = computeAllocation({ targetUsd: 1_000_000, variants: [strong, weak] })!;
         expect(result.legs.length).toBe(1);
         expect(result.legs[0]!.symbol).toBe('A');
@@ -110,8 +122,18 @@ describe('computeAllocation', () => {
 
     it('normalizes mixed decimals into a shared output unit', () => {
         // Same economics, different decimals: legs must be comparable and summable.
-        const a = variant('A', 1, pointsFor({ sizes: LADDER, baseOutPerDollar: 0.001, impactBpsAt: s => s / 4_000, decimals: 6 }), 6);
-        const b = variant('B', 2, pointsFor({ sizes: LADDER, baseOutPerDollar: 0.001, impactBpsAt: s => s / 4_000, decimals: 9 }), 9);
+        const a = variant(
+            'A',
+            1,
+            pointsFor({ sizes: LADDER, baseOutPerDollar: 0.001, impactBpsAt: s => s / 4_000, decimals: 6 }),
+            6,
+        );
+        const b = variant(
+            'B',
+            2,
+            pointsFor({ sizes: LADDER, baseOutPerDollar: 0.001, impactBpsAt: s => s / 4_000, decimals: 9 }),
+            9,
+        );
         const result = computeAllocation({ targetUsd: 400_000, variants: [a, b] })!;
         expect(result.outputUnitDecimals).toBe(9);
         // Identical curves: the split should be roughly even.
@@ -167,9 +189,7 @@ describe('computeAllocationEdge', () => {
     });
 
     it('returns null when a baseline is missing or zero', () => {
-        expect(
-            computeAllocationEdge({ planOutUnitsRaw: 1n, baselineOutUnitsRaw: 0n, targetUsd: 1 }),
-        ).toBeNull();
+        expect(computeAllocationEdge({ planOutUnitsRaw: 1n, baselineOutUnitsRaw: 0n, targetUsd: 1 })).toBeNull();
     });
 });
 
@@ -254,8 +274,16 @@ describe('dust-leg suppression (E)', () => {
     it('keeps the dust leg when no sibling has room', () => {
         // A can only prove $200k of depth; B holds the rest and its own dust
         // cannot move anywhere.
-        const a = variant('A', 1, pointsFor({ sizes: [8_000, 40_000, 200_000], baseOutPerDollar: 0.001, impactBpsAt: () => 0 }));
-        const b = variant('B', 2, pointsFor({ sizes: [8_000, 40_000], baseOutPerDollar: 0.00099, impactBpsAt: () => 0 }));
+        const a = variant(
+            'A',
+            1,
+            pointsFor({ sizes: [8_000, 40_000, 200_000], baseOutPerDollar: 0.001, impactBpsAt: () => 0 }),
+        );
+        const b = variant(
+            'B',
+            2,
+            pointsFor({ sizes: [8_000, 40_000], baseOutPerDollar: 0.00099, impactBpsAt: () => 0 }),
+        );
         const result = computeAllocation({ targetUsd: 220_000, variants: [a, b] })!;
         const bLeg = result.legs.find(leg => leg.symbol === 'B');
         // B's $20k is below the floor but every other variant is cap-bound:
@@ -265,13 +293,16 @@ describe('dust-leg suppression (E)', () => {
     });
 
     it('never folds a full-target single-variant plan', () => {
-        const only = variant('A', 1, pointsFor({ sizes: [1_000, 2_000, 10_000], baseOutPerDollar: 0.001, impactBpsAt: () => 0 }));
+        const only = variant(
+            'A',
+            1,
+            pointsFor({ sizes: [1_000, 2_000, 10_000], baseOutPerDollar: 0.001, impactBpsAt: () => 0 }),
+        );
         const result = computeAllocation({ targetUsd: 10_000, variants: [only] })!;
         expect(result.legs.length).toBe(1);
         expect(result.legs[0]!.amountUsd).toBe(10_000);
     });
 });
-
 
 describe('tuning profiles (P2)', () => {
     it('selects the profile by category and falls back to default', () => {

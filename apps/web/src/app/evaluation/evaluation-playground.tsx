@@ -222,15 +222,79 @@ function normalizeAmountInput(raw: string): string | null {
  * Assets worth routing across: at least two variants in the registry. Sorted
  * by variant count so the assets where splitting matters most lead the list.
  */
-function buildRoutableAssetOptions(): Array<{ assetId: string; label: string; variantCount: number }> {
-    return listAssets()
-        .filter(asset => asset.variants.length >= 2)
-        .map(asset => ({
+interface AssetOption {
+    assetId: string;
+    name: string;
+    symbol: string;
+    variantCount: number;
+    /** The mint whose curated metadata (logo) represents this asset. */
+    logoMint: string;
+}
+
+interface AssetOptionGroup {
+    id: CuratedTokenListIdWithoutLsts;
+    label: string;
+    options: AssetOption[];
+}
+
+/**
+ * One option per canonical asset, grouped by the same curated lists as the
+ * mint selector — the canonicals we maintain per list, so testing across
+ * categories is one scroll. Single-variant assets stay listed (they route as
+ * single-leg plans); the variant count makes the difference obvious.
+ */
+function buildAssetOptionGroups(): AssetOptionGroup[] {
+    const groups = CURATED_LIST_ORDER_WITHOUT_LSTS.map(id => ({
+        id,
+        label: CURATED_TOKEN_LISTS[id].name,
+        mints: new Set<string>(CURATED_TOKEN_LISTS[id].addresses),
+        options: [] as AssetOption[],
+    }));
+
+    for (const asset of listAssets()) {
+        if (asset.variants.length === 0) continue;
+        const matchedGroup = groups.find(group => asset.variants.some(variant => group.mints.has(variant.mint)));
+        const groupId = matchedGroup?.id ?? FALLBACK_LIST_BY_CATEGORY[asset.category];
+        if (!groupId) continue;
+        const group = groups.find(entry => entry.id === groupId);
+        if (!group) continue;
+        // Prefer a curated-listed mint for the logo — it is the one the
+        // metadata queries will have hydrated.
+        const logoMint = asset.variants.find(variant => group.mints.has(variant.mint))?.mint ?? asset.variants[0]!.mint;
+        const symbol = asset.symbol?.trim() || asset.assetId;
+        group.options.push({
             assetId: asset.assetId,
-            label: `${asset.name ?? asset.assetId}${asset.symbol ? ` ($${asset.symbol})` : ''}`,
+            name: cleanTokenName(asset.name?.trim() || symbol),
+            symbol,
             variantCount: asset.variants.length,
-        }))
-        .sort((a, b) => b.variantCount - a.variantCount || a.label.localeCompare(b.label));
+            logoMint,
+        });
+    }
+
+    return groups.map(({ mints: _mints, ...group }) => ({
+        ...group,
+        options: group.options.sort((a, b) => b.variantCount - a.variantCount || a.name.localeCompare(b.name)),
+    }));
+}
+
+function AssetOptionRow({ option, logo }: { option: AssetOption; logo: MintOption | undefined }) {
+    return (
+        <span className="flex w-full min-w-0 items-center gap-2 text-left">
+            <MintOptionLogo
+                key={option.logoMint}
+                option={
+                    logo ?? { assetId: option.assetId, mint: option.logoMint, name: option.name, symbol: option.symbol }
+                }
+            />
+            <span className="flex min-w-0 flex-1 items-center gap-2">
+                <span className="min-w-0 truncate text-[16px] font-medium text-text-extra-high">{option.name}</span>
+                <span className="shrink-0 text-[14px] font-medium text-text-extra-low">${option.symbol}</span>
+                <span className="ml-auto shrink-0 rounded-full bg-gray-100 px-1.5 py-0.5 text-[10px] font-medium text-text-medium">
+                    {option.variantCount} {option.variantCount === 1 ? 'variant' : 'variants'}
+                </span>
+            </span>
+        </span>
+    );
 }
 
 type PlaygroundMode = 'mint' | 'asset';
@@ -251,7 +315,18 @@ export function EvaluationPlayground() {
     const [targetError, setTargetError] = React.useState<string | null>(null);
     const routeQuery = useExecutionRoute();
     const [routeLastRequest, setRouteLastRequest] = React.useState<EndpointRequestState | null>(null);
-    const assetOptions = React.useMemo(buildRoutableAssetOptions, []);
+    const baseAssetGroups = React.useMemo(buildAssetOptionGroups, []);
+    const assetGroups = baseAssetGroups.map(group => ({
+        ...group,
+        options: group.options.map(option => ({ option, logo: metadataByMint.get(option.logoMint) })),
+    }));
+    const selectedAssetOption = React.useMemo(() => {
+        for (const group of baseAssetGroups) {
+            const match = group.options.find(option => option.assetId === selectedAssetId);
+            if (match) return match;
+        }
+        return undefined;
+    }, [baseAssetGroups, selectedAssetId]);
     const baseOptionGroups = React.useMemo(buildMintOptionGroups, []);
     const metadataQueries = useQueries({
         queries: CURATED_LIST_ORDER_WITHOUT_LSTS.map(listId => ({
@@ -441,18 +516,39 @@ export function EvaluationPlayground() {
                                 <Select value={selectedAssetId} onValueChange={setSelectedAssetId}>
                                     <SelectTrigger
                                         id="execution-route-asset"
-                                        className="h-[44px] border-border-medium bg-white text-left text-text-extra-high shadow-none focus:ring-border-medium"
+                                        className="h-[52px] border-border-medium bg-white text-left text-text-extra-high shadow-none focus:ring-border-medium [&>span]:!flex [&>span]:min-w-0 [&>span]:flex-1 [&>span]:text-left"
                                     >
-                                        <SelectValue placeholder="Select an asset" />
+                                        <SelectValue placeholder="Select an asset">
+                                            {selectedAssetOption ? (
+                                                <AssetOptionRow
+                                                    option={selectedAssetOption}
+                                                    logo={metadataByMint.get(selectedAssetOption.logoMint)}
+                                                />
+                                            ) : null}
+                                        </SelectValue>
                                     </SelectTrigger>
-                                    <SelectContent className="rounded-xl border-border-light">
-                                        {assetOptions.map(option => (
-                                            <SelectItem key={option.assetId} value={option.assetId} className="py-2">
-                                                {option.label}
-                                                <span className="ml-2 text-[10px] text-text-extra-low">
-                                                    {option.variantCount} variants
-                                                </span>
-                                            </SelectItem>
+                                    <SelectContent className="rounded-xl border-border-light [&>[aria-hidden=true]]:py-0 [&>div[data-radix-select-viewport]]:!pt-0">
+                                        {assetGroups.map((group, index) => (
+                                            <React.Fragment key={group.id}>
+                                                {index > 0 ? (
+                                                    <SelectSeparator className="my-0.5 bg-border-extra-light" />
+                                                ) : null}
+                                                <SelectGroup>
+                                                    <SelectLabel className="sticky top-0 z-10 block border-b border-border-extra-light bg-white px-2 py-1 text-[11px] font-semibold text-text-medium">
+                                                        {group.label}
+                                                    </SelectLabel>
+                                                    {group.options.map(({ option, logo }) => (
+                                                        <SelectItem
+                                                            key={option.assetId}
+                                                            value={option.assetId}
+                                                            textValue={`${option.name} ${option.symbol} ${option.assetId}`}
+                                                            className="py-2"
+                                                        >
+                                                            <AssetOptionRow option={option} logo={logo} />
+                                                        </SelectItem>
+                                                    ))}
+                                                </SelectGroup>
+                                            </React.Fragment>
                                         ))}
                                     </SelectContent>
                                 </Select>

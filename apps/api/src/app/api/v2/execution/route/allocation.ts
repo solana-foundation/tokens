@@ -214,7 +214,9 @@ function impactAt(points: ReadonlyArray<{ sizeUsd: number; impactBps: number }>,
 /** Expected output (in output-unit raw) of putting `sizeUsd` into a variant. */
 function outputAt(variant: PreparedVariant, sizeUsd: number): bigint {
     if (sizeUsd <= 0) return 0n;
-    const impactMicro = BigInt(Math.min(999_999, Math.max(0, Math.round(impactAt(variant.impactPoints, sizeUsd) * 100))));
+    const impactMicro = BigInt(
+        Math.min(999_999, Math.max(0, Math.round(impactAt(variant.impactPoints, sizeUsd) * 100))),
+    );
     const usdcRaw = BigInt(sizeUsd) * USDC_RAW_PER_DOLLAR;
     return (usdcRaw * variant.effNum * (RATIO_SCALE - impactMicro)) / (variant.effDen * RATIO_SCALE);
 }
@@ -288,9 +290,7 @@ export function computeAllocation(args: {
             delete divergenceBpsByMint[loser.source.mint];
         }
     } else if (prepared.length >= 3) {
-        const byPrice = [...prepared].sort((a, b) =>
-            ratioGreater(a.effNum, a.effDen, b.effNum, b.effDen) ? 1 : -1,
-        );
+        const byPrice = [...prepared].sort((a, b) => (ratioGreater(a.effNum, a.effDen, b.effNum, b.effDen) ? 1 : -1));
         // The median element is its own reference (divergence 0), so at least
         // one variant always survives the gate.
         const median = byPrice[Math.floor(byPrice.length / 2)]!;
@@ -327,7 +327,12 @@ export function computeAllocation(args: {
             // the clamp is surfaced as a warning.
             if (
                 variant.lastMarginalPerDollarNum !== null &&
-                ratioGreater(marginal, BigInt(step), variant.lastMarginalPerDollarNum, variant.lastMarginalPerDollarDen!)
+                ratioGreater(
+                    marginal,
+                    BigInt(step),
+                    variant.lastMarginalPerDollarNum,
+                    variant.lastMarginalPerDollarDen!,
+                )
             ) {
                 marginal = (variant.lastMarginalPerDollarNum * BigInt(step)) / variant.lastMarginalPerDollarDen!;
                 variant.clamped = true;
@@ -335,8 +340,7 @@ export function computeAllocation(args: {
             const better =
                 best === null ||
                 ratioGreater(marginal, BigInt(step), bestMarginal, BigInt(bestStep)) ||
-                (marginal * BigInt(bestStep) === bestMarginal * BigInt(step) &&
-                    variant.source.rank < best.source.rank);
+                (marginal * BigInt(bestStep) === bestMarginal * BigInt(step) && variant.source.rank < best.source.rank);
             if (better) {
                 best = variant;
                 bestStep = step;
@@ -460,8 +464,10 @@ export function computeAllocation(args: {
         let maxVariant = pool[0]!;
         let minVariant = pool[0]!;
         for (const variant of pool.slice(1)) {
-            if (ratioGreater(variant.effNum, variant.effDen, maxVariant.effNum, maxVariant.effDen)) maxVariant = variant;
-            if (ratioGreater(minVariant.effNum, minVariant.effDen, variant.effNum, variant.effDen)) minVariant = variant;
+            if (ratioGreater(variant.effNum, variant.effDen, maxVariant.effNum, maxVariant.effDen))
+                maxVariant = variant;
+            if (ratioGreater(minVariant.effNum, minVariant.effDen, variant.effNum, variant.effDen))
+                minVariant = variant;
         }
         const ratio = (maxVariant.effNum * minVariant.effDen * RATIO_SCALE) / (maxVariant.effDen * minVariant.effNum);
         pegSpreadBps = Math.round(Number(ratio - RATIO_SCALE)) / 100;

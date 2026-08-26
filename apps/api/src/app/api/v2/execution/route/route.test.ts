@@ -200,7 +200,7 @@ describe('GET /api/v2/execution/route', () => {
         expect(response.headers.get('cache-control')).toContain('no-store');
         const body = await response.json();
         expect(body.assetId).toBe('bitcoin');
-        expect((body.variants).length).toBe(4);
+        expect(body.variants.length).toBe(4);
         expect(body.meta.probeLadderUsd).toEqual([40_000, 200_000, 1_000_000, 5_000_000]);
         // One probe fanout per selected variant plus one verification call per
         // allocation leg (asserted precisely below once the plan is in hand).
@@ -210,7 +210,7 @@ describe('GET /api/v2/execution/route', () => {
             expect(variant.parityBasis).toBe('kind');
             expect(variant.allocationEligible).toBe(true);
             const curve = variant.curve as { rungs: unknown[]; maxProvenSizeUsd: number };
-            expect((curve.rungs).length).toBe(4);
+            expect(curve.rungs.length).toBe(4);
             expect(curve.maxProvenSizeUsd).toBe(5_000_000);
         }
         expect(body.variants.map((variant: { rank: number }) => variant.rank)).toEqual([1, 2, 3, 4]);
@@ -308,7 +308,7 @@ describe('GET /api/v2/execution/route', () => {
             variant => variant.mint === failMint,
         );
         if (failed) {
-            expect((failed.quotes).length).toBe(0);
+            expect(failed.quotes.length).toBe(0);
             expect(failed.allocationEligible).toBe(false);
             expect(body.meta.warnings).toContain(`variant_fanout_failed:${failMint}`);
         } else {
@@ -416,9 +416,9 @@ describe('GET /api/v2/execution/route', () => {
             edge: { vsBestSingleVariant: { bps: number } | null };
         };
         expect(allocation.repaired).toBe(true);
-        expect(
-            (body.meta.warnings as string[]).some(warning => warning === `plan_repaired:${collapsedMint}`),
-        ).toBe(true);
+        expect((body.meta.warnings as string[]).some(warning => warning === `plan_repaired:${collapsedMint}`)).toBe(
+            true,
+        );
         // The collapsed variant's injected point starves it: no surviving leg
         // carries a collapsed delta.
         for (const leg of allocation.legs) {
@@ -571,9 +571,7 @@ describe('GET /api/v2/execution/route', () => {
         // The crafted curves guarantee a genuine split.
         expect(allocation.legs.length).toBeGreaterThan(1);
         expect(allocation.legIndependence.independent).toBe(false);
-        expect(allocation.legIndependence.passThrough).toEqual([
-            { legMint: secondary, viaVariantMint: primary },
-        ]);
+        expect(allocation.legIndependence.passThrough).toEqual([{ legMint: secondary, viaVariantMint: primary }]);
         expect(body.meta.warnings).toContain('legs_share_liquidity');
     });
 
@@ -708,6 +706,73 @@ describe('GET /api/v2/execution/route', () => {
         expect(allocation.legIndependence.independent).toBe(true);
         expect(body.meta.warnings).toContain('legs_restricted_requoted');
         expect(body.meta.warnings).not.toContain('legs_share_liquidity');
+    });
+
+    it('discloses when a collapse cannot be repaired (single-variant pool)', async () => {
+        const only = BITCOIN_MINTS[0]!;
+        liquidMints = [only];
+        // Probes healthy; the verification re-quote collapses 95%.
+        quoteResponder = (mint, amounts) => {
+            const fanout = defaultFanout(mint, amounts) as { entries: { candidates: { outAmountRaw: string }[] }[] };
+            if (amounts.length === 1) {
+                for (const entry of fanout.entries) {
+                    for (const candidate of entry.candidates) {
+                        candidate.outAmountRaw = String(BigInt(candidate.outAmountRaw) / 20n);
+                    }
+                }
+            }
+            return fanout;
+        };
+        const response = await request('/api/v2/execution/route?assetId=bitcoin&amountUsd=1000000');
+        expect(response.status).toBe(200);
+        const body = await response.json();
+        const allocation = body.allocation as { repaired: boolean; legs: { verification: { deltaBps: number } }[] };
+        // Nothing else exists to recommend: the collapsed leg ships with its
+        // honest delta, un-repaired, and the response says why.
+        expect(allocation.repaired).toBe(false);
+        expect(allocation.legs[0]!.verification.deltaBps).toBeLessThan(-500);
+        expect(body.meta.warnings).toContain(`collapse_unrepairable:${only}`);
+    });
+
+    it('reports blended plan impact and warns when it is extreme', async () => {
+        const [primary, secondary] = BITCOIN_MINTS;
+        // Both variants get brutal at size: ~50% impact at the top rung. Even
+        // the optimal split absorbs >500bps blended.
+        const perDollar = (amountUsd: number): number =>
+            amountUsd <= 40_000 ? 1_000 : 1_000 - (5_000 * (amountUsd - 40_000)) / 960_000 / 10;
+        quoteResponder = (mint, amounts) => ({
+            providers: ['jupiter', 'titan'],
+            mint,
+            side: 'buy',
+            quoteMint: USDC,
+            entries: amounts.map(amount => {
+                const inRaw = `${amount}000000`;
+                const out = String(Math.round(Number(amount) * perDollar(Number(amount))));
+                const jupiter = availableCandidate('jupiter', inRaw, out);
+                return {
+                    request: { unit: 'usd', amount, rawAmount: inRaw },
+                    status: 'available',
+                    provider: 'jupiter',
+                    inAmountRaw: inRaw,
+                    outAmountRaw: out,
+                    priceImpactPct: 0.05,
+                    route: [],
+                    contextSlot: null,
+                    router: 'metis',
+                    mode: 'ultra',
+                    fees: null,
+                    quotedAt: jupiter.quotedAt,
+                    candidates: [jupiter],
+                };
+            }),
+        });
+        liquidMints = [primary!, secondary!];
+        const response = await request('/api/v2/execution/route?assetId=bitcoin&amountUsd=1000000');
+        const body = await response.json();
+        const allocation = body.allocation as { blendedImpactBps: number | null };
+        expect(allocation.blendedImpactBps).not.toBeNull();
+        expect(allocation.blendedImpactBps!).toBeGreaterThan(500);
+        expect(body.meta.warnings).toContain('extreme_impact');
     });
 
     it('requires the execution:read scope', async () => {

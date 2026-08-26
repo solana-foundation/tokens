@@ -475,6 +475,16 @@ apart are noise, not an edge.
   risk. Spreads above 50bps add a `peg_divergence` warning.
 - Outputs compare **net receipts**: Jupiter Ultra's `outAmount` is net of its
   disclosed fee, so a router can have the better gross route and still lose.
+- `allocation.blendedImpactBps` — whole-plan impact: the plan's expected total
+  vs what the same dollars would buy at each leg variant's own baseline price.
+  Above ~500bps the `extreme_impact` warning fires: even the best available
+  split absorbs severe impact and the size may simply not fit the asset yet.
+- When a collapsed leg has no alternative variant to move to, the repair pass
+  cannot fire; the leg ships with its honest verification delta and a
+  `collapse_unrepairable:<mint>` warning instead of silence.
+- Each `curve.rungs[]` entry carries `reason` on failure: `no_route` only when
+  every provider said no route (real market absence); anything else means the
+  quotes failed and depth at that size is **unknown**, not proven absent.
 - Every quote (both endpoints, both routers) is requested with a baked-in
   `slippageBps=50` tolerance — quoted outputs already assume up to 0.5%
   slippage headroom.

@@ -56,9 +56,7 @@ describe('analyzeLegIndependence', () => {
             ],
         });
         expect(result.passThrough).toEqual([]);
-        expect(result.sharedPools).toEqual([
-            { ammKey: 'sharedUSDCPool', label: 'Whirlpool', legMints: ['A', 'B'] },
-        ]);
+        expect(result.sharedPools).toEqual([{ ammKey: 'sharedUSDCPool', label: 'Whirlpool', legMints: ['A', 'B'] }]);
         expect(result.independent).toBe(false);
     });
 

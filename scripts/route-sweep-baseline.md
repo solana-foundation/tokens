@@ -68,3 +68,14 @@ answered 200/200 in ~5s. Two expectations were corrected to match design
 during this run: a collapsed leg may survive when the one-shot repair budget
 is already spent, and depth exhaustion legitimately concentrates a plan into
 a single leg.
+
+## Refinement pass (2026-08-25 night, from joint testing)
+
+Panel fully green after: `collapse_unrepairable:<mint>` disclosure when a
+collapsed leg has no alternative variant (apple's single-pool case);
+median-gate geometry corrected in the harness (survivors legitimately span up
+to 2x the gate pairwise — micron's ~1,747bps at a 1,000bps off-hours gate is
+two survivors on opposite sides of the median); `allocation.blendedImpactBps`
++ `extreme_impact` warning for catastrophic-but-optimal plans (the HOOD case);
+per-rung failure `reason` distinguishing "no route" from "quotes failed —
+depth unknown". Live bitcoin: blended impact 12.11bps, no warning — correct.

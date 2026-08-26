@@ -142,8 +142,10 @@ function checkExpectations(entry: PanelEntry, body: Json): string[] {
         // starting a loop.
         for (const leg of legs) {
             const delta = get(leg, 'verification.deltaBps') as number | null;
-            if (delta !== null && delta < collapseBps && allocation.repaired !== true) {
-                fail(`leg ${leg.symbol} collapsed ${delta}bps with the repair budget unspent`);
+            const disclosed =
+                allocation.repaired === true || warnings.includes(`collapse_unrepairable:${leg.mint}`);
+            if (delta !== null && delta < collapseBps && !disclosed) {
+                fail(`leg ${leg.symbol} collapsed ${delta}bps with no repair and no unrepairable disclosure`);
             }
         }
         if (allocation.repaired === true && !warnings.some(w => w.startsWith('plan_repaired:'))) {
@@ -174,10 +176,19 @@ function checkExpectations(entry: PanelEntry, body: Json): string[] {
         } else if (legs.length > 0) {
             fail('allocation missing legIndependence');
         }
-        // A: surviving peg spread must be within the divergence gate.
+        // A: the gate is median-anchored, so each survivor sits within
+        // parityGateBps of the MEDIAN — two survivors on opposite sides can
+        // legitimately span up to ~2x the gate pairwise. That is the bound.
         const peg = allocation.pegSpreadBps as number | null;
-        if (peg !== null && peg > parityGateBps) {
-            fail(`surviving pegSpreadBps ${peg} exceeds the published ${parityGateBps}bps divergence gate`);
+        if (peg !== null && peg > 2 * parityGateBps) {
+            fail(`surviving pegSpreadBps ${peg} exceeds 2x the published ${parityGateBps}bps median gate`);
+        }
+        // #3: every plan declares its blended impact, and extreme values warn.
+        const blended = allocation.blendedImpactBps as number | null | undefined;
+        if (blended === undefined) {
+            fail('allocation missing blendedImpactBps');
+        } else if (blended !== null && (blended > 500) !== warnings.includes('extreme_impact')) {
+            fail(`extreme_impact warning disagrees with blendedImpactBps ${blended}`);
         }
     }
 

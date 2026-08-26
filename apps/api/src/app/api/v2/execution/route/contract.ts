@@ -52,6 +52,12 @@ export interface VariantCurveRung {
     impactBps: number | null;
     /** Provider whose quote won this rung; null when the rung failed. */
     provider: QuoteProvider | null;
+    /**
+     * Why the rung failed, when it did. 'no_route' only when every provider
+     * said no route — real market absence; anything else (error/timeout/auth)
+     * means the quotes failed and depth at this size is UNKNOWN, not absent.
+     */
+    reason: string | null;
 }
 
 export interface RoutedVariantMarket {
@@ -193,6 +199,14 @@ export interface AllocationPlan {
     };
     /** Max pairwise divergence of baseEffectivePrice among pool variants, bps. */
     pegSpreadBps: number | null;
+    /**
+     * Whole-plan impact: the plan's total output vs what the same dollars
+     * would buy at each leg variant's own baseline (smallest-rung) price, bps.
+     * The plan analogue of a leg's impactBps. Above ~500bps the response
+     * carries the extreme_impact warning: even the best available split is
+     * absorbing severe impact — the size may not fit the asset yet.
+     */
+    blendedImpactBps: number | null;
     /**
      * Are the legs actually additive? Legs are priced with independent
      * quotes, but a leg whose route hops THROUGH another leg's variant
