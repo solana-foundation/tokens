@@ -5,10 +5,7 @@ import { Effect } from 'effect';
 
 import { apiJson } from '@/effect/api-client';
 
-/**
- * Types come from the endpoint's own contract module (import-free by design),
- * exactly like the evaluate hook — the dogfood app cannot drift from the API.
- */
+// Types come from the endpoint's own contract module (import-free by design).
 export type {
     AllocationLeg,
     AllocationPlan,
@@ -30,11 +27,7 @@ export interface ExecutionRouteRequestArgs {
     amountUsd: string;
 }
 
-/**
- * The request path for one routing call. Exported because the page shows the
- * exact request it makes — the same builder feeds the fetch and the snippet,
- * so the code on screen can never drift from the call.
- */
+/** Exported so the same builder feeds both the fetch and the on-screen snippet. */
 export function buildRouteRequestPath(args: ExecutionRouteRequestArgs): string {
     const params = new URLSearchParams({ assetId: args.assetId, amountUsd: args.amountUsd });
     return `${ROUTE_ENDPOINT_PATH}?${params.toString()}`;

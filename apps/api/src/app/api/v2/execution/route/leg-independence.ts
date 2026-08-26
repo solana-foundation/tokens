@@ -1,12 +1,7 @@
 /**
- * Leg-independence analysis: are the plan's legs actually additive?
- *
- * The allocator prices legs with independent quotes, but live routes showed
- * bitcoin's wBTC/xBTC legs hopping *through* cbBTC pools — executing the
- * split means later legs consume liquidity earlier legs already used, so the
- * headline edge is an upper bound whenever legs overlap. Every quote row
- * carries its per-hop route, so overlap is detectable for free; this module
- * is the pure detector.
+ * Leg-independence analysis: are the plan's legs actually additive? A leg
+ * routing through another leg's variant or pool consumes liquidity the
+ * sibling also uses, so the headline edge is an upper bound when legs overlap.
  */
 
 import type { ExecutionRouteStep } from '../evaluate/contract';

@@ -3,18 +3,9 @@
  * decide how to divide a USD target across variants for the greatest total
  * output.
  *
- * Pure and BigInt-only, tested like comparison.ts — this file produces the
- * product's headline claim ("this split beats the best single variant by X
- * bps"), so the arithmetic must be checkable without an HTTP layer.
- *
- * Method: each variant's output-vs-size function is built from its probe
- * points (impact log-linearly interpolated between rungs, exactly the depth
- * pipeline's idiom), clamped to concavity so marginal output per dollar never
- * increases with size. On concave curves greedy chunk assignment is provably
- * optimal, so the allocator is a greedy loop: give each chunk of the target
- * to whichever variant currently offers the most output for it. Allocation
- * never exceeds a variant's largest successfully probed size — a plan built
- * on extrapolation is speculation dressed as advice.
+ * Pure and BigInt-only. Each curve is log-linearly interpolated between probe
+ * rungs and clamped to concavity, so greedy chunk assignment is optimal;
+ * allocation never exceeds a variant's largest successfully probed size.
  */
 
 import type { QuoteProvider } from '../evaluate/comparison';
@@ -37,16 +28,8 @@ const USDC_RAW_PER_DOLLAR = 1_000_000n;
  * - `pegWarnBps`: surviving pool spread above this adds a peg_divergence
  *   warning.
  *
- * PROVENANCE (keep honest): hand-set first guesses, no external source.
- * Derived from our own sweep observations of *healthy* surviving pools
- * (stablecoins ~5bps spread, crypto 27–95bps, commodity ~151bps; N≈2
- * sessions, demo-Titan in the mix) with a ~3–5x headroom rule of thumb.
- * These are CALIBRATION TARGETS: the multi-session sweep archive
- * (scripts/route-sweep-baseline.md) replaces the rule of thumb with measured
- * distributions, recomputed offline and reviewed — never self-adjusting from
- * live data, because a gate fed by the pool's own current behavior loosens
- * exactly when the pool breaks, and every ejection must be auditable against
- * a published number.
+ * Hand-set calibration targets (see scripts/route-sweep-baseline.md); never
+ * self-adjusting from live data.
  */
 export interface TuningProfile {
     profile: string;
@@ -63,43 +46,21 @@ export const ALLOCATOR_TUNING: Record<string, TuningProfile> = {
     default: { profile: 'default', parityDivergenceMaxBps: 500, collapseThresholdBps: -500, pegWarnBps: 50 },
 };
 
-/**
- * Equity issuer AMMs drift apart legitimately while the underlying market is
- * closed, so the parity gate loosens by this factor off-hours. Deterministic:
- * the clock and the category, no history needed.
- */
+/** Equity parity gates loosen by this factor while the underlying market is closed. */
 export const MARKET_CLOSED_PARITY_MULTIPLIER = 2;
 
 /**
  * Above this interpolated impact, the marginal dollar's fate is decided in a
  * region where quotes move fast, so the leg's exact SIZE is guidance rather
  * than a firm number.
- *
- * Measured motivation: across 5 identical bitcoin $1M requests 20s apart the
- * cbBTC/WBTC split moved $240k peak-to-peak while the plan total stayed
- * within 5.7bps. The driver was one probe point — WBTC's $1M rung swinging
- * 66 → 176bps.
- *
- * Note on method: a slope RATIO cannot separate these cases. Measuring the
- * observed curves, every BTC variant's top segment is 27–71x steeper than its
- * prior segment (convexity is universal at the top rung), calm and spiked
- * alike. Absolute steepness is what distinguishes them: the spiked ping put
- * the leg at ~90bps of local impact where the calm pings sat near ~30bps.
  */
 export const SHARE_SOFT_IMPACT_BPS = 60;
 
 /**
  * How close two legs' next-dollar marginals must be for the boundary between
- * them to count as a near-tie (fraction of the larger marginal).
- *
- * This is the dominant mechanism, and it is structural rather than a market
- * accident: greedy allocation equalizes marginal output across legs at the
- * optimum, so for any interior split the competing marginals are nearly equal
- * BY CONSTRUCTION — and then ordinary quote noise moves the boundary. The
- * measured signature: across repeated bitcoin $1M pings, cbBTC and WBTC (both
- * interior, marginals equalized) swung $220-240k between them every time,
- * while xBTC held exactly $60k because its curve cliffs immediately after
- * that size, leaving a wide marginal gap that noise cannot cross.
+ * them to count as a near-tie (fraction of the larger marginal). Structural:
+ * greedy equalizes marginals at the optimum, so interior splits are near-tied
+ * by construction and quote noise moves the boundary.
  */
 export const SHARE_MARGINAL_TIE_TOLERANCE = 0.02;
 
@@ -120,12 +81,8 @@ export function shareConfidenceOf(args: {
     /** This leg's next-dollar marginal is within a hair of a rival leg's. */
     marginalNearTie?: boolean;
 }): ShareConfidence {
-    // The two mechanisms actually observed moving shares between pings:
-    // an arbitrary boundary with a rival leg (marginals equalized at the
-    // optimum), and coverage gaps that understate a variant's proven depth.
     if (args.marginalNearTie || args.depthUncertain) return 'soft';
     if (args.points.length === 0) return 'firm';
-    // Residual: a leg deep in a steep region is sensitive even without a rival.
     return impactAt(args.points, args.legUsd) > SHARE_SOFT_IMPACT_BPS ? 'soft' : 'firm';
 }
 
@@ -158,11 +115,7 @@ export function isUsMarketOpen(now: Date): boolean {
     return minutes >= 9 * 60 + 30 && minutes < 16 * 60;
 }
 
-/**
- * The profile a request actually runs under: category-selected, with the
- * off-hours multiplier applied for equities. Every new registry asset
- * inherits sane bounds automatically by category — never per-asset tuning.
- */
+/** Category-selected profile, with the off-hours multiplier applied for equities. */
 export function resolveTuningProfile(args: { category: string; now: Date }): {
     tuning: TuningProfile;
     marketClosedMultiplierApplied: boolean;
@@ -192,8 +145,7 @@ export interface AllocatableVariant {
     /**
      * True when a rung failed for a reason other than 'no_route' (a quote
      * error or rate limit), so this variant's proven depth is an artifact of
-     * coverage rather than the market. Measured: a run where cbBTC lost two
-     * rungs to rate limiting handed its entire $840k share to WBTC.
+     * coverage rather than the market.
      */
     depthUncertain?: boolean;
 }
@@ -271,10 +223,9 @@ interface PreparedVariant {
 }
 
 /**
- * Log-linear impact interpolation between probe rungs (the
- * `interpolateImpactBps` math, kept local so this module stays pure and
- * dependency-free). At or below the smallest rung the impact is that rung's;
- * sizes above the cap are never asked for.
+ * Log-linear impact interpolation between probe rungs. At or below the
+ * smallest rung the impact is that rung's; sizes above the cap are never
+ * asked for.
  */
 function impactAt(points: ReadonlyArray<{ sizeUsd: number; impactBps: number }>, sizeUsd: number): number {
     const first = points[0]!;
@@ -335,10 +286,8 @@ export function computeAllocation(args: {
         };
     });
 
-    // --- Runtime unit-parity gate: base-price clustering ---
-    // Directionless divergence between two base prices in bps (2dp): always
-    // the larger over the smaller, so "10x too cheap" and "10x too expensive"
-    // both read as 90,000bps rather than 9,000 vs 90,000.
+    // Runtime unit-parity gate. Divergence is directionless: always the larger
+    // price over the smaller.
     const divergenceBps = (a: PreparedVariant, b: PreparedVariant): number => {
         const aOverB = a.effNum * b.effDen;
         const bOverA = b.effNum * a.effDen;
@@ -351,9 +300,8 @@ export function computeAllocation(args: {
     const divergenceBpsByMint: Record<string, number> = {};
     let pool: PreparedVariant[] = prepared;
     if (prepared.length === 2) {
-        // Two variants cannot tell us which one is the outlier, so the gate
-        // loosens to 2x and the tie-break prefers an exact target-rung quote,
-        // then the better pre-filter rank.
+        // Two variants cannot tell us which one is the outlier: gate loosens
+        // to 2x, tie-break prefers an exact target-rung quote, then rank.
         const [first, second] = prepared;
         const mutual = divergenceBps(first!, second!);
         divergenceBpsByMint[first!.source.mint] = mutual;
@@ -402,10 +350,8 @@ export function computeAllocation(args: {
             const step = Math.min(chunkUsd, remaining, capacity);
             let marginal = outputAt(variant, variant.allocatedUsd + step) - variant.outAtAllocated;
             if (marginal <= 0n) continue;
-            // Concavity clamp: a marginal that beats this variant's own
-            // previous per-dollar marginal is a convex kink in the probe data
-            // (quote noise, a route unlock). Clamp it so greedy stays optimal;
-            // the clamp is surfaced as a warning.
+            // Concavity clamp: a convex kink in the probe data would break
+            // greedy optimality, so cap at the previous per-dollar marginal.
             if (
                 variant.lastMarginalPerDollarNum !== null &&
                 ratioGreater(
@@ -436,12 +382,8 @@ export function computeAllocation(args: {
         remaining -= bestStep;
     }
 
-    // --- Dust-leg suppression ---
-    // A leg that won only one chunk won a single marginal comparison — within
-    // quote noise — and carries fixed per-leg execution overhead (a separate
-    // transaction). Fold it into the best sibling with room; keep it only when
-    // nothing has room, because a dust leg still beats under-filling the
-    // target.
+    // Dust-leg suppression: fold sub-2-chunk legs into the best sibling with
+    // room; keep them only when nothing has room (dust beats under-filling).
     const minLegUsd = Math.min(chunkUsd * 2, args.targetUsd);
     const dustVariants = pool
         .filter(variant => variant.allocatedUsd > 0 && variant.allocatedUsd < minLegUsd)
@@ -463,8 +405,7 @@ export function computeAllocation(args: {
                 if (capacity <= 0) continue;
                 const step = Math.min(chunkUsd, toMove, capacity);
                 const marginal = outputAt(variant, variant.allocatedUsd + step) - variant.outAtAllocated;
-                // Accepting zero-marginal moves is deliberate: the dollars are
-                // committed either way, and concentration beats a dust leg.
+                // Zero-marginal moves are deliberate: concentration beats dust.
                 const better =
                     best === null ||
                     ratioGreater(marginal, BigInt(step), bestMarginal, BigInt(bestStep)) ||
@@ -490,8 +431,7 @@ export function computeAllocation(args: {
         // holds because the moved chunks were added to receivers.
     }
 
-    // Next-dollar marginal per leg: the quantity greedy equalizes. Legs whose
-    // marginals sit within a hair of each other share an arbitrary boundary.
+    // Legs whose next-dollar marginals near-tie share an arbitrary boundary.
     const marginalPerDollar = (variant: PreparedVariant): number => {
         const capacity = variant.capUsd - variant.allocatedUsd;
         const step = Math.min(chunkUsd, Math.max(1, capacity));
@@ -548,8 +488,7 @@ export function computeAllocation(args: {
     const allocatedUsd = legs.reduce((sum, leg) => sum + leg.amountUsd, 0);
     const totalOutUnitsRaw = legs.reduce((sum, leg) => sum + leg.expectedOutUnitsRaw, 0n);
 
-    // Baselines use exact probe quotes at the full target — the ladder includes
-    // T precisely so these are never interpolations.
+    // Baselines use exact probe quotes at the full target, never interpolations.
     const baselineOf = (variant: PreparedVariant | undefined): AllocationBaseline | null => {
         if (!variant) return null;
         const point = variant.source.points.find(p => p.sizeUsd === args.targetUsd);
@@ -571,8 +510,7 @@ export function computeAllocation(args: {
     }
     const primaryAtTarget = baselineOf(pool.find(variant => variant.source.rank === 1) ?? pool[0]);
 
-    // Peg spread: max pairwise divergence of base effective prices.
-    // Peg spread over the surviving pool: residual risk, not handled outliers.
+    // Peg spread: max pairwise divergence of surviving base effective prices.
     let pegSpreadBps: number | null = null;
     if (pool.length >= 2) {
         let maxVariant = pool[0]!;

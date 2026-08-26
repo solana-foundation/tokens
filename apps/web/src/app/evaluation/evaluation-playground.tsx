@@ -39,10 +39,6 @@ import { cleanTokenName } from '@/lib/logo-overrides';
 import { trackEvent } from '@/lib/posthog-client';
 
 /**
- * The size curve this page exists to show: where a router's edge appears and
- * where liquidity gives out are only legible across rungs, so we ask for all
- * eight rather than the endpoint's cheaper three-rung default.
- *
  * Eight plus a custom amount is exactly the endpoint's nine-amount cap, so
  * adding a rung here without raising MAX_AMOUNTS would start returning 400.
  */
@@ -102,9 +98,7 @@ async function fetchCuratedMintMetadata(
         const variant = asset.primaryVariant;
         if (!variant?.mint) return [];
 
-        // Market logos are populated by the assets pipeline from Birdeye. The
-        // canonical image is a fallback for assets whose primary market row
-        // does not expose one.
+        // Canonical image is the fallback when the market row has no logo.
         const logoURI = (variant.market?.logoURI ?? asset.imageUrl ?? '').trim();
         const symbol = (variant.symbol ?? variant.label ?? asset.symbol ?? variant.mint.slice(0, 4)).trim();
         const name = cleanTokenName((variant.name ?? variant.label ?? asset.name ?? symbol).trim());
@@ -132,9 +126,8 @@ function buildMintOptionGroups(): MintOptionGroup[] {
     for (const asset of listAssets()) {
         if (asset.variants.length === 0) continue;
 
-        // Match the same curated lists that power the homepage tabs. A small
-        // number of registry-only assets fall back to their equivalent tab so
-        // the selector does not lose options that were previously available.
+        // Same curated lists as the homepage tabs; registry-only assets fall
+        // back to their category's tab.
         const matchedGroup = groups.find(group => asset.variants.some(variant => group.mints.has(variant.mint)));
         const groupId = matchedGroup?.id ?? FALLBACK_LIST_BY_CATEGORY[asset.category];
         if (!groupId) continue;
@@ -239,9 +232,7 @@ interface AssetOptionGroup {
 
 /**
  * One option per canonical asset, grouped by the same curated lists as the
- * mint selector — the canonicals we maintain per list, so testing across
- * categories is one scroll. Single-variant assets stay listed (they route as
- * single-leg plans); the variant count makes the difference obvious.
+ * mint selector. Single-variant assets stay listed (single-leg plans).
  */
 function buildAssetOptionGroups(): AssetOptionGroup[] {
     const groups = CURATED_LIST_ORDER_WITHOUT_LSTS.map(id => ({
@@ -258,8 +249,7 @@ function buildAssetOptionGroups(): AssetOptionGroup[] {
         if (!groupId) continue;
         const group = groups.find(entry => entry.id === groupId);
         if (!group) continue;
-        // Prefer a curated-listed mint for the logo — it is the one the
-        // metadata queries will have hydrated.
+        // Prefer a curated-listed mint for the logo: it is already hydrated.
         const logoMint = asset.variants.find(variant => group.mints.has(variant.mint))?.mint ?? asset.variants[0]!.mint;
         const symbol = asset.symbol?.trim() || asset.assetId;
         group.options.push({
@@ -397,9 +387,8 @@ export function EvaluationPlayground() {
         [execute, selectedMint, side],
     );
 
-    // Changing the mint or side clears the table but does NOT auto-fetch: each
-    // request is amounts x providers real upstream quotes, so it waits for a
-    // deliberate submit rather than firing on every dropdown change.
+    // Clears the table but does NOT auto-fetch: each request is amounts x
+    // providers real upstream quotes, so it waits for a deliberate submit.
     React.useEffect(() => {
         setAmountInput('');
         setAmountError(null);
@@ -409,14 +398,12 @@ export function EvaluationPlayground() {
         reset();
     }, [selectedMint, side, reset]);
 
-    // What a submit right now would ask for. Drives both the request and the
-    // snippet beside it, so the code updates live as the form changes.
+    // What a submit right now would ask for; drives the request and the snippet.
     const pendingAmounts = React.useMemo(() => {
         const custom = normalizeAmountInput(amountInput);
         if (side === 'sell') return custom ? [custom] : [];
-        // A custom amount joins the curve rather than replacing it, so it can be
-        // read against the neighbouring rungs. Deduped: typing a size that is
-        // already a tier must not spend a second quote on it.
+        // A custom amount joins the curve rather than replacing it; deduped so
+        // a tier-sized custom amount never spends a second quote.
         return [...new Set([...BUY_TIERS, ...(custom ? [custom] : [])])];
     }, [amountInput, side]);
     const requestPath = buildEvaluateRequestPath({ mint: selectedMint, side, amounts: pendingAmounts });

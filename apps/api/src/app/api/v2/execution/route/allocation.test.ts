@@ -76,8 +76,7 @@ describe('computeAllocation', () => {
         const target = 1_000_000;
         const result = computeAllocation({ targetUsd: target, variants: [a, b] })!;
 
-        // Brute force over every whole-chunk split, using the engine itself to
-        // price each side (same curve model, so this isolates the greedy step).
+        // Brute force over every whole-chunk split, priced by the engine itself.
         const chunk = result.chunkUsd;
         let bruteBest = -1n;
         for (let usdA = 0; usdA <= target; usdA += chunk) {
@@ -149,9 +148,7 @@ describe('computeAllocation', () => {
     });
 
     it('clamps convex kinks and reports the clamp', () => {
-        // A convex curve: impact IMPROVES at size (quote noise / a route
-        // unlock). A single variant forces greedy to walk through the kink,
-        // where the rising per-dollar marginal must be clamped, not believed.
+        // Impact IMPROVES at size: greedy must clamp the kink, not believe it.
         const kinked = variant(
             'A',
             1,
@@ -166,7 +163,7 @@ describe('computeAllocation', () => {
         expect(result.totalOutUnitsRaw < BigInt(rawCurvePromise)).toBe(true);
     });
 
-    it('reports peg spread across variants base prices', () => {
+    it('reports peg spread across variant base prices', () => {
         const rich = variant('A', 1, pointsFor({ sizes: LADDER, baseOutPerDollar: 0.001, impactBpsAt: () => 0 }));
         // 1% cheaper base price: ~100bps spread.
         const cheap = variant('B', 2, pointsFor({ sizes: LADDER, baseOutPerDollar: 0.00101, impactBpsAt: () => 0 }));
@@ -247,8 +244,7 @@ describe('parity divergence ejection (A)', () => {
 });
 
 describe('dust-leg suppression (E)', () => {
-    // B wins exactly the first $20k chunk (cheapest shallow region) and then
-    // loses every later marginal — the bitcoin-sweep dust pattern.
+    // B wins exactly the first $20k chunk, then loses every later marginal.
     const dustPair = () => [
         variant('A', 1, pointsFor({ sizes: LADDER, baseOutPerDollar: 0.001, impactBpsAt: () => 250 })),
         variant(
@@ -265,8 +261,7 @@ describe('dust-leg suppression (E)', () => {
     it('folds a single-chunk leg into the best sibling with room', () => {
         const result = computeAllocation({ targetUsd: 1_000_000, variants: dustPair() })!;
         expect(result.minLegUsd).toBe(40_000);
-        // Without folding this is A $980k + B $20k; the $20k leg is one chunk
-        // of noise plus real per-leg execution overhead — folded into A.
+        // Without folding this is A $980k + B $20k.
         expect(result.legs.length).toBe(1);
         expect(result.legs[0]!.symbol).toBe('A');
         expect(result.legs[0]!.amountUsd).toBe(1_000_000);
@@ -274,8 +269,7 @@ describe('dust-leg suppression (E)', () => {
     });
 
     it('keeps the dust leg when no sibling has room', () => {
-        // A can only prove $200k of depth; B holds the rest and its own dust
-        // cannot move anywhere.
+        // A caps at $200k; B's dust has nowhere to go.
         const a = variant(
             'A',
             1,
@@ -288,8 +282,6 @@ describe('dust-leg suppression (E)', () => {
         );
         const result = computeAllocation({ targetUsd: 220_000, variants: [a, b] })!;
         const bLeg = result.legs.find(leg => leg.symbol === 'B');
-        // B's $20k is below the floor but every other variant is cap-bound:
-        // keeping the dust beats under-allocating the target.
         expect(bLeg).toBeDefined();
         expect(result.allocatedUsd).toBe(220_000);
     });
@@ -345,7 +337,6 @@ describe('tuning profiles (P2)', () => {
 });
 
 describe('shareConfidenceOf (measured curve shapes)', () => {
-    // The exact rungs observed across 5 identical bitcoin $1M pings 20s apart.
     const CBBTC = [
         { sizeUsd: 8_000, impactBps: 0 },
         { sizeUsd: 40_000, impactBps: 1.08 },
@@ -358,8 +349,7 @@ describe('shareConfidenceOf (measured curve shapes)', () => {
         { sizeUsd: 200_000, impactBps: 3.29 },
         { sizeUsd: 1_000_000, impactBps: 65.96 },
     ];
-    // Ping 3: the same variant's top rung blew out to 176bps — the shape that
-    // moved $240k between legs.
+    // Same variant, top rung blown out.
     const WBTC_SPIKED = [
         { sizeUsd: 8_000, impactBps: 0 },
         { sizeUsd: 40_000, impactBps: 1.26 },
@@ -367,9 +357,8 @@ describe('shareConfidenceOf (measured curve shapes)', () => {
         { sizeUsd: 1_000_000, impactBps: 176.34 },
     ];
 
-    it('separates the spiked ping from the calm ones at the same leg size', () => {
-        // Ping 3 put a $400k leg at ~90bps of local impact; the calm pings put
-        // the same size near ~30bps. That absolute difference is the signal.
+    it('separates the spiked curve from the calm ones at the same leg size', () => {
+        // ~90bps of local impact on the spiked shape vs ~30bps on the calm ones.
         expect(shareConfidenceOf({ points: WBTC_SPIKED, legUsd: 400_000 })).toBe('soft');
         expect(shareConfidenceOf({ points: WBTC_CALM, legUsd: 400_000 })).toBe('firm');
         expect(shareConfidenceOf({ points: CBBTC, legUsd: 400_000 })).toBe('firm');
@@ -381,16 +370,11 @@ describe('shareConfidenceOf (measured curve shapes)', () => {
     });
 
     it('calls a coverage-gapped variant soft regardless of curve shape', () => {
-        // The measured dominant driver: cbBTC lost two rungs to rate limiting
-        // and its whole $840k share moved to a sibling on the next ping.
         expect(shareConfidenceOf({ points: CBBTC, legUsd: 400_000, depthUncertain: true })).toBe('soft');
         expect(shareConfidenceOf({ points: CBBTC, legUsd: 400_000, depthUncertain: false })).toBe('firm');
     });
 
     it('marks a near-tie boundary soft and a cliff-protected leg firm', () => {
-        // The measured signature: two similar variants (marginals equalized by
-        // greedy) swap dollars every ping, while a variant whose curve cliffs
-        // right after its allocation holds the same size every time.
         const twinA = variant(
             'A',
             1,
@@ -456,7 +440,6 @@ describe('gradeBlendedImpact', () => {
     it('maps the standard bands', () => {
         expect(gradeBlendedImpact(4.27)).toBe('excellent');
         expect(gradeBlendedImpact(11.26)).toBe('good');
-        // The observed ethereum $5M case: past fair, previously unflagged.
         expect(gradeBlendedImpact(174.68)).toBe('poor');
         expect(gradeBlendedImpact(5_949)).toBe('avoid');
         expect(gradeBlendedImpact(Number.NaN)).toBe('avoid');

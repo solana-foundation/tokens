@@ -388,9 +388,8 @@ describe('GET /api/v2/execution/route', () => {
     });
 
     it('repairs the plan when a verification re-quote collapses (B)', async () => {
-        // Probe quotes are healthy everywhere; the verification re-quote
-        // (recognizable as a single-amount call) on one variant returns 95%
-        // fewer tokens — the vanished-RFQ pattern from the sweep.
+        // Healthy probes; the verification re-quote (a single-amount call) on
+        // one variant returns 95% fewer tokens.
         const bitcoinMints = [...BITCOIN_MINTS];
         let collapsedMint: string | null = null;
         quoteResponder = (mint, amounts) => {
@@ -430,10 +429,8 @@ describe('GET /api/v2/execution/route', () => {
     });
 
     it('falls back to the single best variant when the split loses after verification (C)', async () => {
-        // Two curves that genuinely split at probe time; every verification
-        // re-quote comes back 200bps worse (real drift, above the collapse
-        // threshold so no repair fires). The verified split then loses to the
-        // best single variant's exact probe quote — ship that instead.
+        // A genuine split whose re-quotes drift 200bps worse (above the
+        // collapse threshold, so no repair) and then loses to the best single.
         const [steep, flat] = BITCOIN_MINTS;
         const perDollar = (mint: string, amountUsd: number): number => {
             if (mint === flat) return 995;
@@ -526,8 +523,7 @@ describe('GET /api/v2/execution/route', () => {
                     };
                 }),
             } as unknown as { entries: { candidates: Record<string, unknown>[] }[] };
-            // The secondary variant's routes hop through the primary variant —
-            // the live bitcoin shape.
+            // The secondary variant's routes hop through the primary variant.
             if (mint === secondary) {
                 for (const entry of fanout.entries) {
                     for (const candidate of entry.candidates) {
@@ -661,8 +657,7 @@ describe('GET /api/v2/execution/route', () => {
                 quoteMint: USDC,
                 entries: amounts.map(amount => {
                     const inRaw = `${amount}000000`;
-                    // Same price restricted or not — this test isolates route
-                    // cleanness; the C-fallback interaction is covered above.
+                    // Same price restricted or not: isolates route cleanness.
                     const factor = 1;
                     const out = String(Math.round(Number(amount) * perDollar(mint, Number(amount)) * factor));
                     const route = mint === secondary && !restricted ? dirtyRoute : cleanRoute;
@@ -727,8 +722,7 @@ describe('GET /api/v2/execution/route', () => {
         expect(response.status).toBe(200);
         const body = await response.json();
         const allocation = body.allocation as { repaired: boolean; legs: { verification: { deltaBps: number } }[] };
-        // Nothing else exists to recommend: the collapsed leg ships with its
-        // honest delta, un-repaired, and the response says why.
+        // The collapsed leg ships with its honest delta, un-repaired.
         expect(allocation.repaired).toBe(false);
         expect(allocation.legs[0]!.verification.deltaBps).toBeLessThan(-500);
         expect(body.meta.warnings).toContain(`collapse_unrepairable:${only}`);
@@ -736,8 +730,7 @@ describe('GET /api/v2/execution/route', () => {
 
     it('reports blended plan impact and warns when it is extreme', async () => {
         const [primary, secondary] = BITCOIN_MINTS;
-        // Both variants get brutal at size: ~50% impact at the top rung. Even
-        // the optimal split absorbs >500bps blended.
+        // ~50% impact at the top rung: even the optimal split absorbs >500bps.
         const perDollar = (amountUsd: number): number =>
             amountUsd <= 40_000 ? 1_000 : 1_000 - (5_000 * (amountUsd - 40_000)) / 960_000 / 10;
         quoteResponder = (mint, amounts) => ({
@@ -776,9 +769,7 @@ describe('GET /api/v2/execution/route', () => {
     });
 
     it('reports insufficient_quotes (not no_eligible_variants) when curves fail', async () => {
-        // Parity variants were selected and probed; every rung failed. The
-        // observed usd@$2M bug reported no_eligible_variants here, telling
-        // callers the asset was unroutable when they should simply retry.
+        // Parity variants were selected and probed; every rung failed.
         quoteResponder = (mint, amounts) => ({
             providers: ['jupiter', 'titan'],
             mint,

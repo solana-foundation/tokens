@@ -2,15 +2,9 @@
  * The public response contract for GET /v2/execution/evaluate.
  *
  * Deliberately import-free apart from `./comparison` (itself dependency-free)
- * so consumers outside this app — the dogfood web app, the contract verifier —
- * can `import type` it by path without dragging in `server-only`, the `@/`
- * aliases, or anything else that only resolves inside apps/api. It replaces a
- * hand-maintained transcription in the web hook that silently drifted from the
- * route every time the shape changed.
- *
- * The route annotates its return value with `ExecutionEvaluationResponse`, so
- * a change here that the route does not make is a compile error, not a runtime
- * surprise for callers.
+ * so consumers outside this app can `import type` it by path without dragging
+ * in `server-only`, the `@/` aliases, or anything else that only resolves
+ * inside apps/api.
  */
 
 import type { ComparisonSummary, PriceImpactSource, ProviderStat, QuoteEdge, QuoteProvider } from './comparison';
@@ -100,11 +94,8 @@ export type ExecutionProviderQuote =
 export type ExecutionBestQuote = Extract<ExecutionProviderQuote, { status: 'available' }>;
 
 /**
- * One requested size: who won, by how much, and everyone's answer.
- *
- * An `available` row always names a winner — that is the guarantee the docs and
- * the contract verifier state, so the type says it too rather than leaving every
- * consumer to null-check a field that is never null.
+ * One requested size: who won, by how much, and everyone's answer. An
+ * `available` row always names a winner.
  */
 export type ExecutionQuoteRow =
     | {

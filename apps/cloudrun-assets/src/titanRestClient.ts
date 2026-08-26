@@ -113,11 +113,6 @@ function routeSteps(value: unknown): ExecutionRouteStep[] {
 }
 
 /**
- * Pick the best quote for the pair/amount we actually requested. Titan echoes
- * the trade it priced, so an exact-out or otherwise mismatched response is
- * dropped rather than allowed to win the comparison.
- */
-/**
  * The route's declared endpoints must match the requested pair when Titan
  * reports them. Steps that omit mints are tolerated (the field is optional).
  */
@@ -183,8 +178,7 @@ export function makeTitanRestQuoteClient(options: TitanRestClientOptions): Exact
     if (!isValidTitanQuotePublicKey(userPublicKey)) throw new Error('Invalid TITAN_QUOTE_USER_PUBLIC_KEY');
     const authToken = options.authToken.trim();
     const fetchImpl = options.fetch ?? globalThis.fetch;
-    // One retry by default: this sits on an interactive request path, where a
-    // second retry costs more latency than the attempt is worth.
+    // One retry by default: this sits on an interactive request path.
     const maxRetries = options.maxRetries ?? 1;
     const defaultTimeoutMs = options.timeoutMs ?? 8_000;
     const sleep = options.sleep ?? (ms => new Promise(resolve => setTimeout(resolve, ms)));
@@ -203,7 +197,6 @@ export function makeTitanRestQuoteClient(options: TitanRestClientOptions): Exact
                 userPublicKey,
                 slippageBps: '50',
             });
-            // Restricted re-quotes (leg-overlap fix). Effect-verified live:
             // Titan REST honors excludeDexes as CSV of exact venue labels.
             // Callers must still effect-verify the returned steps — a
             // restriction the server ignores must never be assumed applied.

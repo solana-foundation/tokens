@@ -310,8 +310,7 @@ const liveQuoteDeps: LiveQuoteDeps = {
     jupiterTokenMetadataSource: makeJupiterTokenMetadataClient(jupiterApiKey ? { apiKey: jupiterApiKey } : {}),
     ...(jupiterApiKey
         ? {
-              // Paced to Jupiter's ~10 req/s paid-tier budget (observed via
-              // x-ratelimit headers), then capped in-flight.
+              // Paced to Jupiter's ~10 req/s paid-tier budget, capped in-flight.
               jupiterQuoteSource: limitQuoteConcurrency(
                   paceQuoteStarts(makeJupiterSwapV2QuoteClient({ apiKey: jupiterApiKey }), 120),
                   jupiterQuoteLimiter,

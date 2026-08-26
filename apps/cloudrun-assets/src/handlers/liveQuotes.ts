@@ -104,10 +104,8 @@ export interface JupiterTokenMetadataClient {
 }
 
 /**
- * Cap in-flight quote calls per provider. Per-instance and best-effort — a
- * burst that lands on two Cloud Run instances is not globally limited — but it
- * keeps one wide fanout from turning into a 429 storm against a single
- * provider. A shed request degrades to an unavailable rung, never a failure.
+ * Cap in-flight quote calls per provider. Per-instance and best-effort; a
+ * shed request degrades to an unavailable rung, never a failure.
  */
 export function limitQuoteConcurrency<T extends ExactQuoteClient>(client: T, limit: ConcurrencyLimiter): T {
     return {
@@ -118,9 +116,7 @@ export function limitQuoteConcurrency<T extends ExactQuoteClient>(client: T, lim
 
 /**
  * Space out fetchQuote starts so a burst never exceeds the provider's
- * per-second budget (Jupiter's paid tier allows ~10 req/s; probe +
- * verification + restricted waves can otherwise land ~20 calls in a second
- * and turn the tail of every request into 429s). Composes with
+ * per-second budget (Jupiter's paid tier allows ~10 req/s). Composes with
  * limitQuoteConcurrency: the limiter caps in-flight, this paces starts.
  */
 export function paceQuoteStarts<T extends ExactQuoteClient>(client: T, minIntervalMs: number): T {
@@ -573,13 +569,9 @@ export interface DepthSampleResult {
 
 /**
  * On-demand depth sampling for mints the cron hasn't covered yet. Currently
- * uncalled: the `sample=missing` param it served went away with the graded
- * evaluate contract, and the depth cron is parked. Kept working so the graded
- * surface can return without a rebuild. The
- * first visitor to an unsampled asset pays a few seconds once; the result is
- * persisted, so every later view reads the stored curve. Bounded hard:
- * ≤ SAMPLE_MAX_MINTS per call, and mints sampled within SAMPLE_MIN_AGE_MS are
- * skipped so page reloads can't drain upstream quota.
+ * uncalled (the `sample=missing` param went away); kept working so the graded
+ * surface can return without a rebuild. Bounded: ≤ SAMPLE_MAX_MINTS per call,
+ * recently sampled mints skipped.
  */
 export async function depthSampleMints(deps: DepthSampleDeps, args: unknown): Promise<DepthSampleResult> {
     if (typeof args !== 'object' || args === null) {

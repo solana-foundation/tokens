@@ -1,12 +1,8 @@
 /**
  * Serialization from the cloudrun quote-fanout result to the public
- * `ExecutionQuoteRow` shape.
- *
- * Extracted from the evaluate route unchanged so the cross-variant route can
- * emit per-variant rows with exactly the same guarantees the single-mint
- * endpoint documents (one `isBest` per available row, gapless ranks,
- * best-first ordering, non-null `best` iff available). One serializer means
- * those guarantees cannot drift between the two surfaces.
+ * `ExecutionQuoteRow` shape, shared by evaluate and route so the documented
+ * guarantees (one `isBest` per available row, gapless ranks, best-first
+ * ordering, non-null `best` iff available) cannot drift between surfaces.
  */
 
 import type { ExecutionQuotesLiveResult } from '../../../../../../../cloudrun-assets/src/handlers/liveQuotes';
@@ -149,9 +145,7 @@ export function serializeQuoteRows(args: {
         });
 
         const best = providerQuotes.find((quote): quote is ExecutionBestQuote => quote.isBest) ?? null;
-        // No winner means nothing quoted, whatever the upstream entry claimed —
-        // report it as unavailable rather than emitting an "available" row with
-        // a null best that callers must guard.
+        // No winner means unavailable, whatever the upstream entry claimed.
         if (entry.status === 'unavailable' || best === null) {
             return {
                 request: entry.request,

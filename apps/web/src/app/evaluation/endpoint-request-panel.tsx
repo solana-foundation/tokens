@@ -10,9 +10,7 @@ const CODE_BLOCK_CLASS_NAME = '[&_.overflow-x-auto]:text-xs [&_.overflow-x-auto]
 const CODE_MAX_HEIGHT_PX = 520;
 /**
  * Snippets show the public API host, while this page's own request goes to its
- * same-origin proxy so the browser never holds a key. The path is identical —
- * only the origin differs — which is the same split the dashboard playground
- * makes.
+ * same-origin proxy so the browser never holds a key.
  */
 const PUBLIC_API_ORIGIN = 'https://api.tokens.xyz';
 
@@ -78,11 +76,7 @@ export function buildRouteFetchSnippet(requestPath: string): string {
     ].join('\n');
 }
 
-/**
- * Shows the exact request this page is making, so the panel doubles as the
- * endpoint's documentation. The path is passed in rather than rebuilt here —
- * it comes from the same builder the fetch uses.
- */
+/** Shows the exact request this page is making (path from the fetch's own builder). */
 export function EndpointRequestPanel({
     snippet,
     responseJson,

@@ -282,8 +282,7 @@ async function main(): Promise<void> {
                 (noAlloc.providers as unknown[]).length,
         'without allocation, upstreamQuotes must equal variants x rungs x providers',
     );
-    // Allocation invariants (bitcoin's variants are kind-parity, so with any
-    // usable curve the plan must exist unless upstream weather killed it).
+    // Bitcoin's variants are kind-parity: a plan must exist unless quotes failed.
     assert(
         ['ok', 'insufficient_quotes'].includes(routed.allocationStatus as string),
         `bitcoin allocationStatus must be ok or insufficient_quotes, got ${routed.allocationStatus}`,
@@ -347,10 +346,8 @@ async function main(): Promise<void> {
                 `legs[${index}] is below minLegUsd without being cap-bound`,
             );
         }
-        // Cost echo covers probes plus every verification wave (initial,
-        // repair, restricted re-quotes) — waves vary with market weather, so
-        // assert the structure: at least one verification per leg, and every
-        // wave is a whole number of per-provider calls.
+        // Waves vary with market weather, so assert structure: at least one
+        // verification per leg, every wave a whole number of provider calls.
         const providerCount = (routed.providers as unknown[]).length;
         const probeQuotes = (routed.variants as unknown[]).length * ladder.length * providerCount;
         const verificationQuotes = (routeMeta.upstreamQuotes as number) - probeQuotes;

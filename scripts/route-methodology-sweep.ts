@@ -148,9 +148,7 @@ function checkExpectations(entry: PanelEntry, body: Json): string[] {
             fail(`multi-leg plan shipped with negative edge ${edge.bps}bps`);
         }
         // B: a collapsed leg may only survive when the one-shot repair budget
-        // was already spent — the design caps at exactly one repair, and a
-        // second-round collapse ships with its honest delta rather than
-        // starting a loop.
+        // was already spent.
         for (const leg of legs) {
             const delta = get(leg, 'verification.deltaBps') as number | null;
             const disclosed = allocation.repaired === true || warnings.includes(`collapse_unrepairable:${leg.mint}`);
@@ -243,11 +241,9 @@ function checkExpectations(entry: PanelEntry, body: Json): string[] {
                 fail('single-variant plan must have null edge (D)');
             }
         } else if (anyParity) {
-            // A parity variant with quotes must produce a plan; silver's only
-            // variant is an ETF wrapper (parityBasis 'none'), so for it the
-            // honest outcome IS no_eligible_variants — comparison shown,
-            // nothing summed. The baseline plan assumed silver had a spot
-            // variant; the registry says otherwise.
+            // A parity variant with quotes must produce a plan. (For an asset
+            // whose only variant is parityBasis 'none', like silver's ETF
+            // wrapper, no_eligible_variants IS the honest outcome.)
             fail(`single parity variant blocked from the pool (status ${status})`);
         } else if (status !== 'no_eligible_variants') {
             fail(`all-derivative asset must report no_eligible_variants, got ${status}`);
@@ -330,11 +326,7 @@ function stats(values: number[]): { mean: number; stdev: number; min: number; ma
     return { mean, stdev: Math.sqrt(variance), min: Math.min(...values), max: Math.max(...values) };
 }
 
-/**
- * Repeat one request N times and report how much the plan moves. Built for the
- * question "are the leg shares stable across pings?" — the answer measured on
- * bitcoin $1M was no (±$92k stdev) while the totals held within 5.7bps.
- */
+/** Repeat one request N times and report how much the plan moves. */
 async function runStability(baseUrl: string, apiKey: string, args: SweepArgs, outDir: string): Promise<void> {
     const url = `${baseUrl}/api/v2/execution/route?assetId=${args.assetId}&amountUsd=${args.amountUsd}`;
     const shares = new Map<string, number[]>();
@@ -500,9 +492,7 @@ async function main(): Promise<void> {
         }
     }
 
-    // Exit-liquidity coverage: the /route panel is all buy-side, so one
-    // evaluate sell entry keeps the sell path continuously tested. Fixed token
-    // amount (~\$1M of cbBTC at 2026 prices); structural expectations only.
+    // Exit-liquidity coverage: one evaluate sell entry (~$1M of cbBTC).
     const sellUrl =
         `${baseUrl}/api/v2/execution/evaluate?mint=cbbtcf3aa214zXHbiAZQwf4122FBYbraNdFqgw4iMij` +
         `&side=sell&tokenAmount=12`;

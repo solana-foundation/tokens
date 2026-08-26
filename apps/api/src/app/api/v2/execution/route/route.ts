@@ -99,11 +99,7 @@ function decodeProviders(raw: string | null): Effect.Effect<QuoteProvider[], Bad
     return Effect.succeed(QUOTE_PROVIDERS.filter(provider => requested.includes(provider)));
 }
 
-/**
- * Above evaluate's 30s: this route runs two quote waves (probe fanout, then
- * allocation verification), each bounded by the same 12s/14s ladder, in
- * parallel across variants.
- */
+/** Above evaluate's 30s: this route runs two quote waves. */
 export const maxDuration = 60;
 
 /**
@@ -146,17 +142,11 @@ export const GET = route(
                 return yield* Effect.fail(new BadRequestError({ message: 'allocate must be true or false' }));
             }
             const allocate = allocateRaw === 'true';
-            // The judgment thresholds this request runs under: selected by the
-            // asset's registry category, loosened for equities off-hours. The
-            // resolved numbers ship in meta.tuning so every ejection is
-            // auditable against the exact gate that fired.
             const { tuning, marketClosedMultiplierApplied } = resolveTuningProfile({
                 category: asset.category,
                 now: new Date(),
             });
 
-            // One batched market + fill-quality read over every variant mint;
-            // this is where decimals, symbols, and the liquidity floor come from.
             const mints = asset.variants.map(variant => variant.mint);
             const [marketEntries, fillQualityEntries] = yield* Effect.all(
                 [
@@ -213,11 +203,8 @@ export const GET = route(
                 ]),
             );
 
-            // Market rows are the primary decimals source, but coverage is not
-            // universal — tokenized equities in particular can miss rows. Fall
-            // back to Jupiter token metadata (the same chain evaluate uses)
-            // for a bounded number of gaps, so an asset whose issuers lack
-            // market data still routes instead of excluding everything.
+            // Decimals fall back to Jupiter token metadata for mints without
+            // market rows (common for tokenized equities), bounded to 8.
             const missingDecimalMints = asset.variants
                 .map(variant => variant.mint)
                 .filter(mint => !Number.isInteger(displayByMint.get(mint)?.decimals ?? null));
@@ -258,10 +245,8 @@ export const GET = route(
             const probeLadderUsd = buildProbeLadderUsd(targetUsd);
             const amounts = probeLadderUsd.map(String);
 
-            // Probe fanout: one call per variant, in parallel. A variant whose
-            // fanout fails entirely (transport error, not market weather)
-            // degrades to a variant with no successful rungs rather than
-            // failing the request.
+            // Probe fanout: a variant whose fanout fails degrades to one with
+            // no successful rungs rather than failing the request.
             const fanoutResults = yield* Effect.all(
                 selection.selected.map(selected =>
                     executionQuotesLive({
@@ -322,15 +307,11 @@ export const GET = route(
             }
 
             if (variants.some(variant => variant.parityBasis === 'issuer_assertion')) {
-                // Both fixed disclosures for tokenized equity: unit parity is
-                // the issuer's claim, and issuer mint/redeem primary markets
-                // are invisible to every aggregator we quote.
                 warnings.push('equity_unit_parity_assumed', 'issuer_primary_market_not_quoted');
             }
 
             const { providerStats } = summarizeComparison({ providers, entries: summarizable });
 
-            // --- Allocation over the parity pool ---
             const pool: AllocatableVariant[] = variants
                 .filter(variant => variant.allocationEligible)
                 .map(variant => ({
@@ -340,29 +321,22 @@ export const GET = route(
                     decimals: variant.decimals,
                     rank: variant.rank,
                     points: curveByMint.get(variant.mint)?.points ?? [],
-                    // A rung lost to a quote error (not a real no-route) means
-                    // this variant's proven depth understates the market, and
-                    // a retry could reshape the split.
                     depthUncertain: variant.curve.rungs.some(
                         rung => rung.impactBps === null && rung.reason !== null && rung.reason !== 'no_route',
                     ),
                 }));
 
-            // Status must distinguish "this asset cannot be routed" from "the
-            // quotes failed, try again" — a variant with unit parity but no
-            // usable curve is the SECOND case, and conflating them told
-            // callers an asset was unroutable when the rungs had merely been
-            // rate-limited.
+            // 'no_eligible_variants' means the asset cannot be routed;
+            // 'insufficient_quotes' means parity existed but nothing quoted a
+            // usable curve — retryable, and the two must not be conflated.
             const parityCandidates = variants.filter(variant => variant.parityBasis !== 'none');
             let allocationStatus: AllocationStatus;
             let engine: AllocationEngineResult | null = null;
             if (!allocate) {
                 allocationStatus = 'not_requested';
             } else if (parityCandidates.length === 0) {
-                // No variant could ever be summed with its siblings.
                 allocationStatus = 'no_eligible_variants';
             } else if (pool.length === 0) {
-                // Parity existed, but nothing quoted a usable curve.
                 allocationStatus = 'insufficient_quotes';
             } else {
                 engine = computeAllocation({ targetUsd, variants: pool, tuning });
@@ -373,9 +347,8 @@ export const GET = route(
             let allocation: AllocationPlan | null = null;
             let verificationQuotes = 0;
             if (engine) {
-                // One exact re-quote per leg, keyed by (mint, size) so a repair
-                // pass whose legs did not move reuses the wave-1 result instead
-                // of paying for it twice.
+                // One exact re-quote per leg, keyed by (mint, size) so repair
+                // waves reuse unchanged results.
                 const verifiedRowByKey = new Map<
                     string,
                     ReturnType<typeof serializeQuoteRows>['quotes'][number] | null
@@ -420,12 +393,9 @@ export const GET = route(
 
                 yield* verifyWave(engine.legs);
 
-                // One-shot repair: a collapsed re-quote contradicts the
-                // variant's own probe curve, so the variant is distrusted for
-                // this request — ejected from the pool, allocation re-derived,
-                // only the changed legs re-verified. Exactly one repair — if a
-                // second variant collapses in the repaired plan, it ships with
-                // its honest delta rather than starting a loop.
+                // One-shot repair: a collapsed variant is distrusted entirely
+                // and the allocation re-derived without it. Exactly one repair;
+                // a second collapse ships with its honest delta.
                 let activeEngine: AllocationEngineResult = engine;
                 let repaired = false;
                 const collapsedLegs = engine.legs.filter(leg => {
@@ -449,18 +419,13 @@ export const GET = route(
                         }
                         yield* verifyWave(repairedEngine.legs);
                     } else {
-                        // Nothing left to recommend once the collapsed variant
-                        // is distrusted: the collapsed leg ships with its
-                        // honest delta, and the response says why repair
-                        // could not fire.
                         for (const leg of collapsedLegs) {
                             warnings.push(`collapse_unrepairable:${leg.mint}`);
                         }
                     }
                 }
 
-                // Surface the parity gate's verdicts (from the engine that
-                // actually produced the plan) on the variants themselves.
+                // Surface the parity gate's verdicts on the variants themselves.
                 for (const ejectedVariant of activeEngine.ejected) {
                     warnings.push(`price_divergence_excluded:${ejectedVariant.mint}`);
                     const routed = variants.find(variant => variant.mint === ejectedVariant.mint);
@@ -549,19 +514,13 @@ export const GET = route(
                         return sum + BigInt(leg.expectedOut.rawAmount) * scale;
                     }, 0n);
 
-                // Leg-independence: every leg's route is already in hand
-                // (verified row, falling back to the probe rung when
-                // verification failed) — overlap detection costs nothing.
+                // Overlap detection uses routes already in hand — costs nothing.
                 let legIndependence = analyzeLegIndependence({
                     legs: legs.map(leg => ({ mint: leg.mint, steps: legStepsOf(leg) })),
                 });
 
-                // P1: overlapping legs get ONE restricted re-quote each —
-                // Jupiter via its classic endpoint with onlyDirectRoutes (the
-                // guaranteed intermediate-free lever), Titan via excludeDexes
-                // on the offending venue labels (effect-verified live). The
-                // result is only trusted after effect-verification: the
-                // returned route must actually avoid every sibling mint.
+                // Overlapping legs get ONE restricted re-quote each; the result
+                // is only trusted after effect-verification below.
                 let workingLegs = legs;
                 let edgeBasis: 'independent_quotes' | 'restricted_requotes' = 'independent_quotes';
                 if (!legIndependence.independent && legs.length > 1) {
@@ -583,10 +542,8 @@ export const GET = route(
                                 .filter((label): label is string => label !== null && label.length > 0),
                         ),
                     ];
-                    // Breathing room: the restricted wave follows the
-                    // verification burst on the same per-key upstream limits,
-                    // and a first-attempt 429 was observed to persist past one
-                    // backoff. One second inside a 60s budget is cheap.
+                    // Breathing room after the verification burst on the same
+                    // per-key upstream rate limits.
                     yield* Effect.sleep('1 second');
                     const restrictedResults = yield* Effect.all(
                         implicated.map(leg =>
@@ -624,11 +581,8 @@ export const GET = route(
                             break;
                         }
                         // Effect-verification: a restriction the server ignored
-                        // must never be treated as applied. Providers differ in
-                        // lever strength (Titan's excludeDexes can reroute back
-                        // through the sibling via another venue; Jupiter's
-                        // direct-only cannot), so take the best CLEAN candidate
-                        // rather than the overall winner.
+                        // must never be treated as applied — take the best
+                        // CLEAN candidate rather than the overall winner.
                         const isClean = (route: readonly (typeof row.best.route)[number][]) =>
                             !route.some(step =>
                                 [step.inputMint, step.outputMint].some(
@@ -669,19 +623,14 @@ export const GET = route(
                     if (allClean && restrictedByMint.size === implicated.length) {
                         workingLegs = legs.map(leg => restrictedByMint.get(leg.mint) ?? leg);
                         edgeBasis = 'restricted_requotes';
-                        // The plan now reflects routes that avoid the siblings.
                         legIndependence = { independent: true, passThrough: [], sharedPools: [] };
                         warnings.push('legs_restricted_requoted');
                     }
                 }
                 if (!legIndependence.independent) warnings.push('legs_share_liquidity');
 
-                // C: a verified split that loses to simply buying the best
-                // single variant is not a recommendation. Replace it with one
-                // leg on that variant, built from its exact full-target probe
-                // quote (a real quote, so the leg reads as verified). Judged on
-                // the FINAL totals — restricted re-quotes lower the plan total,
-                // and a split that only wins on optimistic numbers must not ship.
+                // A split that loses to the best single variant on the FINAL
+                // totals is replaced with one leg on that variant.
                 let fellBackToSingleVariant = false;
                 let finalLegs = workingLegs;
                 let finalTotalOutUnitsRaw = totalOf(workingLegs);
@@ -716,8 +665,7 @@ export const GET = route(
                                     effectivePrice: baselineRow.best.effectivePrice,
                                     impactBps: targetRung?.impactBps ?? null,
                                     router: baselineRow.best.router,
-                                    // An exact full-target quote: nothing was
-                                    // sized by a marginal decision.
+                                    // Exact full-target quote: no marginal sizing.
                                     shareConfidence: 'firm' as const,
                                     verification: {
                                         status: 'verified' as const,
@@ -729,15 +677,12 @@ export const GET = route(
                             finalTotalOutUnitsRaw = bestSingle.outUnitsRaw;
                             allocatedUsd = targetUsd;
                             unallocatedUsd = 0;
-                            // A single-leg plan is trivially independent.
                             legIndependence = { independent: true, passThrough: [], sharedPools: [] };
                         }
                     }
                 }
 
-                // Whole-plan impact: what the plan's dollars would have
-                // bought at each leg variant's own baseline price vs what the
-                // plan actually expects. The plan analogue of a leg's impact.
+                // Whole-plan impact vs each leg variant's own baseline price.
                 let blendedImpactBps: number | null = null;
                 {
                     let baselineUnitsRaw = 0n;
@@ -759,16 +704,11 @@ export const GET = route(
                     }
                 }
                 const blendedImpactGrade = blendedImpactBps === null ? null : gradeBlendedImpact(blendedImpactBps);
-                // Graded, not a single cliff: 'poor' (>150bps) is already
-                // worth saying out loud — the measured ethereum $5M case sat
-                // at 174bps and slipped past the old 500bps gate entirely.
                 if (blendedImpactGrade === 'poor' || blendedImpactGrade === 'avoid') {
                     warnings.push('extreme_impact');
                 }
 
-                // Share stability: worst-of the legs. The total is firm; the
-                // sizes may move on a re-ask when a leg was decided in a steep
-                // region of its curve.
+                // Share stability: worst-of the legs.
                 const softLegs = finalLegs.filter(leg => leg.shareConfidence === 'soft').length;
                 const shareStability: 'firm' | 'mixed' | 'soft' =
                     softLegs === 0 ? 'firm' : softLegs === finalLegs.length ? 'soft' : 'mixed';
@@ -776,9 +716,7 @@ export const GET = route(
 
                 const edgeFrom = (baseline: AllocationBaseline | null) => {
                     if (!baseline) return null;
-                    // A single-leg plan on the baseline variant would compare
-                    // two quotes of the same thing minutes apart — noise, not
-                    // an edge. Cross-variant comparisons stay meaningful.
+                    // Same-variant single-leg comparison is quote noise, not edge.
                     if (finalLegs.length === 1 && finalLegs[0]!.mint === baseline.mint) return null;
                     const edge = computeAllocationEdge({
                         planOutUnitsRaw: finalTotalOutUnitsRaw,

@@ -4,9 +4,7 @@
  * unit parity holds) split the order across variants for the best total fill.
  *
  * Import-free apart from the evaluate contract (itself import-free) so
- * consumers outside this app can `import type` it by path, exactly like the
- * evaluate contract. The route annotates its return value with
- * `ExecutionRouteResponse`, so drift here is a compile error.
+ * consumers outside this app can `import type` it by path.
  */
 
 import type { ExecutionQuoteAmount, ExecutionQuoteRow, ProviderStat, QuoteProvider } from '../evaluate/contract';
@@ -94,11 +92,9 @@ export interface RoutedVariant {
         maxProvenSizeUsd: number | null;
         /**
          * Base-price divergence vs the allocation pool's median, bps
-         * (directionless). Above the parity gate (500bps) the variant is
-         * ejected from the pool — `allocationEligible: false` plus a
-         * `price_divergence_excluded:<mint>` warning — because a sibling at a
-         * different unit price is a different unit, a broken book, or both.
-         * Null when the variant never entered the pool.
+         * (directionless). Above the parity gate the variant is ejected —
+         * `allocationEligible: false` plus a `price_divergence_excluded:<mint>`
+         * warning. Null when the variant never entered the pool.
          */
         parityDivergenceBps: number | null;
     };
@@ -133,12 +129,10 @@ export interface AllocationLeg {
     /** Provider-internal router that filled the verification quote (e.g. Jupiter's jupiterz RFQ). */
     router: string | null;
     /**
-     * How much to trust this leg's SIZE. 'soft' means the marginal dollar was
-     * decided in a steep part of the variant's curve, where a small change in
-     * the next quote moves the split materially — measured: 5 identical
-     * bitcoin $1M requests 20s apart moved $240k between two legs. The plan's
-     * TOTAL stays firm either way, because every leg is re-quoted at its final
-     * size. Treat soft sizes as guidance and re-request before executing.
+     * How much to trust this leg's SIZE. 'soft' means a re-ask may move the
+     * split materially; the plan's TOTAL stays firm either way because every
+     * leg is re-quoted at its final size. Treat soft sizes as guidance and
+     * re-request before executing.
      */
     shareConfidence: 'firm' | 'soft';
     verification: AllocationLegVerification;
@@ -164,27 +158,20 @@ export interface AllocationPlan {
     chunkUsd: number;
     /**
      * Dust floor: legs below this (two chunks) are folded into siblings with
-     * room — a single-chunk win is within quote noise and costs a whole extra
-     * transaction. A below-floor leg can still appear when no sibling had
-     * capacity, because dust beats under-filling the target.
+     * room. A below-floor leg can still appear when no sibling had capacity.
      */
     minLegUsd: number;
     /**
-     * True when a collapsed verification (re-quote > 500bps below the curve's
-     * expectation) triggered the one-shot repair: the collapsed variant is
-     * distrusted for this request — its own re-quote contradicted its probe
-     * curve — ejected from the pool, and the allocation re-derived with only
-     * the changed legs re-verified. Accompanied by plan_repaired:<mint>
-     * warnings. Exactly one repair per request — a second collapse ships with
-     * its honest delta instead of starting a loop.
+     * True when a collapsed verification triggered the one-shot repair: the
+     * collapsed variant is ejected and the allocation re-derived. Accompanied
+     * by plan_repaired:<mint> warnings. Exactly one repair per request — a
+     * second collapse ships with its honest delta.
      */
     repaired: boolean;
     /**
-     * True when the verified split still lost to the best single variant's
-     * exact full-target quote, so the plan was replaced by one leg on that
-     * variant (its probe quote, already real). A split that loses to not
-     * splitting is not a recommendation. Accompanied by the
-     * plan_fell_back_to_single_variant warning.
+     * True when the verified split lost to the best single variant's exact
+     * full-target quote, so the plan was replaced by one leg on that variant.
+     * Accompanied by the plan_fell_back_to_single_variant warning.
      */
     fellBackToSingleVariant: boolean;
     legs: AllocationLeg[];
@@ -196,9 +183,8 @@ export interface AllocationPlan {
          * What the totals are made of. 'independent_quotes': each leg priced
          * alone — an upper bound whenever legs share liquidity.
          * 'restricted_requotes': overlapping legs were re-quoted with routes
-         * that provably avoid their siblings (effect-verified), making the
-         * total a conservative executable estimate — restricted Jupiter
-         * quotes are Metis-only (no RFQ), which biases the safe direction.
+         * that provably avoid their siblings — a conservative executable
+         * estimate.
          */
         basis: 'independent_quotes' | 'restricted_requotes';
         /** Plan vs the single best variant's exact quote at the full target. */
@@ -211,9 +197,7 @@ export interface AllocationPlan {
     /**
      * Whole-plan impact: the plan's total output vs what the same dollars
      * would buy at each leg variant's own baseline (smallest-rung) price, bps.
-     * The plan analogue of a leg's impactBps. Above ~500bps the response
-     * carries the extreme_impact warning: even the best available split is
-     * absorbing severe impact — the size may not fit the asset yet.
+     * The plan analogue of a leg's impactBps.
      */
     blendedImpactBps: number | null;
     /** blendedImpactBps against the standard bands: ≤10 excellent, ≤50 good, ≤150 fair, ≤500 poor, else avoid. */
@@ -225,14 +209,11 @@ export interface AllocationPlan {
      */
     shareStability: 'firm' | 'mixed' | 'soft';
     /**
-     * Are the legs actually additive? Legs are priced with independent
-     * quotes, but a leg whose route hops THROUGH another leg's variant
-     * (passThrough) or shares a pool with it (sharedPools) consumes liquidity
-     * the sibling leg also uses — executing both fills slightly worse than
-     * quoted, so the edge is an upper bound. Accompanied by the
-     * legs_share_liquidity warning when not independent. Pool matching only
-     * uses real pool ids (demo Titan masks them); mint-level pass-through
-     * works everywhere.
+     * Are the legs actually additive? A leg whose route hops THROUGH another
+     * leg's variant (passThrough) or shares a pool with it (sharedPools)
+     * consumes liquidity the sibling also uses, so the edge is an upper bound.
+     * Accompanied by the legs_share_liquidity warning when not independent.
+     * Pool matching only uses real pool ids (demo Titan masks them).
      */
     legIndependence: {
         independent: boolean;
@@ -259,11 +240,8 @@ export interface ExecutionRouteMeta {
     routingVersion: typeof ROUTING_VERSION;
     comparisonVersion: string;
     /**
-     * The judgment thresholds this request ran under — selected by the
-     * asset's registry category, with the equity off-hours multiplier already
-     * applied. Every parity ejection, collapse repair, and peg warning is
-     * auditable against exactly these numbers. The values are hand-set
-     * calibration targets (see ALLOCATOR_TUNING), not market-derived.
+     * The judgment thresholds this request ran under — category-selected,
+     * equity off-hours multiplier already applied (see ALLOCATOR_TUNING).
      */
     tuning: {
         profile: string;

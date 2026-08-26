@@ -17,13 +17,9 @@ import {
 import type { ExcludedVariant, ParityBasis, VariantExclusionReason } from './contract';
 
 /**
- * Kinds with 1:1 exposure to the underlying. `spot` (commodity claims like
- * XAUT/PAXG, nominally one unit each) is admitted because the allocator now
- * verifies parity at runtime via base-price clustering — a "1-oz" variant
- * priced like a tenth of an ounce gets ejected by the data, not by a static
- * list. Everything else either accrues (yield/lst), levers (leveraged),
- * blends (basket), tracks a different unit (etf), or has no conversion-ratio
- * data at all.
+ * Kinds with 1:1 exposure to the underlying. `spot` is admitted because the
+ * allocator verifies parity at runtime via base-price clustering; everything
+ * else accrues, levers, blends, or tracks a different unit.
  */
 const UNIT_PARITY_KINDS = new Set(['native', 'wrapped', 'bridged', 'spot']);
 
@@ -74,12 +70,9 @@ export interface VariantDisplay {
 }
 
 /**
- * Rank, floor, and truncate an asset's variants for the probe fanout.
- *
- * The liquidity floor scales with the target — quoting a $5M ladder against a
- * $60k pool spends real quotes to learn nothing — but never drops below $50k.
- * Excluded variants are returned with reasons; silence about why a variant is
- * missing reads as a bug to the caller who expected it.
+ * Rank, floor, and truncate an asset's variants for the probe fanout. The
+ * liquidity floor scales with the target but never drops below $50k; excluded
+ * variants are returned with reasons.
  */
 export function selectVariants(args: {
     asset: CanonicalAsset;
@@ -127,8 +120,7 @@ export function selectVariants(args: {
         }
         const decimals = display?.decimals ?? null;
         if (!Number.isInteger(decimals) || (decimals as number) < 0 || (decimals as number) > 18) {
-            // Raw-amount math is impossible without decimals; the long tail of
-            // unlabeled variants can miss market rows entirely.
+            // Raw-amount math is impossible without decimals.
             excluded.push(excludedFrom(variant, 'missing_decimals'));
             continue;
         }

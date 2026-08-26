@@ -1426,9 +1426,7 @@ export function makeJupiterSwapV2QuoteClient(opts: MakeJupiterSwapV2QuoteOptions
             params.set('excludeDexes', args.restrictions.excludeDexes.join(','));
         }
         // Two retries: the restricted wave fires right after the verification
-        // burst on the same per-key rate limit, and the 429 window was
-        // observed to outlast a single backoff. Bounded — at most 3 attempts
-        // for at most a handful of restricted legs. Budget split across attempts.
+        // burst on the same per-key rate limit. Budget split across attempts.
         const maxRetries = 2;
         const budgetMs = Math.max(1, Math.floor(args.timeoutMs ?? 15_000));
         const attemptTimeoutMs = Math.max(1_000, Math.floor(budgetMs / (maxRetries + 1)));
@@ -1470,11 +1468,9 @@ export function makeJupiterSwapV2QuoteClient(opts: MakeJupiterSwapV2QuoteOptions
         id: 'jupiter',
         async fetchQuote(args): Promise<ExactQuote | null> {
             // Restricted re-quotes use the CLASSIC quote endpoint: Ultra's
-            // /order silently drops restriction params (effect-verified), and
-            // its excludeDexes is Metis-only. The classic endpoint honors
-            // onlyDirectRoutes — the one guaranteed intermediate-free lever —
-            // and excludeDexes. Restricted quotes are Metis-only (no RFQ
-            // liquidity), i.e. structurally conservative: the safe direction.
+            // /order silently drops restriction params. Classic honors
+            // onlyDirectRoutes (the one guaranteed intermediate-free lever)
+            // and excludeDexes, at the cost of Metis-only (no RFQ) liquidity.
             if (args.restrictions?.onlyDirectRoutes || args.restrictions?.excludeDexes?.length) {
                 return fetchClassicRestrictedQuote(args);
             }
@@ -1482,9 +1478,8 @@ export function makeJupiterSwapV2QuoteClient(opts: MakeJupiterSwapV2QuoteOptions
                 `${baseUrl}/swap/v2/order?inputMint=${encodeURIComponent(args.inputMint)}` +
                 `&outputMint=${encodeURIComponent(args.outputMint)}` +
                 `&amount=${encodeURIComponent(args.amountRaw)}`;
-            // The timeout is per-attempt, so the caller's budget is split across
-            // attempts (as titanRestClient does) — otherwise a retried quote can
-            // take retries x budget and overshoot the fanout deadline it was given.
+            // The timeout is per-attempt: split the caller's budget across
+            // attempts so a retried quote can't overshoot the fanout deadline.
             const maxRetries = 1;
             const budgetMs = Math.max(1, Math.floor(args.timeoutMs ?? 15_000));
             const attemptTimeoutMs = Math.max(1_000, Math.floor(budgetMs / (maxRetries + 1)));
