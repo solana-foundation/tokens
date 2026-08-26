@@ -131,8 +131,9 @@ export interface AllocationLeg {
     /**
      * How much to trust this leg's SIZE. 'soft' means a re-ask may move the
      * split materially; the plan's TOTAL stays firm either way because every
-     * leg is re-quoted at its final size. Treat soft sizes as guidance and
-     * re-request before executing.
+     * leg is re-quoted at its final size. RFQ-filled legs (router 'jupiterz')
+     * are always soft — the offer has no persistence guarantee. Treat soft
+     * sizes as guidance and re-request before executing.
      */
     shareConfidence: 'firm' | 'soft';
     verification: AllocationLegVerification;

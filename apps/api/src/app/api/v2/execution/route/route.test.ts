@@ -571,14 +571,16 @@ describe('GET /api/v2/execution/route', () => {
         expect(body.meta.warnings).toContain('legs_share_liquidity');
     });
 
-    it('returns an honest empty response when every variant is excluded', async () => {
+    it('reports insufficient_quotes when selection is starved by missing decimals', async () => {
+        // Every variant passed the structural filters and was lost to a
+        // decimals coverage failure — retryable, not "cannot be routed".
         liquidMints = [];
         metadataFallbackMints = [];
         const response = await request('/api/v2/execution/route?assetId=bitcoin&amountUsd=1000000');
         expect(response.status).toBe(200);
         const body = await response.json();
         expect((body.variants as unknown[]).length).toBe(0);
-        expect(body.allocationStatus).toBe('no_eligible_variants');
+        expect(body.allocationStatus).toBe('insufficient_quotes');
         expect(body.allocation).toBeNull();
         expect((body.meta.excludedVariants as unknown[]).length).toBe(BITCOIN_MINTS.length);
         expect(body.meta.upstreamQuotes).toBe(0);
@@ -863,6 +865,35 @@ describe('GET /api/v2/execution/route', () => {
             expect(body.meta.warnings).toContain('shares_may_move');
         }
         expect(allocation.blendedImpactGrade).not.toBeNull();
+    });
+
+    it('never labels an RFQ-filled leg firm', async () => {
+        // Flat curve, single variant, exact full-target quote — firm on every
+        // other signal — but the verification fill came from an RFQ, whose
+        // offer can be absent on a re-ask.
+        const [only] = BITCOIN_MINTS;
+        quoteResponder = (mint, amounts) => {
+            const fanout = defaultFanout(mint, amounts) as {
+                entries: { candidates: { router: string | null }[]; router: string | null }[];
+            };
+            if (amounts.length === 1) {
+                for (const entry of fanout.entries) {
+                    entry.router = 'jupiterz';
+                    for (const candidate of entry.candidates) {
+                        if (candidate.router === 'metis') candidate.router = 'jupiterz';
+                    }
+                }
+            }
+            return fanout;
+        };
+        liquidMints = [only!];
+        const response = await request('/api/v2/execution/route?assetId=bitcoin&amountUsd=1000000&maxVariants=1');
+        const body = await response.json();
+        const allocation = body.allocation as { legs: { router: string | null; shareConfidence: string }[] };
+        expect(allocation.legs.length).toBe(1);
+        expect(allocation.legs[0]!.router).toBe('jupiterz');
+        expect(allocation.legs[0]!.shareConfidence).toBe('soft');
+        expect(body.meta.warnings).toContain('shares_may_move');
     });
 
     it('requires the execution:read scope', async () => {

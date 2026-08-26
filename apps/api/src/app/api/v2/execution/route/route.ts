@@ -335,7 +335,12 @@ export const GET = route(
             if (!allocate) {
                 allocationStatus = 'not_requested';
             } else if (parityCandidates.length === 0) {
-                allocationStatus = 'no_eligible_variants';
+                // missing_decimals exclusions are coverage failures on variants
+                // that passed every structural filter — retryable, not "cannot
+                // be routed".
+                allocationStatus = selection.excluded.some(entry => entry.reason === 'missing_decimals')
+                    ? 'insufficient_quotes'
+                    : 'no_eligible_variants';
             } else if (pool.length === 0) {
                 allocationStatus = 'insufficient_quotes';
             } else {
@@ -707,6 +712,15 @@ export const GET = route(
                 if (blendedImpactGrade === 'poor' || blendedImpactGrade === 'avoid') {
                     warnings.push('extreme_impact');
                 }
+
+                // An RFQ fill is a firm offer with no persistence guarantee —
+                // the fill itself can be absent on a re-ask, so the leg's size
+                // is never firm.
+                finalLegs = finalLegs.map(leg =>
+                    leg.router === 'jupiterz' && leg.shareConfidence === 'firm'
+                        ? { ...leg, shareConfidence: 'soft' as const }
+                        : leg,
+                );
 
                 // Share stability: worst-of the legs.
                 const softLegs = finalLegs.filter(leg => leg.shareConfidence === 'soft').length;

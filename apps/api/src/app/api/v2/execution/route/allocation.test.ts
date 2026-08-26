@@ -409,6 +409,10 @@ describe('shareConfidenceOf (measured curve shapes)', () => {
         expect(shareConfidenceOf({ points: [{ sizeUsd: 1_000, impactBps: 0 }], legUsd: 1_000 })).toBe('firm');
     });
 
+    it('calls a near-tied leg soft regardless of curve shape', () => {
+        expect(shareConfidenceOf({ points: CBBTC, legUsd: 400_000, marginalNearTie: true })).toBe('soft');
+    });
+
     it('flags a leg sized inside a cliff', () => {
         const flatThenCliff = [
             { sizeUsd: 8_000, impactBps: 0 },

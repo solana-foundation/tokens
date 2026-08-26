@@ -487,7 +487,10 @@ apart are noise, not an edge.
   identical bitcoin $1M requests 20 seconds apart moved **$240k** between two
   legs (±$92k stdev) while the plan total stayed within 5.7bps and every
   verification delta was positive — one variant's top rung swung 66→176bps and
-  re-shaped the split. When `shareStability !== 'firm'` (warning
+  re-shaped the split. RFQ-filled legs (`router: 'jupiterz'`) are always soft:
+  an RFQ offer is firm for seconds and carries no persistence guarantee, and
+  repeated off-hours equity requests measurably alternate between plans as the
+  RFQ fill appears and vanishes. When `shareStability !== 'firm'` (warning
   `shares_may_move`), re-request immediately before executing rather than
   acting on sizes quoted minutes earlier.
 - When a collapsed leg has no alternative variant to move to, the repair pass
@@ -558,6 +561,8 @@ comparison, but coverage and the restricted-requote upgrade both suffer.
 `allocationStatus` distinguishes two failure modes deliberately:
 `no_eligible_variants` means nothing about this asset can be summed with its
 siblings (all derivative kinds, no unit parity) — a property of the asset;
-`insufficient_quotes` means parity variants were probed but no usable curve
-came back (no route at any rung, or upstream quote failures) — retry-able.
+`insufficient_quotes` means the request was starved by coverage — parity
+variants were probed but no usable curve came back, or selection itself lost
+every candidate to a decimals-metadata failure (`missing_decimals`
+exclusions) — retry-able.
 | `429` | Rate limited |

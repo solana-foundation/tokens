@@ -124,6 +124,14 @@ function checkExpectations(entry: PanelEntry, body: Json): string[] {
             fail('no_eligible_variants despite parity variants being probed (expected insufficient_quotes)');
         }
     }
+    // Selection starved by a decimals coverage failure is retryable, never
+    // "cannot be routed".
+    if (status === 'no_eligible_variants' && variants.length === 0) {
+        const excluded = (meta.excludedVariants as Json[]) ?? [];
+        if (excluded.some(entry2 => entry2.reason === 'missing_decimals')) {
+            fail('no_eligible_variants despite missing_decimals exclusions (expected insufficient_quotes)');
+        }
+    }
     if (allocation) {
         const legs = (allocation.legs as Json[]) ?? [];
         const legSum = legs.reduce((sum, leg) => sum + Number(leg.amountUsd), 0);
@@ -202,6 +210,13 @@ function checkExpectations(entry: PanelEntry, body: Json): string[] {
             if (stability !== expected) fail(`shareStability ${stability} disagrees with legs (${expected})`);
             if ((stability !== 'firm') !== warnings.includes('shares_may_move')) {
                 fail(`shares_may_move warning disagrees with shareStability ${stability}`);
+            }
+        }
+        // An RFQ-filled leg's offer has no persistence guarantee; its size
+        // must never read firm.
+        for (const leg of legs) {
+            if (leg.router === 'jupiterz' && leg.shareConfidence === 'firm') {
+                fail(`leg ${leg.symbol} is firm on an RFQ fill`);
             }
         }
         // #3: every plan declares its blended impact, and extreme values warn.

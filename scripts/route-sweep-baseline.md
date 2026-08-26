@@ -113,3 +113,45 @@ discover.
 
 All three feed `shareConfidence` / `shareStability`; the third is why most
 multi-leg plans correctly report `soft`.
+
+## Hardening round 2 (2026-08-26) — multi-shape stability + label accuracy
+
+Seven stability runs across every plan shape (`/tmp` receipts; 28 pings,
+~600 quotes). The question this round asks: do the `shareConfidence` labels
+*predict* the movement we measure?
+
+| Run | Shares moved? | Labels | Verdict |
+| --- | --- | --- | --- |
+| bitcoin $1M x5, 20s | cbBTC/WBTC ±$100k stdev, $200k range; xBTC pinned | all soft | true positives (xBTC conservatively soft) |
+| bitcoin $1M x3, **90s** | $300k range — same magnitude as 20s | cbBTC/WBTC soft, xBTC firm | movement is per-quote noise + structural near-ties, NOT time-accumulating drift |
+| gold $1M x5 | shares pinned at caps; verify deltas collapse to −9,998bps | all soft | conservative; demo-Titan magnitudes |
+| spacex $1M x5 | pinned 800/200 | all soft | conservative (60bps local-impact rule) |
+| bitcoin $10k x3 | pinned | all firm | true negatives |
+| usd $2M x3 | winning variant flipped AUSD→FDUSD | soft | true positive at identity level |
+| **tesla $1M x5** | **plan identity flipped TSLAon↔TSLAx 4 times** | **pings 2/5: TSLAon $1M `firm`** | **the one falsified label** |
+
+**Tesla falsification + fix.** The flapping pings' only in-response tell:
+the winning fill's `router` is `jupiterz` — an RFQ. An RFQ offer is firm for
+seconds with no persistence guarantee; whether it exists at all alternates
+between requests (the vanished-RFQ pattern), which is also what drove the
+repairs on pings 1/3/4. Rule shipped: an RFQ-filled leg is never `firm`.
+(A clamp-based rule was tried first and rejected: TSLAon's curve shows no
+impact drop — its `curve_not_concave` came from rounding wobble, and the flag
+also fires on rounding artifacts in clean fixtures.) Recheck x3: TSLAon
+$1M soft/soft/soft.
+
+**Second find: selection starvation mis-statused.** gold and spacex ping 1
+returned `no_eligible_variants` with `variants: 0` — every parity-capable
+variant lost to `missing_decimals` when the Jupiter metadata fallback got
+rate-limited right after the previous run's burst. That reads "asset cannot
+be routed" for what is "retry". Fixed: zero probed variants + any
+missing_decimals exclusion → `insufficient_quotes` (decimals exclusions
+happen after the structural filters, so they are exactly the
+would-have-been-eligible coverage losses).
+
+Knob probes (all honest): 13 boundary 400s/404; $5M maxVariants=6 survived a
+triple-collapse repair + ejection + restricted-requote upgrade in one
+request; providers=jupiter degrades to `verification.status: 'interpolated'`
+under the rate tier; providers=titan splits clean; allocate=false agrees with
+allocate=true on selection; alias/$1/$50M clean. Negative verify deltas now
+appear on bitcoin (3 of 15, min −14bps) — small honest drift, not collapse.
