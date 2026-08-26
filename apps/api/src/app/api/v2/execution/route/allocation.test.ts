@@ -2,7 +2,14 @@ import { describe, expect, it } from 'bun:test';
 
 import type { CurvePoint } from './curve';
 
-import { computeAllocation, computeAllocationEdge, type AllocatableVariant } from './allocation';
+import {
+    ALLOCATOR_TUNING,
+    computeAllocation,
+    computeAllocationEdge,
+    isUsMarketOpen,
+    resolveTuningProfile,
+    type AllocatableVariant,
+} from './allocation';
 
 /** Probe points for a variant priced at `basePrice` out-per-dollar with linear-ish impact growth. */
 function pointsFor(args: {
@@ -265,3 +272,41 @@ describe('dust-leg suppression (E)', () => {
     });
 });
 
+
+describe('tuning profiles (P2)', () => {
+    it('selects the profile by category and falls back to default', () => {
+        const noon = new Date('2026-08-25T16:00:00Z'); // 12:00 ET, a Tuesday — market open
+        expect(resolveTuningProfile({ category: 'stablecoin', now: noon }).tuning.profile).toBe('stablecoin');
+        expect(resolveTuningProfile({ category: 'lst', now: noon }).tuning.profile).toBe('default');
+        expect(resolveTuningProfile({ category: 'equity', now: noon }).marketClosedMultiplierApplied).toBe(false);
+    });
+
+    it('loosens the equity parity gate off-hours, deterministically', () => {
+        const sunday = new Date('2026-08-23T16:00:00Z');
+        const resolved = resolveTuningProfile({ category: 'equity', now: sunday });
+        expect(resolved.marketClosedMultiplierApplied).toBe(true);
+        expect(resolved.tuning.parityDivergenceMaxBps).toBe(ALLOCATOR_TUNING.equity!.parityDivergenceMaxBps * 2);
+        // Non-equities never get the multiplier.
+        expect(resolveTuningProfile({ category: 'crypto', now: sunday }).marketClosedMultiplierApplied).toBe(false);
+        expect(isUsMarketOpen(sunday)).toBe(false);
+    });
+
+    it('the same divergence is ejected under the stablecoin gate but kept under commodity', () => {
+        // Two variants 2% apart (200bps): broken for stables, normal for gold.
+        const a = variant('A', 1, pointsFor({ sizes: LADDER, baseOutPerDollar: 0.001, impactBpsAt: () => 0 }));
+        const b = variant('B', 2, pointsFor({ sizes: LADDER, baseOutPerDollar: 0.00102, impactBpsAt: () => 0 }));
+        const c = variant('C', 3, pointsFor({ sizes: LADDER, baseOutPerDollar: 0.001001, impactBpsAt: () => 0 }));
+        const asStable = computeAllocation({
+            targetUsd: 1_000_000,
+            variants: [a, b, c],
+            tuning: ALLOCATOR_TUNING.stablecoin,
+        })!;
+        expect(asStable.ejected.map(entry => entry.mint)).toEqual(['BMint']);
+        const asCommodity = computeAllocation({
+            targetUsd: 1_000_000,
+            variants: [a, b, c],
+            tuning: ALLOCATOR_TUNING.commodity,
+        })!;
+        expect(asCommodity.ejected).toEqual([]);
+    });
+});

@@ -41,8 +41,9 @@ const SINGLE_VARIANT_ASSETS = new Set(['ethereum', 'hyperliquid', 'silver']);
 /** Assets where verification collapses were observed (thin equity books). */
 const COLLAPSE_PRONE_ASSETS = new Set(['tesla', 'micron', 'apple']);
 
-const PARITY_DIVERGENCE_MAX_BPS = 500;
-const COLLAPSE_THRESHOLD_BPS = -500;
+/** Fallbacks only — responses publish their resolved gates in meta.tuning. */
+const FALLBACK_PARITY_GATE_BPS = 500;
+const FALLBACK_COLLAPSE_BPS = -500;
 
 type Json = Record<string, unknown>;
 
@@ -93,6 +94,10 @@ function checkExpectations(entry: PanelEntry, body: Json): string[] {
     const variants = (body.variants as Json[]) ?? [];
     const meta = body.meta as Json;
     const warnings = (meta.warnings as string[]) ?? [];
+    // Judge each response against the gates it says it ran under.
+    const tuning = (meta.tuning as Json | undefined) ?? {};
+    const parityGateBps = (tuning.parityDivergenceMaxBps as number) ?? FALLBACK_PARITY_GATE_BPS;
+    const collapseBps = (tuning.collapseThresholdBps as number) ?? FALLBACK_COLLAPSE_BPS;
     const allocation = (body.allocation as Json | null) ?? null;
     const status = body.allocationStatus as string;
 
@@ -131,7 +136,7 @@ function checkExpectations(entry: PanelEntry, body: Json): string[] {
         // B: no surviving collapsed leg.
         for (const leg of legs) {
             const delta = get(leg, 'verification.deltaBps') as number | null;
-            if (delta !== null && delta < COLLAPSE_THRESHOLD_BPS) {
+            if (delta !== null && delta < collapseBps) {
                 fail(`leg ${leg.symbol} survived with collapsed verification ${delta}bps`);
             }
         }
@@ -156,8 +161,8 @@ function checkExpectations(entry: PanelEntry, body: Json): string[] {
         }
         // A: surviving peg spread must be within the divergence gate.
         const peg = allocation.pegSpreadBps as number | null;
-        if (peg !== null && peg > PARITY_DIVERGENCE_MAX_BPS) {
-            fail(`surviving pegSpreadBps ${peg} exceeds the ${PARITY_DIVERGENCE_MAX_BPS}bps divergence gate`);
+        if (peg !== null && peg > parityGateBps) {
+            fail(`surviving pegSpreadBps ${peg} exceeds the published ${parityGateBps}bps divergence gate`);
         }
     }
 
@@ -200,7 +205,7 @@ function checkExpectations(entry: PanelEntry, body: Json): string[] {
         const allocatedMints = new Set(((allocation?.legs as Json[]) ?? []).map(leg => leg.mint as string));
         for (const variant of variants) {
             const divergence = get(variant, 'curve.parityDivergenceBps') as number | null | undefined;
-            if (divergence != null && divergence > PARITY_DIVERGENCE_MAX_BPS && allocatedMints.has(variant.mint as string)) {
+            if (divergence != null && divergence > parityGateBps && allocatedMints.has(variant.mint as string)) {
                 fail(`divergent variant ${variant.symbol} (${divergence}bps) received an allocation`);
             }
         }
@@ -305,6 +310,31 @@ async function main(): Promise<void> {
         if (row.warnings.length > 0) console.log(`${''.padEnd(21)}warn: ${row.warnings.join(', ')}`);
         for (const violation of row.violations) console.log(`${''.padEnd(21)}✗ ${violation}`);
     }
+    // Exit-liquidity coverage: the /route panel is all buy-side, so one
+    // evaluate sell entry keeps the sell path continuously tested. Fixed token
+    // amount (~\$1M of cbBTC at 2026 prices); structural expectations only.
+    const sellUrl =
+        `${baseUrl}/api/v2/execution/evaluate?mint=cbbtcf3aa214zXHbiAZQwf4122FBYbraNdFqgw4iMij` +
+        `&side=sell&tokenAmount=12`;
+    const sellResponse = await fetch(sellUrl, { headers: { 'x-api-key': apiKey, accept: 'application/json' } });
+    const sellBody = (await sellResponse.json()) as Json;
+    writeFileSync(join(outDir, 'evaluate-sell-cbbtc.json'), JSON.stringify(sellBody, null, 2));
+    if (mode === 'check') {
+        if (!sellResponse.ok) {
+            allViolations.push(`evaluate-sell: HTTP ${sellResponse.status}`);
+        } else {
+            const quotes = (sellBody.quotes as Json[]) ?? [];
+            if (quotes.length !== 1) allViolations.push('evaluate-sell: expected exactly one row');
+            const row = quotes[0];
+            if (row && row.status !== 'available' && row.status !== 'unavailable') {
+                allViolations.push('evaluate-sell: row has no valid status');
+            }
+        }
+    }
+    console.log(
+        `evaluate-sell cbBTC x12: ${sellResponse.ok ? ((sellBody.quotes as Json[])?.[0]?.status ?? '?') : `HTTP ${sellResponse.status}`}`,
+    );
+
     console.log(`\nresponses saved to ${outDir}`);
 
     if (mode === 'check') {

@@ -218,6 +218,20 @@ export interface ExecutionRouteMeta {
     tieBreak: QuoteProvider;
     routingVersion: typeof ROUTING_VERSION;
     comparisonVersion: string;
+    /**
+     * The judgment thresholds this request ran under — selected by the
+     * asset's registry category, with the equity off-hours multiplier already
+     * applied. Every parity ejection, collapse repair, and peg warning is
+     * auditable against exactly these numbers. The values are hand-set
+     * calibration targets (see ALLOCATOR_TUNING), not market-derived.
+     */
+    tuning: {
+        profile: string;
+        parityDivergenceMaxBps: number;
+        collapseThresholdBps: number;
+        pegWarnBps: number;
+        marketClosedMultiplierApplied: boolean;
+    };
     warnings: string[];
 }
 

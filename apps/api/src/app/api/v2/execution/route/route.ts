@@ -19,13 +19,13 @@ import {
     type RoutedVariant,
 } from './contract';
 import {
-    COLLAPSE_THRESHOLD_BPS,
     computeAllocation,
     computeAllocationEdge,
     type AllocatableVariant,
     type AllocationBaseline,
     type AllocationEngineLeg,
     type AllocationEngineResult,
+    resolveTuningProfile,
 } from './allocation';
 import { buildVariantCurve, type VariantCurve } from './curve';
 import { analyzeLegIndependence } from './leg-independence';
@@ -138,6 +138,14 @@ export const GET = route(
                 return yield* Effect.fail(new BadRequestError({ message: 'allocate must be true or false' }));
             }
             const allocate = allocateRaw === 'true';
+            // The judgment thresholds this request runs under: selected by the
+            // asset's registry category, loosened for equities off-hours. The
+            // resolved numbers ship in meta.tuning so every ejection is
+            // auditable against the exact gate that fired.
+            const { tuning, marketClosedMultiplierApplied } = resolveTuningProfile({
+                category: asset.category,
+                now: new Date(),
+            });
 
             // One batched market + fill-quality read over every variant mint;
             // this is where decimals, symbols, and the liquidity floor come from.
@@ -327,7 +335,7 @@ export const GET = route(
             } else if (pool.length === 0) {
                 allocationStatus = 'no_eligible_variants';
             } else {
-                engine = computeAllocation({ targetUsd, variants: pool });
+                engine = computeAllocation({ targetUsd, variants: pool, tuning });
                 allocationStatus = engine && engine.legs.length > 0 ? 'ok' : 'insufficient_quotes';
                 if (allocationStatus !== 'ok') engine = null;
             }
@@ -389,13 +397,13 @@ export const GET = route(
                 let repaired = false;
                 const collapsedLegs = engine.legs.filter(leg => {
                     const delta = verifiedDeltaBps(leg);
-                    return delta !== null && delta < COLLAPSE_THRESHOLD_BPS;
+                    return delta !== null && delta < tuning.collapseThresholdBps;
                 });
                 if (collapsedLegs.length > 0) {
                     const collapsedMints = new Set(collapsedLegs.map(leg => leg.mint));
                     const repairedPool = pool.filter(poolVariant => !collapsedMints.has(poolVariant.mint));
                     const repairedEngine =
-                        repairedPool.length > 0 ? computeAllocation({ targetUsd, variants: repairedPool }) : null;
+                        repairedPool.length > 0 ? computeAllocation({ targetUsd, variants: repairedPool, tuning }) : null;
                     if (repairedEngine && repairedEngine.legs.length > 0) {
                         activeEngine = repairedEngine;
                         repaired = true;
@@ -424,7 +432,10 @@ export const GET = route(
                 }
                 if (activeEngine.unallocatedUsd > 0) warnings.push('target_exceeds_probed_depth');
                 for (const mint of activeEngine.clampedMints) warnings.push(`curve_not_concave:${mint}`);
-                if (activeEngine.pegSpreadBps !== null && activeEngine.pegSpreadBps > 50) warnings.push('peg_divergence');
+                if (activeEngine.pegSpreadBps !== null && activeEngine.pegSpreadBps > tuning.pegWarnBps) {
+                    warnings.push('peg_divergence');
+                }
+                if (marketClosedMultiplierApplied) warnings.push('market_closed_spread_tolerance');
 
                 const unitDecimals = activeEngine.outputUnitDecimals;
                 let totalOutUnitsRaw = 0n;
@@ -628,6 +639,7 @@ export const GET = route(
                     tieBreak: QUOTE_PROVIDERS[0],
                     routingVersion: ROUTING_VERSION,
                     comparisonVersion: COMPARISON_VERSION,
+                    tuning: { ...tuning, marketClosedMultiplierApplied },
                     warnings,
                 },
             };

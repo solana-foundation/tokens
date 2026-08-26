@@ -25,21 +25,88 @@ const RATIO_SCALE = 1_000_000n;
 const USDC_RAW_PER_DOLLAR = 1_000_000n;
 
 /**
- * Runtime unit-parity gate: variants of one asset must trade near one unit
- * price. A base price further than this from the pool median is a different
- * unit (gold's 1/10-oz ETF wrapper), a broken book, or pre-IPO pricing chaos —
- * in every case not something to sum with the siblings.
+ * Judgment thresholds, per asset category.
+ *
+ * - `parityDivergenceMaxBps`: the runtime unit-parity gate. Variants of one
+ *   asset must trade near one unit price; a base price further than this from
+ *   the pool median is a different unit, a broken book, or pricing chaos —
+ *   never something to sum with the siblings.
+ * - `collapseThresholdBps`: a verification re-quote this far below the
+ *   curve's expectation is a collapse (vanished RFQ fill, drained book), and
+ *   the repair pass distrusts the whole variant for the request.
+ * - `pegWarnBps`: surviving pool spread above this adds a peg_divergence
+ *   warning.
+ *
+ * PROVENANCE (keep honest): hand-set first guesses, no external source.
+ * Derived from our own sweep observations of *healthy* surviving pools
+ * (stablecoins ~5bps spread, crypto 27–95bps, commodity ~151bps; N≈2
+ * sessions, demo-Titan in the mix) with a ~3–5x headroom rule of thumb.
+ * These are CALIBRATION TARGETS: the multi-session sweep archive
+ * (scripts/route-sweep-baseline.md) replaces the rule of thumb with measured
+ * distributions, recomputed offline and reviewed — never self-adjusting from
+ * live data, because a gate fed by the pool's own current behavior loosens
+ * exactly when the pool breaks, and every ejection must be auditable against
+ * a published number.
  */
-export const PARITY_DIVERGENCE_MAX_BPS = 500;
+export interface TuningProfile {
+    profile: string;
+    parityDivergenceMaxBps: number;
+    collapseThresholdBps: number;
+    pegWarnBps: number;
+}
+
+export const ALLOCATOR_TUNING: Record<string, TuningProfile> = {
+    stablecoin: { profile: 'stablecoin', parityDivergenceMaxBps: 50, collapseThresholdBps: -300, pegWarnBps: 10 },
+    crypto: { profile: 'crypto', parityDivergenceMaxBps: 300, collapseThresholdBps: -500, pegWarnBps: 50 },
+    commodity: { profile: 'commodity', parityDivergenceMaxBps: 500, collapseThresholdBps: -500, pegWarnBps: 75 },
+    equity: { profile: 'equity', parityDivergenceMaxBps: 500, collapseThresholdBps: -750, pegWarnBps: 100 },
+    default: { profile: 'default', parityDivergenceMaxBps: 500, collapseThresholdBps: -500, pegWarnBps: 50 },
+};
 
 /**
- * A verification re-quote this far below the curve's expectation is a
- * collapse (a vanished RFQ fill, a drained book), not noise. A collapse
- * contradicts the variant's own probe data, so the repair pass distrusts the
- * whole variant for this request rather than patching one point — the
- * remaining points are exactly the data the re-quote just disproved.
+ * Equity issuer AMMs drift apart legitimately while the underlying market is
+ * closed, so the parity gate loosens by this factor off-hours. Deterministic:
+ * the clock and the category, no history needed.
  */
-export const COLLAPSE_THRESHOLD_BPS = -500;
+export const MARKET_CLOSED_PARITY_MULTIPLIER = 2;
+
+/** NYSE regular session, 9:30–16:00 ET, Mon–Fri. Holidays deliberately ignored (conservative: treated as open). */
+export function isUsMarketOpen(now: Date): boolean {
+    const parts = new Intl.DateTimeFormat('en-US', {
+        timeZone: 'America/New_York',
+        weekday: 'short',
+        hour: 'numeric',
+        minute: 'numeric',
+        hour12: false,
+    }).formatToParts(now);
+    const get = (type: string) => parts.find(part => part.type === type)?.value ?? '';
+    const weekday = get('weekday');
+    if (weekday === 'Sat' || weekday === 'Sun') return false;
+    const minutes = Number(get('hour')) * 60 + Number(get('minute'));
+    return minutes >= 9 * 60 + 30 && minutes < 16 * 60;
+}
+
+/**
+ * The profile a request actually runs under: category-selected, with the
+ * off-hours multiplier applied for equities. Every new registry asset
+ * inherits sane bounds automatically by category — never per-asset tuning.
+ */
+export function resolveTuningProfile(args: { category: string; now: Date }): {
+    tuning: TuningProfile;
+    marketClosedMultiplierApplied: boolean;
+} {
+    const base = ALLOCATOR_TUNING[args.category] ?? ALLOCATOR_TUNING.default!;
+    if (args.category === 'equity' && !isUsMarketOpen(args.now)) {
+        return {
+            tuning: {
+                ...base,
+                parityDivergenceMaxBps: base.parityDivergenceMaxBps * MARKET_CLOSED_PARITY_MULTIPLIER,
+            },
+            marketClosedMultiplierApplied: true,
+        };
+    }
+    return { tuning: base, marketClosedMultiplierApplied: false };
+}
 
 export interface AllocatableVariant {
     variantId: string;
@@ -160,7 +227,9 @@ function ratioGreater(aNum: bigint, aDen: bigint, bNum: bigint, bDen: bigint): b
 export function computeAllocation(args: {
     targetUsd: number;
     variants: AllocatableVariant[];
+    tuning?: TuningProfile;
 }): AllocationEngineResult | null {
+    const tuning = args.tuning ?? ALLOCATOR_TUNING.default!;
     const usable = args.variants.filter(variant => variant.points.length > 0);
     if (usable.length === 0) return null;
 
@@ -206,7 +275,7 @@ export function computeAllocation(args: {
         const mutual = divergenceBps(first!, second!);
         divergenceBpsByMint[first!.source.mint] = mutual;
         divergenceBpsByMint[second!.source.mint] = mutual;
-        if (mutual > 2 * PARITY_DIVERGENCE_MAX_BPS) {
+        if (mutual > 2 * tuning.parityDivergenceMaxBps) {
             const hasTarget = (variant: PreparedVariant) =>
                 variant.source.points.some(point => point.sizeUsd === args.targetUsd);
             const keepFirst =
@@ -228,7 +297,7 @@ export function computeAllocation(args: {
         pool = [];
         for (const variant of prepared) {
             const deviation = divergenceBps(variant, median);
-            if (deviation > PARITY_DIVERGENCE_MAX_BPS) {
+            if (deviation > tuning.parityDivergenceMaxBps) {
                 ejected.push({ mint: variant.source.mint, symbol: variant.source.symbol, divergenceBps: deviation });
             } else {
                 divergenceBpsByMint[variant.source.mint] = deviation;
