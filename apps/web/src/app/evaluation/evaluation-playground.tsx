@@ -315,18 +315,6 @@ export function EvaluationPlayground() {
     const [targetError, setTargetError] = React.useState<string | null>(null);
     const routeQuery = useExecutionRoute();
     const [routeLastRequest, setRouteLastRequest] = React.useState<EndpointRequestState | null>(null);
-    const baseAssetGroups = React.useMemo(buildAssetOptionGroups, []);
-    const assetGroups = baseAssetGroups.map(group => ({
-        ...group,
-        options: group.options.map(option => ({ option, logo: metadataByMint.get(option.logoMint) })),
-    }));
-    const selectedAssetOption = React.useMemo(() => {
-        for (const group of baseAssetGroups) {
-            const match = group.options.find(option => option.assetId === selectedAssetId);
-            if (match) return match;
-        }
-        return undefined;
-    }, [baseAssetGroups, selectedAssetId]);
     const baseOptionGroups = React.useMemo(buildMintOptionGroups, []);
     const metadataQueries = useQueries({
         queries: CURATED_LIST_ORDER_WITHOUT_LSTS.map(listId => ({
@@ -341,6 +329,21 @@ export function EvaluationPlayground() {
             if (!metadataByMint.has(metadata.mint)) metadataByMint.set(metadata.mint, metadata);
         }
     }
+    // Declared after metadataByMint: the asset rows borrow the mint
+    // selector's already-hydrated logos, so this must read a populated map.
+    const baseAssetGroups = React.useMemo(buildAssetOptionGroups, []);
+    const assetGroups = baseAssetGroups.map(group => ({
+        ...group,
+        options: group.options.map(option => ({ option, logo: metadataByMint.get(option.logoMint) })),
+    }));
+    const selectedAssetOption = React.useMemo(() => {
+        for (const group of baseAssetGroups) {
+            const match = group.options.find(option => option.assetId === selectedAssetId);
+            if (match) return match;
+        }
+        return undefined;
+    }, [baseAssetGroups, selectedAssetId]);
+
     const optionGroups = baseOptionGroups.map(group => ({
         ...group,
         options: group.options.map(option => {
