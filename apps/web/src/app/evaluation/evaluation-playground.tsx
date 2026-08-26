@@ -718,6 +718,13 @@ export function EvaluationPlayground() {
                     <div className="min-w-0 xl:sticky xl:top-8">
                         {mode === 'asset' ? (
                             <>
+                                <EndpointRequestPanel
+                                    requestPath={routeRequestPath}
+                                    responseJson={routeQuery.data}
+                                    isPending={routeQuery.isPending}
+                                    isError={routeQuery.isError}
+                                    lastRequest={routeLastRequest}
+                                />
                                 <RouteSplitVisual
                                     data={routeQuery.data ?? null}
                                     isPending={routeQuery.isPending}
@@ -738,13 +745,6 @@ export function EvaluationPlayground() {
                                             [...metadataByMint].map(([mint, option]) => [mint, option.logoURI ?? '']),
                                         )
                                     }
-                                />
-                                <EndpointRequestPanel
-                                    requestPath={routeRequestPath}
-                                    responseJson={routeQuery.data}
-                                    isPending={routeQuery.isPending}
-                                    isError={routeQuery.isError}
-                                    lastRequest={routeLastRequest}
                                 />
                             </>
                         ) : (

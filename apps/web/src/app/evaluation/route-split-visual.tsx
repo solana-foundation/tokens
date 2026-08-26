@@ -4,14 +4,11 @@ import * as React from 'react';
 import { Ellipsis } from 'lucide-react';
 import { motion } from 'motion/react';
 
-import { Tooltip } from '@solana/design-system/tooltip';
-
 import { colorFromTokenImage } from '../assets-api/demos/wallet-demo-data';
 import { usePrimaryVariantColors } from '../assets-api/demos/use-primary-variant-colors';
 import type { ExecutionRouteResponse } from '@/hooks/queries/use-execution-route';
 import { formatExecutionRouterLabel } from '@/lib/execution-quote-format';
 import { getMintLogoOverride, getTokenLogoURLWithSecondarySymbol } from '@/lib/logo-overrides';
-import { normalizeLogoSrc } from '@/lib/normalize-logo-src';
 
 const STACK_EASE = [0.32, 0.72, 0, 1] as const;
 const STACK_TRANSITION = { duration: 0.24, ease: STACK_EASE };
@@ -27,20 +24,13 @@ const FRAME_Y = 92;
 interface SplitLeg {
     id: string;
     name: string;
-    /** Provider · router, plus a soft-size note. */
-    sourceLabel: string;
+    symbol: string;
     logoUrl: string;
     /** Local override to try when the remote logo fails to load. */
     fallbackLogoUrl: string;
     weight: number;
-    /** Exact dollars into this leg. */
     amountLabel: string;
-    /** Tokens this leg is expected to return, with its symbol. */
-    receivedLabel: string;
-    /** Share of the whole order. */
-    shareLabel: string;
-    /** Hover detail: venue hops, price, impact, verification. */
-    detailRows: Array<{ label: string; value: string }>;
+    detailLabel: string;
     muted: boolean;
 }
 
@@ -48,28 +38,16 @@ interface SplitModel {
     assetName: string;
     assetSymbol: string;
     assetLogoUrl: string;
-    /** Local canonical mark, used when the API image fails to load. */
-    assetFallbackLogoUrl: string;
-    /** Exact dollars ordered. */
+    totalLabel: string;
     targetLabel: string;
-    /** Tokens the whole plan is expected to return. */
-    receivedLabel: string;
     legs: SplitLeg[];
 }
 
-/** Exact dollars — this is a testing surface, so no compaction. */
-function formatUsdExact(value: number): string {
+function formatUsdCompact(value: number): string {
     if (!Number.isFinite(value)) return '—';
-    return `$${Math.round(value).toLocaleString('en-US')}`;
-}
-
-/** Token amounts keep enough precision to be checkable against the response. */
-function formatTokenAmount(amount: string | undefined, symbol: string): string {
-    if (!amount) return '—';
-    const numeric = Number(amount);
-    if (!Number.isFinite(numeric)) return `${amount} ${symbol}`;
-    const digits = numeric === 0 ? 2 : numeric < 1 ? 6 : numeric < 1_000 ? 4 : 2;
-    return `${numeric.toLocaleString('en-US', { maximumFractionDigits: digits })} ${symbol}`;
+    if (value >= 1_000_000) return `$${(value / 1_000_000).toLocaleString('en-US', { maximumFractionDigits: 2 })}M`;
+    if (value >= 10_000) return `$${Math.round(value / 1_000).toLocaleString('en-US')}K`;
+    return `$${value.toLocaleString('en-US')}`;
 }
 
 /** The live route response, reshaped for the stacked-card visual. */
@@ -88,65 +66,24 @@ function buildSplitModel(args: {
         const variant = variantByMint.get(leg.mint);
         const provider = leg.provider === 'titan' ? 'Titan' : leg.provider === 'jupiter' ? 'Jupiter' : '—';
         const router = leg.router ? ` · ${formatExecutionRouterLabel(leg.router)}` : '';
-        // Tolerate a response cached before leg.route existed.
-        const hops = (leg.route ?? [])
-            .map(step => step.label ?? 'unknown venue')
-            .filter((label, index, all) => all.indexOf(label) === index);
-        const detailRows: Array<{ label: string; value: string }> = [
-            {
-                label: 'Filled by',
-                value: `${provider}${leg.router ? ` · ${formatExecutionRouterLabel(leg.router)}` : ''}`,
-            },
-            {
-                label: 'Venue path',
-                value:
-                    hops.length > 0
-                        ? hops.join(' → ')
-                        : leg.router === 'jupiterz'
-                          ? 'RFQ fill — no on-chain hops'
-                          : 'not reported',
-            },
-            { label: 'Price', value: leg.effectivePrice ? `${leg.effectivePrice} ${leg.symbol}/USDC` : '—' },
-            { label: 'Impact', value: leg.impactBps === null ? '—' : `${leg.impactBps.toFixed(2)} bps` },
-            {
-                label: 'Verified',
-                value:
-                    leg.verification.status === 'verified'
-                        ? `re-quoted at $${Number(leg.amountUsd).toLocaleString('en-US')}${
-                              leg.verification.deltaBps === null
-                                  ? ''
-                                  : ` · ${leg.verification.deltaBps > 0 ? '+' : ''}${leg.verification.deltaBps} bps vs curve`
-                          }`
-                        : 'interpolated — verification quote failed',
-            },
-            { label: 'Size', value: leg.shareConfidence === 'soft' ? 'soft — may move on a re-ask' : 'firm' },
-            { label: 'Mint', value: leg.mint },
-        ];
         // A mint-level override is the curated-correct logo — it leads. With
         // no override, the distinctive remote logo leads (legs must be
         // tellable apart) and a symbol-level local mark backs it up, then a
         // letter avatar.
-        // The API absolutizes its own /logos/* against a loopback origin in
-        // dev, which the browser cannot render — normalizeLogoSrc rewrites
-        // those to same-origin paths.
-        const remoteLogo = normalizeLogoSrc(args.logoByMint.get(leg.mint) ?? '');
-        const mintOverride = normalizeLogoSrc(getMintLogoOverride(leg.mint) ?? '');
-        const symbolFallback = normalizeLogoSrc(
-            getTokenLogoURLWithSecondarySymbol(leg.symbol, args.asset?.symbol, undefined) ?? '',
-        );
+        const remoteLogo = args.logoByMint.get(leg.mint) ?? '';
+        const mintOverride = getMintLogoOverride(leg.mint) ?? '';
+        const symbolFallback = getTokenLogoURLWithSecondarySymbol(leg.symbol, args.asset?.symbol, undefined) ?? '';
         const primaryLogo = mintOverride || remoteLogo || symbolFallback;
         const fallbackLogo = mintOverride ? remoteLogo : symbolFallback;
         return {
             id: leg.mint,
             name: variant?.name ?? leg.symbol,
-            sourceLabel: `${provider}${router}${leg.shareConfidence === 'soft' ? ' · size may move' : ''}`,
+            symbol: `${provider}${router}${leg.shareConfidence === 'soft' ? ' · size may move' : ''}`,
             logoUrl: primaryLogo,
             fallbackLogoUrl: fallbackLogo !== primaryLogo ? fallbackLogo : '',
             weight: Number(leg.amountUsd) / (target || 1),
-            amountLabel: formatUsdExact(Number(leg.amountUsd)),
-            receivedLabel: formatTokenAmount(leg.expectedOut?.amount, leg.symbol),
-            shareLabel: `${Math.round(leg.shareOfTarget * 1000) / 10}%`,
-            detailRows,
+            amountLabel: formatUsdCompact(Number(leg.amountUsd)),
+            detailLabel: `${Math.round(leg.shareOfTarget * 1000) / 10}% · ${leg.symbol}`,
             muted: false,
         };
     });
@@ -154,17 +91,12 @@ function buildSplitModel(args: {
         legs.push({
             id: 'unallocated',
             name: 'Unallocated',
-            sourceLabel: 'beyond proven depth at this size',
+            symbol: 'beyond proven depth at this size',
             logoUrl: '',
             fallbackLogoUrl: '',
             weight: unallocated / (target || 1),
-            amountLabel: formatUsdExact(unallocated),
-            receivedLabel: '—',
-            shareLabel: `${Math.round((unallocated / (target || 1)) * 1000) / 10}%`,
-            detailRows: [
-                { label: 'Why', value: 'no variant proved depth for these dollars in this probe' },
-                { label: 'Fix', value: 'ask for a smaller size, or re-request when books deepen' },
-            ],
+            amountLabel: formatUsdCompact(unallocated),
+            detailLabel: `${Math.round((unallocated / (target || 1)) * 1000) / 10}%`,
             muted: true,
         });
     }
@@ -173,12 +105,11 @@ function buildSplitModel(args: {
         assetName: args.asset?.name ?? args.data.assetId,
         assetSymbol: args.asset?.symbol ?? args.data.assetId,
         // The canonical card shows the asset's own image from the API return.
-        assetLogoUrl: normalizeLogoSrc(args.asset?.logoUrl ?? ''),
-        assetFallbackLogoUrl: normalizeLogoSrc(
-            getTokenLogoURLWithSecondarySymbol(args.asset?.symbol, undefined, undefined) ?? '',
-        ),
-        targetLabel: formatUsdExact(target),
-        receivedLabel: formatTokenAmount(allocation.totalExpectedOut?.amount, allocation.outputUnit.symbol),
+        assetLogoUrl: args.asset?.logoUrl ?? '',
+        totalLabel: allocation.totalExpectedOut
+            ? `${Number(allocation.totalExpectedOut.amount).toLocaleString('en-US', { maximumFractionDigits: 6 })} ${allocation.outputUnit.symbol}`
+            : '—',
+        targetLabel: `${formatUsdCompact(target)} routed`,
         legs,
     };
 }
@@ -212,7 +143,7 @@ export function RouteSplitVisual({
 
     return (
         <section
-            className={`relative mb-4 overflow-hidden rounded-[24px] border border-black/60 bg-[#0a0a0b] px-5 py-6 shadow-[0_8px_40px_rgba(0,0,0,0.18)] transition-opacity ${isPending ? 'opacity-60' : ''}`}
+            className={`relative mt-4 overflow-hidden rounded-[34px] border border-black/60 bg-[#0a0a0b] px-5 py-6 shadow-[0_8px_40px_rgba(0,0,0,0.18)] transition-opacity ${isPending ? 'opacity-60' : ''}`}
         >
             <div
                 aria-hidden
@@ -259,10 +190,10 @@ function SplitStack({
             model.legs.map(leg => ({
                 id: leg.id,
                 name: leg.name,
-                symbol: leg.sourceLabel,
+                symbol: leg.symbol,
                 logoUrl: leg.logoUrl,
                 balanceLabel: leg.amountLabel,
-                accountLabel: leg.shareLabel,
+                accountLabel: leg.detailLabel,
             })),
         [model.legs],
     );
@@ -350,13 +281,13 @@ function SplitFrame({ expanded, itemCount }: { expanded: boolean; itemCount: num
                     height="calc(100% - 1px)"
                     rx="26"
                     fill="none"
-                    stroke="rgba(255,255,255,0.14)"
+                    stroke="rgba(255,255,255,0.34)"
                     strokeWidth="1"
                     strokeDasharray="14 10"
                     vectorEffect="non-scaling-stroke"
                 />
             </svg>
-            <div className="absolute left-1/2 top-0 -translate-x-1/2 -translate-y-1/2 rounded-md border border-white/10 bg-[#121213] px-3 py-1 font-berkeley-mono text-[11px] uppercase leading-none tracking-[0.16em] text-white/44">
+            <div className="absolute left-1/2 top-0 -translate-x-1/2 -translate-y-1/2 rounded-md border border-white/15 bg-[#121213] px-3 py-1 font-berkeley-mono text-[11px] uppercase leading-none tracking-[0.16em] text-white/44">
                 Route Split
             </div>
         </motion.div>
@@ -485,12 +416,7 @@ function CanonicalRow({
             aria-expanded={expanded}
         >
             <div className="flex translate-y-[-1px] items-center gap-3.5">
-                <AssetIcon
-                    key={`${model.assetLogoUrl}|${model.assetFallbackLogoUrl}`}
-                    src={model.assetLogoUrl}
-                    fallbackSrc={model.assetFallbackLogoUrl}
-                    symbol={model.assetSymbol}
-                />
+                <AssetIcon key={model.assetLogoUrl} src={model.assetLogoUrl} symbol={model.assetSymbol} />
                 <div className="min-w-0 flex-1">
                     <div className="truncate text-[15px] font-medium leading-6 text-white">{model.assetName}</div>
                     <div className="mt-1.5 w-2/3">
@@ -505,10 +431,8 @@ function CanonicalRow({
                     </div>
                 </div>
                 <div className="shrink-0 text-right">
-                    <div className="text-[15px] font-medium text-white tabular-nums">{model.targetLabel}</div>
-                    <div className="mt-0.5 text-[12px] font-medium text-white/64 tabular-nums">
-                        → {model.receivedLabel}
-                    </div>
+                    <div className="text-[14px] font-medium text-white">{model.totalLabel}</div>
+                    <div className="mt-0.5 text-[12px] font-medium text-white/52">{model.targetLabel}</div>
                 </div>
                 <Ellipsis className="size-5 shrink-0 rotate-90 text-white/44" strokeWidth={2.5} aria-hidden />
             </div>
@@ -518,82 +442,53 @@ function CanonicalRow({
 
 function LegRow({ leg, contentOpacity }: { leg: SplitLeg; contentOpacity: number }) {
     return (
-        <Tooltip content={<LegRouteDetail leg={leg} />} side="left" align="center">
-            <motion.div
-                className="flex h-full cursor-help items-center justify-between gap-4"
-                initial={false}
-                animate={{ opacity: contentOpacity }}
-                transition={{ duration: 0.18, ease: STACK_EASE }}
-            >
-                <div className="flex min-w-0 items-center gap-3.5">
-                    <LegIcon
-                        key={`${leg.logoUrl}|${leg.fallbackLogoUrl}`}
-                        src={leg.logoUrl}
-                        fallbackSrc={leg.fallbackLogoUrl}
-                        symbol={leg.name}
-                        muted={leg.muted}
-                    />
-                    <div className="min-w-0">
-                        <div
-                            className={`truncate text-[13px] font-medium leading-5 ${leg.muted ? 'text-white/48' : 'text-white/92'}`}
-                        >
-                            {leg.name}
-                        </div>
-                        <div className="mt-0.5 truncate text-[11px] font-medium text-white/44">{leg.sourceLabel}</div>
-                    </div>
-                </div>
-                <div className="shrink-0 text-right">
+        <motion.div
+            className="flex h-full items-center justify-between gap-4"
+            initial={false}
+            animate={{ opacity: contentOpacity }}
+            transition={{ duration: 0.18, ease: STACK_EASE }}
+        >
+            <div className="flex min-w-0 items-center gap-3.5">
+                <LegIcon
+                    key={`${leg.logoUrl}|${leg.fallbackLogoUrl}`}
+                    src={leg.logoUrl}
+                    fallbackSrc={leg.fallbackLogoUrl}
+                    symbol={leg.name}
+                    muted={leg.muted}
+                />
+                <div className="min-w-0">
                     <div
-                        className={`text-[13px] font-medium tabular-nums ${leg.muted ? 'text-white/48' : 'text-white/86'}`}
+                        className={`truncate text-[13px] font-medium leading-5 ${leg.muted ? 'text-white/48' : 'text-white/92'}`}
                     >
-                        {leg.amountLabel}
-                        <span className="ml-1.5 text-[11px] font-medium text-white/44">{leg.shareLabel}</span>
+                        {leg.name}
                     </div>
-                    <div className="mt-0.5 text-[11px] font-medium text-white/60 tabular-nums">
-                        → {leg.receivedLabel}
-                    </div>
+                    <div className="mt-0.5 truncate text-[11px] font-medium text-white/44">{leg.symbol}</div>
                 </div>
-            </motion.div>
-        </Tooltip>
+            </div>
+            <div className="shrink-0 text-right">
+                <div className={`text-[13px] font-medium ${leg.muted ? 'text-white/48' : 'text-white/86'}`}>
+                    {leg.amountLabel}
+                </div>
+                <div className="mt-0.5 text-[11px] font-medium text-white/44">{leg.detailLabel}</div>
+            </div>
+        </motion.div>
     );
 }
 
-/** What route this leg actually took, on hover. */
-function LegRouteDetail({ leg }: { leg: SplitLeg }) {
-    return (
-        <div className="max-w-[320px] space-y-1">
-            <p className="text-[11px] font-medium">
-                {leg.name} · {leg.amountLabel} → {leg.receivedLabel}
-            </p>
-            <dl className="space-y-0.5">
-                {leg.detailRows.map(row => (
-                    <div key={row.label} className="flex gap-2 text-[10px] leading-4">
-                        <dt className="shrink-0 opacity-60">{row.label}</dt>
-                        <dd className="min-w-0 break-all font-mono">{row.value}</dd>
-                    </div>
-                ))}
-            </dl>
-        </div>
-    );
-}
-
-function AssetIcon({ src, fallbackSrc, symbol }: { src: string; fallbackSrc: string; symbol: string }) {
-    const candidates = [...new Set([src, fallbackSrc].filter(Boolean))];
-    const [candidateIndex, setCandidateIndex] = React.useState(0);
-    const activeSrc = candidates[candidateIndex];
-    if (activeSrc) {
+function AssetIcon({ src, symbol }: { src: string; symbol: string }) {
+    const [failed, setFailed] = React.useState(false);
+    if (src && !failed) {
         return (
             <img
-                key={activeSrc}
-                src={activeSrc}
+                src={src}
                 alt=""
-                onError={() => setCandidateIndex(index => index + 1)}
-                className="size-[42px] shrink-0 rounded-[14px] border-2 border-black/90 bg-white object-cover"
+                onError={() => setFailed(true)}
+                className="size-[42px] shrink-0 rounded-full border-2 border-black/90 bg-white object-cover"
             />
         );
     }
     return (
-        <div className="flex size-[42px] shrink-0 items-center justify-center rounded-[14px] bg-white/[0.06] text-[20px] font-semibold text-white/70">
+        <div className="flex size-[42px] shrink-0 items-center justify-center rounded-full bg-white/[0.06] text-[20px] font-semibold text-white/70">
             {symbol.slice(0, 1) || '$'}
         </div>
     );
