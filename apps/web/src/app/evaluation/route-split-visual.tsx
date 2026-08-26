@@ -8,7 +8,7 @@ import { colorFromTokenImage } from '../assets-api/demos/wallet-demo-data';
 import { usePrimaryVariantColors } from '../assets-api/demos/use-primary-variant-colors';
 import type { ExecutionRouteResponse } from '@/hooks/queries/use-execution-route';
 import { formatExecutionRouterLabel } from '@/lib/execution-quote-format';
-import { getTokenLogoURLForMintWithSecondarySymbol } from '@/lib/logo-overrides';
+import { getMintLogoOverride, getTokenLogoURLWithSecondarySymbol } from '@/lib/logo-overrides';
 
 const STACK_EASE = [0.32, 0.72, 0, 1] as const;
 const STACK_TRANSITION = { duration: 0.24, ease: STACK_EASE };
@@ -66,18 +66,21 @@ function buildSplitModel(args: {
         const variant = variantByMint.get(leg.mint);
         const provider = leg.provider === 'titan' ? 'Titan' : leg.provider === 'jupiter' ? 'Jupiter' : '—';
         const router = leg.router ? ` · ${formatExecutionRouterLabel(leg.router)}` : '';
-        // The distinctive remote logo leads (legs must be tellable apart); a
-        // local override backs it up when the remote host is flaky (ipfs
-        // gateways), then a letter avatar.
+        // A mint-level override is the curated-correct logo — it leads. With
+        // no override, the distinctive remote logo leads (legs must be
+        // tellable apart) and a symbol-level local mark backs it up, then a
+        // letter avatar.
         const remoteLogo = args.logoByMint.get(leg.mint) ?? '';
-        const overrideLogo =
-            getTokenLogoURLForMintWithSecondarySymbol(leg.mint, leg.symbol, args.asset?.symbol, undefined) ?? '';
+        const mintOverride = getMintLogoOverride(leg.mint) ?? '';
+        const symbolFallback = getTokenLogoURLWithSecondarySymbol(leg.symbol, args.asset?.symbol, undefined) ?? '';
+        const primaryLogo = mintOverride || remoteLogo || symbolFallback;
+        const fallbackLogo = mintOverride ? remoteLogo : symbolFallback;
         return {
             id: leg.mint,
             name: variant?.name ?? leg.symbol,
             symbol: `${provider}${router}${leg.shareConfidence === 'soft' ? ' · size may move' : ''}`,
-            logoUrl: remoteLogo || overrideLogo,
-            fallbackLogoUrl: overrideLogo !== remoteLogo ? overrideLogo : '',
+            logoUrl: primaryLogo,
+            fallbackLogoUrl: fallbackLogo !== primaryLogo ? fallbackLogo : '',
             weight: Number(leg.amountUsd) / (target || 1),
             amountLabel: formatUsdCompact(Number(leg.amountUsd)),
             detailLabel: `${Math.round(leg.shareOfTarget * 1000) / 10}% · ${leg.symbol}`,
@@ -228,6 +231,7 @@ function SplitStack({
                         >
                             {row.kind === 'canonical' ? <CanonicalCardOverlay /> : null}
                             <TokenImageWash
+                                key={row.kind === 'canonical' ? model.assetLogoUrl : row.leg!.logoUrl}
                                 src={row.kind === 'canonical' ? model.assetLogoUrl : row.leg!.logoUrl}
                                 variant={row.kind === 'canonical' ? 'canonical' : 'variant'}
                             />
@@ -412,7 +416,7 @@ function CanonicalRow({
             aria-expanded={expanded}
         >
             <div className="flex translate-y-[-1px] items-center gap-3.5">
-                <AssetIcon src={model.assetLogoUrl} symbol={model.assetSymbol} />
+                <AssetIcon key={model.assetLogoUrl} src={model.assetLogoUrl} symbol={model.assetSymbol} />
                 <div className="min-w-0 flex-1">
                     <div className="truncate text-[15px] font-medium leading-6 text-white">{model.assetName}</div>
                     <div className="mt-1.5 w-2/3">
@@ -445,7 +449,13 @@ function LegRow({ leg, contentOpacity }: { leg: SplitLeg; contentOpacity: number
             transition={{ duration: 0.18, ease: STACK_EASE }}
         >
             <div className="flex min-w-0 items-center gap-3.5">
-                <LegIcon src={leg.logoUrl} fallbackSrc={leg.fallbackLogoUrl} symbol={leg.name} muted={leg.muted} />
+                <LegIcon
+                    key={`${leg.logoUrl}|${leg.fallbackLogoUrl}`}
+                    src={leg.logoUrl}
+                    fallbackSrc={leg.fallbackLogoUrl}
+                    symbol={leg.name}
+                    muted={leg.muted}
+                />
                 <div className="min-w-0">
                     <div
                         className={`truncate text-[13px] font-medium leading-5 ${leg.muted ? 'text-white/48' : 'text-white/92'}`}
