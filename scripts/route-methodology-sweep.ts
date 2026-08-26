@@ -23,13 +23,16 @@ interface PanelEntry {
 
 /** The panel is fixed so before/after runs compare like for like. */
 const PANEL: PanelEntry[] = [
+    { assetId: 'bitcoin', amountUsd: 10_000 },
     { assetId: 'bitcoin', amountUsd: 1_000_000 },
     { assetId: 'bitcoin', amountUsd: 5_000_000 },
+    { assetId: 'bitcoin', amountUsd: 25_000_000 },
     { assetId: 'ethereum', amountUsd: 1_000_000 },
     { assetId: 'hyperliquid', amountUsd: 1_000_000 },
     { assetId: 'tesla', amountUsd: 1_000_000 },
     { assetId: 'apple', amountUsd: 1_000_000 },
     { assetId: 'spacex', amountUsd: 1_000_000 },
+    { assetId: 'micron', amountUsd: 50_000 },
     { assetId: 'micron', amountUsd: 1_000_000 },
     { assetId: 'gold', amountUsd: 1_000_000 },
     { assetId: 'silver', amountUsd: 1_000_000 },
@@ -170,7 +173,9 @@ function checkExpectations(entry: PanelEntry, body: Json): string[] {
     if (entry.assetId === 'bitcoin') {
         if (status !== 'ok') fail(`expected ok, got ${status}`);
         const legs = (allocation?.legs as Json[]) ?? [];
-        if (allocation && legs.length < 2 && allocation.fellBackToSingleVariant !== true) {
+        // Small orders legitimately fill on one variant; the split-regression
+        // guard only applies at institutional size.
+        if (entry.amountUsd >= 1_000_000 && allocation && legs.length < 2 && allocation.fellBackToSingleVariant !== true) {
             fail('expected a multi-leg plan or an explicit single-variant fallback');
         }
     }
@@ -310,6 +315,27 @@ async function main(): Promise<void> {
         if (row.warnings.length > 0) console.log(`${''.padEnd(21)}warn: ${row.warnings.join(', ')}`);
         for (const violation of row.violations) console.log(`${''.padEnd(21)}✗ ${violation}`);
     }
+    // Concurrency probe: two simultaneous /route calls exercise the
+    // per-provider limiters under contention. Both must answer, neither 500s.
+    {
+        const probeUrl = `${baseUrl}/api/v2/execution/route?assetId=bitcoin&amountUsd=100000`;
+        const startedAt = performance.now();
+        const [first, second] = await Promise.all([
+            fetch(probeUrl, { headers: { 'x-api-key': apiKey, accept: 'application/json' } }),
+            fetch(probeUrl, { headers: { 'x-api-key': apiKey, accept: 'application/json' } }),
+        ]);
+        const elapsedMs = Math.round(performance.now() - startedAt);
+        const concurrencyOk = first.status < 500 && second.status < 500 && elapsedMs < 30_000;
+        console.log(
+            `concurrency probe: ${first.status}/${second.status} in ${elapsedMs}ms ${concurrencyOk ? '' : '✗'}`,
+        );
+        if (mode === 'check' && !concurrencyOk) {
+            allViolations.push(
+                `concurrency: statuses ${first.status}/${second.status} in ${elapsedMs}ms (limit 30s, no 5xx)`,
+            );
+        }
+    }
+
     // Exit-liquidity coverage: the /route panel is all buy-side, so one
     // evaluate sell entry keeps the sell path continuously tested. Fixed token
     // amount (~\$1M of cbBTC at 2026 prices); structural expectations only.

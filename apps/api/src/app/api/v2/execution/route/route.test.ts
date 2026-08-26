@@ -574,6 +574,40 @@ describe('GET /api/v2/execution/route', () => {
         expect(body.meta.warnings).toContain('legs_share_liquidity');
     });
 
+    it('returns an honest empty response when every variant is excluded', async () => {
+        liquidMints = [];
+        metadataFallbackMints = [];
+        const response = await request('/api/v2/execution/route?assetId=bitcoin&amountUsd=1000000');
+        expect(response.status).toBe(200);
+        const body = await response.json();
+        expect((body.variants as unknown[]).length).toBe(0);
+        expect(body.allocationStatus).toBe('no_eligible_variants');
+        expect(body.allocation).toBeNull();
+        expect((body.meta.excludedVariants as unknown[]).length).toBe(BITCOIN_MINTS.length);
+        expect(body.meta.upstreamQuotes).toBe(0);
+    });
+
+    it('maxVariants=1 forces a single-variant plan with null edges', async () => {
+        const response = await request('/api/v2/execution/route?assetId=bitcoin&amountUsd=1000000&maxVariants=1');
+        const body = await response.json();
+        expect((body.variants as unknown[]).length).toBe(1);
+        expect(body.allocationStatus).toBe('ok');
+        const allocation = body.allocation as { legs: unknown[]; edge: Record<string, unknown> };
+        expect(allocation.legs.length).toBe(1);
+        expect(allocation.edge.vsBestSingleVariant).toBeNull();
+        expect(allocation.edge.vsPrimaryVariant).toBeNull();
+    });
+
+    it('allocate=false still carries probe-derived warnings', async () => {
+        const skHynix = getAsset('sk-hynix')!;
+        liquidMints = skHynix.variants.map(variant => variant.mint);
+        const response = await request('/api/v2/execution/route?assetId=sk-hynix&amountUsd=100000&allocate=false');
+        const body = await response.json();
+        expect(body.allocationStatus).toBe('not_requested');
+        expect(body.meta.warnings).toContain('equity_unit_parity_assumed');
+        expect(body.meta.tuning.profile).toBe('equity');
+    });
+
     it('requires the execution:read scope', async () => {
         const response = await request('/api/v2/execution/route?assetId=bitcoin', ['assets:read']);
         expect(response.status).toBe(403);
