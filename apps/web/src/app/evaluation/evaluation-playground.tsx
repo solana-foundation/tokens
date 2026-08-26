@@ -58,6 +58,8 @@ const FALLBACK_LIST_BY_CATEGORY: Partial<Record<AssetCategory, CuratedTokenListI
 interface MintOption {
     assetId: string;
     logoURI?: string;
+    /** The canonical asset's own image from the API, distinct from the variant's market logo. */
+    assetImageUrl?: string;
     mint: string;
     name: string;
     symbol: string;
@@ -100,6 +102,7 @@ async function fetchCuratedMintMetadata(
         if (!variant?.mint) return [];
 
         // Canonical image is the fallback when the market row has no logo.
+        const assetImageUrl = (asset.imageUrl ?? '').trim();
         const logoURI = (variant.market?.logoURI ?? asset.imageUrl ?? '').trim();
         const symbol = (variant.symbol ?? variant.label ?? asset.symbol ?? variant.mint.slice(0, 4)).trim();
         const name = cleanTokenName((variant.name ?? variant.label ?? asset.name ?? symbol).trim());
@@ -107,6 +110,7 @@ async function fetchCuratedMintMetadata(
             {
                 assetId: asset.assetId,
                 ...(logoURI ? { logoURI } : {}),
+                ...(assetImageUrl ? { assetImageUrl } : {}),
                 mint: variant.mint,
                 name,
                 symbol,
@@ -728,7 +732,9 @@ export function EvaluationPlayground() {
                                                   name: selectedAssetOption.name,
                                                   symbol: selectedAssetOption.symbol,
                                                   logoUrl:
-                                                      metadataByMint.get(selectedAssetOption.logoMint)?.logoURI ?? '',
+                                                      metadataByMint.get(selectedAssetOption.logoMint)?.assetImageUrl ??
+                                                      metadataByMint.get(selectedAssetOption.logoMint)?.logoURI ??
+                                                      '',
                                               }
                                             : null
                                     }

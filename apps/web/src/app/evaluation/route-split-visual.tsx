@@ -8,7 +8,7 @@ import { colorFromTokenImage } from '../assets-api/demos/wallet-demo-data';
 import { usePrimaryVariantColors } from '../assets-api/demos/use-primary-variant-colors';
 import type { ExecutionRouteResponse } from '@/hooks/queries/use-execution-route';
 import { formatExecutionRouterLabel } from '@/lib/execution-quote-format';
-import { getTokenLogoURLForMintWithSecondarySymbol, getTokenLogoURLWithSecondarySymbol } from '@/lib/logo-overrides';
+import { getTokenLogoURLForMintWithSecondarySymbol } from '@/lib/logo-overrides';
 
 const STACK_EASE = [0.32, 0.72, 0, 1] as const;
 const STACK_TRANSITION = { duration: 0.24, ease: STACK_EASE };
@@ -101,7 +101,8 @@ function buildSplitModel(args: {
     return {
         assetName: args.asset?.name ?? args.data.assetId,
         assetSymbol: args.asset?.symbol ?? args.data.assetId,
-        assetLogoUrl: getTokenLogoURLWithSecondarySymbol(args.asset?.symbol, undefined, args.asset?.logoUrl) ?? '',
+        // The canonical card shows the asset's own image from the API return.
+        assetLogoUrl: args.asset?.logoUrl ?? '',
         totalLabel: allocation.totalExpectedOut
             ? `${Number(allocation.totalExpectedOut.amount).toLocaleString('en-US', { maximumFractionDigits: 6 })} ${allocation.outputUnit.symbol}`
             : '—',
