@@ -21,7 +21,7 @@ import type { ExcludedVariant, ParityBasis, VariantExclusionReason } from './con
  * allocator verifies parity at runtime via base-price clustering; everything
  * else accrues, levers, blends, or tracks a different unit.
  */
-const UNIT_PARITY_KINDS = new Set(['native', 'wrapped', 'bridged', 'spot']);
+const UNIT_PARITY_KINDS = new Set(['native', 'wrapped', 'bridged', 'spot', 'stablecoin']);
 
 /** Issuer-asserted 1 token = 1 share; redeemability is the only equivalence marker we have. */
 const REDEEMABLE_STOCK_TIERS = new Set(['share_redeemable', 'cash_redeemable']);

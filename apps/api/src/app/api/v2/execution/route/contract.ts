@@ -226,6 +226,8 @@ export interface AllocationPlan {
 export type AllocationStatus = 'ok' | 'not_requested' | 'no_eligible_variants' | 'insufficient_quotes';
 
 export interface ExecutionRouteMeta {
+    /** When this plan was produced. Quotes age from here; re-request before acting on a stale plan. */
+    generatedAt: string;
     assetId: string;
     category: string;
     side: 'buy';

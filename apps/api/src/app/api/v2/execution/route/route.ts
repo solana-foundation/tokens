@@ -409,7 +409,12 @@ export const GET = route(
                 });
                 if (collapsedLegs.length > 0) {
                     const collapsedMints = new Set(collapsedLegs.map(leg => leg.mint));
-                    const repairedPool = pool.filter(poolVariant => !collapsedMints.has(poolVariant.mint));
+                    // A variant the parity gate ejected is just as distrusted as
+                    // the collapsed one — repair must never re-admit it.
+                    const ejectedMints = new Set(engine.ejected.map(entry => entry.mint));
+                    const repairedPool = pool.filter(
+                        poolVariant => !collapsedMints.has(poolVariant.mint) && !ejectedMints.has(poolVariant.mint),
+                    );
                     const repairedEngine =
                         repairedPool.length > 0
                             ? computeAllocation({ targetUsd, variants: repairedPool, tuning })
@@ -430,8 +435,12 @@ export const GET = route(
                     }
                 }
 
-                // Surface the parity gate's verdicts on the variants themselves.
-                for (const ejectedVariant of activeEngine.ejected) {
+                // Surface the parity gate's verdicts on the variants themselves,
+                // from both engines: a repair must not erase the original ejections.
+                const ejectedByMint = new Map(
+                    [...engine.ejected, ...activeEngine.ejected].map(entry => [entry.mint, entry]),
+                );
+                for (const ejectedVariant of ejectedByMint.values()) {
                     warnings.push(`price_divergence_excluded:${ejectedVariant.mint}`);
                     const routed = variants.find(variant => variant.mint === ejectedVariant.mint);
                     if (routed) {
@@ -439,7 +448,10 @@ export const GET = route(
                         routed.curve.parityDivergenceBps = ejectedVariant.divergenceBps;
                     }
                 }
-                for (const [mint, divergence] of Object.entries(activeEngine.divergenceBpsByMint)) {
+                for (const [mint, divergence] of Object.entries({
+                    ...engine.divergenceBpsByMint,
+                    ...activeEngine.divergenceBpsByMint,
+                })) {
                     const routed = variants.find(variant => variant.mint === mint);
                     if (routed) routed.curve.parityDivergenceBps = divergence;
                 }
@@ -455,6 +467,12 @@ export const GET = route(
                     const verified = verifiedRowByKey.get(legKey(leg)) ?? null;
                     if (verified && verified.status === 'available') {
                         const delta = verifiedDeltaBps(leg);
+                        // A verified output far ABOVE the curve's expectation
+                        // means the probe curve was wrong (a fill appeared that
+                        // the probes missed) — the sizes were derived from bad
+                        // data even though the totals err in the caller's favor.
+                        const upsideAnomaly = delta !== null && delta > Math.abs(tuning.collapseThresholdBps);
+                        if (upsideAnomaly) warnings.push(`verification_upside_anomaly:${leg.mint}`);
                         return {
                             variantId: leg.variantId,
                             mint: leg.mint,
@@ -467,7 +485,7 @@ export const GET = route(
                             effectivePrice: verified.best.effectivePrice,
                             impactBps: leg.impactBps,
                             router: verified.best.router,
-                            shareConfidence: leg.shareConfidence,
+                            shareConfidence: upsideAnomaly ? ('soft' as const) : leg.shareConfidence,
                             verification: {
                                 status: 'verified' as const,
                                 deltaBps: delta === null ? null : Math.round(delta * 100) / 100,
@@ -787,6 +805,7 @@ export const GET = route(
                 allocationStatus,
                 allocation,
                 meta: {
+                    generatedAt: new Date().toISOString(),
                     assetId: asset.assetId,
                     category: asset.category,
                     side: 'buy',

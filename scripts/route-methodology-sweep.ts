@@ -90,7 +90,7 @@ function summarizeLegs(allocation: Json | null): string {
  * single successful rung, the market (or an upstream) is down — expectations
  * downgrade to "the response is honest about it".
  */
-function checkExpectations(entry: PanelEntry, body: Json): string[] {
+function checkExpectations(entry: PanelEntry, body: Json, opts?: { universalOnly?: boolean }): string[] {
     const violations: string[] = [];
     const fail = (message: string) => violations.push(`${entry.assetId}@$${entry.amountUsd}: ${message}`);
 
@@ -219,6 +219,17 @@ function checkExpectations(entry: PanelEntry, body: Json): string[] {
                 fail(`leg ${leg.symbol} is firm on an RFQ fill`);
             }
         }
+        // A verified output far above the curve means the sizes came from bad
+        // data — must be disclosed and never firm.
+        for (const leg of legs) {
+            const delta = get(leg, 'verification.deltaBps') as number | null;
+            if (delta !== null && delta > Math.abs(collapseBps)) {
+                if (!warnings.includes(`verification_upside_anomaly:${leg.mint}`)) {
+                    fail(`leg ${leg.symbol} verified +${delta}bps above the curve with no upside-anomaly warning`);
+                }
+                if (leg.shareConfidence === 'firm') fail(`leg ${leg.symbol} is firm despite a +${delta}bps anomaly`);
+            }
+        }
         // #3: every plan declares its blended impact, and extreme values warn.
         const blended = allocation.blendedImpactBps as number | null | undefined;
         if (blended === undefined) {
@@ -229,6 +240,8 @@ function checkExpectations(entry: PanelEntry, body: Json): string[] {
         const grade = allocation.blendedImpactGrade as string | null | undefined;
         if (blended !== null && grade === undefined) fail('allocation missing blendedImpactGrade');
     }
+
+    if (opts?.universalOnly) return violations;
 
     // --- Per-asset expectations ---
     if (entry.assetId === 'bitcoin') {
@@ -277,7 +290,16 @@ function checkExpectations(entry: PanelEntry, body: Json): string[] {
         for (const variant of variants) {
             const divergence = get(variant, 'curve.parityDivergenceBps') as number | null | undefined;
             if (divergence != null && divergence > parityGateBps && allocatedMints.has(variant.mint as string)) {
-                fail(`divergent variant ${variant.symbol} (${divergence}bps) received an allocation`);
+                // The survivor of a two-variant mutual ejection legitimately
+                // carries the (unattributable) mutual divergence — allowed
+                // only when the ejected sibling is disclosed.
+                const siblingEjected = warnings.some(
+                    w =>
+                        w.startsWith('price_divergence_excluded:') && w !== `price_divergence_excluded:${variant.mint}`,
+                );
+                if (!siblingEjected) {
+                    fail(`divergent variant ${variant.symbol} (${divergence}bps) received an allocation`);
+                }
             }
         }
     }
@@ -302,7 +324,7 @@ function checkExpectations(entry: PanelEntry, body: Json): string[] {
     return violations;
 }
 
-type SweepMode = 'baseline' | 'check' | 'stability';
+type SweepMode = 'baseline' | 'check' | 'stability' | 'census';
 
 interface SweepArgs {
     mode: SweepMode;
@@ -321,8 +343,8 @@ function parseArgs(): SweepArgs {
         return index >= 0 ? args[index + 1] : undefined;
     };
     const mode = (flag('--mode') ?? 'baseline') as SweepMode;
-    if (mode !== 'baseline' && mode !== 'check' && mode !== 'stability') {
-        console.error(`Unknown --mode ${mode}; expected baseline, check, or stability`);
+    if (mode !== 'baseline' && mode !== 'check' && mode !== 'stability' && mode !== 'census') {
+        console.error(`Unknown --mode ${mode}; expected baseline, check, stability, or census`);
         process.exit(2);
     }
     return {
@@ -331,7 +353,7 @@ function parseArgs(): SweepArgs {
         pings: Number(flag('--pings') ?? 5),
         gapSeconds: Number(flag('--gap-seconds') ?? 20),
         assetId: flag('--asset') ?? 'bitcoin',
-        amountUsd: Number(flag('--amount') ?? 1_000_000),
+        amountUsd: Number(flag('--amount') ?? (mode === 'census' ? 100_000 : 1_000_000)),
     };
 }
 
@@ -414,6 +436,135 @@ async function runStability(baseUrl: string, apiKey: string, args: SweepArgs, ou
     console.log(`\nresponses saved to ${outDir}`);
 }
 
+/** How many single-variant assets to sample per category in census tier 2. */
+const CENSUS_SINGLE_SAMPLE: Record<string, number> = {
+    commodity: 99,
+    stablecoin: 99,
+    rwa: 5,
+    etf: 5,
+    crypto: 10,
+    equity: 15,
+};
+
+/**
+ * Registry-wide census: every multi-variant asset (the allocation surface) at
+ * the requested size, plus a deterministic per-category sample of the
+ * single-variant long tail at $50k. Universal invariants only — per-asset
+ * expectations do not generalize. Cost: ~2,300 upstream quotes. Never CI.
+ */
+async function runCensus(baseUrl: string, apiKey: string, args: SweepArgs, outDir: string): Promise<void> {
+    const { listAssets } = await import('../packages/asset-registry/src/index.ts');
+    const assets = listAssets();
+    const multi = assets
+        .filter(asset => asset.variants.length > 1)
+        .sort((a, b) => b.variants.length - a.variants.length);
+    const singleByCategory = new Map<string, string[]>();
+    for (const asset of assets
+        .filter(a => a.variants.length === 1)
+        .sort((a, b) => a.assetId.localeCompare(b.assetId))) {
+        const list = singleByCategory.get(asset.category) ?? [];
+        list.push(asset.assetId);
+        singleByCategory.set(asset.category, list);
+    }
+    const tier2: string[] = [];
+    for (const [category, ids] of singleByCategory) {
+        tier2.push(...ids.slice(0, CENSUS_SINGLE_SAMPLE[category] ?? 5));
+    }
+
+    const plan: Array<{ assetId: string; amountUsd: number; tier: 1 | 2; variants: number; gapMs: number }> = [
+        ...multi.map(asset => ({
+            assetId: asset.assetId,
+            amountUsd: args.amountUsd,
+            tier: 1 as const,
+            variants: asset.variants.length,
+            gapMs: 7_000,
+        })),
+        ...tier2.map(assetId => ({ assetId, amountUsd: 50_000, tier: 2 as const, variants: 1, gapMs: 4_000 })),
+    ];
+    console.log(
+        `census: ${multi.length} multi-variant @ $${args.amountUsd.toLocaleString('en-US')} + ${tier2.length} single-variant @ $50k\n`,
+    );
+
+    const statusCounts = new Map<string, number>();
+    const exclusionCounts = new Map<string, number>();
+    const warningCounts = new Map<string, number>();
+    const routerCounts = new Map<string, number>();
+    const allViolations: string[] = [];
+    const notable: string[] = [];
+    const bump = (map: Map<string, number>, key: string) => map.set(key, (map.get(key) ?? 0) + 1);
+
+    for (const [index, entry] of plan.entries()) {
+        const url = `${baseUrl}/api/v2/execution/route?assetId=${encodeURIComponent(entry.assetId)}&amountUsd=${entry.amountUsd}`;
+        let body: Json | null = null;
+        let httpStatus = 0;
+        try {
+            const response = await fetch(url, { headers: { 'x-api-key': apiKey, accept: 'application/json' } });
+            httpStatus = response.status;
+            body = (await response.json()) as Json;
+        } catch (error) {
+            allViolations.push(`${entry.assetId}: fetch failed (${String(error)})`);
+        }
+        if (body) writeFileSync(join(outDir, `${entry.assetId}.json`), JSON.stringify(body, null, 2));
+
+        if (!body || httpStatus !== 200) {
+            bump(statusCounts, `http_${httpStatus}`);
+            allViolations.push(`${entry.assetId}: HTTP ${httpStatus}`);
+            notable.push(`${entry.assetId} [t${entry.tier}]: HTTP ${httpStatus}`);
+        } else {
+            const status = String(body.allocationStatus);
+            bump(statusCounts, status);
+            const meta = body.meta as Json;
+            for (const excluded of (meta.excludedVariants as Json[]) ?? [])
+                bump(exclusionCounts, String(excluded.reason));
+            for (const warning of (meta.warnings as string[]) ?? []) bump(warningCounts, warning.split(':')[0]!);
+            for (const variant of (body.variants as Json[]) ?? []) {
+                for (const row of (variant.quotes as Json[]) ?? []) {
+                    for (const quote of (row.providerQuotes as Json[]) ?? []) {
+                        if (quote.status === 'available')
+                            bump(routerCounts, `${String(quote.provider)}/${String(quote.router ?? '-')}`);
+                    }
+                }
+            }
+            const violations = checkExpectations({ assetId: entry.assetId, amountUsd: entry.amountUsd }, body, {
+                universalOnly: true,
+            });
+            allViolations.push(...violations);
+            const allocation = (body.allocation as Json | null) ?? null;
+            const legs = ((allocation?.legs as Json[]) ?? []).length;
+            const flags = [
+                ...violations.map(() => 'VIOLATION'),
+                ...(allocation?.repaired === true ? ['repaired'] : []),
+                ...(allocation?.fellBackToSingleVariant === true ? ['fellBack'] : []),
+                ...(legs > 1 ? [`${legs} legs`] : []),
+            ];
+            if (flags.length > 0 || status !== 'ok') {
+                notable.push(
+                    `${entry.assetId} [t${entry.tier}, ${entry.variants}v]: ${status}${legs ? `, legs=${summarizeLegs(allocation)}` : ''} ${[...new Set(flags)].join(' ')}`.trim(),
+                );
+            }
+            for (const violation of violations) console.log(`  ✗ ${violation}`);
+        }
+        if ((index + 1) % 10 === 0) console.log(`  …${index + 1}/${plan.length}`);
+        if (index < plan.length - 1) await new Promise(resolve => setTimeout(resolve, entry.gapMs));
+    }
+
+    const dump = (label: string, map: Map<string, number>) => {
+        console.log(`\n${label}:`);
+        for (const [key, count] of [...map.entries()].sort((a, b) => b[1] - a[1]))
+            console.log(`  ${String(count).padStart(4)}  ${key}`);
+    };
+    dump('status distribution', statusCounts);
+    dump('exclusion reasons', exclusionCounts);
+    dump('warnings (prefix)', warningCounts);
+    dump('routers that answered', routerCounts);
+    console.log(`\nnotable (${notable.length}):`);
+    for (const line of notable) console.log(`  ${line}`);
+    console.log(`\nviolations: ${allViolations.length}`);
+    for (const violation of allViolations) console.log(`  ✗ ${violation}`);
+    console.log(`\nresponses saved to ${outDir}`);
+    if (allViolations.length > 0) process.exitCode = 1;
+}
+
 async function main(): Promise<void> {
     const baseUrl = process.env.API_BASE_URL?.replace(/\/+$/, '');
     const apiKey = process.env.API_KEY;
@@ -427,6 +578,10 @@ async function main(): Promise<void> {
 
     if (mode === 'stability') {
         await runStability(baseUrl, apiKey, parsed, outDir);
+        return;
+    }
+    if (mode === 'census') {
+        await runCensus(baseUrl, apiKey, parsed, outDir);
         return;
     }
 

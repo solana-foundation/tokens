@@ -431,7 +431,7 @@ Requires the `execution:read` scope. Responses are `cache-control: no-store`.
 
 | `parityBasis` | Meaning |
 | --- | --- |
-| `kind` | `native` / `wrapped` / `bridged` / `spot` variants: the same unit of the underlying |
+| `kind` | `native` / `wrapped` / `bridged` / `spot` / `stablecoin` variants: the same unit of the underlying |
 | `issuer_assertion` | Tokenized equity, redeemable tiers only: 1 token = 1 share is the **issuer's claim**, not our data. Always accompanied by `equity_unit_parity_assumed` and `issuer_primary_market_not_quoted` warnings |
 | `none` | Compared, never allocated: ETF wrappers with different units (gold's GLD wrapper is ~1/10 oz), leveraged, baskets, accruing LSTs, non-redeemable pre-IPO claims |
 
@@ -481,6 +481,9 @@ apart are noise, not an edge.
   ≤50 good, ≤150 fair, ≤500 poor, else avoid). The `extreme_impact` warning
   fires from `poor` upward: even the best available split is absorbing serious
   impact and a smaller order would fill materially better.
+- `meta.generatedAt` — when the plan was produced. Quotes age from this
+  moment; anything acting on a plan should re-request when it is more than a
+  few seconds old.
 - **Totals are firm; leg sizes are guidance.** `allocation.shareStability`
   ('firm' | 'mixed' | 'soft', with per-leg `shareConfidence`) reports whether
   the split rests on stable parts of the variants' curves. Measured: five

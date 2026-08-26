@@ -730,6 +730,62 @@ describe('GET /api/v2/execution/route', () => {
         expect(body.meta.warnings).toContain(`collapse_unrepairable:${only}`);
     });
 
+    it('never re-admits a parity-ejected variant during repair', async () => {
+        const [broken, good] = BITCOIN_MINTS;
+        liquidMints = [good!, broken!];
+        // The broken sibling quotes 10x cheap (a different unit or a broken
+        // book); the good variant's verification re-quote then collapses 95%.
+        quoteResponder = (mint, amounts) => {
+            const fanout = defaultFanout(mint, amounts) as { entries: { candidates: { outAmountRaw: string }[] }[] };
+            for (const entry of fanout.entries) {
+                for (const candidate of entry.candidates) {
+                    if (mint === broken) candidate.outAmountRaw = String(BigInt(candidate.outAmountRaw) * 10n);
+                    if (mint === good && amounts.length === 1) {
+                        candidate.outAmountRaw = String(BigInt(candidate.outAmountRaw) / 20n);
+                    }
+                }
+            }
+            return fanout;
+        };
+        const response = await request('/api/v2/execution/route?assetId=bitcoin&amountUsd=1000000');
+        expect(response.status).toBe(200);
+        const body = await response.json();
+        const allocation = body.allocation as { repaired: boolean; legs: { mint: string }[] };
+        // The gate ejected the broken book before verification; repair must
+        // not rebuild the plan on it, so the collapse ships unrepaired.
+        expect(allocation.legs.some(leg => leg.mint === broken)).toBe(false);
+        expect(allocation.repaired).toBe(false);
+        expect(body.meta.warnings).toContain(`price_divergence_excluded:${broken}`);
+        expect(body.meta.warnings).toContain(`collapse_unrepairable:${good}`);
+    });
+
+    it('flags a verified output far above the curve as an upside anomaly', async () => {
+        const [only] = BITCOIN_MINTS;
+        liquidMints = [only!];
+        // Probes are modest; the verification re-quote returns 2x the tokens —
+        // the curve the sizes were derived from was wrong.
+        quoteResponder = (mint, amounts) => {
+            const fanout = defaultFanout(mint, amounts) as { entries: { candidates: { outAmountRaw: string }[] }[] };
+            if (amounts.length === 1) {
+                for (const entry of fanout.entries) {
+                    for (const candidate of entry.candidates) {
+                        candidate.outAmountRaw = String(BigInt(candidate.outAmountRaw) * 2n);
+                    }
+                }
+            }
+            return fanout;
+        };
+        const response = await request('/api/v2/execution/route?assetId=bitcoin&amountUsd=1000000&maxVariants=1');
+        expect(response.status).toBe(200);
+        const body = await response.json();
+        const allocation = body.allocation as {
+            legs: { shareConfidence: string; verification: { deltaBps: number } }[];
+        };
+        expect(allocation.legs[0]!.verification.deltaBps).toBeGreaterThan(500);
+        expect(allocation.legs[0]!.shareConfidence).toBe('soft');
+        expect(body.meta.warnings).toContain(`verification_upside_anomaly:${only}`);
+    });
+
     it('reports blended plan impact and warns when it is extreme', async () => {
         const [primary, secondary] = BITCOIN_MINTS;
         // ~50% impact at the top rung: even the optimal split absorbs >500bps.

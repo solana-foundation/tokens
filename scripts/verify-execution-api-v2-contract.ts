@@ -84,10 +84,7 @@ function assertLink(link: unknown, path: string): { id: string; url: string } {
 function assertLinksResponse(body: unknown, label: string): { linkIds: string[]; primary: string | null } {
     assertObject(body, label);
     assert(typeof body.buyMint === 'string' && body.buyMint.length > 0, `${label}.buyMint must be a string`);
-    assert(
-        body.sellMint === null || typeof body.sellMint === 'string',
-        `${label}.sellMint must be a string or null`,
-    );
+    assert(body.sellMint === null || typeof body.sellMint === 'string', `${label}.sellMint must be a string or null`);
     assert(body.primary === null || typeof body.primary === 'string', `${label}.primary must be a string or null`);
     assert(Array.isArray(body.links), `${label}.links must be an array`);
     const linkIds = body.links.map((link, i) => assertLink(link, `${label}.links[${i}]`).id);
@@ -226,12 +223,13 @@ async function main(): Promise<void> {
     assert(Array.isArray(routed.variants) && routed.variants.length >= 1, 'route must select at least one variant');
     assertObject(routed.meta, 'route(bitcoin).meta');
     const routeMeta = routed.meta as Record<string, unknown>;
+    assert(
+        typeof routeMeta.generatedAt === 'string' && !Number.isNaN(Date.parse(routeMeta.generatedAt as string)),
+        'route meta must carry a parseable generatedAt timestamp',
+    );
     assert(Array.isArray(routeMeta.probeLadderUsd), 'route meta must list the probe ladder');
     const ladder = routeMeta.probeLadderUsd as number[];
-    assert(
-        ladder[ladder.length - 1] === 1_000_000,
-        'the probe ladder must include the target itself as its top rung',
-    );
+    assert(ladder[ladder.length - 1] === 1_000_000, 'the probe ladder must include the target itself as its top rung');
     const routeRanks: number[] = [];
     for (const [index, rawVariant] of (routed.variants as unknown[]).entries()) {
         const path = `route(bitcoin).variants[${index}]`;
@@ -253,8 +251,10 @@ async function main(): Promise<void> {
         );
         assertObject(variant.curve, `${path}.curve`);
         const curve = variant.curve as Record<string, unknown>;
-        assert(Array.isArray(curve.rungs) && (curve.rungs as unknown[]).length === ladder.length,
-            `${path}.curve must have one rung per probe size`);
+        assert(
+            Array.isArray(curve.rungs) && (curve.rungs as unknown[]).length === ladder.length,
+            `${path}.curve must have one rung per probe size`,
+        );
     }
     assert(
         routeRanks.every((rank, index) => rank === index + 1),
@@ -376,7 +376,10 @@ async function main(): Promise<void> {
     console.log('v2 execution API contract OK');
 }
 
-function assertProviderQuote(value: unknown, path: string): { provider: string; rank: number | null; isBest: boolean; outRaw: bigint | null } {
+function assertProviderQuote(
+    value: unknown,
+    path: string,
+): { provider: string; rank: number | null; isBest: boolean; outRaw: bigint | null } {
     assertObject(value, path);
     assert(typeof value.provider === 'string' && value.provider.length > 0, `${path}.provider must be a string`);
     assert(
@@ -506,10 +509,7 @@ function assertQuotesResponse(body: unknown, label: string): { entryCount: numbe
 
     assertObject(body.meta, `${label}.meta`);
     const meta = body.meta as Record<string, unknown>;
-    assert(
-        meta.requested === (body.quotes as unknown[]).length,
-        `${label}.meta.requested must match the entry count`,
-    );
+    assert(meta.requested === (body.quotes as unknown[]).length, `${label}.meta.requested must match the entry count`);
     assert(
         (meta.available as number) + (meta.unavailable as number) === meta.requested,
         `${label}.meta available + unavailable must equal requested`,
@@ -522,10 +522,7 @@ function assertQuotesResponse(body: unknown, label: string): { entryCount: numbe
         const statPath = `${label}.meta.providerStats.${provider}`;
         assertObject(statRaw, statPath);
         const stat = statRaw as Record<string, number>;
-        assert(
-            stat.wins + stat.soleQuotes <= stat.quoted,
-            `${statPath}: wins + soleQuotes cannot exceed quoted`,
-        );
+        assert(stat.wins + stat.soleQuotes <= stat.quoted, `${statPath}: wins + soleQuotes cannot exceed quoted`);
     }
     assertObject(meta.summary, `${label}.meta.summary`);
     const summary = meta.summary as Record<string, unknown>;

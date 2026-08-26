@@ -33,6 +33,11 @@ function marketsFrom(displays: Map<string, VariantDisplay>) {
 }
 
 describe('parityBasisOf', () => {
+    it('grants kind parity to stablecoin variants (exotic fiat stables)', () => {
+        const variant = { variantId: 'audd:mint', mint: 'AUDDmint', kind: 'stablecoin' } as never;
+        expect(parityBasisOf(variant)).toBe('kind');
+    });
+
     it('grants kind parity to wrapped/bridged and nothing to derivatives', () => {
         const bitcoin = getAsset('bitcoin')!;
         for (const variant of bitcoin.variants) {

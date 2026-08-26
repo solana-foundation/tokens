@@ -155,3 +155,83 @@ request; providers=jupiter degrades to `verification.status: 'interpolated'`
 under the rate tier; providers=titan splits clean; allocate=false agrees with
 allocate=true on selection; alias/$1/$50M clean. Negative verify deltas now
 appear on bitcoin (3 of 15, min −14bps) — small honest drift, not collapse.
+
+## Registry census (2026-08-26) — 137 assets, 4 defects found
+
+`--mode census`: all 84 multi-variant assets @ $100k + 53 single-variant
+samples @ $50k (~2,300 quotes). First run: **zero universal-invariant
+violations**, but the notable rows surfaced four real defects, all fixed and
+encoded:
+
+1. **Repair re-admitted parity-ejected variants** (the big one; jpmorgan).
+   JPMon's base rung implied ~$5,700/share (15.7x off), so the parity gate
+   ejected it; the surviving JPMx plan collapsed at verification; the repair
+   pass then rebuilt the plan on exactly the ejected book and shipped a leg
+   whose verify delta was **+330,862bps** — with the original ejection warning
+   erased (disclosures were read from the repaired engine only). Fix: repair
+   distrusts collapsed AND ejected mints, and ejections from both engines
+   surface. jpmorgan now ships an honest repaired/collapse-disclosed plan.
+2. **Positive verify-delta blowouts passed silently** (oracle +5,312bps). The
+   collapse gate is negative-only; a verified output far ABOVE the curve means
+   the sizes were derived from bad probe data even though the total errs in
+   the caller's favor. Fix: delta > |collapseThresholdBps| →
+   `verification_upside_anomaly:<mint>` + the leg is never firm.
+3. **`stablecoin` kind lacked unit parity** while usd/eur variants (same
+   semantics) are `native` — so every exotic fiat stable (audd, brz, gyen,
+   tryb, …15 census rows) read "cannot be routed". The registry ranking
+   already treats `stablecoin` as spot-like; the route layer now grants it
+   kind parity (runtime clustering still guards). brz immediately routes a
+   real $30k leg; audd honestly reports insufficient_quotes (no books).
+4. **Registry data: IEMG misfiled.** `cdVNL7…ondo` was named "iShares Core
+   MSCI EAFE ETF" but live metadata identifies it as the Emerging Markets
+   fund; two different funds sat under one canonical asset. Renamed → it now
+   groups with the xStocks IEMG tracker under `core-msci-em`.
+
+**Self-check re-run after the fixes: 137 assets, zero violations.** Status
+distribution moved ok 103→111, no_eligible_variants 31→17,
+insufficient_quotes 3→9 — the stablecoin-parity fix converting 14 exotic
+stables from "cannot be routed" to routable/retryable. One check-panel
+expectation was refined during the re-run: the survivor of a two-variant
+mutual ejection legitimately carries the unattributable mutual divergence
+(usd's pool collapsed to AUSD+USDP this run; USDP ejected and disclosed,
+AUSD ships wearing the 28,919bps number as information).
+
+Census landscape (first run): status ok 103 / no_eligible_variants 31 /
+insufficient_quotes 3; jupiterz is the most common router registry-wide (485
+answers, ahead of Titan's 484); 11 plans repaired, 5 fell back, 3 restricted
+re-quotes completed. abbott/chevron hit the missing_decimals→
+insufficient_quotes path (round-2 fix working at scale). Size-ladder torture
+(bitcoin/gold/micron at $1k, $5k, $137,777, $3M, $50M, default): all
+invariants hold — the ladder degenerates to 1–2 rungs gracefully and odd
+amounts sum exactly.
+
+## Simulation → execution gaps (2026-08-26 review, backlog — not built)
+
+The simulation phase quotes and plans; a real multi-asset execution system
+needs, in rough priority order:
+
+1. **Plan identity.** A deterministic plan id/hash so an executor can say
+   "execute plan X" and audit what was quoted vs what filled. Today a plan is
+   only identified by its full body. (`meta.generatedAt` shipped now as the
+   freshness half of this.)
+2. **Caller slippage budget.** `slippageBps` is fixed at 50 inside the quote
+   clients; an executor must pass its own tolerance and see it echoed in the
+   plan, per leg.
+3. **Leg sequencing.** Legs are size-sorted and the docs say largest-first
+   (overlap consumes shared liquidity), but an executor needs this as a
+   contract-level statement plus per-leg ordering semantics when legs share
+   pools (`legIndependence` already carries the data).
+4. **Partial-fill re-planning.** If leg 2 fails after leg 1 filled, the
+   remainder needs a re-route that excludes the filled variant and accounts
+   for the already-moved price. Natural shape: `/route` with `excludeMints`
+   and a reduced target — the repair pass already implements the internal
+   version of this.
+5. **Plan TTL semantics.** RFQ legs are firm for seconds; AMM legs drift.
+   `generatedAt` + `shareStability` describe it; an executor wants an explicit
+   `validForSeconds` per leg (RFQ expiry is known to Jupiter, unknown to us —
+   needs Ultra order metadata).
+6. **Sell-side exits.** Descoped from simulation; an execution system needs
+   position exit with unit-parity conversion per variant.
+7. **Concurrency + quota.** One route call ≈ 22 Jupiter quotes; concurrent
+   executor traffic requires the paid tier and per-key budget partitioning
+   (per-instance limiter is best-effort only).
