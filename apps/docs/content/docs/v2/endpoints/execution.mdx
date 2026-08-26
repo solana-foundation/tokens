@@ -481,6 +481,19 @@ apart are noise, not an edge.
   ≤50 good, ≤150 fair, ≤500 poor, else avoid). The `extreme_impact` warning
   fires from `poor` upward: even the best available split is absorbing serious
   impact and a smaller order would fill materially better.
+- `variants[].market.priceAsOf` — when the market snapshot behind
+  `market.price` was fetched. The snapshot lags live quotes, so never value
+  quoted token amounts at `market.price` and read the difference as
+  execution cost — value them against the variant's own
+  `curve.baseEffectivePrice` (same source as the quotes) and treat
+  `market.price` as a reference.
+- **Slippage does not shape quoted amounts.** Measured on both venues:
+  quoted `outAmount` is identical (±1bps quote noise) at `slippageBps`
+  1 / 50 / 300; only the min-out bound scales (Jupiter's
+  `otherAmountThreshold` = outAmount × (1 − slippage) exactly). The 50bps
+  constant in our quote clients therefore has no effect on any number this
+  API returns; a caller-supplied slippage budget is an execution-phase
+  concern, not a quoting one.
 - `allocation.legs[].route` — the venue path that leg's quote actually took,
   hop by hop, from its own verification quote (falling back to its probe rung
   at the same size). Empty for RFQ fills, which have no on-chain hops.

@@ -235,3 +235,35 @@ needs, in rough priority order:
 7. **Concurrency + quota.** One route call ≈ 22 Jupiter quotes; concurrent
    executor traffic requires the paid tier and per-key budget partitioning
    (per-instance limiter is best-effort only).
+
+## Received-value basis + slippage empirics (2026-08-26 evening)
+
+Steven's $750k test showed "received $735,489" (−194bps) beside a "+31.95bps
+good deal" headline. Decomposition on the live $1M payload:
+
+| Leg | exec price | venue base ($6–8k rung) | Birdeye snapshot | vs base | vs Birdeye |
+| --- | --- | --- | --- | --- | --- |
+| cbBTC | $78,989 | $78,872 | $77,130 | **+15bps** | +241bps |
+| WBTC | $78,908 | $78,859 | $77,066 | **+6bps** | +239bps |
+| xBTC | $78,989 | $78,882 | $77,106 | **+14bps** | +244bps |
+
+A uniform ~240bps wedge across independent variants is a price-basis
+artifact, not slippage — and `priceAsOf` (now exposed) proved it: the local
+Birdeye snapshot was **3+ days old** (2026-08-23) while quotes are live.
+Real execution cost on the plan: **11.8bps**. Fix: the split visual values
+tokens at each variant's own `curve.baseEffectivePrice` (same source as the
+quotes); the Birdeye value moved to the hover with its age and a divergence
+note when the wedge exceeds 100bps.
+
+**Slippage empirics** (direct venue calls, cbBTC $150k, slippageBps 1/50/300):
+- Jupiter classic: outAmount 190,611,556 / 190,602,387 / 190,590,163 —
+  ±0.6bps (inter-call noise); `otherAmountThreshold` scaled exactly
+  ×(1−s/10⁴) at every setting.
+- Titan REST: 190,571,589 / 190,595,039 / (one transient no-route, 200 on
+  retry) — same invariance.
+- Jupiter Ultra: takes no slippage param; reports its own `slippageBps: 0`.
+
+Conclusion: quoted amounts are slippage-independent; slippage is an
+execution-time min-out bound. The hardcoded 50bps in the quote clients
+affects nothing this API returns. Caller slippage budget stays on the
+execution-phase backlog.

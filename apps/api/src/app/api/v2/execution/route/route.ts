@@ -196,6 +196,9 @@ export const GET = route(
                               name: entry.market.name ?? null,
                               decimals: entry.market.decimals ?? null,
                               price: entry.market.price ?? null,
+                              priceAsOf: Number.isFinite(entry.market.lastFetchedAt)
+                                  ? new Date(entry.market.lastFetchedAt).toISOString()
+                                  : null,
                               liquidity: entry.market.liquidity ?? null,
                               volume24hUSD: entry.market.volume24hUSD ?? null,
                           }
@@ -226,6 +229,7 @@ export const GET = route(
                         name: existing?.name ?? metadata.name ?? null,
                         decimals: metadata.decimals,
                         price: existing?.price ?? null,
+                        priceAsOf: existing?.priceAsOf ?? null,
                         liquidity: existing?.liquidity ?? null,
                         volume24hUSD: existing?.volume24hUSD ?? null,
                     });

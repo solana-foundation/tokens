@@ -923,6 +923,19 @@ describe('GET /api/v2/execution/route', () => {
         expect(allocation.blendedImpactGrade).not.toBeNull();
     });
 
+    it('carries the market snapshot timestamp as priceAsOf', async () => {
+        const response = await request('/api/v2/execution/route?assetId=bitcoin&amountUsd=100000');
+        const body = await response.json();
+        const markets = (body.variants as { market: { priceAsOf: string | null } | null }[])
+            .map(variant => variant.market)
+            .filter((market): market is { priceAsOf: string | null } => market !== null);
+        expect(markets.length).toBeGreaterThan(0);
+        for (const market of markets) {
+            expect(typeof market.priceAsOf).toBe('string');
+            expect(Number.isNaN(Date.parse(market.priceAsOf!))).toBe(false);
+        }
+    });
+
     it("exposes each leg's venue path", async () => {
         const [only] = BITCOIN_MINTS;
         liquidMints = [only!];

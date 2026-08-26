@@ -66,6 +66,8 @@ export interface VariantCurveRung {
 
 export interface RoutedVariantMarket {
     price: number | null;
+    /** When the market snapshot behind `price` was fetched — the price can lag live quotes. */
+    priceAsOf: string | null;
     liquidity: number | null;
     volume24hUSD: number | null;
 }

@@ -41,7 +41,12 @@ export interface SelectedVariant {
     decimals: number;
     symbol: string;
     name: string;
-    market: { price: number | null; liquidity: number | null; volume24hUSD: number | null } | null;
+    market: {
+        price: number | null;
+        priceAsOf: string | null;
+        liquidity: number | null;
+        volume24hUSD: number | null;
+    } | null;
 }
 
 export interface VariantSelection {
@@ -65,6 +70,7 @@ export interface VariantDisplay {
     name?: string | null;
     decimals?: number | null;
     price?: number | null;
+    priceAsOf?: string | null;
     liquidity?: number | null;
     volume24hUSD?: number | null;
 }
@@ -139,6 +145,7 @@ export function selectVariants(args: {
             market: display
                 ? {
                       price: display.price ?? null,
+                      priceAsOf: display.priceAsOf ?? null,
                       liquidity: display.liquidity ?? null,
                       volume24hUSD: display.volume24hUSD ?? null,
                   }

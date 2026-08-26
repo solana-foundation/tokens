@@ -63,6 +63,16 @@ function formatUsdExact(value: number): string {
     return `$${Math.round(value).toLocaleString('en-US')}`;
 }
 
+/** "3m old" / "2h old" — how stale the reference snapshot is. */
+function formatAge(iso: string): string {
+    const ms = Date.now() - Date.parse(iso);
+    if (!Number.isFinite(ms) || ms < 0) return '';
+    const minutes = Math.round(ms / 60_000);
+    if (minutes < 1) return 'fresh';
+    if (minutes < 90) return `${minutes}m old`;
+    return `${Math.round(minutes / 60)}h old`;
+}
+
 /** Token amounts keep enough precision to be checkable against the response. */
 function formatTokenAmount(amount: string | undefined, symbol: string): string {
     if (!amount) return '—';
@@ -84,14 +94,26 @@ function buildSplitModel(args: {
     const unallocated = Number(allocation.unallocatedUsd);
     const variantByMint = new Map(args.data.variants.map(variant => [variant.mint, variant]));
 
-    // What the tokens received are actually worth right now, at each
-    // variant's own market price — distinct from the dollars put in.
+    // What the tokens received are worth, on a basis consistent with the
+    // quotes themselves: each variant's own smallest-rung price (tokens per
+    // USDC). The in-vs-value gap is then real execution cost. Birdeye's
+    // snapshot is computed alongside as a REFERENCE — it lags live quotes,
+    // and mixing the two bases once showed a fake −194bps "haircut".
     const legValueUsd = new Map<string, number>();
+    const legReferenceValueUsd = new Map<string, number>();
     for (const leg of allocation.legs) {
-        const price = variantByMint.get(leg.mint)?.market?.price ?? null;
         const tokens = leg.expectedOut ? Number(leg.expectedOut.amount) : null;
-        if (price !== null && tokens !== null && Number.isFinite(price) && Number.isFinite(tokens)) {
-            legValueUsd.set(leg.mint, tokens * price);
+        if (tokens === null || !Number.isFinite(tokens)) continue;
+        const baseTokensPerUsdc = Number(variantByMint.get(leg.mint)?.curve.baseEffectivePrice ?? Number.NaN);
+        if (Number.isFinite(baseTokensPerUsdc) && baseTokensPerUsdc > 0) {
+            legValueUsd.set(leg.mint, tokens / baseTokensPerUsdc);
+        }
+        const referencePrice = variantByMint.get(leg.mint)?.market?.price ?? null;
+        if (referencePrice !== null && Number.isFinite(referencePrice)) {
+            legReferenceValueUsd.set(leg.mint, tokens * referencePrice);
+            // No venue base price at all: fall back to the reference rather
+            // than showing nothing.
+            if (!legValueUsd.has(leg.mint)) legValueUsd.set(leg.mint, tokens * referencePrice);
         }
     }
     const everyLegValued = allocation.legs.every(leg => legValueUsd.has(leg.mint));
@@ -104,6 +126,11 @@ function buildSplitModel(args: {
         const provider = leg.provider === 'titan' ? 'Titan' : leg.provider === 'jupiter' ? 'Jupiter' : '—';
         const router = leg.router ? ` · ${formatExecutionRouterLabel(leg.router)}` : '';
         const valueUsd = legValueUsd.get(leg.mint) ?? null;
+        const referenceValueUsd = legReferenceValueUsd.get(leg.mint) ?? null;
+        const referenceWedgeBps =
+            valueUsd !== null && referenceValueUsd !== null && referenceValueUsd > 0
+                ? (valueUsd / referenceValueUsd - 1) * 10_000
+                : null;
         // Tolerate a response cached before leg.route existed.
         const hops = (leg.route ?? [])
             .map(step => step.label ?? 'unknown venue')
@@ -124,11 +151,24 @@ function buildSplitModel(args: {
             },
             { label: 'Price', value: leg.effectivePrice ? `${leg.effectivePrice} ${leg.symbol}/USDC` : '—' },
             {
-                label: 'Market value',
+                label: 'Venue value',
                 value:
                     valueUsd === null
-                        ? 'no market price for this mint'
-                        : `${formatUsdExact(valueUsd)} @ ${formatUsdExact(variant?.market?.price ?? Number.NaN)}/${leg.symbol}`,
+                        ? 'no price basis for this mint'
+                        : `${formatUsdExact(valueUsd)} at this venue's own top-of-book price`,
+            },
+            {
+                label: 'Birdeye value',
+                value:
+                    referenceValueUsd === null
+                        ? 'no market snapshot'
+                        : `${formatUsdExact(referenceValueUsd)} @ ${formatUsdExact(variant?.market?.price ?? Number.NaN)}/${leg.symbol}` +
+                          (variant?.market?.priceAsOf
+                              ? ` (${formatAge(variant.market.priceAsOf) || 'age unknown'})`
+                              : '') +
+                          (referenceWedgeBps !== null && Math.abs(referenceWedgeBps) > 100
+                              ? ` — diverges ${referenceWedgeBps > 0 ? '+' : ''}${Math.round(referenceWedgeBps)}bps from the venue basis: snapshot stale or venue off-market`
+                              : ''),
             },
             { label: 'Impact', value: leg.impactBps === null ? '—' : `${leg.impactBps.toFixed(2)} bps` },
             {
