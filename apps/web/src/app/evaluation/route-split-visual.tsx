@@ -8,6 +8,7 @@ import { colorFromTokenImage } from '../assets-api/demos/wallet-demo-data';
 import { usePrimaryVariantColors } from '../assets-api/demos/use-primary-variant-colors';
 import type { ExecutionRouteResponse } from '@/hooks/queries/use-execution-route';
 import { formatExecutionRouterLabel } from '@/lib/execution-quote-format';
+import { getTokenLogoURLForMintWithSecondarySymbol, getTokenLogoURLWithSecondarySymbol } from '@/lib/logo-overrides';
 
 const STACK_EASE = [0.32, 0.72, 0, 1] as const;
 const STACK_TRANSITION = { duration: 0.24, ease: STACK_EASE };
@@ -25,6 +26,8 @@ interface SplitLeg {
     name: string;
     symbol: string;
     logoUrl: string;
+    /** Local override to try when the remote logo fails to load. */
+    fallbackLogoUrl: string;
     weight: number;
     amountLabel: string;
     detailLabel: string;
@@ -63,11 +66,18 @@ function buildSplitModel(args: {
         const variant = variantByMint.get(leg.mint);
         const provider = leg.provider === 'titan' ? 'Titan' : leg.provider === 'jupiter' ? 'Jupiter' : '—';
         const router = leg.router ? ` · ${formatExecutionRouterLabel(leg.router)}` : '';
+        // The distinctive remote logo leads (legs must be tellable apart); a
+        // local override backs it up when the remote host is flaky (ipfs
+        // gateways), then a letter avatar.
+        const remoteLogo = args.logoByMint.get(leg.mint) ?? '';
+        const overrideLogo =
+            getTokenLogoURLForMintWithSecondarySymbol(leg.mint, leg.symbol, args.asset?.symbol, undefined) ?? '';
         return {
             id: leg.mint,
             name: variant?.name ?? leg.symbol,
             symbol: `${provider}${router}${leg.shareConfidence === 'soft' ? ' · size may move' : ''}`,
-            logoUrl: args.logoByMint.get(leg.mint) ?? '',
+            logoUrl: remoteLogo || overrideLogo,
+            fallbackLogoUrl: overrideLogo !== remoteLogo ? overrideLogo : '',
             weight: Number(leg.amountUsd) / (target || 1),
             amountLabel: formatUsdCompact(Number(leg.amountUsd)),
             detailLabel: `${Math.round(leg.shareOfTarget * 1000) / 10}% · ${leg.symbol}`,
@@ -80,6 +90,7 @@ function buildSplitModel(args: {
             name: 'Unallocated',
             symbol: 'beyond proven depth at this size',
             logoUrl: '',
+            fallbackLogoUrl: '',
             weight: unallocated / (target || 1),
             amountLabel: formatUsdCompact(unallocated),
             detailLabel: `${Math.round((unallocated / (target || 1)) * 1000) / 10}%`,
@@ -90,7 +101,7 @@ function buildSplitModel(args: {
     return {
         assetName: args.asset?.name ?? args.data.assetId,
         assetSymbol: args.asset?.symbol ?? args.data.assetId,
-        assetLogoUrl: args.asset?.logoUrl ?? '',
+        assetLogoUrl: getTokenLogoURLWithSecondarySymbol(args.asset?.symbol, undefined, args.asset?.logoUrl) ?? '',
         totalLabel: allocation.totalExpectedOut
             ? `${Number(allocation.totalExpectedOut.amount).toLocaleString('en-US', { maximumFractionDigits: 6 })} ${allocation.outputUnit.symbol}`
             : '—',
@@ -279,12 +290,14 @@ function SplitFrame({ expanded, itemCount }: { expanded: boolean; itemCount: num
 }
 
 function TokenImageWash({ src, variant }: { src: string; variant: 'canonical' | 'variant' }) {
-    if (!src) return null;
+    const [failed, setFailed] = React.useState(false);
+    if (!src || failed) return null;
     return (
         <img
             src={src}
             alt=""
             aria-hidden
+            onError={() => setFailed(true)}
             className={`pointer-events-none absolute left-[-18px] top-1/2 z-[1] -translate-y-1/2 rounded-full object-cover blur-2xl ${
                 variant === 'canonical' ? 'size-[108px] opacity-22' : 'size-[88px] opacity-18'
             }`}
@@ -431,7 +444,7 @@ function LegRow({ leg, contentOpacity }: { leg: SplitLeg; contentOpacity: number
             transition={{ duration: 0.18, ease: STACK_EASE }}
         >
             <div className="flex min-w-0 items-center gap-3.5">
-                <LegIcon src={leg.logoUrl} symbol={leg.name} muted={leg.muted} />
+                <LegIcon src={leg.logoUrl} fallbackSrc={leg.fallbackLogoUrl} symbol={leg.name} muted={leg.muted} />
                 <div className="min-w-0">
                     <div
                         className={`truncate text-[13px] font-medium leading-5 ${leg.muted ? 'text-white/48' : 'text-white/92'}`}
@@ -452,11 +465,13 @@ function LegRow({ leg, contentOpacity }: { leg: SplitLeg; contentOpacity: number
 }
 
 function AssetIcon({ src, symbol }: { src: string; symbol: string }) {
-    if (src) {
+    const [failed, setFailed] = React.useState(false);
+    if (src && !failed) {
         return (
             <img
                 src={src}
                 alt=""
+                onError={() => setFailed(true)}
                 className="size-[42px] shrink-0 rounded-[14px] border-2 border-black/90 bg-white object-cover"
             />
         );
@@ -509,13 +524,33 @@ function normalizeSegments(segments: ReadonlyArray<{ weight: number; color: stri
     return cleaned.map(segment => ({ ...segment, weight: segment.weight / sum }));
 }
 
-function LegIcon({ src, symbol, muted }: { src: string; symbol: string; muted: boolean }) {
+function LegIcon({
+    src,
+    fallbackSrc,
+    symbol,
+    muted,
+}: {
+    src: string;
+    fallbackSrc: string;
+    symbol: string;
+    muted: boolean;
+}) {
+    // Remote logo → local override → letter avatar.
+    const candidates = [src, fallbackSrc].filter(Boolean);
+    const [candidateIndex, setCandidateIndex] = React.useState(0);
+    const activeSrc = candidates[candidateIndex];
     return (
         <div
             className={`flex size-[34px] shrink-0 items-center justify-center overflow-hidden rounded-full border-2 border-black/80 backdrop-blur-xl ${muted ? 'border-dashed border-white/20 bg-transparent' : 'bg-white/[0.06]'}`}
         >
-            {src ? (
-                <img src={src} alt="" className="h-full w-full object-cover" />
+            {activeSrc ? (
+                <img
+                    key={activeSrc}
+                    src={activeSrc}
+                    alt=""
+                    onError={() => setCandidateIndex(index => index + 1)}
+                    className="h-full w-full object-cover"
+                />
             ) : (
                 <span className="text-[13px] font-semibold text-white/60">{symbol.slice(0, 1)}</span>
             )}
