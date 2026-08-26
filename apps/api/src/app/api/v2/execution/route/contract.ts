@@ -7,7 +7,13 @@
  * consumers outside this app can `import type` it by path.
  */
 
-import type { ExecutionQuoteAmount, ExecutionQuoteRow, ProviderStat, QuoteProvider } from '../evaluate/contract';
+import type {
+    ExecutionQuoteAmount,
+    ExecutionQuoteRow,
+    ExecutionRouteStep,
+    ProviderStat,
+    QuoteProvider,
+} from '../evaluate/contract';
 
 export const ROUTING_VERSION = 'variant-route-v1';
 export const ALLOCATION_VERSION = 'allocation-v1';
@@ -128,6 +134,13 @@ export interface AllocationLeg {
     impactBps: number | null;
     /** Provider-internal router that filled the verification quote (e.g. Jupiter's jupiterz RFQ). */
     router: string | null;
+    /**
+     * The venue path this leg's quote actually took, hop by hop. From the
+     * leg's own verification quote, falling back to its probe rung at the
+     * same size when verification failed. Empty when neither reported hops
+     * (RFQ fills and demo-masked routes).
+     */
+    route: readonly ExecutionRouteStep[];
     /**
      * How much to trust this leg's SIZE. 'soft' means a re-ask may move the
      * split materially; the plan's TOTAL stays firm either way because every

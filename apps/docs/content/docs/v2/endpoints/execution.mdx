@@ -481,6 +481,9 @@ apart are noise, not an edge.
   ≤50 good, ≤150 fair, ≤500 poor, else avoid). The `extreme_impact` warning
   fires from `poor` upward: even the best available split is absorbing serious
   impact and a smaller order would fill materially better.
+- `allocation.legs[].route` — the venue path that leg's quote actually took,
+  hop by hop, from its own verification quote (falling back to its probe rung
+  at the same size). Empty for RFQ fills, which have no on-chain hops.
 - `meta.generatedAt` — when the plan was produced. Quotes age from this
   moment; anything acting on a plan should re-request when it is more than a
   few seconds old.

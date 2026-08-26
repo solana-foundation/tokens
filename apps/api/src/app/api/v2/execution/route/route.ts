@@ -485,6 +485,7 @@ export const GET = route(
                             effectivePrice: verified.best.effectivePrice,
                             impactBps: leg.impactBps,
                             router: verified.best.router,
+                            route: verified.best.route,
                             shareConfidence: upsideAnomaly ? ('soft' as const) : leg.shareConfidence,
                             verification: {
                                 status: 'verified' as const,
@@ -512,6 +513,7 @@ export const GET = route(
                         effectivePrice: null,
                         impactBps: leg.impactBps,
                         router: null,
+                        route: [],
                         shareConfidence: leg.shareConfidence,
                         verification: {
                             status: 'interpolated' as const,
@@ -536,6 +538,11 @@ export const GET = route(
                         const scale = 10n ** BigInt(unitDecimals - (decimalsByMint.get(leg.mint) ?? unitDecimals));
                         return sum + BigInt(leg.expectedOut.rawAmount) * scale;
                     }, 0n);
+
+                // Interpolated legs have no verification route; use their probe rung's.
+                for (const leg of legs) {
+                    if (leg.route.length === 0) leg.route = legStepsOf(leg);
+                }
 
                 // Overlap detection uses routes already in hand — costs nothing.
                 let legIndependence = analyzeLegIndependence({
@@ -636,6 +643,7 @@ export const GET = route(
                             expectedOut: cleanQuote.output,
                             effectivePrice: cleanQuote.effectivePrice,
                             router: cleanQuote.router,
+                            route: cleanQuote.route,
                             verification: {
                                 status: 'verified' as const,
                                 deltaBps: deltaVsCurve === null ? null : Math.round(deltaVsCurve * 100) / 100,
@@ -688,6 +696,7 @@ export const GET = route(
                                     effectivePrice: baselineRow.best.effectivePrice,
                                     impactBps: targetRung?.impactBps ?? null,
                                     router: baselineRow.best.router,
+                                    route: baselineRow.best.route,
                                     // Exact full-target quote: no marginal sizing.
                                     shareConfidence: 'firm' as const,
                                     verification: {

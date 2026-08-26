@@ -923,6 +923,37 @@ describe('GET /api/v2/execution/route', () => {
         expect(allocation.blendedImpactGrade).not.toBeNull();
     });
 
+    it("exposes each leg's venue path", async () => {
+        const [only] = BITCOIN_MINTS;
+        liquidMints = [only!];
+        const hop = {
+            ammKey: 'poolA',
+            label: 'Whirlpool',
+            percent: 100,
+            inputMint: USDC,
+            outputMint: only!,
+            inAmountRaw: null,
+            outAmountRaw: null,
+            feeAmountRaw: null,
+            feeMint: null,
+        };
+        quoteResponder = (mint, amounts) => {
+            const fanout = defaultFanout(mint, amounts) as {
+                entries: { candidates: { route: unknown[] }[]; route: unknown[] }[];
+            };
+            for (const entry of fanout.entries) {
+                entry.route = [hop];
+                for (const candidate of entry.candidates) candidate.route = [hop];
+            }
+            return fanout;
+        };
+        const response = await request('/api/v2/execution/route?assetId=bitcoin&amountUsd=1000000&maxVariants=1');
+        const body = await response.json();
+        const allocation = body.allocation as { legs: { route: { label: string }[] }[] };
+        expect(allocation.legs[0]!.route.length).toBe(1);
+        expect(allocation.legs[0]!.route[0]!.label).toBe('Whirlpool');
+    });
+
     it('never labels an RFQ-filled leg firm', async () => {
         // Flat curve, single variant, exact full-target quote — firm on every
         // other signal — but the verification fill came from an RFQ, whose
