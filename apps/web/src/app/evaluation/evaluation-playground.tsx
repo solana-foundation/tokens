@@ -33,6 +33,7 @@ import {
     type EndpointRequestState,
 } from './endpoint-request-panel';
 import { RouteResults } from './route-results';
+import { RouteSplitVisual } from './route-split-visual';
 import { buildRouteRequestPath, useExecutionRoute } from '@/hooks/queries/use-execution-route';
 import { CURATED_LIST_ORDER_WITHOUT_LSTS, type CuratedTokenListIdWithoutLsts } from '@/lib/curated-token-lists';
 import { cleanTokenName } from '@/lib/logo-overrides';
@@ -717,13 +718,34 @@ export function EvaluationPlayground() {
                     {/* Sticky so the request stays in view while the curve scrolls. */}
                     <div className="min-w-0 xl:sticky xl:top-8">
                         {mode === 'asset' ? (
-                            <EndpointRequestPanel
-                                snippet={buildRouteFetchSnippet(routeRequestPath)}
-                                responseJson={routeQuery.data}
-                                isPending={routeQuery.isPending}
-                                isError={routeQuery.isError}
-                                lastRequest={routeLastRequest}
-                            />
+                            <>
+                                <RouteSplitVisual
+                                    data={routeQuery.data ?? null}
+                                    isPending={routeQuery.isPending}
+                                    asset={
+                                        selectedAssetOption
+                                            ? {
+                                                  name: selectedAssetOption.name,
+                                                  symbol: selectedAssetOption.symbol,
+                                                  logoUrl:
+                                                      metadataByMint.get(selectedAssetOption.logoMint)?.logoURI ?? '',
+                                              }
+                                            : null
+                                    }
+                                    logoByMint={
+                                        new Map(
+                                            [...metadataByMint].map(([mint, option]) => [mint, option.logoURI ?? '']),
+                                        )
+                                    }
+                                />
+                                <EndpointRequestPanel
+                                    snippet={buildRouteFetchSnippet(routeRequestPath)}
+                                    responseJson={routeQuery.data}
+                                    isPending={routeQuery.isPending}
+                                    isError={routeQuery.isError}
+                                    lastRequest={routeLastRequest}
+                                />
+                            </>
                         ) : (
                             <EndpointRequestPanel
                                 snippet={buildEvaluateFetchSnippet(requestPath)}
