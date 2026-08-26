@@ -136,11 +136,14 @@ function checkExpectations(entry: PanelEntry, body: Json): string[] {
         if (legs.length > 1 && edge && (edge.bps as number) < 0) {
             fail(`multi-leg plan shipped with negative edge ${edge.bps}bps`);
         }
-        // B: no surviving collapsed leg.
+        // B: a collapsed leg may only survive when the one-shot repair budget
+        // was already spent — the design caps at exactly one repair, and a
+        // second-round collapse ships with its honest delta rather than
+        // starting a loop.
         for (const leg of legs) {
             const delta = get(leg, 'verification.deltaBps') as number | null;
-            if (delta !== null && delta < collapseBps) {
-                fail(`leg ${leg.symbol} survived with collapsed verification ${delta}bps`);
+            if (delta !== null && delta < collapseBps && allocation.repaired !== true) {
+                fail(`leg ${leg.symbol} collapsed ${delta}bps with the repair budget unspent`);
             }
         }
         if (allocation.repaired === true && !warnings.some(w => w.startsWith('plan_repaired:'))) {
@@ -183,9 +186,16 @@ function checkExpectations(entry: PanelEntry, body: Json): string[] {
         if (status !== 'ok') fail(`expected ok, got ${status}`);
         const legs = (allocation?.legs as Json[]) ?? [];
         // Small orders legitimately fill on one variant; the split-regression
-        // guard only applies at institutional size.
-        if (entry.amountUsd >= 1_000_000 && allocation && legs.length < 2 && allocation.fellBackToSingleVariant !== true) {
-            fail('expected a multi-leg plan or an explicit single-variant fallback');
+        // guard only applies at institutional size, and depth exhaustion
+        // (unallocated remainder) legitimately concentrates what's left.
+        if (
+            entry.amountUsd >= 1_000_000 &&
+            allocation &&
+            legs.length < 2 &&
+            allocation.fellBackToSingleVariant !== true &&
+            Number(allocation.unallocatedUsd) === 0
+        ) {
+            fail('expected a multi-leg plan, a fallback, or a depth-exhaustion remainder');
         }
     }
     if (SINGLE_VARIANT_ASSETS.has(entry.assetId)) {

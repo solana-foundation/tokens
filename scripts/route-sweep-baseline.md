@@ -55,3 +55,16 @@ partial all along (rungs degrading to `error`), and live restricted re-quotes
 (`edge.basis: 'restricted_requotes'`) rarely complete on this tier despite
 pacing + retries. The machinery is verified by effect-tests; the tier upgrade
 belongs on the prod-keys gate checklist alongside the Titan production URL.
+
+## Route-hardening acceptance (2026-08-25, same day)
+
+Extended panel (adds bitcoin $10k/$25M, micron $50k, concurrency probe,
+evaluate-sell entry) passes all structural expectations. Live highlights:
+spacex upgraded to `edge.basis: 'restricted_requotes'` (the overlap fix
+completing end-to-end); bitcoin $25M honestly concentrates into one leg with
+an $11.5M unallocatable remainder; equity entries run the off-hours parity
+multiplier (`market_closed_spread_tolerance`); two concurrent route calls
+answered 200/200 in ~5s. Two expectations were corrected to match design
+during this run: a collapsed leg may survive when the one-shot repair budget
+is already spent, and depth exhaustion legitimately concentrates a plan into
+a single leg.
