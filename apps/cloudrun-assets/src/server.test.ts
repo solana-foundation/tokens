@@ -40,6 +40,7 @@ import type { AssetCollectionMemberRow, AssetCollectionsReadsRepo } from './hand
 import type { TokenListsReadsRepo } from './handlers/tokenListsReads';
 import type { TokenListsMutationsDeps } from './handlers/tokenListsMutations';
 import type { CacheWarmDeps } from './handlers/cacheWarm';
+import type { CuratedMembershipSource } from './handlers/curatedMembershipReads';
 import type { AdminActionsDeps, AdminActionsRepo } from './handlers/adminActions';
 import { createApp, type ServerDeps } from './server';
 
@@ -302,6 +303,21 @@ function makeAssetsApiRepo(data: AssetsApiRepoData = {}): AssetsApiRepo {
 
 const noopAssetsApiRepo: AssetsApiRepo = makeAssetsApiRepo();
 
+function emptyCuratedMembershipSource(): CuratedMembershipSource {
+    return {
+        warmup: async () => {},
+        getSnapshot: async () => ({
+            loadedAt: 0,
+            mintsByList: { majors: [], lsts: [], currencies: [], rwas: [], etfs: [], metals: [], stocks: [] },
+            allMints: [],
+            entriesByMint: {},
+        }),
+        getAllCuratedMintsInOrder: () => [],
+        getCuratedMintRank: () => new Map(),
+        getListSlugsByMint: () => new Map(),
+    };
+}
+
 function deps(overrides: Partial<ServerDeps> = {}): ServerDeps {
     return {
         repo: overrides.repo ?? makeRepo(),
@@ -321,6 +337,7 @@ function deps(overrides: Partial<ServerDeps> = {}): ServerDeps {
         assetCollectionsReadsRepo: overrides.assetCollectionsReadsRepo ?? emptyAssetCollectionsReadsRepo(),
         tokenListsReadsRepo: overrides.tokenListsReadsRepo ?? emptyTokenListsReadsRepo(),
         tokenListsMutationsDeps: overrides.tokenListsMutationsDeps ?? emptyTokenListsMutationsDeps(),
+        curatedMembershipSource: overrides.curatedMembershipSource ?? emptyCuratedMembershipSource(),
         authToken: overrides.authToken ?? 'tok',
         ...(overrides.serviceRole ? { serviceRole: overrides.serviceRole } : {}),
         ...(overrides.checkDatabase ? { checkDatabase: overrides.checkDatabase } : {}),

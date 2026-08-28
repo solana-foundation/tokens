@@ -162,12 +162,20 @@ function makeSeedRepo(state: FakeState): SeedRepo {
             state.seedAliases.push(args);
         },
         async ensureVariantMarketRow() {},
-        async upsertAssetCollection() {},
-        async mergeAssetCollectionMembers() {},
-        async listTombstonedRefs() {
+        async insertCollectionIfMissing() {},
+        async insertCollectionMembersIfMissing() {
+            return 0;
+        },
+        async countCollectionMembers() {
+            return 0;
+        },
+        async listTombstonedAssetIds() {
             return [];
         },
-        async listCollectionMemberUnion() {
+        async deleteCollectionCascade() {
+            return 0;
+        },
+        async listTombstonedRefs() {
             return [];
         },
         async lowerCollectionMemberAddedAtByMint() {
@@ -290,8 +298,16 @@ function makeCronDeps(state: FakeState): CronDeps {
     return {
         repo: makeJobsRepo(state),
         curated: {
+            warmup: async () => {},
+            getSnapshot: async () => ({
+                loadedAt: 0,
+                mintsByList: { majors: [], lsts: [], currencies: [], rwas: [], etfs: [], metals: [], stocks: [] },
+                allMints: [],
+                entriesByMint: {},
+            }),
             getAllCuratedMintsInOrder: () => [],
             getCuratedMintRank: () => new Map(),
+            getListSlugsByMint: () => new Map(),
         },
         birdeye: {
             async fetchTokenOverview() {
@@ -746,13 +762,15 @@ describe('adminSeedAsset', () => {
         expect(result.assetId).toBe('bitcoin');
     });
 
-    it('rejects when the asset is already in a different curated category', async () => {
+    it('adds membership additively when the asset is already in another curated category', async () => {
         const state = makeState({
             collectionsByAssetId: { [`solana-${MINT}`]: ['majors'] },
         });
-        await expect(adminSeedAsset(makeDeps(state), { mint: MINT, slug: 'stocks' }, ADMIN)).rejects.toThrow(
-            'Asset already exists in category: majors',
-        );
+        const result = await adminSeedAsset(makeDeps(state), { mint: MINT, slug: 'stocks' }, ADMIN);
+        expect(result.assetId).toBe(`solana-${MINT}`);
+        expect(state.upsertedMembers).toEqual([
+            expect.objectContaining({ collectionSlug: 'stocks', assetId: `solana-${MINT}` }),
+        ]);
     });
 
     it('rejects when Birdeye has no symbol', async () => {

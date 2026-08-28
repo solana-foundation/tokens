@@ -1,6 +1,6 @@
 /* eslint-disable no-console */
 
-import { CURATED_LIST_ORDER } from '@tokens/asset-registry/compat';
+import { CURATED_LIST_ORDER } from '@tokens/asset-registry/curated-lists';
 
 const apiBaseUrl = (process.env.TOKENS_API_BASE_URL ?? '').trim().replace(/\/$/, '');
 const apiKey = (process.env.TOKENS_API_KEY ?? '').trim();

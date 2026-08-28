@@ -172,6 +172,12 @@ export {
 } from './assetCollectionsSummaries';
 
 export {
+    curatedMembershipGetSnapshot,
+    type CuratedMembershipEntry,
+    type CuratedMembershipSnapshot,
+} from './curatedMembership';
+
+export {
     tokenListsList,
     tokenListsGetBySlug,
     tokenListsGetMembers,

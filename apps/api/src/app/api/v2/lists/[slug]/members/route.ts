@@ -16,7 +16,7 @@ const bodySchema = Schema.Struct({
 });
 
 /**
- * POST /api/v2/lists/{slug}/members — bulk add (≤100 mints per call, for
+ * POST /api/v2/lists/{slug}/members — bulk add (≤1000 mints per call, for
  * onboarding an existing list). Per-mint failures are reported in `failed`
  * without failing the batch.
  */

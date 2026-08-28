@@ -8,6 +8,9 @@
 
 export type AssetCategory = 'crypto' | 'stablecoin' | 'lst' | 'rwa' | 'commodity' | 'equity' | 'etf' | 'index';
 
+// Hand-copied from ADMIN_ASSIGNABLE_CURATED_SLUGS in
+// packages/asset-registry/src/curated-lists.ts (the source of truth —
+// deliberately excludes `lsts`, whose membership is Sanctum-dynamic).
 export type CuratedCategorySlug = 'majors' | 'currencies' | 'rwas' | 'etfs' | 'metals' | 'stocks';
 
 export type VariantKind =

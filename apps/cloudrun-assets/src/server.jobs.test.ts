@@ -18,6 +18,7 @@ import type { AssetCollectionsReadsRepo } from './handlers/assetCollectionsReads
 import type { TokenListsReadsRepo } from './handlers/tokenListsReads';
 import type { TokenListsMutationsDeps } from './handlers/tokenListsMutations';
 import type { CronDeps } from './handlers/crons';
+import type { CuratedMembershipSource } from './handlers/curatedMembershipReads';
 import { OidcAuthError, type VerifyOidc } from './oidc';
 import { createApp } from './server';
 
@@ -130,6 +131,18 @@ const noopAssetCollectionsReadsRepo: AssetCollectionsReadsRepo = {
     async listMemberMintsBySlug() { return []; },
     async getSummariesBySlugs() { return []; },
 };
+const noopCuratedMembershipSource: CuratedMembershipSource = {
+    warmup: async () => {},
+    getSnapshot: async () => ({
+        loadedAt: 0,
+        mintsByList: { majors: [], lsts: [], currencies: [], rwas: [], etfs: [], metals: [], stocks: [] },
+        allMints: [],
+        entriesByMint: {},
+    }),
+    getAllCuratedMintsInOrder: () => [],
+    getCuratedMintRank: () => new Map(),
+    getListSlugsByMint: () => new Map(),
+};
 const baseDeps = {
     repo: undefined as unknown as AssetsRepo,
     assetsApiRepo: noopAssetsApiRepo,
@@ -148,6 +161,7 @@ const baseDeps = {
     assetCollectionsReadsRepo: noopAssetCollectionsReadsRepo,
     tokenListsReadsRepo: noopTokenListsReadsRepo,
     tokenListsMutationsDeps: noopTokenListsMutationsDeps,
+    curatedMembershipSource: noopCuratedMembershipSource,
 };
 
 const noopRepo: AssetsRepo = {
@@ -237,10 +251,7 @@ function emptyCronDeps(): CronDeps {
             async upsertOhlcvCandles() { return { inserted: 0, updated: 0, skipped: 0 }; },
             async applyRollupBatchAtomic() { return true; },
         },
-        curated: {
-            getAllCuratedMintsInOrder: () => [],
-            getCuratedMintRank: () => new Map(),
-        },
+        curated: noopCuratedMembershipSource,
         birdeye: { async fetchTokenOverview() { return null; } },
         birdeyeOhlcv: { async fetchOhlcv() { return []; } },
         sanctum: { async fetchAndNormalizeLsts() { return { ok: false, reason: 'missing_env' as const }; } },

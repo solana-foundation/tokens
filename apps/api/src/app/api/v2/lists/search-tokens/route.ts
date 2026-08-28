@@ -50,7 +50,8 @@ export const GET = route(
             const policy = POLICIES[policyId];
 
             const { candidates, sources } = yield* gatherCandidates(q, interpretation);
-            const { results, suppressed } = judgeCandidates(candidates, interpretation, policy, getProtectedSymbolIndex(), {
+            const protectedIndex = yield* Effect.promise(() => getProtectedSymbolIndex());
+            const { results, suppressed } = judgeCandidates(candidates, interpretation, policy, protectedIndex, {
                 nowMs: Date.now(),
                 limit,
             });
@@ -58,7 +59,7 @@ export const GET = route(
             // Prior art for the curator: which lists (curated ∪ published
             // community) already contain each candidate. Fail-open — membership
             // annotations must never break the search.
-            const registryByMint = new Map(candidates.map(c => [c.mint, c.registry] as const));
+            const candidateByMint = new Map(candidates.map(c => [c.mint, c] as const));
             const resultMints = results.map(r => r.mint);
             const communityLists =
                 resultMints.length > 0
@@ -69,12 +70,12 @@ export const GET = route(
             const communityByMint = new Map(communityLists.map(entry => [entry.mint, entry.slugs] as const));
 
             const annotated = results.map(result => {
-                const registry = registryByMint.get(result.mint) ?? null;
+                const candidate = candidateByMint.get(result.mint) ?? null;
                 const inLists = [
-                    ...(registry?.curatedListIds ?? []),
+                    ...(candidate?.curatedListIds ?? []),
                     ...(communityByMint.get(result.mint) ?? []),
                 ];
-                return { ...result, verified: registry !== null, inLists };
+                return { ...result, verified: candidate?.registry != null, inLists };
             });
 
             return {

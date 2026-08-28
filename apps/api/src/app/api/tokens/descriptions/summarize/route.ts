@@ -2,7 +2,7 @@ import { Effect } from 'effect';
 import { createHash } from 'node:crypto';
 
 import { tokenDescriptionSummariesGetByAddress, tokensGetByAddress } from '@/lib/cloudrun';
-import { CURATED_LIST_ORDER, type CuratedTokenListId } from '@tokens/asset-registry/compat';
+import { CURATED_LIST_ORDER, type CuratedListSlug as CuratedTokenListId } from '@tokens/asset-registry/curated-lists';
 import { JsonParseError, MissingEnvError, NotFoundError } from '@tokens/effect';
 import { fetchJsonWithRetry } from '@tokens/effect';
 import { route } from '@/effect/next-route';

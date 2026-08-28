@@ -6,6 +6,7 @@ import { ohlcvList, stockOhlcvList } from '@/lib/cloudrun';
 import type { OHLCVData, TimeInterval } from '@/lib/birdeye';
 import type { GlobalTokenStats, TokenLinks } from '@/lib/coingecko';
 import { buildXProfileUrl } from '@/lib/social-links';
+import { getCuratedListSlugsForMint } from '@/lib/curated-membership';
 import { computeMarketScore, type MarketScoreInput } from '@/lib/token-risk-helpers';
 
 import type { TokenMarketSnapshot } from './_asset-helpers';
@@ -198,27 +199,29 @@ export function loadRiskInclude(params: {
     const volume24hUsd = params.market?.volume24hUSD ?? null;
     const volume7dUsd = estimate7dVolume(volume24hUsd);
 
-    const marketScoreInput: MarketScoreInput = {
-        liquidityUsd: params.market?.liquidity ?? null,
-        marketCapUsd: params.market?.marketCap ?? null,
-        holderCount: null,
-        top10HoldersPercent: null,
-        volume24hUsd,
-        volume7dUsd,
-        tokenMintTime: null,
-        tokenAddress: params.primaryMint,
-    };
+    return Effect.gen(function* () {
+        const curatedListSlugs = yield* Effect.promise(() => getCuratedListSlugsForMint(params.primaryMint));
+        const marketScoreInput: MarketScoreInput = {
+            liquidityUsd: params.market?.liquidity ?? null,
+            marketCapUsd: params.market?.marketCap ?? null,
+            holderCount: null,
+            top10HoldersPercent: null,
+            volume24hUsd,
+            volume7dUsd,
+            tokenMintTime: null,
+            tokenAddress: params.primaryMint,
+            curatedListSlugs,
+        };
 
-    const marketScore = computeMarketScore(marketScoreInput);
+        const marketScore = computeMarketScore(marketScoreInput);
 
-    return Effect.succeed(
-        includeOk({
+        return includeOk({
             tokenData: null,
             tradingData: null,
             marketScoreInput,
             marketScore,
-        } satisfies AssetRiskInclude),
-    );
+        } satisfies AssetRiskInclude);
+    });
 }
 
 export function loadMarketsInclude(

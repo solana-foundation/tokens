@@ -4,11 +4,11 @@ import { route } from '@/effect/next-route';
 import { withStaleFallback } from '@/effect/stale-response-cache';
 import { BadRequestError, decodeLimit, decodeOffset, tapErrorAndDefault } from '@tokens/effect';
 import { tokenListsGetBySlug, tokenListsGetMembers, type TokenListMember } from '@/lib/cloudrun';
-import { getCuratedTokenList } from '@tokens/asset-registry/compat';
 
 import { getEffectiveCuratedAddresses } from '../../../_curated-addresses';
 import {
     CURATED_OWNER,
+    curatedListMeta,
     hydrateCommunityMembers,
     normalizeCuratedSlug,
     type V2ListSummary,
@@ -25,18 +25,23 @@ interface ResolvedList {
     membersByMint: Map<string, TokenListMember>;
 }
 
-/** A curated slug resolves from the effective membership; failure yields an empty list (fail-open). */
-function resolveCurated(slug: string, curatedId: NonNullable<ReturnType<typeof normalizeCuratedSlug>>) {
+/**
+ * A curated slug resolves from the effective DB-backed membership. Membership
+ * failures propagate to the stale-fallback wrapper (a hollow list must not
+ * overwrite the last good composition).
+ */
+function resolveCurated(curatedId: NonNullable<ReturnType<typeof normalizeCuratedSlug>>) {
     return Effect.gen(function* () {
-        const list = getCuratedTokenList(curatedId);
-        const { addresses } = yield* Effect.tryPromise(() => getEffectiveCuratedAddresses(curatedId)).pipe(
-            tapErrorAndDefault(`v2.lists.compose.${slug}`, { addresses: [] as string[] }),
-        );
+        const meta = yield* curatedListMeta(curatedId);
+        const { addresses } = yield* Effect.tryPromise({
+            try: () => getEffectiveCuratedAddresses(curatedId),
+            catch: error => (error instanceof Error ? error : new Error(String(error))),
+        });
         const resolved: ResolvedList = {
             summary: {
                 slug: curatedId,
-                name: list.name.trim() || curatedId,
-                description: list.description.trim() || null,
+                name: meta.name,
+                description: meta.description,
                 curated: true,
                 owner: CURATED_OWNER,
                 tokenCount: addresses.length,
@@ -107,7 +112,7 @@ export const GET = route(
                 for (const slug of slugs) {
                     const curatedId = normalizeCuratedSlug(slug);
                     const list = curatedId
-                        ? yield* resolveCurated(slug, curatedId)
+                        ? yield* resolveCurated(curatedId)
                         : yield* resolveCommunity(slug).pipe(
                               tapErrorAndDefault(`v2.lists.compose.${slug}`, null),
                           );

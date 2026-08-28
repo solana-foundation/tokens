@@ -7,8 +7,10 @@
  * protected symbol while the protected mint is a *different* token.
  */
 
-import { getCuratedTokenList, CURATED_TOKEN_LISTS } from '@tokens/asset-registry/compat';
 import { getVariantByMint, listAssets } from '@tokens/asset-registry';
+
+import { getCuratedMembershipSnapshot } from '@/lib/curated-membership';
+import type { CuratedMembershipSnapshot } from '@/lib/cloudrun';
 
 import { normalizeClaim, tokenAgeDays } from './claims';
 import type { EnrichedCandidate } from './types';
@@ -85,20 +87,25 @@ function addEntry(index: ProtectedSymbolIndex, symbol: string | null | undefined
 }
 
 let cachedIndex: ProtectedSymbolIndex | null = null;
+let cachedIndexLoadedAt = -1;
 
-/** Build (and memoize) the protected-symbol index from curated lists + registry. */
-export function getProtectedSymbolIndex(): ProtectedSymbolIndex {
-    if (cachedIndex) return cachedIndex;
-
+function buildProtectedSymbolIndex(snapshot: CuratedMembershipSnapshot | null): ProtectedSymbolIndex {
     const index: ProtectedSymbolIndex = new Map();
 
-    for (const listId of Object.keys(CURATED_TOKEN_LISTS) as Array<keyof typeof CURATED_TOKEN_LISTS>) {
-        const list = getCuratedTokenList(listId);
-        for (const mint of list.addresses) {
+    // DB-backed curated membership: registry variants claim via
+    // registryProtectedSymbols; curated admin-only mints with usable DB
+    // metadata become protected holders too (the compiled registry has never
+    // heard of them, but impersonating them is just as harmful).
+    if (snapshot) {
+        for (const [mint, entry] of Object.entries(snapshot.entriesByMint)) {
             const match = getVariantByMint(mint);
-            if (!match) continue;
-            for (const symbol of registryProtectedSymbols(match.variant, match.asset)) {
-                addEntry(index, symbol, mint, `curated:${list.id}`);
+            const source = `curated:${entry.listSlugs[0] ?? 'all'}`;
+            if (match) {
+                for (const symbol of registryProtectedSymbols(match.variant, match.asset)) {
+                    addEntry(index, symbol, mint, source);
+                }
+            } else if (entry.symbol) {
+                addEntry(index, entry.symbol, mint, source);
             }
         }
     }
@@ -111,8 +118,30 @@ export function getProtectedSymbolIndex(): ProtectedSymbolIndex {
         }
     }
 
-    cachedIndex = index;
     return index;
+}
+
+/**
+ * Build (and memoize per membership snapshot) the protected-symbol index from
+ * DB-backed curated membership + compiled registry identity. A membership
+ * failure degrades to a registry-only index (never an empty one).
+ */
+export async function getProtectedSymbolIndex(): Promise<ProtectedSymbolIndex> {
+    const snapshot = await getCuratedMembershipSnapshot().catch((error: unknown) => {
+        console.error('[judgment] protected symbols: curated membership unavailable', error);
+        return null;
+    });
+
+    const loadedAt = snapshot?.loadedAt ?? 0;
+    if (cachedIndex && cachedIndexLoadedAt === loadedAt) return cachedIndex;
+
+    const index = buildProtectedSymbolIndex(snapshot);
+    // Keep a registry-only index only until a snapshot-backed one exists.
+    if (snapshot || !cachedIndex) {
+        cachedIndex = index;
+        cachedIndexLoadedAt = loadedAt;
+    }
+    return cachedIndex ?? index;
 }
 
 /** Test seam: inject a custom index (pure pipeline stays network/registry free). */

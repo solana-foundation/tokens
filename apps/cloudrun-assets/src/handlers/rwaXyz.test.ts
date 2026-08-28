@@ -10,7 +10,6 @@ import {
     type BirdeyeOhlcvClient,
     type BirdeyeOverview,
     type CronDeps,
-    type CuratedMintsSource,
     type JobsRepo,
     type RwaXyzAssetLatestExisting,
     type RwaXyzAssetLatestUpsert,
@@ -22,6 +21,7 @@ import {
     type SanctumClient,
     type WebacyClient,
 } from './crons';
+import type { CuratedMembershipSource } from './curatedMembershipReads';
 
 const FIXED_NOW = 1_780_000_000_000;
 
@@ -41,12 +41,20 @@ function emptyWebacy(): WebacyClient {
     return { isConfigured: () => true, async fetchAll() { return { token: { ok: false, status: 0 }, trading: { ok: false, status: 0 }, holder: { ok: false, status: 0 } }; } };
 }
 
-function emptyCurated(mints: readonly string[] = []): CuratedMintsSource {
+function emptyCurated(mints: readonly string[] = []): CuratedMembershipSource {
     const rank = new Map<string, number>();
     for (let i = 0; i < mints.length; i++) rank.set(mints[i]!, i);
     return {
+        warmup: async () => {},
+        getSnapshot: async () => ({
+            loadedAt: 0,
+            mintsByList: { majors: [...mints], lsts: [], currencies: [], rwas: [], etfs: [], metals: [], stocks: [] },
+            allMints: [...mints],
+            entriesByMint: {},
+        }),
         getAllCuratedMintsInOrder: () => Array.from(mints),
         getCuratedMintRank: () => rank,
+        getListSlugsByMint: () => new Map(),
     };
 }
 

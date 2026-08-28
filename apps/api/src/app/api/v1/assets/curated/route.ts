@@ -41,9 +41,9 @@ import {
 } from '@tokens/asset-registry';
 import {
     CURATED_LIST_ORDER,
-    normalizeCuratedTokenListId,
-    type CuratedTokenListId,
-} from '@tokens/asset-registry/compat';
+    normalizeCuratedListSlug as normalizeCuratedTokenListId,
+    type CuratedListSlug as CuratedTokenListId,
+} from '@tokens/asset-registry/curated-lists';
 import { getEffectiveCuratedAddresses } from '../../../_curated-addresses';
 
 import {

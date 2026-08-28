@@ -1,5 +1,7 @@
 import { Effect } from 'effect';
 
+import { getCuratedListSlugsForMint } from '@/lib/curated-membership';
+
 import { coingeckoGetCoinById } from '@/lib/cloudrun';
 import { computeMarketScore, type MarketScoreInput } from '@/lib/token-risk-helpers';
 import { BadRequestError, NotFoundError } from '@tokens/effect';
@@ -79,6 +81,10 @@ export const GET = route(
                 tokenMintTime: null,
                 tokenAddress: pickAnyPlatformAddress(coinDoc.platforms) ?? coinDoc.id,
             };
+            // Curated exemptions only apply when the coin maps to a Solana mint.
+            marketScoreInput.curatedListSlugs = yield* Effect.promise(() =>
+                getCuratedListSlugsForMint(marketScoreInput.tokenAddress),
+            );
 
             const marketScore = computeMarketScore(marketScoreInput);
 

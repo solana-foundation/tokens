@@ -1,6 +1,7 @@
 import { Effect, Schema } from 'effect';
 
 import { route, type PlatformAuthContext } from '@/effect/next-route';
+import { withStaleFallback } from '@/effect/stale-response-cache';
 import { decodeLimit, decodeOffset, decodeUnknownOrBadRequest, tapErrorAndDefault } from '@tokens/effect';
 import { tokenListsCreate, tokenListsList, type TokenListSummary } from '@/lib/cloudrun';
 
@@ -19,27 +20,40 @@ export const GET = route(
             const limit = yield* decodeLimit(url.searchParams.get('limit'), { defaultValue: '100', max: 500 });
             const offset = yield* decodeOffset(url.searchParams.get('offset'));
 
-            const curated = yield* curatedListSummaries();
-            // Fail-open: a cloudrun blip must not empty the catalog of curated lists.
-            const community = yield* tokenListsList({ limit, offset }).pipe(
-                tapErrorAndDefault('v2.lists.community', [] as TokenListSummary[]),
+            const main = Effect.gen(function* () {
+                // Membership failures propagate to the stale-fallback wrapper —
+                // a hollow catalog must never overwrite the last good one.
+                const curated = yield* curatedListSummaries();
+                // Fail-open: a cloudrun blip must not empty the catalog of curated lists.
+                const community = yield* tokenListsList({ limit, offset }).pipe(
+                    tapErrorAndDefault('v2.lists.community', [] as TokenListSummary[]),
+                );
+
+                const communitySummaries: V2ListSummary[] = community.map(list => ({
+                    slug: list.slug,
+                    name: list.name,
+                    // Community lists have no descriptions; curated registry lists keep theirs.
+                    description: null,
+                    curated: false,
+                    owner: { projectId: list.ownerProjectId },
+                    tokenCount: list.tokenCount,
+                    updatedAt: list.updatedAt,
+                }));
+
+                // Curated lists lead the catalog; pagination applies to community lists
+                // (the curated set is small and fixed).
+                const lists = offset === 0 ? [...curated, ...communitySummaries] : communitySummaries;
+                return { lists, total: lists.length };
+            });
+
+            return yield* withStaleFallback(
+                {
+                    operation: 'v2.lists.catalog',
+                    cacheKey: `v2:lists:catalog:${limit}:${offset}`,
+                    ttlSeconds: 10 * 60,
+                },
+                main,
             );
-
-            const communitySummaries: V2ListSummary[] = community.map(list => ({
-                slug: list.slug,
-                name: list.name,
-                // Community lists have no descriptions; curated registry lists keep theirs.
-                description: null,
-                curated: false,
-                owner: { projectId: list.ownerProjectId },
-                tokenCount: list.tokenCount,
-                updatedAt: list.updatedAt,
-            }));
-
-            // Curated lists lead the catalog; pagination applies to community lists
-            // (the curated set is small and fixed).
-            const lists = offset === 0 ? [...curated, ...communitySummaries] : communitySummaries;
-            return { lists, total: lists.length };
         }),
     { platform: { requiredScopes: ['assets:read'] }, cache: { maxAge: 300 } },
 );

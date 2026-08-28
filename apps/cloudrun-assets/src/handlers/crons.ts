@@ -1306,6 +1306,8 @@ export interface ComputedAssetRisk {
         volume24hUsd: number | null;
         volume7dUsd: number | null;
         tokenMintTime: string | null;
+        /** DB-backed curated membership; drives concentration/trusted-launch exemptions. */
+        curatedListSlugs?: readonly string[];
     };
     tags: RiskTag[];
     riskScore10: number | null;
@@ -1505,6 +1507,7 @@ export async function refreshCuratedAssetRisk(deps: CronDeps, rawArgs: unknown):
                     tradingData: all.trading.ok ? all.trading.data : null,
                     holderData: all.holder.ok ? all.holder.data : null,
                 });
+                computed.marketScoreInput.curatedListSlugs = deps.curated.getListSlugsByMint().get(mint) ?? [];
                 const marketScore = deps.computeMarketScore
                     ? deps.computeMarketScore(computed.marketScoreInput)
                     : null;

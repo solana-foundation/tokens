@@ -125,7 +125,8 @@ Update `name`, `slug` (rename — the old path stops resolving), or `status` (`d
 
 ### `DELETE /v2/lists/{slug}`
 
-Archives the list (no hard delete): it drops out of discovery, detail reads, and composition.
+Permanently deletes the list and its members, releasing the slug for anyone to claim again.
+Irreversible — `PATCH { status: 'archived' }` is the reversible hide-it option.
 
 ### `PUT /v2/lists/{slug}/members/{mint}`
 

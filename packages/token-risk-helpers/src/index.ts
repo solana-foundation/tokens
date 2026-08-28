@@ -1,4 +1,4 @@
-import { CURATED_TOKEN_LISTS } from '@tokens/asset-registry/compat';
+import type { CuratedListSlug } from '@tokens/asset-registry/curated-lists';
 
 export type RiskStatus = 'risk' | 'warning' | 'safe' | 'info';
 
@@ -23,6 +23,12 @@ export interface MarketScoreInput {
     tokenMintTime: string | Date | null;
     /** Token address for curated list lookups */
     tokenAddress: string;
+    /**
+     * Curated list slugs this token belongs to (DB-backed effective
+     * membership, provided by the caller). Absent/empty means no curated
+     * exemptions apply — conservative by default.
+     */
+    curatedListSlugs?: readonly string[];
 }
 
 export interface MarketScoreComponentResult {
@@ -231,24 +237,21 @@ function computeTokenAgeDays(tokenMintTime: string | Date | null): number | null
     }
 }
 
-type CuratedListId = keyof typeof CURATED_TOKEN_LISTS;
-const CONCENTRATION_EXEMPT_LISTS: CuratedListId[] = ['currencies', 'stocks', 'lsts'];
-const TRUSTED_LAUNCH_LISTS: CuratedListId[] = ['majors', 'lsts', 'currencies', 'rwas', 'stocks'];
+export const CONCENTRATION_EXEMPT_LISTS: readonly CuratedListSlug[] = ['currencies', 'stocks', 'lsts'];
+export const TRUSTED_LAUNCH_LISTS: readonly CuratedListSlug[] = ['majors', 'lsts', 'currencies', 'rwas', 'stocks'];
 
-function isInCuratedList(tokenAddress: string, listIds: readonly CuratedListId[]): boolean {
-    for (const listId of listIds) {
-        const list = CURATED_TOKEN_LISTS[listId];
-        if ((list.addresses as readonly string[]).includes(tokenAddress)) return true;
-    }
-    return false;
+function isInCuratedList(input: MarketScoreInput, listIds: readonly CuratedListSlug[]): boolean {
+    const memberships = input.curatedListSlugs;
+    if (!memberships || memberships.length === 0) return false;
+    return memberships.some(slug => (listIds as readonly string[]).includes(slug));
 }
 
-function isConcentrationExempt(tokenAddress: string): boolean {
-    return isInCuratedList(tokenAddress, CONCENTRATION_EXEMPT_LISTS);
+function isConcentrationExempt(input: MarketScoreInput): boolean {
+    return isInCuratedList(input, CONCENTRATION_EXEMPT_LISTS);
 }
 
-function isTrustedLaunchEligible(tokenAddress: string): boolean {
-    return isInCuratedList(tokenAddress, TRUSTED_LAUNCH_LISTS);
+function isTrustedLaunchEligible(input: MarketScoreInput): boolean {
+    return isInCuratedList(input, TRUSTED_LAUNCH_LISTS);
 }
 
 interface CapResult {
@@ -289,7 +292,7 @@ function computeCaps(input: MarketScoreInput, tokenAgeDays: number | null): CapR
     }
 
     if (input.top10HoldersPercent != null && input.top10HoldersPercent > 50 && input.top10HoldersPercent <= 80) {
-        if (!isConcentrationExempt(input.tokenAddress)) {
+        if (!isConcentrationExempt(input)) {
             caps.push({ id: 'high-concentration', maxScore: 84, reason: 'High Concentration (>50% top 10)' });
         }
     }
@@ -315,7 +318,7 @@ interface BorderlineResult {
 
 function computeBorderlineSignals(input: MarketScoreInput, tokenAgeDays: number | null): BorderlineResult[] {
     const signals: BorderlineResult[] = [];
-    const isExempt = isConcentrationExempt(input.tokenAddress);
+    const isExempt = isConcentrationExempt(input);
 
     if (input.holderCount != null) {
         signals.push({
@@ -417,7 +420,7 @@ export function computeMarketScore(input: MarketScoreInput): MarketScoreResult {
     }
 
     const tokenAgeDays = computeTokenAgeDays(input.tokenMintTime);
-    const isExempt = isConcentrationExempt(input.tokenAddress);
+    const isExempt = isConcentrationExempt(input);
 
     const liquidityHealth = scoreLiquidityHealth(input.liquidityUsd, input.marketCapUsd);
     const holderDistribution = scoreHolderDistribution(input.top10HoldersPercent, isExempt);
@@ -472,7 +475,7 @@ export function computeMarketScore(input: MarketScoreInput): MarketScoreResult {
         appliedCaps.push('Elevated Risk (3 borderline metrics)');
     }
 
-    const isTrustedLaunch = isTrustedLaunchEligible(input.tokenAddress) && tokenAgeDays != null && tokenAgeDays <= 21;
+    const isTrustedLaunch = isTrustedLaunchEligible(input) && tokenAgeDays != null && tokenAgeDays <= 21;
     if (isTrustedLaunch && score < 70) score = 70;
 
     const grade = getGrade(score);

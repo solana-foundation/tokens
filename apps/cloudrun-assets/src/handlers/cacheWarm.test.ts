@@ -208,8 +208,16 @@ function makeCronDeps(state: FakeState): CronDeps {
     return {
         repo: makeJobsRepo(state),
         curated: {
+            warmup: async () => {},
+            getSnapshot: async () => ({
+                loadedAt: 0,
+                mintsByList: { majors: [], lsts: [], currencies: [], rwas: [], etfs: [], metals: [], stocks: [] },
+                allMints: [],
+                entriesByMint: {},
+            }),
             getAllCuratedMintsInOrder: () => [],
             getCuratedMintRank: () => new Map(),
+            getListSlugsByMint: () => new Map(),
         },
         birdeye: {
             async fetchTokenOverview() {
@@ -452,12 +460,20 @@ function makeSeedDeps(state: FakeState): SeedCronDeps {
             async upsertCanonicalAssetVariant() {},
             async upsertCanonicalAssetAlias() {},
             async ensureVariantMarketRow() {},
-            async upsertAssetCollection() {},
-            async mergeAssetCollectionMembers() {},
-            async listTombstonedRefs() {
+            async insertCollectionIfMissing() {},
+            async insertCollectionMembersIfMissing() {
+                return 0;
+            },
+            async countCollectionMembers() {
+                return 0;
+            },
+            async listTombstonedAssetIds() {
                 return [];
             },
-            async listCollectionMemberUnion() {
+            async deleteCollectionCascade() {
+                return 0;
+            },
+            async listTombstonedRefs() {
                 return [];
             },
             async lowerCollectionMemberAddedAtByMint() {
@@ -482,11 +498,6 @@ function makeSeedDeps(state: FakeState): SeedCronDeps {
             return FIXED_NOW;
         },
         listCanonicalAssets: () => [],
-        listCuratedListOrder: () => [],
-        getCuratedListMints: () => [],
-        getCuratedListTitle: () => ({ title: 't', description: 'd' }),
-        getAllCuratedMintsInOrder: () => [],
-        resolveAssetIdByMint: () => null,
     };
 }
 
@@ -849,9 +860,31 @@ describe('cacheWarmRequestCuratedListWarm', () => {
         expect(state.upsertedBirdeye).toEqual([]);
     });
 
-    it('resolves curated lists from the asset registry', () => {
-        expect(__testing.getCuratedMints('all').length).toBeGreaterThan(0);
-        expect(__testing.getCuratedMints('nope')).toEqual([]);
+    it('resolves curated lists (and legacy aliases) from the membership snapshot', async () => {
+        const { deps } = makeDeps();
+        const snapshotDeps: CacheWarmDeps = {
+            ...deps,
+            cron: {
+                ...deps.cron,
+                curated: {
+                    ...deps.cron.curated,
+                    getSnapshot: async () => ({
+                        loadedAt: 0,
+                        mintsByList: {
+                            majors: ['m1'], lsts: ['m2'], currencies: ['m3'],
+                            rwas: [], etfs: ['m4'], metals: [], stocks: [],
+                        },
+                        allMints: ['m1', 'm2', 'm3', 'm4'],
+                        entriesByMint: {},
+                    }),
+                },
+            },
+        };
+        expect(await __testing.getCuratedMints(snapshotDeps, 'all')).toEqual(['m1', 'm2', 'm3', 'm4']);
+        expect(await __testing.getCuratedMints(snapshotDeps, 'majors')).toEqual(['m1']);
+        expect(await __testing.getCuratedMints(snapshotDeps, 'stables')).toEqual(['m3']);
+        expect(await __testing.getCuratedMints(snapshotDeps, 'xstocks')).toEqual(['m4']);
+        expect(await __testing.getCuratedMints(snapshotDeps, 'nope')).toEqual([]);
     });
 });
 
