@@ -306,15 +306,6 @@ function isCuratedCategorySlug(value: string): value is CuratedCategorySlug {
     return (CURATED_CATEGORY_SLUGS as readonly string[]).includes(value);
 }
 
-/** Port of `findCategoryForAssetId`: first curated slug (in the fixed order) the asset belongs to. */
-function findCuratedCategory(memberships: readonly string[]): CuratedCategorySlug | null {
-    const set = new Set(memberships);
-    for (const slug of CURATED_CATEGORY_SLUGS) {
-        if (set.has(slug)) return slug;
-    }
-    return null;
-}
-
 /** Port of `availableVariantIdForAsset` on top of a pre-fetched id set. */
 export function availableVariantId(
     existingIds: ReadonlySet<string>,
@@ -1088,10 +1079,8 @@ export async function adminSeedAsset(
         singletonAssetIdForMint(mint);
 
     if (slug) {
-        const existingSlug = findCuratedCategory(await deps.repo.listCollectionSlugsForAssetId(assetId));
-        if (existingSlug && existingSlug !== slug) {
-            throw new InvalidArgsError(`Asset already exists in category: ${existingSlug}`);
-        }
+        // Membership is additive and multi-list (e.g. USO sits in both stocks
+        // and the oil commodity view); no one-category-per-asset restriction.
         await deps.repo.upsertAssetCollectionTitle(slug, defaultTitleForSlug(slug));
     }
 

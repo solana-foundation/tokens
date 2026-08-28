@@ -1,5 +1,5 @@
 import type { AssetVariant, CanonicalAsset, TrustTier, VariantKind } from '../types';
-import { CURATED_TOKEN_LISTS } from './curated-token-lists';
+import { MAJORS_MINTS } from './list-mints';
 import { MANUAL_ASSET_DEFINITIONS } from './manual';
 import { TOKEN_WRAPPER_GROUPS } from './token-wrappers';
 import { BITCOIN_VARIANT_GROUP } from './token-variants';
@@ -132,7 +132,7 @@ function mergeBitcoinVariantsFromGroup(bitcoin: CanonicalAsset): CanonicalAsset 
 }
 
 function buildMajorsSingletonAssets(groupedMints: Set<string>): CanonicalAsset[] {
-    return CURATED_TOKEN_LISTS.majors.addresses
+    return MAJORS_MINTS
         .filter(
             mint =>
                 !groupedMints.has(mint) &&

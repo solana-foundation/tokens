@@ -1,5 +1,5 @@
 import { XSTOCK_VARIANT_GROUPS } from './xstock-variant-groups';
-import { CURATED_TOKEN_LISTS } from './curated-token-lists';
+import { LST_MINTS } from './list-mints';
 import { STABLECOIN_ASSETS } from './stablecoins';
 
 export { XSTOCK_VARIANT_GROUPS };
@@ -79,7 +79,7 @@ const SOL_MINT = 'So11111111111111111111111111111111111111112';
 export const SOLANA_VARIANT_GROUP: TokenVariantGroup = {
     id: 'solana',
     label: 'Solana variants',
-    addresses: [{ address: SOL_MINT }, ...CURATED_TOKEN_LISTS.lsts.addresses.map(address => ({ address }))],
+    addresses: [{ address: SOL_MINT }, ...LST_MINTS.map(address => ({ address }))],
 };
 
 export const TOKEN_VARIANT_GROUPS: TokenVariantGroup[] = [

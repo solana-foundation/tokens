@@ -328,6 +328,9 @@ export interface JobsRepo {
     ): Promise<OhlcvUpsertResult>;
 }
 
+// eslint-disable-next-line import/no-cycle -- type-only
+import type { CuratedMembershipSource } from './curatedMembershipReads';
+
 export interface CuratedMintsSource {
     getAllCuratedMintsInOrder(): string[];
     getCuratedMintRank(): Map<string, number>;
@@ -451,7 +454,7 @@ export interface BirdeyeOhlcvClient {
 
 export interface CronDeps {
     repo: JobsRepo;
-    curated: CuratedMintsSource;
+    curated: CuratedMembershipSource;
     birdeye: BirdeyeClient;
     birdeyeOhlcv: BirdeyeOhlcvClient;
     sanctum: SanctumClient;

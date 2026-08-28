@@ -3,7 +3,7 @@ import { Effect } from 'effect';
 import { apiJson } from '@/effect/api-client';
 import type { Token } from '@/lib/types';
 import { getTokenLogoURLWithSecondarySymbol } from '@/lib/logo-overrides';
-import type { CuratedTokenListId } from '@tokens/asset-registry/compat';
+import type { CuratedListSlug as CuratedTokenListId } from '@tokens/asset-registry/curated-lists';
 
 interface TokensQueryOptions {
     enabled?: boolean;

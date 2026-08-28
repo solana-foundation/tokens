@@ -1,18 +1,14 @@
+import { readFileSync } from 'node:fs';
+
 import { Effect } from 'effect';
 import { isShuttingDown } from '@tokens/cloudrun-shutdown';
 import { runJobPool } from '@tokens/effect/job-runner';
 import type { CanonicalAsset, TrustTier } from '@tokens/asset-registry';
 import { listAssets } from '@tokens/asset-registry';
-import {
-    CURATED_LIST_ORDER,
-    CURATED_TOKEN_ADDED_AT,
-    getCuratedTokenAddedAt,
-    getCuratedTokenAddresses,
-    getCuratedTokenList,
-    type CuratedTokenListId,
-} from '@tokens/asset-registry/compat';
-import { getVariantByMint } from '@tokens/asset-registry';
+import { ALL_PSEUDO_SLUG, CURATED_LIST_SLUGS, isCuratedListSlug } from '@tokens/asset-registry/curated-lists';
+import { CURATED_TOKEN_ADDED_AT } from '@tokens/asset-registry/compat';
 
+import { InvalidArgsError } from './assets';
 import type { CronResult } from './crons';
 
 export type AssetAliasKind =
@@ -74,13 +70,6 @@ export interface CanonicalAssetCollectionMemberUpsert {
     addedAt: number;
 }
 
-export interface CollectionMemberUnionRow {
-    collectionSlug: string;
-    assetId: string;
-    rank: number;
-    addedAt: number;
-}
-
 export interface IdentityAssetRow {
     assetId: string;
     category: string;
@@ -116,21 +105,18 @@ export interface SeedRepo {
     upsertCanonicalAssetVariant(args: CanonicalAssetVariantUpsert): Promise<void>;
     upsertCanonicalAssetAlias(args: CanonicalAssetAliasUpsert): Promise<void>;
     ensureVariantMarketRow(mint: string): Promise<void>;
-    upsertAssetCollection(args: CanonicalAssetCollectionUpsert): Promise<void>;
-    /**
-     * Merge registry membership into a collection without touching admin rows:
-     * upsert each member as source='registry' (rank refreshed; added_at and
-     * source preserved on existing rows), then delete source='registry' rows
-     * no longer present in the registry. source='admin' rows are never removed.
-     */
-    mergeAssetCollectionMembers(
-        collectionSlug: string,
-        members: readonly CanonicalAssetCollectionMemberUpsert[],
-    ): Promise<void>;
+    /** INSERT the collection metadata row iff the slug does not exist. */
+    insertCollectionIfMissing(args: CanonicalAssetCollectionUpsert): Promise<void>;
+    /** INSERT members (source='registry') with ON CONFLICT DO NOTHING; returns rows inserted. */
+    insertCollectionMembersIfMissing(members: readonly CanonicalAssetCollectionMemberUpsert[]): Promise<number>;
+    /** Total membership rows across the given slugs (fixture-guard check). */
+    countCollectionMembers(slugs: readonly string[]): Promise<number>;
+    /** Which of the given asset ids are hard-deleted (asset_deletion_tombstones). */
+    listTombstonedAssetIds(assetIds: readonly string[]): Promise<string[]>;
+    /** Delete a collection row and its membership (one-off 'all' cleanup). Returns rows removed. */
+    deleteCollectionCascade(slug: string): Promise<number>;
     /** Which of the given lowercased refs exist in asset_deletion_tombstones. */
     listTombstonedRefs(normalizedRefs: readonly string[]): Promise<string[]>;
-    /** All collection members outside the given slug, for rebuilding the derived 'all' collection. */
-    listCollectionMemberUnion(excludeSlug: string): Promise<CollectionMemberUnionRow[]>;
     /** Lower (never raise) added_at for every membership of the asset owning the mint. Returns rows updated. */
     lowerCollectionMemberAddedAtByMint(mint: string, addedAtMs: number): Promise<number>;
     refreshSolanaDefaultVariantsView?(): Promise<void>;
@@ -149,14 +135,6 @@ export interface SeedCronDeps {
     repo: SeedRepo;
     now: () => number;
     listCanonicalAssets?: () => readonly CanonicalAsset[];
-    listCuratedListOrder?: () => readonly string[];
-    getCuratedListMints?: (listId: string) => string[];
-    getCuratedListTitle?: (listId: string) => { title: string; description: string };
-    /** Unused by the seed since the 'all' collection became DB-derived; still used by other crons' deps shapes. */
-    getAllCuratedMintsInOrder?: () => string[];
-    resolveAssetIdByMint?: (mint: string) => string | null;
-    /** Git-history added-at (unix ms) for a curated mint, or null when unknown. */
-    getCuratedAddedAtMsByMint?: (mint: string) => number | null;
     birdeyeIdentity?: BirdeyeIdentityClient;
 }
 
@@ -205,34 +183,6 @@ export function buildAssetAliases(asset: CanonicalAsset): CanonicalAssetAliasUps
         }
     }
     return out;
-}
-
-export function buildCollectionMembersFromMints(
-    mints: readonly string[],
-    resolveAssetIdByMint: (mint: string) => string | null,
-    getAddedAtMsByMint: (mint: string) => number | null = getCuratedTokenAddedAt,
-    nowMs: number = Date.now(),
-): Array<{ assetId: string; rank: number; addedAt: number }> {
-    const rankByAssetId = new Map<string, number>();
-    const addedAtByAssetId = new Map<string, number>();
-    for (let i = 0; i < mints.length; i++) {
-        const mint = mints[i]!;
-        const assetId = resolveAssetIdByMint(mint);
-        if (!assetId) continue;
-        if (!rankByAssetId.has(assetId)) rankByAssetId.set(assetId, i);
-        // An asset can appear via several mints; keep the earliest known added-at.
-        const addedAt = getAddedAtMsByMint(mint) ?? nowMs;
-        const existing = addedAtByAssetId.get(assetId);
-        if (existing === undefined || addedAt < existing) addedAtByAssetId.set(assetId, addedAt);
-    }
-    return Array.from(rankByAssetId.entries())
-        .map(([assetId, rank]) => ({ assetId, rank, addedAt: addedAtByAssetId.get(assetId) ?? nowMs }))
-        .sort((a, b) => a.rank - b.rank);
-}
-
-function defaultResolveAssetIdByMint(mint: string): string | null {
-    const match = getVariantByMint(mint);
-    return match?.asset.assetId ?? null;
 }
 
 /**
@@ -331,94 +281,9 @@ export async function seedCanonicalAssetsRegistry(
         aliasCount += buildAssetAliases(asset).length;
     }
 
-    const curatedListOrder = (deps.listCuratedListOrder ?? (() => CURATED_LIST_ORDER))();
-    const getMints =
-        deps.getCuratedListMints ??
-        ((listId: string) => getCuratedTokenAddresses(getCuratedTokenList(listId as CuratedTokenListId)));
-    const getTitle =
-        deps.getCuratedListTitle ??
-        ((listId: string) => {
-            const list = getCuratedTokenList(listId as CuratedTokenListId);
-            return { title: list.name, description: list.description };
-        });
-    const rawResolveAssetId = deps.resolveAssetIdByMint ?? defaultResolveAssetIdByMint;
-    // Tombstoned assets must not re-enter list membership either.
-    const resolveAssetId = (mint: string): string | null => {
-        const assetId = rawResolveAssetId(mint);
-        return assetId && !tombstonedAssetIds.has(assetId) ? assetId : null;
-    };
-    const getAddedAtMs = deps.getCuratedAddedAtMsByMint ?? getCuratedTokenAddedAt;
-
-    let collectionsWritten = 0;
-    let collectionMembersWritten = 0;
-
-    const collections: Array<{ slug: string; title: string; description: string; mints: readonly string[] }> = [];
-    for (const listId of curatedListOrder) {
-        const { title, description } = getTitle(listId);
-        collections.push({ slug: listId, title, description, mints: getMints(listId) });
-    }
-
-    for (const collection of collections) {
-        await deps.repo.upsertAssetCollection({
-            slug: collection.slug,
-            title: collection.title,
-            description: collection.description,
-        });
-        collectionsWritten += 1;
-
-        const builtMembers = buildCollectionMembersFromMints(collection.mints, resolveAssetId, getAddedAtMs, start);
-        const members: CanonicalAssetCollectionMemberUpsert[] = [];
-        for (const member of builtMembers) {
-            const assetId = member.assetId.trim();
-            if (!assetId) continue;
-            members.push({ collectionSlug: collection.slug, assetId, rank: member.rank, addedAt: member.addedAt });
-        }
-        await deps.repo.mergeAssetCollectionMembers(collection.slug, members);
-        collectionMembersWritten += members.length;
-    }
-
-    // The 'all' collection is derived from the post-merge union of per-slug DB
-    // rows (registry AND admin) rather than from the committed files, so
-    // admin-added memberships surface in it without a registry PR. Order:
-    // curated list order first (then unknown/admin slugs alphabetically),
-    // rank within slug; first occurrence wins; added_at is the min across a
-    // given asset's memberships.
-    await deps.repo.upsertAssetCollection({
-        slug: 'all',
-        title: 'All',
-        description: 'All curated assets on Solana.',
-    });
-    collectionsWritten += 1;
-
-    const slugOrder = new Map<string, number>(curatedListOrder.map((slug, index) => [slug, index]));
-    const unionRows = [...(await deps.repo.listCollectionMemberUnion('all'))].sort((a, b) => {
-        const aOrder = slugOrder.get(a.collectionSlug) ?? curatedListOrder.length;
-        const bOrder = slugOrder.get(b.collectionSlug) ?? curatedListOrder.length;
-        if (aOrder !== bOrder) return aOrder - bOrder;
-        if (a.collectionSlug !== b.collectionSlug) return a.collectionSlug < b.collectionSlug ? -1 : 1;
-        return a.rank - b.rank;
-    });
-    const allSeen = new Set<string>();
-    const minAddedAt = new Map<string, number>();
-    const allOrdered: string[] = [];
-    for (const row of unionRows) {
-        const assetId = row.assetId.trim();
-        if (!assetId || tombstonedAssetIds.has(assetId)) continue;
-        if (!allSeen.has(assetId)) {
-            allSeen.add(assetId);
-            allOrdered.push(assetId);
-        }
-        const existing = minAddedAt.get(assetId);
-        if (existing === undefined || row.addedAt < existing) minAddedAt.set(assetId, row.addedAt);
-    }
-    const allMembers: CanonicalAssetCollectionMemberUpsert[] = allOrdered.map((assetId, index) => ({
-        collectionSlug: 'all',
-        assetId,
-        rank: index,
-        addedAt: minAddedAt.get(assetId) ?? start,
-    }));
-    await deps.repo.mergeAssetCollectionMembers('all', allMembers);
-    collectionMembersWritten += allMembers.length;
+    // Collection membership is DB-authoritative (admin-edited); the nightly
+    // seed maintains registry identity only. Bootstrap for fresh databases:
+    // the guarded `seed-curated-collections-fixture` job below.
 
     if (deps.repo.refreshSolanaDefaultVariantsView) {
         await deps.repo.refreshSolanaDefaultVariantsView();
@@ -432,8 +297,6 @@ export async function seedCanonicalAssetsRegistry(
         variants: variantCount,
         aliases: aliasCount,
         ensuredMarkets,
-        collections: collectionsWritten,
-        collectionMembers: collectionMembersWritten,
         tombstonedSkipped: tombstonedAssetIds.size,
     };
 }
@@ -705,10 +568,131 @@ export async function backfillCuratedAddedAt(deps: SeedCronDeps, _rawArgs: unkno
     };
 }
 
+interface CuratedFixtureMember {
+    assetId: string;
+    rank: number;
+    addedAtMs: number;
+}
+
+interface CuratedFixtureCollection {
+    slug: string;
+    title: string;
+    description: string;
+    members: CuratedFixtureMember[];
+}
+
+const RECOVERY_CONFIRMATION = 'RESEED_CURATED_COLLECTIONS';
+
+function loadCuratedCollectionsFixture(): CuratedFixtureCollection[] {
+    const raw = readFileSync(new URL('../data/curated-collections-seed.json', import.meta.url), 'utf8');
+    const parsed = JSON.parse(raw) as CuratedFixtureCollection[];
+    if (!Array.isArray(parsed)) throw new Error('curated-collections-seed.json: expected an array');
+    for (const collection of parsed) {
+        if (!isCuratedListSlug(collection.slug)) {
+            throw new Error(`curated-collections-seed.json: unknown slug ${collection.slug}`);
+        }
+    }
+    return parsed;
+}
+
+/**
+ * One-off, guarded bootstrap of `asset_collections(_members)` from the frozen
+ * fixture (generated once from the compiled registry arrays + git added-at
+ * map — see scripts/generate-curated-collections-fixture.ts).
+ *
+ * The DB is the membership authority, so a rerun against an edited database
+ * must NOT silently resurrect admin-deleted members:
+ * - bootstrap (default): fails before writing unless the seven curated
+ *   collections have zero membership rows.
+ * - recovery: explicit `{ mode: 'recovery', confirm: 'RESEED_CURATED_COLLECTIONS' }`
+ *   inserts any missing baseline rows (never overwrites existing ones).
+ */
+export async function seedCuratedCollectionsFixture(deps: SeedCronDeps, rawArgs: unknown): Promise<CronResult> {
+    const start = deps.now();
+    const args = rawArgs && typeof rawArgs === 'object' ? (rawArgs as Record<string, unknown>) : {};
+    const mode = args.mode === 'recovery' ? 'recovery' : 'bootstrap';
+    if (args.mode !== undefined && args.mode !== 'recovery' && args.mode !== 'bootstrap') {
+        throw new InvalidArgsError(`mode must be 'bootstrap' or 'recovery'`);
+    }
+    if (mode === 'recovery' && args.confirm !== RECOVERY_CONFIRMATION) {
+        throw new InvalidArgsError(`recovery mode requires confirm: '${RECOVERY_CONFIRMATION}'`);
+    }
+
+    const existingMembers = await deps.repo.countCollectionMembers(CURATED_LIST_SLUGS);
+    if (mode === 'bootstrap' && existingMembers > 0) {
+        return {
+            ok: false,
+            processed: 0,
+            durationMs: deps.now() - start,
+            error: 'collections_not_empty',
+            existingMembers,
+            hint: `curated collections already have membership; use { mode: 'recovery', confirm: '${RECOVERY_CONFIRMATION}' } to insert missing baseline rows`,
+        };
+    }
+
+    const fixture = loadCuratedCollectionsFixture();
+    const fixtureAssetIds = [...new Set(fixture.flatMap(c => c.members.map(m => m.assetId)))];
+    const tombstoned = new Set<string>();
+    for (const chunk of chunkArray(fixtureAssetIds, 500)) {
+        for (const assetId of await deps.repo.listTombstonedAssetIds(chunk)) tombstoned.add(assetId);
+    }
+
+    let collectionsProcessed = 0;
+    let membersInserted = 0;
+    let tombstonedSkipped = 0;
+    await deps.repo.withTransaction(async txRepo => {
+        for (const collection of fixture) {
+            await txRepo.insertCollectionIfMissing({
+                slug: collection.slug,
+                title: collection.title,
+                description: collection.description,
+            });
+            collectionsProcessed += 1;
+            const members: CanonicalAssetCollectionMemberUpsert[] = [];
+            for (const member of collection.members) {
+                if (tombstoned.has(member.assetId)) {
+                    tombstonedSkipped += 1;
+                    continue;
+                }
+                members.push({
+                    collectionSlug: collection.slug,
+                    assetId: member.assetId,
+                    rank: member.rank,
+                    addedAt: member.addedAtMs,
+                });
+            }
+            membersInserted += await txRepo.insertCollectionMembersIfMissing(members);
+        }
+    });
+
+    return {
+        ok: true,
+        processed: collectionsProcessed,
+        durationMs: deps.now() - start,
+        mode,
+        membersInserted,
+        tombstonedSkipped,
+    };
+}
+
+/**
+ * One-off cleanup: the 'all' pseudo-list is a live union now (never
+ * persisted), so the materialized rows the old nightly seed maintained are
+ * dead weight. Idempotent; run only after live-union reads are verified.
+ */
+export async function cleanupMaterializedAllCollection(deps: SeedCronDeps, _rawArgs: unknown): Promise<CronResult> {
+    void _rawArgs;
+    const start = deps.now();
+    const removed = await deps.repo.deleteCollectionCascade(ALL_PSEUDO_SLUG);
+    return { ok: true, processed: removed, durationMs: deps.now() - start, rowsRemoved: removed };
+}
+
 export type SeedJobHandler = (deps: SeedCronDeps, args: unknown) => Promise<CronResult>;
 
 export const seedJobs: Record<string, SeedJobHandler> = {
     'seed-canonical-assets-registry': seedCanonicalAssetsRegistry,
     'backfill-missing-asset-identity': backfillMissingAssetIdentity,
     'backfill-curated-added-at': backfillCuratedAddedAt,
+    'seed-curated-collections-fixture': seedCuratedCollectionsFixture,
+    'cleanup-materialized-all-collection': cleanupMaterializedAllCollection,
 };

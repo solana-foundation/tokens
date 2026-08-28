@@ -67,6 +67,10 @@ import {
     type AssetCollectionsReadsRepo,
 } from './handlers/assetCollectionsReads';
 import {
+    getSnapshot as curatedMembershipGetSnapshot,
+    type CuratedMembershipSource,
+} from './handlers/curatedMembershipReads';
+import {
     getBySlug as tokenListsGetBySlug,
     getMembers as tokenListsGetMembers,
     getSlugsByMints as tokenListsGetSlugsByMints,
@@ -169,6 +173,7 @@ export interface ServerDeps {
     trendingReadsRepo: TrendingReadsRepo;
     fillQualityReadsRepo: FillQualityReadsRepo;
     assetCollectionsReadsRepo: AssetCollectionsReadsRepo;
+    curatedMembershipSource: CuratedMembershipSource;
     tokenListsReadsRepo: TokenListsReadsRepo;
     tokenListsMutationsDeps: TokenListsMutationsDeps;
     coingeckoReadsRepo: CoingeckoReadsRepo;
@@ -247,6 +252,7 @@ const ATOMIC_RETRY_QUERY_NAMES = new Set([
     'assetCollectionsGetMembers',
     'assetCollectionsGetMemberMints',
     'assetCollectionsGetSummaries',
+    'curatedMembershipGetSnapshot',
     'tokenListsList',
     'tokenListsGetBySlug',
     'tokenListsGetMembers',
@@ -426,6 +432,7 @@ export function createApp(deps: ServerDeps) {
     queries.assetCollectionsGetMemberMints = args =>
         assetCollectionsGetMemberMints(deps.assetCollectionsReadsRepo, args);
     queries.assetCollectionsGetSummaries = args => assetCollectionsGetSummaries(deps.assetCollectionsReadsRepo, args);
+    queries.curatedMembershipGetSnapshot = args => curatedMembershipGetSnapshot(deps.curatedMembershipSource, args);
     queries.tokenListsList = args => tokenListsListPublished(deps.tokenListsReadsRepo, args);
     queries.tokenListsGetBySlug = args => tokenListsGetBySlug(deps.tokenListsReadsRepo, args);
     queries.tokenListsGetMembers = args => tokenListsGetMembers(deps.tokenListsReadsRepo, args);

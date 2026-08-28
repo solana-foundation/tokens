@@ -9,7 +9,7 @@ import {
     type unstable_UpdateUrlFunction as UpdateUrlFunction,
 } from 'nuqs/adapters/custom';
 
-import { CURATED_LIST_ORDER_WITHOUT_LSTS, type CuratedTokenListIdWithoutLsts } from '@/lib/curated-token-lists';
+import { CURATED_LIST_ORDER_WITHOUT_LSTS, type CuratedTokenListIdWithoutLsts } from '@/lib/curated-lists';
 
 export const HOME_CATEGORY_PARAM_KEY = 'category';
 

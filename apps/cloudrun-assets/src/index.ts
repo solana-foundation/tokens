@@ -26,7 +26,7 @@ import {
     makePostgresCoingeckoCuratedSource,
     makePostgresCoingeckoReadsRepo,
     makePostgresCoingeckoRepo,
-    makePostgresCuratedMintsSource,
+    makePostgresCuratedMembershipSource,
     makePostgresFillQualityReadsRepo,
     makePostgresJobsRepo,
     makePostgresMiscJobsRepo,
@@ -101,6 +101,15 @@ let trendingCronDeps: TrendingCronDeps | undefined;
 let clickhouseExtrasCronDeps: ClickhouseExtrasCronDeps | undefined;
 let prestocksCronDeps: PrestocksCronDeps | undefined;
 let verifyOidc: ReturnType<typeof makeGoogleOidcVerifier> | undefined;
+
+// Effective curated membership is served on the read path too (the
+// curatedMembershipGetSnapshot RPC), so the source exists regardless of
+// whether /jobs/* is enabled.
+const curated = makePostgresCuratedMembershipSource(sql);
+curated.warmup().catch(err => {
+    console.error('[cloudrun-assets] curated membership warmup failed', err);
+});
+
 if (birdeyeApiKey) {
     if (!cronAudience && !cronInvokerSa) {
         console.error(
@@ -108,7 +117,6 @@ if (birdeyeApiKey) {
         );
         process.exit(1);
     }
-    const curated = makePostgresCuratedMintsSource(sql);
     const coingeckoCurated = makePostgresCoingeckoCuratedSource(sql);
     const baseDeps: CronDeps = {
         repo: makePostgresJobsRepo(sql),
@@ -180,6 +188,7 @@ if (birdeyeApiKey) {
     trendingCronDeps = {
         repo: makePostgresTrendingRepo(sql),
         now: () => Date.now(),
+        listCanonicalCuratedMints: () => curated.getAllCuratedMintsInOrder(),
     };
     // PreStocks needs no API key — the reference endpoint is unauthenticated.
     prestocksCronDeps = {
@@ -231,9 +240,6 @@ if (birdeyeApiKey) {
     verifyOidc = makeGoogleOidcVerifier({
         ...(cronAudience ? { audience: cronAudience } : {}),
         ...(cronInvokerSa ? { invokerEmail: cronInvokerSa } : {}),
-    });
-    curated.warmup().catch(err => {
-        console.error('[cloudrun-assets] curated mints warmup failed', err);
     });
 } else {
     console.warn('[cloudrun-assets] BIRDEYE_API_KEY not set — /jobs/* endpoints disabled');
@@ -300,6 +306,7 @@ const app = createApp({
     trendingReadsRepo: makePostgresTrendingReadsRepo(sql),
     fillQualityReadsRepo: makePostgresFillQualityReadsRepo(sql),
     assetCollectionsReadsRepo: makePostgresAssetCollectionsReadsRepo(sql),
+    curatedMembershipSource: curated,
     tokenListsReadsRepo: makePostgresTokenListsReadsRepo(sql),
     tokenListsMutationsDeps: {
         repo: makePostgresTokenListsMutationsRepo(sql),

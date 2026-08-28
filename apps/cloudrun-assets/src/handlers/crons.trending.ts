@@ -3,7 +3,6 @@ import { isShuttingDown } from '@tokens/cloudrun-shutdown';
 import { isTotalFailure, runJobPool } from '@tokens/effect/job-runner';
 import type { AssetCategory } from '@tokens/asset-registry';
 import { getVariantByMint } from '@tokens/asset-registry';
-import { CURATED_LIST_ORDER, getCuratedTokenAddresses, getCuratedTokenList } from '@tokens/asset-registry/compat';
 
 import type { CronResult } from './crons';
 
@@ -105,22 +104,9 @@ export interface TrendingRepo {
 export interface TrendingCronDeps {
     repo: TrendingRepo;
     now: () => number;
-    listCanonicalCuratedMints?: () => string[];
+    /** DB-backed curated universe (effective membership snapshot). */
+    listCanonicalCuratedMints: () => string[];
     isRefreshEnabled?: () => boolean;
-}
-
-function defaultCuratedMints(): string[] {
-    const unique = new Set<string>();
-    const out: string[] = [];
-    for (const listId of CURATED_LIST_ORDER) {
-        const list = getCuratedTokenList(listId);
-        for (const mint of getCuratedTokenAddresses(list)) {
-            if (unique.has(mint)) continue;
-            unique.add(mint);
-            out.push(mint);
-        }
-    }
-    return out;
 }
 
 function defaultIsRefreshEnabled(): boolean {
@@ -326,7 +312,7 @@ export async function refreshFreshTrendingMarkets(
 
     const nowMs = deps.now();
     const flowMints = await deps.repo.listFlowTrendingMints(maxMints);
-    const curatedMints = (deps.listCanonicalCuratedMints ?? defaultCuratedMints)();
+    const curatedMints = deps.listCanonicalCuratedMints();
     const mints = uniqueStrings([...curatedMints, ...flowMints]).slice(0, maxMints);
     if (mints.length === 0) {
         return {

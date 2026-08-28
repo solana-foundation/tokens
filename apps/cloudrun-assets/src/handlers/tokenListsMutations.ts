@@ -1,4 +1,4 @@
-import { normalizeCuratedTokenListId } from '@tokens/asset-registry/compat';
+import { isReservedListSlug } from '@tokens/asset-registry/curated-lists';
 
 import { InvalidArgsError } from './assets';
 import type { BirdeyeOverview } from './crons';
@@ -17,13 +17,9 @@ import type { BirdeyeOverview } from './crons';
 
 export const TOKEN_LIST_SLUG_REGEX = /^[a-z][a-z0-9-]{2,62}$/;
 
-/** Route segments + derived ids that must never become community list slugs. */
-const STATIC_RESERVED_SLUGS = new Set(['all', 'lists', 'curated', 'tokens', 'search-tokens', 'check-slug']);
-
+/** Route segments, curated slugs, and their aliases must never become community list slugs. */
 export function isReservedTokenListSlug(slug: string): boolean {
-    if (STATIC_RESERVED_SLUGS.has(slug)) return true;
-    // Curated list ids (and their aliases, e.g. 'stables') stay ours.
-    return normalizeCuratedTokenListId(slug) !== null;
+    return isReservedListSlug(slug);
 }
 
 const SOLANA_MINT_REGEX = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;

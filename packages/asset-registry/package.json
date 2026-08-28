@@ -12,7 +12,8 @@
   "exports": {
     ".": "./src/index.ts",
     "./types": "./src/types.ts",
-    "./compat": "./src/compat.ts"
+    "./compat": "./src/compat.ts",
+    "./curated-lists": "./src/curated-lists.ts"
   },
   "files": [
     "src"

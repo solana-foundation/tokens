@@ -12,12 +12,7 @@
  * successfully *enqueued* job already counted as "scheduled".
  */
 
-import {
-    CURATED_LIST_ORDER,
-    getCuratedTokenAddresses,
-    getCuratedTokenList,
-    isCuratedTokenListId,
-} from '@tokens/asset-registry/compat';
+import { normalizeCuratedListSlug } from '@tokens/asset-registry/curated-lists';
 
 import {
     InvalidArgsError,
@@ -649,23 +644,13 @@ export async function cacheWarmRequestMintsWarm(deps: CacheWarmDeps, rawArgs: un
     return { totalMints: mints.length, scheduled, skipped };
 }
 
-function getCuratedMints(listId: string): string[] {
-    if (listId === 'all') {
-        const unique = new Set<string>();
-        const out: string[] = [];
-        for (const id of CURATED_LIST_ORDER) {
-            const list = getCuratedTokenList(id);
-            for (const mint of getCuratedTokenAddresses(list)) {
-                if (unique.has(mint)) continue;
-                unique.add(mint);
-                out.push(mint);
-            }
-        }
-        return out;
-    }
-
-    if (!isCuratedTokenListId(listId)) return [];
-    return getCuratedTokenAddresses(getCuratedTokenList(listId));
+async function getCuratedMints(deps: CacheWarmDeps, listId: string): Promise<string[]> {
+    // Effective DB-backed membership: admin adds/removes warm without a deploy.
+    const snapshot = await deps.cron.curated.getSnapshot();
+    if (listId === 'all') return [...snapshot.allMints];
+    const slug = normalizeCuratedListSlug(listId);
+    if (!slug) return [];
+    return [...(snapshot.mintsByList[slug] ?? [])];
 }
 
 export interface CuratedListWarmResult {
@@ -687,7 +672,7 @@ export async function cacheWarmRequestCuratedListWarm(
 
     if (!listId) return { listId: '', totalMints: 0, scheduled: [], skipped: ['invalid_listId'] };
 
-    const mints = uniqueStrings(getCuratedMints(listId)).slice(0, 5000);
+    const mints = uniqueStrings(await getCuratedMints(deps, listId)).slice(0, 5000);
     if (mints.length === 0) return { listId, totalMints: 0, scheduled: [], skipped: ['unknown_listId'] };
 
     const { scheduled, skipped } = await warmMintsInChunks(deps, { mints, variantMarket, markets, minAgeMs });
@@ -706,8 +691,9 @@ export async function cacheWarmRequestRegistrySeed(
     const args = asObject(rawArgs);
     const includeCuratedCollections = readOptionalBoolean(args, 'includeCuratedCollections') ?? true;
 
-    // The Cloud Run seed job always writes curated collections; the arg is
-    // accepted for compatibility and echoed back like the Convex mutation did.
+    // The seed maintains registry identity only — curated collections are
+    // DB-authoritative and never written here. The arg is accepted for
+    // compatibility and echoed back like the Convex mutation did.
     await runRefresh('registrySeed', () => seedCanonicalAssetsRegistry(deps.seed, {}));
 
     return { scheduled: true, includeCuratedCollections };

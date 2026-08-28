@@ -1,5 +1,5 @@
 import type { CanonicalAsset } from '../types';
-import { CURATED_TOKEN_LISTS } from './curated-token-lists';
+import { METALS_MINTS as METALS_LIST_MINTS, STOCKS_MINTS as STOCKS_LIST_MINTS } from './list-mints';
 
 // Mints in the `metals` list currently represent multiple underlying assets (gold, silver, etc).
 // We group them here into canonical assets to enable centralized pages like `/gold`.
@@ -214,8 +214,8 @@ const COMMODITY_ASSETS_RAW: CanonicalAsset[] = [
 // (If the curated lists change, this prevents silently serving stale mints.)
 // Oil's USO mint lives in the `stocks` curated list rather than `metals`.
 const ALLOWED_COMMODITY_MINTS = new Set<string>([
-    ...CURATED_TOKEN_LISTS.metals.addresses,
-    ...CURATED_TOKEN_LISTS.stocks.addresses,
+    ...METALS_LIST_MINTS,
+    ...STOCKS_LIST_MINTS,
 ]);
 
 export const COMMODITY_ASSETS: CanonicalAsset[] = COMMODITY_ASSETS_RAW.filter(asset =>

@@ -5,7 +5,7 @@ import { parseAsStringEnum, useQueryState } from 'nuqs';
 
 import { HomeCategoryPathNuqsAdapter, HOME_CATEGORY_PARAM_KEY } from '@/hooks/use-home-category-path-nuqs-adapter';
 import { useCuratedTokens, useTrendingTokens, type TrendingMode } from '@/hooks/queries/use-token-search';
-import type { CuratedTokenListIdWithoutLsts } from '@/lib/curated-token-lists';
+import type { CuratedTokenListIdWithoutLsts } from '@/lib/curated-lists';
 import type { HomeTabId } from '@/lib/home-highlights';
 import type { Token, TrendingWindow } from '@/lib/types';
 import { HOME_TAB_IDS, TRENDING_MODE_IDS, TRENDING_WINDOW_IDS } from './home-tokens-constants';

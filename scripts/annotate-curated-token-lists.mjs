@@ -1,3 +1,14 @@
+// DEPRECATED: curated list membership now lives in the database
+// (asset_collections, edited via the admin app), and the mint arrays moved to
+// packages/asset-registry/src/data/list-mints.ts (a different format this
+// script's line parser does not understand). Running it would corrupt that
+// file. It is scheduled for deletion with the DB cutover.
+console.error(
+    '[deprecated] annotate-curated-token-lists.mjs: curated membership is DB-backed now; edit lists via the admin app. ' +
+        'Mint arrays live in packages/asset-registry/src/data/list-mints.ts.',
+);
+process.exit(1);
+
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
