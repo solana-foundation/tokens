@@ -1,0 +1,93 @@
+{
+  "uid": "tokens-assets-cloudrun-no-instance",
+  "title": "tokens-assets: Cloud Run rejecting requests (no available instance)",
+  "ruleGroup": "tokens-api-availability",
+  "folderUID": "tokens-xyz",
+  "noDataState": "OK",
+  "execErrState": "OK",
+  "for": "2m",
+  "data": [
+    {
+      "refId": "A",
+      "datasourceUid": "grafanacloud-logs",
+      "queryType": "range",
+      "relativeTimeRange": {
+        "from": 600,
+        "to": 0
+      },
+      "model": {
+        "expr": "sum by (service) (rate({service=~\"tokens-(assets|prices|usage|admin)-prd-us\"} |= \"no available instance\" [5m]))",
+        "queryType": "range",
+        "refId": "A"
+      }
+    },
+    {
+      "refId": "B",
+      "datasourceUid": "__expr__",
+      "queryType": "",
+      "relativeTimeRange": {
+        "from": 0,
+        "to": 0
+      },
+      "model": {
+        "type": "reduce",
+        "refId": "B",
+        "expression": "A",
+        "reducer": "last",
+        "settings": {
+          "mode": "replaceNN",
+          "replaceWithValue": 0
+        }
+      }
+    },
+    {
+      "refId": "C",
+      "datasourceUid": "__expr__",
+      "queryType": "",
+      "relativeTimeRange": {
+        "from": 0,
+        "to": 0
+      },
+      "model": {
+        "type": "threshold",
+        "refId": "C",
+        "expression": "B",
+        "conditions": [
+          {
+            "evaluator": {
+              "type": "gt",
+              "params": [
+                0.1
+              ]
+            },
+            "operator": {
+              "type": "and"
+            },
+            "query": {
+              "params": [
+                "B"
+              ]
+            },
+            "reducer": {
+              "type": "last",
+              "params": []
+            },
+            "type": "query"
+          }
+        ]
+      }
+    }
+  ],
+  "condition": "C",
+  "labels": {
+    "service": "tokens-cloudrun",
+    "severity": "critical",
+    "pagerduty": "true",
+    "slack": "true"
+  },
+  "annotations": {
+    "summary": "Cloud Run is aborting requests: instance cap reached (label: service)",
+    "description": "A Cloud Run service is rejecting requests with 'no available instance' (HTTP 429 to its callers) at more than ~6/min sustained — it is pegged at its max-instances cap or instances are failing to start. This is the earliest saturation signal: tokens-api degrades to fallbacks and returns 429/504 to users while this fires. Check instance count vs maxScale on the named service, then look for a traffic burst (per-key request rates on the API overview dashboard) or a stuck revision. Raising cloud_run_assets_max_instances in terraform is the capacity lever.",
+    "runbook_url": "https://example.com/runbooks/assets-cloudrun-no-instance"
+  }
+}

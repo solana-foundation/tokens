@@ -110,4 +110,16 @@ describe('httpStatusForError', () => {
         const wrapped = new Cause.UnknownError({ _tag: 'BadRequestError', message: 'bad input' }, 'An unknown error occurred');
         expect(httpStatusForError(wrapped)).toBe(500);
     });
+
+    it('maps a saturated backend (CloudRun 429) to 429', () => {
+        expect(httpStatusForError({ _tag: 'CloudRunHttpError', message: 'HTTP 429', status: 429 })).toBe(429);
+    });
+
+    it('keeps 500 for other CloudRun HTTP failures', () => {
+        expect(httpStatusForError({ _tag: 'CloudRunHttpError', message: 'HTTP 503', status: 503 })).toBe(500);
+    });
+
+    it('maps CloudRun timeouts to 504', () => {
+        expect(httpStatusForError({ _tag: 'CloudRunTimeoutError', message: 'timed out after 15000ms' })).toBe(504);
+    });
 });
