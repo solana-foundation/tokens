@@ -130,7 +130,7 @@ export function loadEnv(): ApiEnv {
             readNumber('TOKENS_USAGE_AGGREGATION_TTL_SECONDS', 172_800, 60, 604_800),
         ),
         defaultRateLimit: {
-            requests: Math.floor(readNumber('TOKENS_DEFAULT_RATE_LIMIT_REQUESTS', 100_000, 1, 10_000_000)),
+            requests: Math.floor(readNumber('TOKENS_DEFAULT_RATE_LIMIT_REQUESTS', 500, 1, 10_000_000)),
             windowSeconds: Math.floor(readNumber('TOKENS_DEFAULT_RATE_LIMIT_WINDOW_SECONDS', 10, 1, 3_600)),
         },
         defaultQuota: {

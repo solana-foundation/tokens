@@ -2,6 +2,41 @@ import { Effect } from 'effect';
 
 import { tapErrorAndDefault } from '@tokens/effect';
 import { coingeckoSearchCoins } from '@/lib/cloudrun';
+import { getRedisClient, type RedisClient } from '@/lib/redis';
+
+const COIN_ID_CACHE_NONE = '__none__';
+const COIN_ID_CACHE_HIT_TTL_SECONDS = 24 * 60 * 60;
+const COIN_ID_CACHE_MISS_TTL_SECONDS = 60 * 60;
+
+function coinIdCacheKey(assetId: string): string {
+    return `cg-coin-id:v1:${assetId}`;
+}
+
+/** `undefined` = no usable cache entry; `null` = cached "resolves to no coin id". */
+export function coinIdCacheGet(
+    assetId: string,
+    redis: () => RedisClient = getRedisClient,
+): Effect.Effect<string | null | undefined> {
+    return Effect.tryPromise(async () => redis().get<string>(coinIdCacheKey(assetId))).pipe(
+        Effect.map(value => (value === null ? undefined : value === COIN_ID_CACHE_NONE ? null : value)),
+        Effect.catch(() => Effect.succeed(undefined)),
+    );
+}
+
+export function coinIdCacheSet(
+    assetId: string,
+    coinId: string | null,
+    redis: () => RedisClient = getRedisClient,
+): Effect.Effect<void> {
+    return Effect.tryPromise(async () =>
+        redis().set(coinIdCacheKey(assetId), coinId ?? COIN_ID_CACHE_NONE, {
+            ex: coinId ? COIN_ID_CACHE_HIT_TTL_SECONDS : COIN_ID_CACHE_MISS_TTL_SECONDS,
+        }),
+    ).pipe(
+        Effect.asVoid,
+        Effect.catch(() => Effect.void),
+    );
+}
 
 export type CoinGeckoCoinSearchResult = {
     id: string;
@@ -90,6 +125,9 @@ export function resolveCoinGeckoCoinIdForAsset(params: {
     if (queries.length === 0) return Effect.succeed(null);
 
     return Effect.gen(function* () {
+        const cached = yield* coinIdCacheGet(params.assetId);
+        if (cached !== undefined) return cached;
+
         for (const query of queries) {
             const coins = (yield* coingeckoSearchCoins({ query, limit: 25 }).pipe(
                 tapErrorAndDefault('assets.resolveCoinGeckoCoinId.search', [] as CoinGeckoCoinSearchResult[], {
@@ -99,9 +137,13 @@ export function resolveCoinGeckoCoinIdForAsset(params: {
             )) as CoinGeckoCoinSearchResult[];
 
             const best = pickBestTokenizedCoinId(coins, { name: params.name ?? null, symbol: params.symbol ?? null });
-            if (best) return best;
+            if (best) {
+                yield* coinIdCacheSet(params.assetId, best);
+                return best;
+            }
         }
 
+        yield* coinIdCacheSet(params.assetId, null);
         return null;
     });
 }

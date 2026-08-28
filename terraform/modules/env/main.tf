@@ -81,7 +81,7 @@ module "cloud_run" {
   runtime_sa_email    = module.iam.cloud_run_runtime_sa_email
   network_id          = module.network.vpc_id
   subnet_id           = module.network.subnet_id
-  max_instances       = var.cloud_run_max_instances
+  max_instances       = each.value == "assets" ? coalesce(var.cloud_run_assets_max_instances, var.cloud_run_max_instances) : var.cloud_run_max_instances
   request_concurrency = each.value == "assets" ? var.cloud_run_assets_request_concurrency : 80
   # `usage` hosts Cloud Scheduler cron endpoints — Scheduler sends from GCP-managed
   # infra outside the VPC, so it can't reach an INTERNAL_LOAD_BALANCER ingress.
