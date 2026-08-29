@@ -12,6 +12,7 @@
  */
 
 import type { AssetCategory, StockVariantTier, VariantKind } from '@tokens/asset-registry';
+import { CURATED_LIST_SLUGS, type CuratedListSlug } from '@tokens/asset-registry/curated-lists';
 
 import { InvalidArgsError } from './errors';
 import {
@@ -131,6 +132,15 @@ export type MoveVariantOutcome =
     | { status: 'asset_not_found' }
     | { status: 'variant_id_collision' };
 
+export interface UpdateCollectionMetaWrite {
+    slug: CuratedListSlug;
+    /** Undefined leaves the column untouched. */
+    title?: string;
+    /** Undefined leaves the column untouched; null clears it. */
+    description?: string | null;
+    nowMs: number;
+}
+
 export interface AdminMutationsRepo {
     createCanonicalAsset(args: CreateCanonicalAssetWrite): Promise<'created' | 'exists'>;
     updateCanonicalAsset(args: UpdateCanonicalAssetWrite): Promise<'updated' | 'not_found'>;
@@ -142,6 +152,7 @@ export interface AdminMutationsRepo {
     moveVariantToCanonical(args: { mint: string; toAssetId: string; nowMs: number }): Promise<MoveVariantOutcome>;
     /** Returns true when a membership row was deleted. */
     removeFromCategory(args: { slug: CuratedCategorySlug; assetId: string }): Promise<boolean>;
+    updateCollectionMeta(args: UpdateCollectionMetaWrite): Promise<void>;
 }
 
 export interface AdminMutationsDeps {
@@ -454,4 +465,63 @@ export async function removeFromCategory(
 
     const removed = await deps.repo.removeFromCategory({ slug, assetId });
     return { removed };
+}
+
+
+/* ------------------------------------------------------------------------- *
+ * updateCollectionMeta
+ * ------------------------------------------------------------------------- */
+
+const COLLECTION_TITLE_MAX = 80;
+const COLLECTION_DESCRIPTION_MAX = 300;
+
+/**
+ * Edit a curated list's public display metadata (`asset_collections.title` /
+ * `.description`) — what `/api/v2/lists` and `/api/v1/assets/curated/lists`
+ * serve. The DB is authoritative for these: the nightly registry seed no
+ * longer refreshes them and `adminSeedAsset` only inserts them when missing.
+ *
+ * All seven curated slugs are editable, including `lsts`: its *membership* is
+ * Sanctum-driven, but its title is ordinary display text.
+ */
+export async function updateCollectionMeta(
+    deps: AdminMutationsDeps,
+    args: unknown,
+    identity: CallerIdentity | null,
+): Promise<{ slug: CuratedListSlug; updated: boolean }> {
+    requireAdmin(deps.adminAllowlist, identity);
+    const obj = asArgsObject(args);
+    const slug = requireEnum(obj, 'slug', CURATED_LIST_SLUGS);
+
+    const hasTitle = obj.title !== undefined;
+    const hasDescription = obj.description !== undefined;
+    if (!hasTitle && !hasDescription) {
+        throw new InvalidArgsError('Provide at least one of: title, description');
+    }
+
+    let title: string | undefined;
+    if (hasTitle) {
+        title = requireString(obj, 'title').trim();
+        if (!title) throw new InvalidArgsError('title must not be empty');
+        if (title.length > COLLECTION_TITLE_MAX) {
+            throw new InvalidArgsError(`title must be at most ${COLLECTION_TITLE_MAX} characters`);
+        }
+    }
+
+    let description: string | null | undefined;
+    if (hasDescription) {
+        // Empty string clears the column (there is no other way to unset it).
+        description = normalizeOptionalText(optionalNullableString(obj, 'description'));
+        if (description !== null && description.length > COLLECTION_DESCRIPTION_MAX) {
+            throw new InvalidArgsError(`description must be at most ${COLLECTION_DESCRIPTION_MAX} characters`);
+        }
+    }
+
+    await deps.repo.updateCollectionMeta({
+        slug,
+        ...(title !== undefined ? { title } : {}),
+        ...(description !== undefined ? { description } : {}),
+        nowMs: nowMs(deps),
+    });
+    return { slug, updated: true };
 }

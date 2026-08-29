@@ -38,6 +38,7 @@ export const ADMIN_FNS: Record<string, AdminFnSpec> = {
     deactivateVariant: { service: 'admin', kind: 'mutation' },
     moveVariantToCanonical: { service: 'admin', kind: 'mutation' },
     removeFromCategory: { service: 'admin', kind: 'mutation' },
+    updateCollectionMeta: { service: 'admin', kind: 'mutation' },
     generateCanonicalLogoUploadUrl: { service: 'admin', kind: 'mutation' },
     adminArchiveTokenList: { service: 'admin', kind: 'mutation' },
 

@@ -18,6 +18,8 @@ export interface CronResult {
 
 export { InvalidArgsError } from '@tokens/cloudrun-shutdown/http-errors';
 import { InvalidArgsError } from '@tokens/cloudrun-shutdown/http-errors';
+// Type-only: no runtime cycle with curatedMembershipReads.
+import type { CuratedMembershipSource } from './curatedMembershipReads';
 
 export interface VariantMarketUpsertFromBirdeye {
     mint: string;
@@ -327,9 +329,6 @@ export interface JobsRepo {
         candles: readonly OhlcvCandle[],
     ): Promise<OhlcvUpsertResult>;
 }
-
-// eslint-disable-next-line import/no-cycle -- type-only
-import type { CuratedMembershipSource } from './curatedMembershipReads';
 
 export interface CuratedMintsSource {
     getAllCuratedMintsInOrder(): string[];

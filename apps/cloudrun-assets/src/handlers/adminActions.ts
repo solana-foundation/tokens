@@ -25,6 +25,7 @@
  */
 
 import { getVariantByMint } from '@tokens/asset-registry';
+import { CURATED_LIST_FALLBACK_NAMES } from '@tokens/asset-registry/curated-lists';
 
 import { requireAdmin, type AdminAllowlist } from '../adminAuth';
 import { InvalidArgsError, type CallerIdentity } from './assets';
@@ -188,8 +189,8 @@ export interface AdminActionsRepo {
     getNextCategoryRank(slug: string): Promise<number>;
     /** Port of `assetsSeedMutations.upsertAssetCollectionMember` (keyed on slug+assetId). */
     upsertAssetCollectionMember(args: { collectionSlug: string; assetId: string; rank: number }): Promise<void>;
-    /** Port of `assetsSeedMutations.upsertAssetCollection` without clobbering description. */
-    upsertAssetCollectionTitle(slug: string, title: string): Promise<void>;
+    /** INSERT the collection row iff the slug is missing; never rewrites admin-owned title/description. */
+    ensureAssetCollection(slug: string, title: string): Promise<void>;
     /** Port of `assetDeletionTombstones.clearDeletedRefs`; takes normalized refs, returns rows deleted. */
     clearDeletedRefs(normalizedRefs: readonly string[]): Promise<number>;
 }
@@ -227,25 +228,6 @@ function kindForCategory(category: AssetCategory): VariantKind {
             return 'lst';
         default:
             return 'wrapped';
-    }
-}
-
-function defaultTitleForSlug(slug: CuratedCategorySlug): string {
-    switch (slug) {
-        case 'majors':
-            return 'Majors';
-        case 'currencies':
-            return 'Currencies';
-        case 'rwas':
-            return 'RWAs';
-        case 'etfs':
-            return 'ETFs';
-        case 'metals':
-            return 'Metals';
-        case 'stocks':
-            return 'Stocks';
-        default:
-            return slug;
     }
 }
 
@@ -1081,7 +1063,7 @@ export async function adminSeedAsset(
     if (slug) {
         // Membership is additive and multi-list (e.g. USO sits in both stocks
         // and the oil commodity view); no one-category-per-asset restriction.
-        await deps.repo.upsertAssetCollectionTitle(slug, defaultTitleForSlug(slug));
+        await deps.repo.ensureAssetCollection(slug, CURATED_LIST_FALLBACK_NAMES[slug]);
     }
 
     const category: AssetCategory =

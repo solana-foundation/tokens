@@ -11,6 +11,8 @@ import type { Sql, TransactionSql } from 'postgres';
 
 import { ALIAS_PRIORITIES, type AdminMutationsRepo } from '../handlers/curatedTokensMutations';
 import { ASSET_ALIAS_KINDS, CURATED_CATEGORY_SLUGS, type CuratedCategorySlug } from '../handlers/shared';
+import { CURATED_LIST_FALLBACK_NAMES } from '@tokens/asset-registry/curated-lists';
+
 import { randomId } from '../db';
 
 type Tx = TransactionSql;
@@ -472,6 +474,34 @@ export function makePostgresAdminMutationsRepo(sql: Sql): AdminMutationsRepo {
                 WHERE asset_id = ${args.assetId} AND collection_slug = ${args.slug}
             `;
             return result.count > 0;
+        },
+        async updateCollectionMeta(args) {
+            const now = new Date(args.nowMs);
+            // Partial update via CASE over plain parameters (not SQL fragments):
+            // an omitted field keeps the stored value, while `description: null`
+            // explicitly clears it — so editing a title never blanks the
+            // description and vice versa. The INSERT branch covers fresh
+            // environments where the collection row does not exist yet.
+            const setTitle = args.title !== undefined;
+            const setDescription = args.description !== undefined;
+            await sql`
+                INSERT INTO asset_collections (id, slug, title, description, created_at, updated_at)
+                VALUES (
+                    ${randomId('acl')},
+                    ${args.slug},
+                    ${args.title ?? CURATED_LIST_FALLBACK_NAMES[args.slug]},
+                    ${args.description ?? null},
+                    ${now},
+                    ${now}
+                )
+                ON CONFLICT (slug) DO UPDATE SET
+                    title = CASE WHEN ${setTitle} THEN ${args.title ?? null}::text ELSE asset_collections.title END,
+                    description = CASE
+                        WHEN ${setDescription} THEN ${args.description ?? null}::text
+                        ELSE asset_collections.description
+                    END,
+                    updated_at = ${now}
+            `;
         },
     };
 }

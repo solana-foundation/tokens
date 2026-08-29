@@ -12,7 +12,6 @@ import type {
     ApiRequestEvent,
     AssetVariantSummary,
     AssetVariantsForRollup,
-    CuratedMintsSource,
     JobsRepo,
     OhlcvCandle,
     OhlcvUpsertResult,
@@ -4212,14 +4211,15 @@ export function makePostgresAdminActionsRepo(sql: Sql): AdminActionsRepo {
             `;
         },
 
-        async upsertAssetCollectionTitle(slug, title) {
+        async ensureAssetCollection(slug, title) {
             const now = new Date();
+            // Insert-if-missing only: `asset_collections.title/description` is
+            // admin-owned display metadata (served by v1/v2), so seeding a
+            // token into a list must never rewrite that list's name.
             await sql`
                 INSERT INTO asset_collections (id, slug, title, created_at, updated_at)
                 VALUES (${randomId('acl')}, ${slug}, ${title}, ${now}, ${now})
-                ON CONFLICT (slug) DO UPDATE SET
-                    title = EXCLUDED.title,
-                    updated_at = EXCLUDED.updated_at
+                ON CONFLICT (slug) DO NOTHING
             `;
         },
 

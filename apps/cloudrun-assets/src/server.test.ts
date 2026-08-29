@@ -4211,7 +4211,7 @@ describe('admin mutations dispatch', () => {
                 return 0;
             },
             async upsertAssetCollectionMember() {},
-            async upsertAssetCollectionTitle() {},
+            async ensureAssetCollection() {},
             async clearDeletedRefs() {
                 return 0;
             },
