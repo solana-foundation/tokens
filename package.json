@@ -33,9 +33,9 @@
         "hono": "^4.13.0"
     },
     "devDependencies": {
-        "@grafana/lezer-logql": "0.3.0",
+        "@grafana/lezer-logql": "0.4.1",
         "@lezer/lr": "1.4.10",
-        "@solana/prettier-config-solana": "^0.0.5",
+        "@solana/prettier-config-solana": "^0.0.7",
         "@tokens/asset-registry": "workspace:*",
         "@tokens/token-risk-helpers": "workspace:*",
         "dialkit": "^1.4.3",
