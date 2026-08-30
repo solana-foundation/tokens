@@ -39,7 +39,7 @@
         "@tokens/asset-registry": "workspace:*",
         "@tokens/token-risk-helpers": "workspace:*",
         "dialkit": "^1.4.3",
-        "effect": "4.0.0-rc.108",
+        "effect": "4.0.0-rc.112",
         "motion": "^12.43.0",
         "postgres": "^3.4.9",
         "prettier": "^3.9.6",
@@ -48,7 +48,7 @@
     },
     "overrides": {
         "next": "16.3.0",
-        "effect": "4.0.0-rc.108",
+        "effect": "4.0.0-rc.112",
         "vite": "6.4.3",
         "@babel/core": "7.29.7",
         "@clerk/backend": "2.33.5",

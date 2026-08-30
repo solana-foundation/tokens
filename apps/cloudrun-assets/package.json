@@ -19,7 +19,7 @@
     "@tokens/cloudrun-shutdown": "workspace:*",
     "@tokens/effect": "workspace:*",
     "@tokens/token-risk-helpers": "workspace:*",
-    "effect": "4.0.0-rc.108",
+    "effect": "4.0.0-rc.112",
     "hono": "^4.13.0",
     "jose": "^5.9.6",
     "postgres": "^3.4.5"

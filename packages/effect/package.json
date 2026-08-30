@@ -24,7 +24,7 @@
     "src"
   ],
   "dependencies": {
-    "effect": "4.0.0-rc.108"
+    "effect": "4.0.0-rc.112"
   },
   "devDependencies": {
     "@tokens/typescript-config": "workspace:*",
