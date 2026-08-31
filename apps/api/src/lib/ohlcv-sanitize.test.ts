@@ -162,4 +162,39 @@ describe('sanitizeOhlcvWicks', () => {
     test('empty input', () => {
         expect(sanitizeOhlcvWicks([])).toEqual([]);
     });
+    test('a poisoned open does not drag the snapped low to zero', () => {
+        // A zero open is not a real price, and the reference prices already
+        // reject it. Using it as the body floor would put the low back at 0,
+        // which is the flat-zero y-axis this module exists to prevent.
+        const input = [
+            candle({ time: 1, open: 75, high: 75.4, low: 74.9, close: 75.2 }),
+            candle({ time: 2, open: 0, high: 75.5, low: 75, close: 75.3 }),
+            candle({ time: 3, open: 75.3, high: 75.6, low: 75.1, close: 75.4 }),
+        ];
+        const out = sanitizeOhlcvWicks(input);
+        expect(out[1]!.low).toBe(75);
+        expect(out[1]!.high).toBe(75.5);
+    });
+
+    test('a non-finite open does not spread to both wicks', () => {
+        const input = [
+            candle({ time: 1, open: 75, high: 75.4, low: 74.9, close: 75.2 }),
+            candle({ time: 2, open: Number.NaN, high: 75.5, low: 75, close: 75.3 }),
+            candle({ time: 3, open: 75.3, high: 75.6, low: 75.1, close: 75.4 }),
+        ];
+        const out = sanitizeOhlcvWicks(input);
+        expect(out[1]!.high).toBe(75.5);
+        expect(out[1]!.low).toBe(75);
+    });
+
+    test('a poisoned close falls back to the open for the body', () => {
+        const input = [
+            candle({ time: 1, open: 75, high: 75.4, low: 74.9, close: 75.2 }),
+            candle({ time: 2, open: 75.2, high: 75.5, low: 75, close: 0 }),
+            candle({ time: 3, open: 75.3, high: 75.6, low: 75.1, close: 75.4 }),
+        ];
+        const out = sanitizeOhlcvWicks(input);
+        expect(out[1]!.low).toBe(75);
+        expect(out[1]!.high).toBe(75.5);
+    });
 });

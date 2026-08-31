@@ -72,8 +72,14 @@ export function sanitizeOhlcvWicks<T extends OhlcvCandleLike>(candles: readonly 
         const maxHigh = ref * WICK_TOLERANCE;
         const minLow = ref / WICK_TOLERANCE;
 
-        const bodyHigh = Math.max(candle.open, candle.close);
-        const bodyLow = Math.min(candle.open, candle.close);
+        // Open/close are only trusted here if they pass the same validity check
+        // used for the reference prices. A poisoned open of 0 would otherwise
+        // become the snapped low and reintroduce the flat-zero y-axis this
+        // module exists to prevent, and a NaN would spread to both wicks.
+        // When neither is usable the body collapses to the reference price.
+        const bodyPrices = [candle.open, candle.close].filter(isValidPrice);
+        const bodyHigh = bodyPrices.length > 0 ? Math.max(...bodyPrices) : ref;
+        const bodyLow = bodyPrices.length > 0 ? Math.min(...bodyPrices) : ref;
 
         // Snap untrusted wicks to the body; always re-establish the OHLC
         // invariant (high >= body >= low) in case stored data violates it.
