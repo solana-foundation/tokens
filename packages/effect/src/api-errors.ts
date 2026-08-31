@@ -184,6 +184,12 @@ export function httpStatusForError(error: unknown): number {
             return 404;
         case 'RateLimitedError':
             return 429;
+        case 'CloudRunHttpError':
+            // A saturated backend rejecting work (429) is not an internal error —
+            // surface it to the caller as 429 so they back off instead of retrying a "500".
+            return isRecord(error) && error.status === 429 ? 429 : 500;
+        case 'CloudRunTimeoutError':
+            return 504;
         case 'UpstreamDataError':
         case 'MissingEnvError':
         case 'UpstreamHttpError':
