@@ -1,0 +1,7 @@
+# False positives: gitleaks' generic-api-key rule matches the quoted URL path
+# in `getRaw(baseUrl, apiKey, 'api/v2/execution/...')` calls because the
+# variable name `apiKey` appears on the same line. The flagged strings are
+# request paths, not credentials.
+6be7829c2ed1c9e937d27b06ec5cc4ef96402f9c:scripts/verify-execution-api-v2-contract.ts:generic-api-key:194
+d38224cfb372f8b3dc99691fd6e2b39bf4278570:scripts/verify-execution-api-v2-contract.ts:generic-api-key:156
+ec58182d5a895308ba6a203bbf9f0e561d68ec50:scripts/verify-execution-api-v2-contract.ts:generic-api-key:155
