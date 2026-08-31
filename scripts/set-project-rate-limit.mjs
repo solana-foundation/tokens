@@ -1,16 +1,3 @@
-/**
- * Set, clear, or show a project's API rate-limit override.
- *
- * Usage (run under doppler for the usage-service URL + bearer token):
- *   doppler run --project tokens --config prd_cloudrun -- \
- *     bun scripts/set-project-rate-limit.mjs "<project name or id>" <requests> [windowSeconds]
- *   doppler run --project tokens --config prd_cloudrun -- \
- *     bun scripts/set-project-rate-limit.mjs "<project name or id>" --clear
- *
- * Changes take effect within ~60s (API auth cache TTL). Projects without an
- * override use the code default (TOKENS_DEFAULT_RATE_LIMIT_REQUESTS).
- */
-
 import { callCloudRun } from './_cloudrun.mjs';
 
 function usage(message) {

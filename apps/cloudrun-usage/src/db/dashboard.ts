@@ -258,8 +258,6 @@ export function makePostgresDashboardRepo(sql: Sql): DashboardRepo {
         },
 
         async setProjectRateLimit(projectId, rateLimit, nowMs) {
-            // jsonb_build_object sidesteps the string-param double-encoding trap
-            // (see #257); merge preserves sibling keys like `quota`.
             const rows = await sql<{ id: string; name: string; limits: unknown }[]>`
                 UPDATE projects
                 SET limits = ${

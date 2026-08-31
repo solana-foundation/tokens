@@ -100,7 +100,6 @@ export interface DashboardRepo {
     /** Insert membership if missing (idempotent). */
     ensureMembership(projectId: string, clerkUserId: string, role: ProjectRole, nowMs: number): Promise<void>;
     updateProject(projectId: string, name: string, description: string, nowMs: number): Promise<void>;
-    /** Set or clear (null) the project's rateLimit override inside `limits` jsonb, preserving other keys. */
     setProjectRateLimit(
         projectId: string,
         rateLimit: { requests: number; windowSeconds: number } | null,
@@ -329,11 +328,6 @@ export async function usersUpdateProject(
     return null;
 }
 
-/**
- * Operator mutation (service bearer token only, no Clerk identity): set or
- * clear a project's rateLimit override. `{projectId, requests, windowSeconds?}`
- * sets; `{projectId, clear: true}` reverts the project to the default limit.
- */
 export async function projectsSetRateLimit(
     deps: DashboardDeps,
     args: unknown,
