@@ -9,6 +9,7 @@ import {
     apiKeysRevoke,
     projectsGetOrCreatePersonalProject,
     projectsListMine,
+    projectsSetRateLimit,
     usersCreateProjectWithApiKey,
     usersDeleteProject,
     usersGetAllProjectApiKeys,
@@ -81,6 +82,11 @@ function makeRepo(state: RepoState = {}) {
         },
         ensureMembership: async (...args) => track('ensureMembership', args),
         updateProject: async (...args) => track('updateProject', args),
+        setProjectRateLimit: async (...args) => {
+            track('setProjectRateLimit', args);
+            if (!state.project) return null;
+            return { id: args[0], name: 'P', limits: args[1] === null ? null : { rateLimit: args[1] } };
+        },
         deleteProjectCascade: async (...args) => track('deleteProjectCascade', args),
         listProjectApiKeys: async () => [
             { id: 'key_a', keyPrefix: 'tok_aaaa', createdAt: 5, revokedAt: null, hasEncrypted: true },
@@ -189,6 +195,40 @@ describe('usersGetProjectById', () => {
 
         const member = makeDeps({ project: PROJECT, membership: { role: 'member' } });
         expect(await usersGetProjectById(member.deps, { projectId: 'proj_1' }, IDENT)).toEqual(PROJECT);
+    });
+});
+
+describe('projectsSetRateLimit', () => {
+    it('sets the override with a default 10s window', async () => {
+        const { deps, calls } = makeDeps({ project: PROJECT });
+        const res = await projectsSetRateLimit(deps, { projectId: 'proj_1', requests: 500 });
+        expect(calls.setProjectRateLimit?.[0]).toEqual(['proj_1', { requests: 500, windowSeconds: 10 }, NOW]);
+        expect(res.limits).toEqual({ rateLimit: { requests: 500, windowSeconds: 10 } });
+    });
+
+    it('clears the override', async () => {
+        const { deps, calls } = makeDeps({ project: PROJECT });
+        await projectsSetRateLimit(deps, { projectId: 'proj_1', clear: true });
+        expect(calls.setProjectRateLimit?.[0]).toEqual(['proj_1', null, NOW]);
+    });
+
+    it('rejects invalid requests values', async () => {
+        const { deps } = makeDeps({ project: PROJECT });
+        for (const requests of [0, -5, 1.5, 2_000_000, '500', undefined]) {
+            await expect(projectsSetRateLimit(deps, { projectId: 'proj_1', requests })).rejects.toBeInstanceOf(
+                InvalidArgsError,
+            );
+        }
+        await expect(
+            projectsSetRateLimit(deps, { projectId: 'proj_1', requests: 500, windowSeconds: 0 }),
+        ).rejects.toBeInstanceOf(InvalidArgsError);
+    });
+
+    it('rejects unknown projects', async () => {
+        const { deps } = makeDeps({ project: null });
+        await expect(projectsSetRateLimit(deps, { projectId: 'nope', requests: 500 })).rejects.toBeInstanceOf(
+            InvalidArgsError,
+        );
     });
 });
 

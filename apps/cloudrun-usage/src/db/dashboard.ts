@@ -257,6 +257,29 @@ export function makePostgresDashboardRepo(sql: Sql): DashboardRepo {
             `;
         },
 
+        async setProjectRateLimit(projectId, rateLimit, nowMs) {
+            // jsonb_build_object sidesteps the string-param double-encoding trap
+            // (see #257); merge preserves sibling keys like `quota`.
+            const rows = await sql<{ id: string; name: string; limits: unknown }[]>`
+                UPDATE projects
+                SET limits = ${
+                    rateLimit === null
+                        ? sql`NULLIF(COALESCE(limits, '{}'::jsonb) - 'rateLimit', '{}'::jsonb)`
+                        : sql`COALESCE(limits, '{}'::jsonb) || jsonb_build_object(
+                              'rateLimit', jsonb_build_object(
+                                  'requests', ${rateLimit.requests}::int,
+                                  'windowSeconds', ${rateLimit.windowSeconds}::int
+                              )
+                          )`
+                },
+                    updated_at = to_timestamp(${nowMs} / 1000.0)
+                WHERE id = ${projectId}
+                RETURNING id, name, limits
+            `;
+            const row = rows[0];
+            return row ? { id: row.id, name: row.name, limits: row.limits } : null;
+        },
+
         async deleteProjectCascade(projectId) {
             await sql.begin(async tx => {
                 await tx`DELETE FROM api_keys WHERE project_id = ${projectId}`;

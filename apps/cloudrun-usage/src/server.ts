@@ -118,6 +118,7 @@ export function createApp(deps: ServerDeps) {
         dashboard.projectsGetOrCreatePersonalProject(dashDeps, args, identity);
     mutations.apiKeysRevoke = (args, identity) => dashboard.apiKeysRevoke(dashDeps, args, identity);
     mutations.apiKeysReset = (args, identity) => dashboard.apiKeysReset(dashDeps, args, identity);
+    mutations.projectsSetRateLimit = args => dashboard.projectsSetRateLimit(dashDeps, args);
 
     app.get('/health', c => c.json({ ok: true }));
 

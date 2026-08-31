@@ -100,6 +100,12 @@ export interface DashboardRepo {
     /** Insert membership if missing (idempotent). */
     ensureMembership(projectId: string, clerkUserId: string, role: ProjectRole, nowMs: number): Promise<void>;
     updateProject(projectId: string, name: string, description: string, nowMs: number): Promise<void>;
+    /** Set or clear (null) the project's rateLimit override inside `limits` jsonb, preserving other keys. */
+    setProjectRateLimit(
+        projectId: string,
+        rateLimit: { requests: number; windowSeconds: number } | null,
+        nowMs: number,
+    ): Promise<{ id: string; name: string; limits: unknown } | null>;
     /** Transaction: delete api keys + project (memberships cascade). */
     deleteProjectCascade(projectId: string): Promise<void>;
 
@@ -321,6 +327,41 @@ export async function usersUpdateProject(
 
     await deps.repo.updateProject(projectId, name, description, now(deps));
     return null;
+}
+
+/**
+ * Operator mutation (service bearer token only, no Clerk identity): set or
+ * clear a project's rateLimit override. `{projectId, requests, windowSeconds?}`
+ * sets; `{projectId, clear: true}` reverts the project to the default limit.
+ */
+export async function projectsSetRateLimit(
+    deps: DashboardDeps,
+    args: unknown,
+): Promise<{ id: string; name: string; limits: unknown }> {
+    const a = requireObject(args);
+    const projectId = requireString(a, 'projectId');
+
+    let rateLimit: { requests: number; windowSeconds: number } | null = null;
+    if (a.clear !== true) {
+        const requests = a.requests;
+        if (typeof requests !== 'number' || !Number.isInteger(requests) || requests < 1 || requests > 1_000_000) {
+            throw new InvalidArgsError('requests must be an integer between 1 and 1000000');
+        }
+        const windowSeconds = a.windowSeconds ?? 10;
+        if (
+            typeof windowSeconds !== 'number' ||
+            !Number.isInteger(windowSeconds) ||
+            windowSeconds < 1 ||
+            windowSeconds > 3600
+        ) {
+            throw new InvalidArgsError('windowSeconds must be an integer between 1 and 3600');
+        }
+        rateLimit = { requests, windowSeconds };
+    }
+
+    const updated = await deps.repo.setProjectRateLimit(projectId, rateLimit, now(deps));
+    if (!updated) throw new InvalidArgsError(`Unknown project: ${projectId}`);
+    return updated;
 }
 
 /** Port of `users.deleteProject` — requires owner role; cascades keys + memberships. */
