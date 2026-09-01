@@ -51,6 +51,7 @@ interface PendingNavigation {
 type PerpsProviderId = PerpsMarketProviderId | 'jupiter';
 
 const FLASH_TRADE_ICON_SRC = '/logos/popular/flashtrade.png';
+const JTX_ICON_SRC = '/logos/popular/jtx.png';
 const JUPITER_ICON_SRC = '/logos/popular/jupiter.png';
 const KAMINO_ICON_SRC = '/logos/popular/kamino.png';
 const OMFG_ICON_SRC = '/logos/popular/omfg.svg';
@@ -727,7 +728,7 @@ function SwapProvidersDropdownBase({
         ...(omfgUrl ? [{ href: omfgUrl, name: 'OMFG', iconSrc: OMFG_ICON_SRC }] : []),
         { href: kaminoUrl, name: 'Kamino', iconSrc: KAMINO_ICON_SRC },
         { href: orcaUrl, name: 'Orca', iconSrc: 'https://www.orca.so/favicon.ico' },
-        { href: jtxUrl, name: 'JTX', iconSrc: 'https://app.jtx.com/favicon.ico' },
+        { href: jtxUrl, name: 'JTX', iconSrc: JTX_ICON_SRC },
     ];
 
     const perpsProviders = buildPerpsProviders({ perpsMarkets, variantMatch, buyName, buySymbol, safeBuyAddress });
