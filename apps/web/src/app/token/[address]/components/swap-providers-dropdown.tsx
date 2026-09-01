@@ -281,6 +281,12 @@ function getByrealSwapUrl(args: { inputMint: string; outputMint: string }): stri
     return url.toString();
 }
 
+function getJtxSwapUrl(args: { mint: string }): string {
+    const url = new URL('https://app.jtx.com/');
+    url.searchParams.set('mint', args.mint);
+    return url.toString();
+}
+
 function normalizeSwapSymbol(value: string | undefined | null): string | null {
     const trimmed = (value ?? '').trim();
     if (!trimmed) return null;
@@ -640,6 +646,7 @@ function SwapProvidersDropdownBase({
     const sunriseToToken = buySymbol ?? variantMatch?.variant.symbol ?? variantMatch?.asset.symbol;
     const sunriseUrl = getSunriseSwapUrl({ fromToken: 'USDC', toToken: sunriseToToken });
     const omfgUrl = getOmfgSwapUrl({ from: USDC_MINT, to: safeBuyAddress });
+    const jtxUrl = getJtxSwapUrl({ mint: safeBuyAddress });
 
     const { marketsForPoolsTab, poolsByVolume, isMarketsFetched, isMarketsLoading, perpsMarkets } = useSwapMarkets({
         assetId,
@@ -720,6 +727,7 @@ function SwapProvidersDropdownBase({
         ...(omfgUrl ? [{ href: omfgUrl, name: 'OMFG', iconSrc: OMFG_ICON_SRC }] : []),
         { href: kaminoUrl, name: 'Kamino', iconSrc: KAMINO_ICON_SRC },
         { href: orcaUrl, name: 'Orca', iconSrc: 'https://www.orca.so/favicon.ico' },
+        { href: jtxUrl, name: 'JTX', iconSrc: 'https://app.jtx.com/favicon.ico' },
     ];
 
     const perpsProviders = buildPerpsProviders({ perpsMarkets, variantMatch, buyName, buySymbol, safeBuyAddress });
