@@ -51,6 +51,7 @@ interface PendingNavigation {
 type PerpsProviderId = PerpsMarketProviderId | 'jupiter';
 
 const FLASH_TRADE_ICON_SRC = '/logos/popular/flashtrade.png';
+const JTX_ICON_SRC = '/logos/popular/jtx.png';
 const JUPITER_ICON_SRC = '/logos/popular/jupiter.png';
 const KAMINO_ICON_SRC = '/logos/popular/kamino.png';
 const OMFG_ICON_SRC = '/logos/popular/omfg.svg';
@@ -278,6 +279,12 @@ function getByrealSwapUrl(args: { inputMint: string; outputMint: string }): stri
     const url = new URL('https://www.byreal.io/en/swap');
     url.searchParams.set('inputMint', args.inputMint);
     url.searchParams.set('outputMint', args.outputMint);
+    return url.toString();
+}
+
+function getJtxSwapUrl(args: { mint: string }): string {
+    const url = new URL('https://app.jtx.com/');
+    url.searchParams.set('mint', args.mint);
     return url.toString();
 }
 
@@ -640,6 +647,7 @@ function SwapProvidersDropdownBase({
     const sunriseToToken = buySymbol ?? variantMatch?.variant.symbol ?? variantMatch?.asset.symbol;
     const sunriseUrl = getSunriseSwapUrl({ fromToken: 'USDC', toToken: sunriseToToken });
     const omfgUrl = getOmfgSwapUrl({ from: USDC_MINT, to: safeBuyAddress });
+    const jtxUrl = getJtxSwapUrl({ mint: safeBuyAddress });
 
     const { marketsForPoolsTab, poolsByVolume, isMarketsFetched, isMarketsLoading, perpsMarkets } = useSwapMarkets({
         assetId,
@@ -717,6 +725,7 @@ function SwapProvidersDropdownBase({
 
     const spotVenueProviders: SpotProviderLink[] = [
         ...(sunriseUrl ? [{ href: sunriseUrl, name: 'Sunrise', iconSrc: SUNRISE_ICON_SRC }] : []),
+        { href: jtxUrl, name: 'JTX', iconSrc: JTX_ICON_SRC },
         ...(omfgUrl ? [{ href: omfgUrl, name: 'OMFG', iconSrc: OMFG_ICON_SRC }] : []),
         { href: kaminoUrl, name: 'Kamino', iconSrc: KAMINO_ICON_SRC },
         { href: orcaUrl, name: 'Orca', iconSrc: 'https://www.orca.so/favicon.ico' },
