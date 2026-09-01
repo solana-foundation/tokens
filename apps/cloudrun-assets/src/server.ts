@@ -133,6 +133,18 @@ import {
 } from './handlers/crons.assetVariants';
 import { seedJobs, type SeedCronDeps, type SeedJobHandler } from './handlers/crons.seed';
 import { prestocksJobs, type PrestocksCronDeps, type PrestocksJobHandler } from './handlers/crons.prestocks';
+import { depthJobs, type DepthCronDeps, type DepthJobHandler } from './handlers/crons.depth';
+import {
+    getLatestByMints as variantDepthCurvesGetLatestByMints,
+    type DepthCurveReadsRepo,
+} from './handlers/depthCurveReads';
+import {
+    depthSampleMints,
+    executionQuoteTokenMetadata,
+    executionQuotesLive,
+    type DepthSampleDeps,
+    type LiveQuoteDeps,
+} from './handlers/liveQuotes';
 import { trendingJobs, type TrendingCronDeps, type TrendingJobHandler } from './handlers/crons.trending';
 import {
     clickhouseExtrasJobs,
@@ -177,6 +189,7 @@ export interface ServerDeps {
     tokensReadsRepo: TokensReadsRepo;
     trendingReadsRepo: TrendingReadsRepo;
     fillQualityReadsRepo: FillQualityReadsRepo;
+    depthCurveReadsRepo: DepthCurveReadsRepo;
     assetCollectionsReadsRepo: AssetCollectionsReadsRepo;
     curatedMembershipSource: CuratedMembershipSource;
     tokenListsReadsRepo: TokenListsReadsRepo;
@@ -200,6 +213,9 @@ export interface ServerDeps {
     trendingCronDeps?: TrendingCronDeps;
     clickhouseExtrasCronDeps?: ClickhouseExtrasCronDeps;
     prestocksCronDeps?: PrestocksCronDeps;
+    depthCronDeps?: DepthCronDeps;
+    liveQuoteDeps?: LiveQuoteDeps;
+    depthSampleDeps?: DepthSampleDeps;
     cacheWarmDeps?: CacheWarmDeps;
     adminActionsDeps?: AdminActionsDeps;
     /** Admin-only token-list build tools (CSV import, create-for-project); allowlist-gated. */
@@ -256,6 +272,7 @@ const ATOMIC_RETRY_QUERY_NAMES = new Set([
     'trendingMarketsList',
     'freshTrendingMarketsList',
     'variantFillQualityGetLatestByMints',
+    'variantDepthCurvesGetLatestByMints',
     'assetCollectionsGetMembers',
     'assetCollectionsGetMemberMints',
     'assetCollectionsGetSummaries',
@@ -435,6 +452,18 @@ export function createApp(deps: ServerDeps) {
     queries.freshTrendingMarketsList = args => freshTrendingMarketsList(deps.trendingReadsRepo, args);
     queries.variantFillQualityGetLatestByMints = args =>
         variantFillQualityGetLatestByMints(deps.fillQualityReadsRepo, args);
+    queries.variantDepthCurvesGetLatestByMints = args =>
+        variantDepthCurvesGetLatestByMints(deps.depthCurveReadsRepo, args);
+    queries.executionQuotesLive = args => {
+        const liveQuoteDeps = deps.liveQuoteDeps;
+        if (!liveQuoteDeps) throw new InvalidArgsError('live quotes are not configured on this service');
+        return executionQuotesLive(liveQuoteDeps, args);
+    };
+    queries.executionQuoteTokenMetadata = args => {
+        const liveQuoteDeps = deps.liveQuoteDeps;
+        if (!liveQuoteDeps) throw new InvalidArgsError('live quotes are not configured on this service');
+        return executionQuoteTokenMetadata(liveQuoteDeps, args);
+    };
     queries.assetCollectionsGetMembers = args => assetCollectionsGetMembers(deps.assetCollectionsReadsRepo, args);
     queries.assetCollectionsGetMemberMints = args =>
         assetCollectionsGetMemberMints(deps.assetCollectionsReadsRepo, args);
@@ -463,6 +492,14 @@ export function createApp(deps: ServerDeps) {
     queries.ohlcvList = args => listOhlcv(deps.ohlcvReadsRepo, args);
 
     const mutations: Record<string, Handler> = Object.create(null);
+    // Persists curves, so it lives with the mutations. Currently uncalled: the
+    // read-through warm it backed (sample=missing) went away with the graded
+    // evaluate contract. Kept alongside the parked depth cron.
+    mutations.depthSampleMints = args => {
+        const depthSampleDeps = deps.depthSampleDeps;
+        if (!depthSampleDeps) throw new InvalidArgsError('depth sampling is not configured on this service');
+        return depthSampleMints(depthSampleDeps, args);
+    };
     mutations.setAssetDescriptionByAssetId = (args, identity) =>
         setAssetDescriptionByAssetId(deps.repo, args, identity);
 
@@ -632,6 +669,7 @@ export function createApp(deps: ServerDeps) {
     const prestocksJobsTable: Record<string, PrestocksJobHandler> = {
         ...prestocksJobs,
     };
+    const depthJobsTable: Record<string, DepthJobHandler> = { ...depthJobs };
 
     interface JobGroup {
         has(name: string): boolean;
@@ -681,6 +719,11 @@ export function createApp(deps: ServerDeps) {
             run: deps.prestocksCronDeps
                 ? (name, args) => prestocksJobsTable[name]!(deps.prestocksCronDeps!, args)
                 : null,
+        },
+        {
+            has: name => Object.hasOwn(depthJobsTable, name),
+            run: deps.depthCronDeps ? (name, args) => depthJobsTable[name]!(deps.depthCronDeps!, args) : null,
+            disabledError: 'depth_jobs_disabled',
         },
     ];
 

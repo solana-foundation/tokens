@@ -193,5 +193,25 @@
     "eventName": "swap_provider_cancelled",
     "eventDescription": "User cancelled pending navigation to a swap provider (properties: provider_name, provider_url, provider_category, surface, plus token context)",
     "filePath": "src/app/token/[address]/components/swap-providers-dropdown.tsx"
+  },
+  {
+    "eventName": "execution_quotes_requested",
+    "eventDescription": "User requested live router quotes on /evaluation (properties: mint, side, requested_count, includes_custom_amount, providers_requested)",
+    "filePath": "src/app/evaluation/evaluation-playground.tsx"
+  },
+  {
+    "eventName": "execution_quotes_completed",
+    "eventDescription": "Live multi-provider quote comparison returned (properties: mint, side, requested_count, available_count, unavailable_count, jupiter_available_count, titan_available_count, jupiter_win_count, titan_win_count, comparable_count, best_provider, median_edge_bps, request_latency_ms)",
+    "filePath": "src/app/evaluation/evaluation-playground.tsx"
+  },
+  {
+    "eventName": "execution_route_requested",
+    "eventDescription": "User requested a cross-variant routing plan on /evaluation (properties: asset_id, target_usd)",
+    "filePath": "src/app/evaluation/evaluation-playground.tsx"
+  },
+  {
+    "eventName": "execution_route_completed",
+    "eventDescription": "Cross-variant routing plan returned (properties: asset_id, target_usd, allocation_status, selected_variants, leg_count, edge_vs_best_single_bps, upstream_quotes, request_latency_ms)",
+    "filePath": "src/app/evaluation/evaluation-playground.tsx"
   }
 ]

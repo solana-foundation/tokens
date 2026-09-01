@@ -26,13 +26,10 @@ import { apiJson } from '@/effect/api-client';
 import type { TokenMarket } from '@/lib/birdeye';
 import type { PerpsMarket, PerpsMarketProviderId, PerpsMarketsResponse } from '@/lib/perps-markets';
 import { getVariantByMint } from '@tokens/asset-registry';
+import { buildSwapLinks, SOL_MINT, USDC_MINT } from '@tokens/execution-links';
 import { getTokenLogoURLForMintWithSecondarySymbol } from '@/lib/logo-overrides';
 import { trackEvent } from '@/lib/posthog-client';
 import { formatCompactAddress, formatUsd } from '../lib/format';
-
-const SOL_MINT = 'So11111111111111111111111111111111111111112';
-const USDC_MINT = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
-const RAYDIUM_SOL_ALIAS = 'sol';
 
 type PoolProviderId = 'orca' | 'raydium' | 'byreal';
 type DesktopActionTab = 'swap' | 'perps' | 'pools';
@@ -52,10 +49,7 @@ type PerpsProviderId = PerpsMarketProviderId | 'jupiter';
 
 const FLASH_TRADE_ICON_SRC = '/logos/popular/flashtrade.png';
 const JUPITER_ICON_SRC = '/logos/popular/jupiter.png';
-const KAMINO_ICON_SRC = '/logos/popular/kamino.png';
-const OMFG_ICON_SRC = '/logos/popular/omfg.svg';
 const PHOENIX_TRADE_ICON_SRC = '/logos/popular/pheonix.png';
-const SUNRISE_ICON_SRC = '/logos/popular/sunrise.svg';
 
 const JUPITER_PERPS_MARKET_BY_ASSET_ID: Record<string, string> = {
     ethereum: 'ETH',
@@ -240,94 +234,6 @@ function getPoolDeepLink(market: TokenMarket): { href: string; name: string } | 
     if (/meteora/i.test(source)) return { href: getMeteoraPoolUrl(address), name: 'Meteora' };
 
     return null;
-}
-
-function getJupiterSwapUrl(args: { sell: string; buy: string }): string {
-    const url = new URL('https://jup.ag/swap');
-    url.searchParams.set('sell', args.sell);
-    url.searchParams.set('buy', args.buy);
-    return url.toString();
-}
-
-function getTitanSwapUrl(args: { sell: string; buy: string }): string {
-    return `https://titan.exchange/swap?${args.sell}-${args.buy}`;
-}
-
-function getDflowSwapUrl(args: { sendToken: string; receiveToken: string }): string {
-    const url = new URL('https://dflow.net/');
-    url.searchParams.set('sendToken', args.sendToken);
-    url.searchParams.set('receiveToken', args.receiveToken);
-    return url.toString();
-}
-
-function getOrcaSwapUrl(args: { tokenIn: string; tokenOut: string }): string {
-    const url = new URL('https://www.orca.so/');
-    url.searchParams.set('tokenIn', args.tokenIn);
-    url.searchParams.set('tokenOut', args.tokenOut);
-    return url.toString();
-}
-
-function getRaydiumSwapUrl(args: { inputMint: string; outputMint: string }): string {
-    const url = new URL('https://raydium.io/swap/');
-    url.searchParams.set('inputMint', args.inputMint);
-    url.searchParams.set('outputMint', args.outputMint);
-    return url.toString();
-}
-
-function getByrealSwapUrl(args: { inputMint: string; outputMint: string }): string {
-    const url = new URL('https://www.byreal.io/en/swap');
-    url.searchParams.set('inputMint', args.inputMint);
-    url.searchParams.set('outputMint', args.outputMint);
-    return url.toString();
-}
-
-function normalizeSwapSymbol(value: string | undefined | null): string | null {
-    const trimmed = (value ?? '').trim();
-    if (!trimmed) return null;
-    if (/^\?+$/.test(trimmed)) return null;
-    return trimmed.replace(/\s+/g, '');
-}
-
-function getKaminoSwapUrl(args: { aSymbol: string; bSymbol: string }): string {
-    const a = normalizeSwapSymbol(args.aSymbol);
-    const b = normalizeSwapSymbol(args.bSymbol);
-    if (!a || !b) return 'https://kamino.com/swap/SOL-USDC';
-
-    // Match Kamino's commonly shared canonical route for SOL/USDC.
-    const aUpper = a.toUpperCase();
-    const bUpper = b.toUpperCase();
-    const isSolUsdc =
-        (aUpper === 'SOL' && bUpper === 'USDC') ||
-        (aUpper === 'USDC' && bUpper === 'SOL') ||
-        (aUpper === 'WSOL' && bUpper === 'USDC') ||
-        (aUpper === 'USDC' && bUpper === 'WSOL');
-    if (isSolUsdc) return 'https://kamino.com/swap/SOL-USDC';
-
-    return `https://kamino.com/swap/${encodeURIComponent(a)}-${encodeURIComponent(b)}`;
-}
-
-function getSunriseSwapUrl(args: { fromToken: string; toToken: string | undefined | null }): string | null {
-    const fromToken = normalizeSwapSymbol(args.fromToken);
-    const toToken = normalizeSwapSymbol(args.toToken);
-    if (!fromToken || !toToken) return null;
-    if (fromToken.toUpperCase() === toToken.toUpperCase()) return null;
-
-    const url = new URL('https://sunrise.xyz/');
-    url.searchParams.set('fromToken', fromToken);
-    url.searchParams.set('toToken', toToken);
-    return url.toString();
-}
-
-function getOmfgSwapUrl(args: { from: string; to: string }): string | null {
-    const from = args.from.trim();
-    const to = args.to.trim();
-    if (!from || !to) return null;
-    if (from === to) return null;
-
-    const url = new URL('https://www.omnipair.fi/trade');
-    url.searchParams.set('from', from);
-    url.searchParams.set('to', to);
-    return url.toString();
 }
 
 function getPoolIdFromSource(source: string | undefined): PoolProviderId | null {
@@ -620,26 +526,19 @@ function SwapProvidersDropdownBase({
 
     const buyLabel = buyName.trim() || 'token';
     const safeBuyAddress = normalizedBuyAddress || SOL_MINT;
-    const isBuyingSol = safeBuyAddress === SOL_MINT;
-    const sellMint = isBuyingSol ? USDC_MINT : SOL_MINT;
     const variantMatch = getVariantByMint(safeBuyAddress);
     const assetId = variantMatch?.asset.assetId ?? null;
 
-    const jupiterUrl = getJupiterSwapUrl({ sell: sellMint, buy: safeBuyAddress });
-    const titanUrl = getTitanSwapUrl({ sell: sellMint, buy: safeBuyAddress });
-    const dflowUrl = getDflowSwapUrl({ sendToken: sellMint, receiveToken: safeBuyAddress });
-    const orcaUrl = getOrcaSwapUrl({ tokenIn: sellMint, tokenOut: safeBuyAddress });
-    const raydiumUrl = getRaydiumSwapUrl({
-        inputMint: isBuyingSol ? USDC_MINT : RAYDIUM_SOL_ALIAS,
-        outputMint: isBuyingSol ? RAYDIUM_SOL_ALIAS : safeBuyAddress,
+    // Same source of truth as GET /v2/execution/links; the buySymbol fallback
+    // chain (buySymbol ?? variant.symbol ?? asset.symbol) lives in the package.
+    const swapLinks = buildSwapLinks({
+        buyMint: safeBuyAddress,
+        ...(buySymbol !== undefined ? { buySymbol } : {}),
     });
-    const byrealUrl = getByrealSwapUrl({ inputMint: sellMint, outputMint: safeBuyAddress });
-
-    const kaminoOut = safeBuyAddress === SOL_MINT || safeBuyAddress === USDC_MINT ? 'USDC' : safeBuyAddress;
-    const kaminoUrl = getKaminoSwapUrl({ aSymbol: 'SOL', bSymbol: kaminoOut });
-    const sunriseToToken = buySymbol ?? variantMatch?.variant.symbol ?? variantMatch?.asset.symbol;
-    const sunriseUrl = getSunriseSwapUrl({ fromToken: 'USDC', toToken: sunriseToToken });
-    const omfgUrl = getOmfgSwapUrl({ from: USDC_MINT, to: safeBuyAddress });
+    const urlByVenueId = new Map(swapLinks.venues.map(venue => [venue.id, venue.url]));
+    const orcaUrl = urlByVenueId.get('orca') ?? '';
+    const raydiumUrl = urlByVenueId.get('raydium') ?? '';
+    const byrealUrl = urlByVenueId.get('byreal') ?? '';
 
     const { marketsForPoolsTab, poolsByVolume, isMarketsFetched, isMarketsLoading, perpsMarkets } = useSwapMarkets({
         assetId,
@@ -709,18 +608,16 @@ function SwapProvidersDropdownBase({
         setDesktopTab(tab);
     }
 
-    const spotAggregatorProviders: SpotProviderLink[] = [
-        { href: titanUrl, name: 'Titan', iconSrc: '/logos/popular/titan.png' },
-        { href: jupiterUrl, name: 'Jupiter', iconSrc: JUPITER_ICON_SRC },
-        { href: dflowUrl, name: 'DFlow', iconSrc: '/logos/popular/dflow.png' },
-    ];
+    // The UI deliberately shows a subset of the package's venue registry —
+    // the same caller-side selection the endpoint's `venues` param offers.
+    const spotAggregatorProviders: SpotProviderLink[] = swapLinks.venues
+        .filter(venue => venue.venueType === 'aggregator')
+        .map(venue => ({ href: venue.url, name: venue.name, iconSrc: venue.iconPath ?? '' }));
 
-    const spotVenueProviders: SpotProviderLink[] = [
-        ...(sunriseUrl ? [{ href: sunriseUrl, name: 'Sunrise', iconSrc: SUNRISE_ICON_SRC }] : []),
-        ...(omfgUrl ? [{ href: omfgUrl, name: 'OMFG', iconSrc: OMFG_ICON_SRC }] : []),
-        { href: kaminoUrl, name: 'Kamino', iconSrc: KAMINO_ICON_SRC },
-        { href: orcaUrl, name: 'Orca', iconSrc: 'https://www.orca.so/favicon.ico' },
-    ];
+    const spotVenueIds = ['sunrise', 'omfg', 'kamino', 'orca'];
+    const spotVenueProviders: SpotProviderLink[] = swapLinks.venues
+        .filter(venue => spotVenueIds.includes(venue.id))
+        .map(venue => ({ href: venue.url, name: venue.name, iconSrc: venue.iconPath ?? '' }));
 
     const perpsProviders = buildPerpsProviders({ perpsMarkets, variantMatch, buyName, buySymbol, safeBuyAddress });
 

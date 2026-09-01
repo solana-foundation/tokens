@@ -1,4 +1,5 @@
 import { Suspense, cache, type ComponentProps } from 'react';
+import { connection } from 'next/server';
 import Image from 'next/image';
 import Link from 'next/link';
 import { ArrowUpRight } from 'lucide-react';
@@ -395,6 +396,10 @@ const loadGlobalStats = cache(
 
         const resolvedCoinGeckoId = (coingeckoId ?? '').trim();
         if (enableCoinGeckoFallback && resolvedCoinGeckoId) {
+            // The Effect runtime reads the clock internally, which Next 16
+            // rejects during prerendering; this fallback is request-time work,
+            // so mark the boundary dynamic before entering it.
+            await connection();
             return await getGlobalTokenStats(resolvedCoinGeckoId);
         }
 

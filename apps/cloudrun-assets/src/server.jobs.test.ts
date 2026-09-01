@@ -14,6 +14,7 @@ import type { PrestocksReadsRepo } from './handlers/prestocksReads';
 import type { TokensReadsRepo } from './handlers/tokensReads';
 import type { TrendingReadsRepo } from './handlers/trendingReads';
 import type { FillQualityReadsRepo } from './handlers/fillQualityReads';
+import type { DepthCurveReadsRepo } from './handlers/depthCurveReads';
 import type { AssetCollectionsReadsRepo } from './handlers/assetCollectionsReads';
 import type { TokenListsReadsRepo } from './handlers/tokenListsReads';
 import type { TokenListsMutationsDeps } from './handlers/tokenListsMutations';
@@ -100,6 +101,9 @@ const noopTrendingReadsRepo: TrendingReadsRepo = {
 const noopFillQualityReadsRepo: FillQualityReadsRepo = {
     async findLatestByMints() { return []; },
 };
+const noopDepthCurveReadsRepo: DepthCurveReadsRepo = {
+    async findLatestByMints() { return []; },
+};
 const noopTokenListsReadsRepo: TokenListsReadsRepo = {
     async listPublished() { return []; },
     async getBySlug() { return null; },
@@ -158,6 +162,7 @@ const baseDeps = {
     tokensReadsRepo: noopTokensReadsRepo,
     trendingReadsRepo: noopTrendingReadsRepo,
     fillQualityReadsRepo: noopFillQualityReadsRepo,
+    depthCurveReadsRepo: noopDepthCurveReadsRepo,
     assetCollectionsReadsRepo: noopAssetCollectionsReadsRepo,
     tokenListsReadsRepo: noopTokenListsReadsRepo,
     tokenListsMutationsDeps: noopTokenListsMutationsDeps,

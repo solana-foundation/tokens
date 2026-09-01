@@ -158,6 +158,21 @@ export {
 } from './fillQualityReads';
 
 export {
+    variantDepthCurvesGetLatestByMints,
+    type VariantDepthCurvesGetLatestByMintsArgs,
+    type VariantDepthCurvesGetLatestByMintsResult,
+} from './depthCurveReads';
+
+export {
+    depthSampleMints,
+    executionQuoteTokenMetadata,
+    executionQuotesLive,
+    type DepthSampleMintsArgs,
+    type ExecutionQuoteTokenMetadataArgs,
+    type ExecutionQuotesLiveArgs,
+} from './liveQuotes';
+
+export {
     assetCollectionsGetMembers,
     type AssetCollectionsGetMembersArgs,
     type AssetCollectionsGetMembersResult,
