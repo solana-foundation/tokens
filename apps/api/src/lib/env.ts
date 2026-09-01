@@ -139,7 +139,7 @@ export function loadEnv(): ApiEnv {
             windowSeconds: Math.floor(readNumber('TOKENS_DEFAULT_RATE_LIMIT_WINDOW_SECONDS', 10, 1, 3_600)),
         },
         defaultSustainedRateLimit: {
-            requests: Math.floor(readNumber('TOKENS_DEFAULT_SUSTAINED_RATE_LIMIT_REQUESTS', 600, 1, 10_000_000)),
+            requests: Math.floor(readNumber('TOKENS_DEFAULT_SUSTAINED_RATE_LIMIT_REQUESTS', 1_000, 1, 10_000_000)),
             windowSeconds: Math.floor(
                 readNumber('TOKENS_DEFAULT_SUSTAINED_RATE_LIMIT_WINDOW_SECONDS', 60, 1, 86_400),
             ),
