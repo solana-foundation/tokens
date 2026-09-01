@@ -51,7 +51,7 @@ interface PendingNavigation {
 type PerpsProviderId = PerpsMarketProviderId | 'jupiter';
 
 const FLASH_TRADE_ICON_SRC = '/logos/popular/flashtrade.png';
-const JTX_ICON_SRC = '/logos/popular/jtx.png';
+const JTX_ICON_SRC = '/logos/popular/jtx.svg';
 const JUPITER_ICON_SRC = '/logos/popular/jupiter.png';
 const KAMINO_ICON_SRC = '/logos/popular/kamino.png';
 const OMFG_ICON_SRC = '/logos/popular/omfg.svg';
