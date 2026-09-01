@@ -2,13 +2,19 @@ import { callCloudRun } from './_cloudrun.mjs';
 
 function usage(message) {
     if (message) console.error(`error: ${message}\n`);
-    console.error('usage: set-project-rate-limit.mjs <project name|id> <requests> [windowSeconds]');
+    console.error(
+        'usage: set-project-rate-limit.mjs <project name|id> <requests> [windowSeconds] [--sustained N [windowSeconds]]',
+    );
     console.error('       set-project-rate-limit.mjs <project name|id> --clear');
     process.exit(1);
 }
 
-const [target, requestsArg, windowArg] = process.argv.slice(2);
+const argv = process.argv.slice(2);
+const sustainedAt = argv.indexOf('--sustained');
+const sustainedArgs = sustainedAt === -1 ? [] : argv.splice(sustainedAt).slice(1);
+const [target, requestsArg, windowArg] = argv;
 if (!target || !requestsArg) usage();
+if (sustainedAt !== -1 && sustainedArgs.length === 0) usage('--sustained needs a requests value');
 
 async function resolveProject(nameOrId) {
     const projects = await callCloudRun('usage', 'query', 'listProjectsDigest', {});
@@ -28,6 +34,10 @@ if (requestsArg === '--clear') {
 } else {
     args.requests = Number(requestsArg);
     if (windowArg !== undefined) args.windowSeconds = Number(windowArg);
+    if (sustainedArgs.length > 0) {
+        args.sustainedRequests = Number(sustainedArgs[0]);
+        if (sustainedArgs[1] !== undefined) args.sustainedWindowSeconds = Number(sustainedArgs[1]);
+    }
 }
 
 const updated = await callCloudRun('usage', 'mutation', 'projectsSetRateLimit', args);

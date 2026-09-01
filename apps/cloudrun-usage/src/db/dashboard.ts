@@ -257,19 +257,28 @@ export function makePostgresDashboardRepo(sql: Sql): DashboardRepo {
             `;
         },
 
-        async setProjectRateLimit(projectId, rateLimit, nowMs) {
+        async setProjectRateLimit(projectId, limits, nowMs) {
+            const merged =
+                limits === null
+                    ? sql`NULLIF(COALESCE(limits, '{}'::jsonb) - 'rateLimit' - 'sustainedRateLimit', '{}'::jsonb)`
+                    : sql`COALESCE(limits, '{}'::jsonb) || jsonb_build_object(
+                          'rateLimit', jsonb_build_object(
+                              'requests', ${limits.rateLimit.requests}::int,
+                              'windowSeconds', ${limits.rateLimit.windowSeconds}::int
+                          )
+                      ) || ${
+                          limits.sustainedRateLimit
+                              ? sql`jsonb_build_object(
+                                    'sustainedRateLimit', jsonb_build_object(
+                                        'requests', ${limits.sustainedRateLimit.requests}::int,
+                                        'windowSeconds', ${limits.sustainedRateLimit.windowSeconds}::int
+                                    )
+                                )`
+                              : sql`'{}'::jsonb`
+                      }`;
             const rows = await sql<{ id: string; name: string; limits: unknown }[]>`
                 UPDATE projects
-                SET limits = ${
-                    rateLimit === null
-                        ? sql`NULLIF(COALESCE(limits, '{}'::jsonb) - 'rateLimit', '{}'::jsonb)`
-                        : sql`COALESCE(limits, '{}'::jsonb) || jsonb_build_object(
-                              'rateLimit', jsonb_build_object(
-                                  'requests', ${rateLimit.requests}::int,
-                                  'windowSeconds', ${rateLimit.windowSeconds}::int
-                              )
-                          )`
-                },
+                SET limits = ${merged},
                     updated_at = to_timestamp(${nowMs} / 1000.0)
                 WHERE id = ${projectId}
                 RETURNING id, name, limits

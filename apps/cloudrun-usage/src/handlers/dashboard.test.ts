@@ -85,7 +85,7 @@ function makeRepo(state: RepoState = {}) {
         setProjectRateLimit: async (...args) => {
             track('setProjectRateLimit', args);
             if (!state.project) return null;
-            return { id: args[0], name: 'P', limits: args[1] === null ? null : { rateLimit: args[1] } };
+            return { id: args[0], name: 'P', limits: args[1] };
         },
         deleteProjectCascade: async (...args) => track('deleteProjectCascade', args),
         listProjectApiKeys: async () => [
@@ -202,8 +202,32 @@ describe('projectsSetRateLimit', () => {
     it('sets the override with a default 10s window', async () => {
         const { deps, calls } = makeDeps({ project: PROJECT });
         const res = await projectsSetRateLimit(deps, { projectId: 'proj_1', requests: 500 });
-        expect(calls.setProjectRateLimit?.[0]).toEqual(['proj_1', { requests: 500, windowSeconds: 10 }, NOW]);
+        expect(calls.setProjectRateLimit?.[0]).toEqual([
+            'proj_1',
+            { rateLimit: { requests: 500, windowSeconds: 10 } },
+            NOW,
+        ]);
         expect(res.limits).toEqual({ rateLimit: { requests: 500, windowSeconds: 10 } });
+    });
+
+    it('sets an optional sustained window with a default 60s window', async () => {
+        const { deps, calls } = makeDeps({ project: PROJECT });
+        await projectsSetRateLimit(deps, { projectId: 'proj_1', requests: 500, sustainedRequests: 3000 });
+        expect(calls.setProjectRateLimit?.[0]).toEqual([
+            'proj_1',
+            {
+                rateLimit: { requests: 500, windowSeconds: 10 },
+                sustainedRateLimit: { requests: 3000, windowSeconds: 60 },
+            },
+            NOW,
+        ]);
+    });
+
+    it('rejects invalid sustained values', async () => {
+        const { deps } = makeDeps({ project: PROJECT });
+        await expect(
+            projectsSetRateLimit(deps, { projectId: 'proj_1', requests: 500, sustainedRequests: 0 }),
+        ).rejects.toBeInstanceOf(InvalidArgsError);
     });
 
     it('clears the override', async () => {
