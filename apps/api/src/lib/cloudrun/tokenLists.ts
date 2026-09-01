@@ -151,7 +151,9 @@ export type TokenListBatchAddResult = {
 export function tokenListsAddMembersBatch(args: {
     ownerProjectId: string;
     slug: string;
-    mints: string[];
+    mints?: string[];
+    /** CSV-shaped input: per-row note carried onto the member. */
+    members?: Array<{ mint: string; note?: string }>;
 }): Effect.Effect<TokenListMutationOutcome<TokenListBatchAddResult>, CloudRunError> {
     // A 1000-mint batch legitimately outlives the default 15s client timeout
     // (chunked DB upserts + up to ~50 budgeted provider lookups).

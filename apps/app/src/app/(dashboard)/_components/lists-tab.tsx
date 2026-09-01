@@ -27,6 +27,7 @@ import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '
 import { EmptyState } from '@/components/global/empty-state';
 import { TabNavigation } from '@/components/global/tab-navigation';
 import { ComposeEndpointSheet, type ComposableList } from './compose-endpoint-dialog';
+import { ImportMembersDialog } from './import-members-dialog';
 import { ListSettingsDialog } from './list-settings-dialog';
 import { PencilIcon, PlusIcon, StackIcon, TrashCanFillIcon } from './icons';
 import { MEMBER_GRID_TEMPLATE_COLUMNS, MemberTable } from './member-table';
@@ -747,6 +748,7 @@ export function ListsTab(): React.JSX.Element {
     const [deleteSlug, setDeleteSlug] = useState<string | null>(null);
     const [deleting, setDeleting] = useState(false);
     const [settingsSlug, setSettingsSlug] = useState<string | null>(null);
+    const [importOpen, setImportOpen] = useState(false);
 
     /** DELETE is a hard delete: the list is gone and its slug is claimable again. */
     const handleDelete = useCallback(
@@ -1132,22 +1134,31 @@ export function ListsTab(): React.JSX.Element {
                                         />
                                     </div>
                                     {selectedIsOwned && (
-                                        <button
-                                            type="button"
-                                            onClick={() => setSearchOpen(true)}
-                                            className="group flex shrink-0 cursor-pointer items-center gap-2 rounded-lg border border-border-medium bg-white px-2.5 py-1.5 text-xs text-muted-foreground shadow-sm transition-colors hover:border-black/25 hover:text-foreground active:scale-[0.99] dark:bg-zinc-950/30"
-                                        >
-                                            <IconMagnifyingglass className="size-3 fill-muted-foreground transition-colors group-hover:fill-foreground" />
-                                            <span>Add tokens</span>
-                                            <span className="flex items-center gap-0.5">
-                                                <kbd className="rounded-sm bg-gray-100 p-1 dark:bg-zinc-800">
-                                                    <IconCommand className="size-2 fill-muted-foreground" />
-                                                </kbd>
-                                                <kbd className="rounded-sm bg-gray-100 p-1 dark:bg-zinc-800">
-                                                    <IconK className="size-2 fill-muted-foreground" />
-                                                </kbd>
-                                            </span>
-                                        </button>
+                                        <div className="flex shrink-0 items-center gap-2">
+                                            <button
+                                                type="button"
+                                                onClick={() => setImportOpen(true)}
+                                                className="cursor-pointer rounded-lg border border-border-medium bg-white px-2.5 py-1.5 text-xs text-muted-foreground shadow-sm transition-colors hover:border-black/25 hover:text-foreground active:scale-[0.99] dark:bg-zinc-950/30"
+                                            >
+                                                Import CSV
+                                            </button>
+                                            <button
+                                                type="button"
+                                                onClick={() => setSearchOpen(true)}
+                                                className="group flex cursor-pointer items-center gap-2 rounded-lg border border-border-medium bg-white px-2.5 py-1.5 text-xs text-muted-foreground shadow-sm transition-colors hover:border-black/25 hover:text-foreground active:scale-[0.99] dark:bg-zinc-950/30"
+                                            >
+                                                <IconMagnifyingglass className="size-3 fill-muted-foreground transition-colors group-hover:fill-foreground" />
+                                                <span>Add tokens</span>
+                                                <span className="flex items-center gap-0.5">
+                                                    <kbd className="rounded-sm bg-gray-100 p-1 dark:bg-zinc-800">
+                                                        <IconCommand className="size-2 fill-muted-foreground" />
+                                                    </kbd>
+                                                    <kbd className="rounded-sm bg-gray-100 p-1 dark:bg-zinc-800">
+                                                        <IconK className="size-2 fill-muted-foreground" />
+                                                    </kbd>
+                                                </span>
+                                            </button>
+                                        </div>
                                     )}
                                 </div>
                                 {tokens === null ? (
@@ -1228,6 +1239,17 @@ export function ListsTab(): React.JSX.Element {
                 loading={metadataLoading}
             />
 
+            <ImportMembersDialog
+                slug={selectedList?.slug ?? null}
+                listName={selectedList?.name ?? null}
+                open={importOpen && selectedList !== null}
+                onOpenChange={setImportOpen}
+                fetcher={playgroundFetch}
+                onImported={() => {
+                    void refreshDetail();
+                    void refreshLists();
+                }}
+            />
             <ListSettingsDialog
                 list={settingsList}
                 isOpen={settingsList !== null}

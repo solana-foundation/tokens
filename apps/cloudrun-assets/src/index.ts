@@ -45,7 +45,7 @@ import {
     makePostgresVariantMarketsRepo,
 } from './db';
 import type { AdminActionsDeps } from './handlers/adminActions';
-import { DEFAULT_TOKEN_LIST_CAPS } from './handlers/tokenListsMutations';
+import { DEFAULT_TOKEN_LIST_CAPS, type TokenListsMutationsDeps } from './handlers/tokenListsMutations';
 import type { CacheWarmDeps } from './handlers/cacheWarm';
 import type { CronDeps } from './handlers/crons';
 import type { ClickhouseCronDeps } from './handlers/crons.clickhouse';
@@ -294,6 +294,19 @@ if (cronDeps && miscCronDeps && seedCronDeps) {
     console.warn('[cloudrun-assets] cron deps not fully set — /mutation/admin* endpoints disabled');
 }
 
+const tokenListsMutationsDeps: TokenListsMutationsDeps = {
+    repo: makePostgresTokenListsMutationsRepo(sql),
+    // Without a Birdeye key, mints unknown to the registry/tokens table
+    // simply resolve as unknown_mint instead of snapshotting metadata.
+    fetchTokenOverview: async mint => (cronDeps ? cronDeps.birdeye.fetchTokenOverview(mint) : null),
+    now: () => Date.now(),
+    caps: {
+        batch: envInt('TOKEN_LIST_BATCH_CAP', DEFAULT_TOKEN_LIST_CAPS.batch),
+        membersPerList: envInt('TOKEN_LIST_MEMBERS_PER_LIST_CAP', DEFAULT_TOKEN_LIST_CAPS.membersPerList),
+        providerLookups: envInt('TOKEN_LIST_PROVIDER_LOOKUP_BUDGET', DEFAULT_TOKEN_LIST_CAPS.providerLookups),
+    },
+};
+
 const app = createApp({
     repo: makePostgresAssetsRepo(sql),
     assetsApiRepo: makePostgresAssetsApiRepo(sql),
@@ -308,18 +321,7 @@ const app = createApp({
     assetCollectionsReadsRepo: makePostgresAssetCollectionsReadsRepo(sql),
     curatedMembershipSource: curated,
     tokenListsReadsRepo: makePostgresTokenListsReadsRepo(sql),
-    tokenListsMutationsDeps: {
-        repo: makePostgresTokenListsMutationsRepo(sql),
-        // Without a Birdeye key, mints unknown to the registry/tokens table
-        // simply resolve as unknown_mint instead of snapshotting metadata.
-        fetchTokenOverview: async mint => (cronDeps ? cronDeps.birdeye.fetchTokenOverview(mint) : null),
-        now: () => Date.now(),
-        caps: {
-            batch: envInt('TOKEN_LIST_BATCH_CAP', DEFAULT_TOKEN_LIST_CAPS.batch),
-            membersPerList: envInt('TOKEN_LIST_MEMBERS_PER_LIST_CAP', DEFAULT_TOKEN_LIST_CAPS.membersPerList),
-            providerLookups: envInt('TOKEN_LIST_PROVIDER_LOOKUP_BUDGET', DEFAULT_TOKEN_LIST_CAPS.providerLookups),
-        },
-    },
+    tokenListsMutationsDeps,
     coingeckoReadsRepo: makePostgresCoingeckoReadsRepo(sql),
     stockReadsRepo: makePostgresStockReadsRepo(sql),
     ohlcvReadsRepo: makePostgresOhlcvReadsRepo(sql),
@@ -340,6 +342,7 @@ const app = createApp({
     ...(prestocksCronDeps ? { prestocksCronDeps } : {}),
     ...(cacheWarmDeps ? { cacheWarmDeps } : {}),
     ...(adminActionsDeps ? { adminActionsDeps } : {}),
+    tokenListsAdminDeps: { adminAllowlist, lists: tokenListsMutationsDeps },
 });
 
 registerGracefulShutdown({ sql, serviceName: 'cloudrun-assets' });

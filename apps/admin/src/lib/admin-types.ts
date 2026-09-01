@@ -309,3 +309,37 @@ export type TokenListAdminRow = {
     createdAt: number;
     updatedAt: number;
 };
+
+/** Mirrors `TokenListMutationErrorCode` in cloudrun-assets handlers/tokenListsMutations.ts. */
+export type TokenListMutationErrorCode =
+    | 'invalid_slug'
+    | 'reserved_slug'
+    | 'slug_conflict'
+    | 'unknown_project'
+    | 'not_found'
+    | 'forbidden'
+    | 'invalid_mint'
+    | 'unknown_mint'
+    | 'batch_too_large'
+    | 'list_full';
+
+export type TokenListMutationOutcome<T> = { ok: true; value: T } | { ok: false; error: TokenListMutationErrorCode };
+
+/** `adminCreateTokenList` result (cloudrun-assets handlers/tokenListsAdmin.ts). */
+export type AdminCreateTokenListResult = TokenListMutationOutcome<{
+    id: string;
+    slug: string;
+    ownerProjectId: string;
+    name: string;
+    status: string;
+    createdAt: number;
+    updatedAt: number;
+}>;
+
+/** `adminImportTokenListMembers` result (cloudrun-assets handlers/tokenListsAdmin.ts). */
+export type AdminImportTokenListMembersResult = TokenListMutationOutcome<{
+    slug: string;
+    received: number;
+    added: Array<{ mint: string; verified: boolean }>;
+    failed: Array<{ mint: string; error: TokenListMutationErrorCode }>;
+}>;

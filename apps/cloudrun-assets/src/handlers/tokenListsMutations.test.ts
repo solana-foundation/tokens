@@ -396,6 +396,37 @@ describe('upsertMember list_full', () => {
     });
 });
 
+describe('addMembersBatch members shape', () => {
+    it('accepts members with notes and keeps request order', async () => {
+        let bulk: unknown = null;
+        const deps = makeDeps({
+            upsertMembersBulk: async (_listId, rows) => {
+                bulk = rows;
+            },
+        });
+        const result = await addMembersBatch(deps, {
+            ownerProjectId: 'proj_1',
+            slug: 'ownership-core',
+            members: [{ mint: MEME_MINT, note: 'wrapped SOL' }, { mint: USDC_MINT }],
+        });
+        expect(result).toMatchObject({ ok: true, value: { failed: [] } });
+        expect((bulk as Array<{ mint: string; note: string | null }>).map(r => [r.mint, r.note])).toEqual([
+            [MEME_MINT, 'wrapped SOL'],
+            [USDC_MINT, null],
+        ]);
+    });
+
+    it('requires one of mints or members and validates member rows', async () => {
+        const deps = makeDeps();
+        await expect(
+            addMembersBatch(deps, { ownerProjectId: 'proj_1', slug: 'ownership-core' }),
+        ).rejects.toBeInstanceOf(InvalidArgsError);
+        await expect(
+            addMembersBatch(deps, { ownerProjectId: 'proj_1', slug: 'ownership-core', members: [{ mint: 1 }] }),
+        ).rejects.toBeInstanceOf(InvalidArgsError);
+    });
+});
+
 describe('removeMember', () => {
     it('reports not_found when the mint was not a member', async () => {
         const deps = makeDeps({ removeMember: async () => false });

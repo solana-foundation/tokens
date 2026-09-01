@@ -47,4 +47,9 @@ export const ADMIN_FNS: Record<string, AdminFnSpec> = {
     adminAddCheckedVariant: { service: 'assets', kind: 'mutation', timeoutMs: 60_000 },
     adminSeedAsset: { service: 'assets', kind: 'mutation', timeoutMs: 60_000 },
     adminRefreshChartData: { service: 'assets', kind: 'mutation', timeoutMs: 60_000 },
+
+    // cloudrun-assets token-list build tools (CSV import resolves unknown
+    // mints through Birdeye, so allow a long tail per chunk).
+    adminCreateTokenList: { service: 'assets', kind: 'mutation' },
+    adminImportTokenListMembers: { service: 'assets', kind: 'mutation', timeoutMs: 60_000 },
 };

@@ -70,6 +70,7 @@ import type {
 } from './handlers/tokenListsReads';
 import {
     SlugConflictError,
+    UnknownProjectError,
     type TokenListMutationRow,
     type TokenListsMutationsRepo,
 } from './handlers/tokenListsMutations';
@@ -419,7 +420,8 @@ export function makePostgresCuratedMembershipSource(sql: Sql): CuratedMembership
         const viewJson = viewRows[0]?.variants_json;
         if (viewJson) {
             try {
-                const parsed = JSON.parse(viewJson) as { variants?: Array<{ kind?: string; mint?: string }> } | Array<{ kind?: string; mint?: string }>;
+                const parsed = JSON.parse(viewJson) as
+                    { variants?: Array<{ kind?: string; mint?: string }> } | Array<{ kind?: string; mint?: string }>;
                 const variants = Array.isArray(parsed) ? parsed : (parsed.variants ?? []);
                 const seen = new Set<string>();
                 for (const v of variants) {
@@ -3481,7 +3483,8 @@ export function makePostgresAssetCollectionsReadsRepo(sql: Sql): AssetCollection
                 description: r.description,
                 member_count: r.member_count,
                 last_added_asset_id: r.last_added_asset_id,
-                last_added_at: r.last_added_at === null || r.last_added_at === undefined ? null : Number(r.last_added_at),
+                last_added_at:
+                    r.last_added_at === null || r.last_added_at === undefined ? null : Number(r.last_added_at),
             }));
         },
     };
@@ -3566,6 +3569,8 @@ export function makePostgresTokenListsReadsRepo(sql: Sql): TokenListsReadsRepo {
 
 /** Postgres unique-violation SQLSTATE. */
 const UNIQUE_VIOLATION = '23505';
+/** Postgres foreign-key-violation SQLSTATE (token_lists.owner_project_id → projects). */
+const FOREIGN_KEY_VIOLATION = '23503';
 
 export function makePostgresTokenListsMutationsRepo(sql: Sql): TokenListsMutationsRepo {
     async function getRowById(listId: string): Promise<TokenListMutationRow> {
@@ -3593,9 +3598,9 @@ export function makePostgresTokenListsMutationsRepo(sql: Sql): TokenListsMutatio
                     VALUES (${id}, ${args.slug}, ${args.ownerProjectId}, ${args.name}, ${args.status}, ${now}, ${now})
                 `;
             } catch (err) {
-                if ((err as { code?: string }).code === UNIQUE_VIOLATION) {
-                    throw new SlugConflictError(args.slug);
-                }
+                const code = (err as { code?: string }).code;
+                if (code === UNIQUE_VIOLATION) throw new SlugConflictError(args.slug);
+                if (code === FOREIGN_KEY_VIOLATION) throw new UnknownProjectError(args.ownerProjectId);
                 throw err;
             }
             return getRowById(id);

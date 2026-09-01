@@ -88,6 +88,11 @@ import {
     type TokenListsMutationsDeps,
 } from './handlers/tokenListsMutations';
 import {
+    adminCreateTokenList,
+    adminImportTokenListMembers,
+    type TokenListsAdminDeps,
+} from './handlers/tokenListsAdmin';
+import {
     getCoinById as coingeckoReadsGetCoinById,
     getPriceLatestByCoinId as coingeckoReadsGetPriceLatestByCoinId,
     getPriceLatestByCoinIds as coingeckoReadsGetPriceLatestByCoinIds,
@@ -197,6 +202,8 @@ export interface ServerDeps {
     prestocksCronDeps?: PrestocksCronDeps;
     cacheWarmDeps?: CacheWarmDeps;
     adminActionsDeps?: AdminActionsDeps;
+    /** Admin-only token-list build tools (CSV import, create-for-project); allowlist-gated. */
+    tokenListsAdminDeps?: TokenListsAdminDeps;
     verifyOidc?: VerifyOidc;
     /**
      * When set, RPC routes also accept a Google OIDC ID token (audience/SA
@@ -500,6 +507,17 @@ export function createApp(deps: ServerDeps) {
         mutations.adminAddCheckedVariant = (args, identity) => adminAddCheckedVariant(adminActionsDeps, args, identity);
         mutations.adminSeedAsset = (args, identity) => adminSeedAsset(adminActionsDeps, args, identity);
         mutations.adminRefreshChartData = (args, identity) => adminRefreshChartData(adminActionsDeps, args, identity);
+    }
+
+    // Admin token-list build tools, called by the apps/admin proxy. Unlike the
+    // curated actions above these need no cron deps — only the allowlist and
+    // the same mutation deps the partner API uses — so they are wired whenever
+    // an allowlist is configured.
+    const tokenListsAdminDeps = deps.tokenListsAdminDeps;
+    if (tokenListsAdminDeps) {
+        mutations.adminCreateTokenList = (args, identity) => adminCreateTokenList(tokenListsAdminDeps, args, identity);
+        mutations.adminImportTokenListMembers = (args, identity) =>
+            adminImportTokenListMembers(tokenListsAdminDeps, args, identity);
     }
 
     app.get('/health', c => c.json({ ok: true }));

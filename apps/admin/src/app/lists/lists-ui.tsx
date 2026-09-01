@@ -1,14 +1,18 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 
 import { useAdminMutation, useAdminQuery } from '@/hooks/use-admin-api';
 import type { TokenListAdminRow } from '@/lib/admin-types';
 
+import { CreateListDialog } from './create-list-dialog';
+import { ImportMembersDialog } from './import-members-dialog';
+
 /**
- * Read-only oversight of community token lists (any status), with an
- * emergency archive. Partner self-service happens on the public v2 API;
- * this page exists so the team can take down an abusive list without SQL.
+ * Oversight of community token lists (any status) plus the team's build tools:
+ * create a list on behalf of a project and bulk-import members from a CSV.
+ * Partner self-service still happens on the public v2 API; archive remains the
+ * emergency takedown for abusive lists.
  */
 export function ListsUi() {
     const { data: lists, isLoading, refetch } = useAdminQuery<TokenListAdminRow[]>('adminListTokenLists', {});
@@ -16,6 +20,19 @@ export function ListsUi() {
     const [confirmSlug, setConfirmSlug] = useState<string | null>(null);
     const [busySlug, setBusySlug] = useState<string | null>(null);
     const [error, setError] = useState<string | null>(null);
+
+    const [createOpen, setCreateOpen] = useState(false);
+    const [importSlug, setImportSlug] = useState<string | null>(null);
+    // Set by the create dialog; resolves to a row once the refetch lands, then opens the importer.
+    const [pendingImportSlug, setPendingImportSlug] = useState<string | null>(null);
+
+    const importList = lists?.find(list => list.slug === importSlug) ?? null;
+
+    useEffect(() => {
+        if (!pendingImportSlug || !lists?.some(list => list.slug === pendingImportSlug)) return;
+        setImportSlug(pendingImportSlug);
+        setPendingImportSlug(null);
+    }, [pendingImportSlug, lists]);
 
     async function handleArchive(slug: string) {
         setError(null);
@@ -33,12 +50,21 @@ export function ListsUi() {
 
     return (
         <div className="mx-auto max-w-5xl space-y-4 p-6">
-            <div>
-                <h1 className="text-xl font-inter-medium">Community token lists</h1>
-                <p className="text-body-md text-muted-foreground">
-                    Every list across projects, including drafts and archived. Archive is the emergency takedown —
-                    it removes the list from discovery, reads, and composition.
-                </p>
+            <div className="flex items-start justify-between gap-4">
+                <div>
+                    <h1 className="text-xl font-inter-medium">Community token lists</h1>
+                    <p className="text-body-md text-muted-foreground">
+                        Every list across projects, including drafts and archived. Import fills a list from a CSV;
+                        archive is the emergency takedown — it removes the list from discovery, reads, and composition.
+                    </p>
+                </div>
+                <button
+                    type="button"
+                    className="shrink-0 rounded-md border border-border-medium bg-card px-3 py-1.5 text-sm font-inter-medium"
+                    onClick={() => setCreateOpen(true)}
+                >
+                    New list
+                </button>
             </div>
 
             {error && (
@@ -75,34 +101,45 @@ export function ListsUi() {
                                     <td className="p-3">{list.memberCount}</td>
                                     <td className="p-3">{new Date(list.updatedAt).toLocaleString()}</td>
                                     <td className="p-3 text-right">
-                                        {list.status !== 'archived' &&
-                                            (confirmSlug === list.slug ? (
-                                                <span className="inline-flex items-center gap-2">
-                                                    <button
-                                                        type="button"
-                                                        className="rounded-md border border-red-300 bg-red-50 px-2 py-1 text-sm text-red-800 disabled:opacity-50"
-                                                        disabled={busySlug === list.slug}
-                                                        onClick={() => void handleArchive(list.slug)}
-                                                    >
-                                                        {busySlug === list.slug ? 'Archiving…' : 'Confirm archive'}
-                                                    </button>
-                                                    <button
-                                                        type="button"
-                                                        className="rounded-md border border-border-medium px-2 py-1 text-sm"
-                                                        onClick={() => setConfirmSlug(null)}
-                                                    >
-                                                        Cancel
-                                                    </button>
-                                                </span>
-                                            ) : (
+                                        <span className="inline-flex items-center gap-2">
+                                            {list.status !== 'archived' && (
                                                 <button
                                                     type="button"
                                                     className="rounded-md border border-border-medium px-2 py-1 text-sm"
-                                                    onClick={() => setConfirmSlug(list.slug)}
+                                                    onClick={() => setImportSlug(list.slug)}
                                                 >
-                                                    Archive
+                                                    Import CSV
                                                 </button>
-                                            ))}
+                                            )}
+                                            {list.status !== 'archived' &&
+                                                (confirmSlug === list.slug ? (
+                                                    <span className="inline-flex items-center gap-2">
+                                                        <button
+                                                            type="button"
+                                                            className="rounded-md border border-red-300 bg-red-50 px-2 py-1 text-sm text-red-800 disabled:opacity-50"
+                                                            disabled={busySlug === list.slug}
+                                                            onClick={() => void handleArchive(list.slug)}
+                                                        >
+                                                            {busySlug === list.slug ? 'Archiving…' : 'Confirm archive'}
+                                                        </button>
+                                                        <button
+                                                            type="button"
+                                                            className="rounded-md border border-border-medium px-2 py-1 text-sm"
+                                                            onClick={() => setConfirmSlug(null)}
+                                                        >
+                                                            Cancel
+                                                        </button>
+                                                    </span>
+                                                ) : (
+                                                    <button
+                                                        type="button"
+                                                        className="rounded-md border border-border-medium px-2 py-1 text-sm"
+                                                        onClick={() => setConfirmSlug(list.slug)}
+                                                    >
+                                                        Archive
+                                                    </button>
+                                                ))}
+                                        </span>
                                     </td>
                                 </tr>
                             ))}
@@ -110,6 +147,23 @@ export function ListsUi() {
                     </table>
                 </div>
             )}
+
+            <CreateListDialog
+                open={createOpen}
+                onOpenChange={setCreateOpen}
+                onCreated={slug => {
+                    setPendingImportSlug(slug);
+                    refetch();
+                }}
+            />
+            <ImportMembersDialog
+                list={importList}
+                open={importList !== null}
+                onOpenChange={open => {
+                    if (!open) setImportSlug(null);
+                }}
+                onImported={() => refetch()}
+            />
         </div>
     );
 }

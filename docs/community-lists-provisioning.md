@@ -33,3 +33,10 @@ unknown mints fail individually as `unknown_mint` and can be retried in later ba
   `PATCH` are a clean cut — the old path 404s immediately and the slug frees up.
 - Lists may contain mints outside the registry; they appear with `verified: false` in all
   read responses, with provider metadata snapshotted at add time.
+- **Bulk membership from a CSV:** `POST /v2/lists/{slug}/members` accepts
+  `{ "members": [{ "mint", "note"? }] }` alongside the original `{ "mints": [...] }`; row
+  order becomes rank order for new members and `note` lands on the row. The dashboard's
+  Lists tab has an `Import CSV` button (mint + optional note column; headerless files and
+  bare mint lists accepted) that chunks through this same endpoint. The admin app's Lists
+  page has the same importer plus `New list` for creating a list under any project
+  (`adminCreateTokenList` / `adminImportTokenListMembers`, admin-allowlist gated).

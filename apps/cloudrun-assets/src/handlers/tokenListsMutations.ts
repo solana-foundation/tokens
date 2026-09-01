@@ -120,6 +120,14 @@ export class SlugConflictError extends Error {
     }
 }
 
+/** Thrown by the repo when owner_project_id fails its FK — the project does not exist. */
+export class UnknownProjectError extends Error {
+    constructor(projectId: string) {
+        super(`project does not exist: ${projectId}`);
+        this.name = 'UnknownProjectError';
+    }
+}
+
 export interface TokenListsMutationsDeps {
     repo: TokenListsMutationsRepo;
     /** Birdeye token_overview for mints unknown locally; null when the provider has nothing. */
@@ -132,6 +140,7 @@ export type TokenListMutationErrorCode =
     | 'invalid_slug'
     | 'reserved_slug'
     | 'slug_conflict'
+    | 'unknown_project'
     | 'not_found'
     | 'forbidden'
     | 'invalid_mint'
@@ -236,6 +245,7 @@ export async function createList(
         return { ok: true, value: listResult(row) };
     } catch (err) {
         if (err instanceof SlugConflictError) return { ok: false, error: 'slug_conflict' };
+        if (err instanceof UnknownProjectError) return { ok: false, error: 'unknown_project' };
         throw err;
     }
 }
@@ -412,11 +422,7 @@ export interface BatchAddResult {
 }
 
 /** Run `fn` over `items` with at most `limit` in flight. Results keep item order. */
-async function mapWithConcurrency<T, R>(
-    items: readonly T[],
-    limit: number,
-    fn: (item: T) => Promise<R>,
-): Promise<R[]> {
+async function mapWithConcurrency<T, R>(items: readonly T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
     const results: R[] = new Array(items.length);
     let next = 0;
     async function worker() {
@@ -431,27 +437,37 @@ async function mapWithConcurrency<T, R>(
 
 const PROVIDER_LOOKUP_CONCURRENCY = 5;
 
-export async function addMembersBatch(
-    deps: TokenListsMutationsDeps,
-    args: unknown,
-): Promise<MutationOutcome<BatchAddResult>> {
-    const a = asObject(args);
-    const ownerProjectId = requireString(a, 'ownerProjectId');
-    const slug = requireString(a, 'slug');
-    if (!Array.isArray(a.mints) || a.mints.some(m => typeof m !== 'string')) {
-        throw new InvalidArgsError('mints must be an array of strings');
-    }
-    const mints = [...new Set((a.mints as string[]).map(m => m.trim()).filter(Boolean))];
-    if (mints.length > deps.caps.batch) return { ok: false, error: 'batch_too_large' };
+/** One requested member: mint plus an optional curator note carried into the row. */
+export interface MemberEntry {
+    mint: string;
+    note: string | null;
+}
 
-    const owned = await requireOwnedList(deps, slug, ownerProjectId);
-    if (!owned.ok) return owned;
-    const listId = owned.value.id;
+/**
+ * Core of every bulk add. Resolves each mint (registry → tokens table →
+ * provider, budgeted), enforces the members-per-list cap, and upserts in
+ * request order — so a CSV's row order becomes rank order for net-new rows.
+ * Ownership is NOT checked here: `addMembersBatch` does that for partners,
+ * and the admin import deliberately skips it.
+ */
+export async function addMembersToList(
+    deps: TokenListsMutationsDeps,
+    listId: string,
+    entries: readonly MemberEntry[],
+): Promise<BatchAddResult> {
+    // Dedupe on mint, first note wins — a CSV with a repeated row should not
+    // flip-flop the note or double-count against the cap.
+    const byMint = new Map<string, MemberEntry>();
+    for (const entry of entries) {
+        const mint = entry.mint.trim();
+        if (!mint || byMint.has(mint)) continue;
+        byMint.set(mint, { mint, note: entry.note?.trim() || null });
+    }
 
     const failed: BatchAddResult['failed'] = [];
 
     // Format gate first — malformed strings never reach the DB or the provider.
-    const wellFormed = mints.filter(mint => {
+    const wellFormed = [...byMint.keys()].filter(mint => {
         if (SOLANA_MINT_REGEX.test(mint)) return true;
         failed.push({ mint, error: 'invalid_mint' });
         return false;
@@ -496,7 +512,10 @@ export async function addMembersBatch(
     // inserts consume slots in request order, and the overflow fails as
     // list_full without sinking the rest of the batch.
     const existingSet = new Set(
-        await deps.repo.filterMintsExistingMembers(listId, resolved.map(member => member.mint)),
+        await deps.repo.filterMintsExistingMembers(
+            listId,
+            resolved.map(member => member.mint),
+        ),
     );
     const currentCount = await deps.repo.countMembers(listId);
     let slots = Math.max(0, deps.caps.membersPerList - currentCount);
@@ -511,10 +530,70 @@ export async function addMembersBatch(
             }
             slots -= 1;
         }
-        rows.push({ mint: member.mint, note: null, addedAt, snapshot: member.snapshot });
+        rows.push({
+            mint: member.mint,
+            note: byMint.get(member.mint)?.note ?? null,
+            addedAt,
+            snapshot: member.snapshot,
+        });
         added.push(member);
     }
 
     if (rows.length > 0) await deps.repo.upsertMembersBulk(listId, rows);
-    return { ok: true, value: { added, failed } };
+    return { added, failed };
+}
+
+/** Decodes `members: [{ mint, note? }]` — the CSV-shaped batch input. */
+export function decodeMemberEntries(raw: unknown): MemberEntry[] {
+    if (!Array.isArray(raw)) throw new InvalidArgsError('members must be an array');
+    return raw.map((item, index) => {
+        if (typeof item !== 'object' || item === null) {
+            throw new InvalidArgsError(`members[${index}] must be an object`);
+        }
+        const row = item as Record<string, unknown>;
+        if (typeof row.mint !== 'string' || !row.mint.trim()) {
+            throw new InvalidArgsError(`members[${index}].mint must be a non-empty string`);
+        }
+        if (row.note !== undefined && row.note !== null && typeof row.note !== 'string') {
+            throw new InvalidArgsError(`members[${index}].note must be a string when present`);
+        }
+        return { mint: row.mint.trim(), note: typeof row.note === 'string' ? row.note : null };
+    });
+}
+
+/**
+ * Partner-facing batch add: owner-checked. Accepts either `mints: string[]`
+ * (original shape) or `members: [{ mint, note? }]` (CSV import); when both are
+ * present they are concatenated in that order.
+ */
+export async function addMembersBatch(
+    deps: TokenListsMutationsDeps,
+    args: unknown,
+): Promise<MutationOutcome<BatchAddResult>> {
+    const a = asObject(args);
+    const ownerProjectId = requireString(a, 'ownerProjectId');
+    const slug = requireString(a, 'slug');
+
+    const entries: MemberEntry[] = [];
+    if (a.mints !== undefined) {
+        if (!Array.isArray(a.mints) || a.mints.some(m => typeof m !== 'string')) {
+            throw new InvalidArgsError('mints must be an array of strings');
+        }
+        for (const mint of a.mints as string[]) {
+            if (mint.trim()) entries.push({ mint: mint.trim(), note: null });
+        }
+    }
+    if (a.members !== undefined) entries.push(...decodeMemberEntries(a.members));
+    if (a.mints === undefined && a.members === undefined) {
+        throw new InvalidArgsError('one of mints or members is required');
+    }
+
+    const distinct = new Set(entries.map(entry => entry.mint));
+    if (distinct.size > deps.caps.batch) return { ok: false, error: 'batch_too_large' };
+
+    const owned = await requireOwnedList(deps, slug, ownerProjectId);
+    if (!owned.ok) return owned;
+
+    const result = await addMembersToList(deps, owned.value.id, entries);
+    return { ok: true, value: result };
 }
