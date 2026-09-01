@@ -5,7 +5,7 @@
   "folderUID": "tokens-xyz",
   "noDataState": "OK",
   "execErrState": "OK",
-  "for": "5m",
+  "for": "15m",
   "data": [
     {
       "refId": "A",
@@ -57,7 +57,7 @@
             "evaluator": {
               "type": "gt",
               "params": [
-                1.0
+                3.0
               ]
             },
             "operator": {
@@ -86,8 +86,8 @@
     "slack": "true"
   },
   "annotations": {
-    "summary": "tokens-api 429 rate above 1/sec",
-    "description": "tokens-api returned HTTP 429 (rate-limited) at more than 1/sec sustained for 5 minutes. Either a single API key is hammering the service or the rate limiter is over-firing. Check the Top 10 endpoints panel and per-project rate-limit metrics.",
+    "summary": "tokens-api 429 rate above 3/sec",
+    "description": "tokens-api returned HTTP 429 (rate-limited) at more than 3/sec sustained for 15 minutes. Known bursty consumers bouncing off the per-key default (100/10s) sit well below this; sustained firing means a denial storm — a runaway client or an over-firing limiter. Check 429s by key_prefix in Loki, then raise the project's limit via scripts/set-project-rate-limit.mjs or contact the owner.",
     "runbook_url": "https://example.com/runbooks/api-rate-limit-spike"
   }
 }
