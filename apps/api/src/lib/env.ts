@@ -32,8 +32,13 @@ export interface ApiEnv {
      * per-project override. Tunable via env so real limits can be set before
      * offering the API externally without a code change. Fallbacks preserve
      * the current "launch mode" behavior.
+     *
+     * Two windows: `defaultRateLimit` is the short burst window and
+     * `defaultSustainedRateLimit` is the long flatline window — a request is
+     * admitted only when both allow it.
      */
     defaultRateLimit: { requests: number; windowSeconds: number };
+    defaultSustainedRateLimit: { requests: number; windowSeconds: number };
     defaultQuota: { requestsPerMonth: number };
 }
 
@@ -130,8 +135,14 @@ export function loadEnv(): ApiEnv {
             readNumber('TOKENS_USAGE_AGGREGATION_TTL_SECONDS', 172_800, 60, 604_800),
         ),
         defaultRateLimit: {
-            requests: Math.floor(readNumber('TOKENS_DEFAULT_RATE_LIMIT_REQUESTS', 100, 1, 10_000_000)),
+            requests: Math.floor(readNumber('TOKENS_DEFAULT_RATE_LIMIT_REQUESTS', 400, 1, 10_000_000)),
             windowSeconds: Math.floor(readNumber('TOKENS_DEFAULT_RATE_LIMIT_WINDOW_SECONDS', 10, 1, 3_600)),
+        },
+        defaultSustainedRateLimit: {
+            requests: Math.floor(readNumber('TOKENS_DEFAULT_SUSTAINED_RATE_LIMIT_REQUESTS', 1_000, 1, 10_000_000)),
+            windowSeconds: Math.floor(
+                readNumber('TOKENS_DEFAULT_SUSTAINED_RATE_LIMIT_WINDOW_SECONDS', 60, 1, 86_400),
+            ),
         },
         defaultQuota: {
             requestsPerMonth: Math.floor(
