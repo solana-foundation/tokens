@@ -725,10 +725,10 @@ function SwapProvidersDropdownBase({
 
     const spotVenueProviders: SpotProviderLink[] = [
         ...(sunriseUrl ? [{ href: sunriseUrl, name: 'Sunrise', iconSrc: SUNRISE_ICON_SRC }] : []),
+        { href: jtxUrl, name: 'JTX', iconSrc: JTX_ICON_SRC },
         ...(omfgUrl ? [{ href: omfgUrl, name: 'OMFG', iconSrc: OMFG_ICON_SRC }] : []),
         { href: kaminoUrl, name: 'Kamino', iconSrc: KAMINO_ICON_SRC },
         { href: orcaUrl, name: 'Orca', iconSrc: 'https://www.orca.so/favicon.ico' },
-        { href: jtxUrl, name: 'JTX', iconSrc: JTX_ICON_SRC },
     ];
 
     const perpsProviders = buildPerpsProviders({ perpsMarkets, variantMatch, buyName, buySymbol, safeBuyAddress });
