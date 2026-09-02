@@ -39,6 +39,7 @@ const noopDashboard: DashboardRepo = {
     createProjectWithOwner: async () => 'prj_test',
     ensureMembership: async () => {},
     updateProject: async () => {},
+    setProjectRateLimit: async () => null,
     deleteProjectCascade: async () => {},
     listProjectsDigest: async () => [],
     listProjectApiKeys: async () => [],

@@ -38,6 +38,7 @@ export interface PlatformAuthContext {
     scopes: string[];
     limits?: {
         rateLimit?: { requests: number; windowSeconds: number };
+        sustainedRateLimit?: { requests: number; windowSeconds: number };
         quota?: { requestsPerMonth: number };
     };
 }
@@ -207,12 +208,13 @@ function requirePlatformAuth(request: Request) {
     });
 }
 
-function enforceUpstashLimits(auth: PlatformAuthContext) {
+function enforceUpstashLimits(auth: PlatformAuthContext, redisOverride?: RedisClient) {
     return Effect.gen(function* () {
-        const redis = yield* getRedisClientEffect();
+        const redis = redisOverride ?? (yield* getRedisClientEffect());
 
         const env = loadEnv();
         const rateLimitCfg = auth.limits?.rateLimit ?? env.defaultRateLimit;
+        const sustainedCfg = auth.limits?.sustainedRateLimit ?? env.defaultSustainedRateLimit;
 
         const quotaCfg = auth.limits?.quota ?? env.defaultQuota;
         const now = new Date();
@@ -224,7 +226,7 @@ function enforceUpstashLimits(auth: PlatformAuthContext) {
         // The quota INCR+EXPIRE share a single pipelined request; EXPIRE NX sets
         // the TTL only when none exists (fixes the `used === 1` TOCTOU).
         // Trade-off: rate-limited (429) requests still increment the quota.
-        const [rate, [used]] = yield* Effect.all(
+        const [rate, sustained, [used]] = yield* Effect.all(
             [
                 slidingWindowLimit({
                     redis,
@@ -233,6 +235,12 @@ function enforceUpstashLimits(auth: PlatformAuthContext) {
                     windowSeconds: rateLimitCfg.windowSeconds,
                     // A hung Redis must not hold the request hostage; TimeoutError
                     // falls into the caller's fail-open catch (only RateLimitedError blocks).
+                }).pipe(Effect.timeout('1 second')),
+                slidingWindowLimit({
+                    redis,
+                    identifier: `key:${auth.apiKeyId}:sustained`,
+                    tokens: sustainedCfg.requests,
+                    windowSeconds: sustainedCfg.windowSeconds,
                 }).pipe(Effect.timeout('1 second')),
                 Effect.tryPromise(() =>
                     redis
@@ -251,6 +259,17 @@ function enforceUpstashLimits(auth: PlatformAuthContext) {
                 new RateLimitedError({
                     service: 'rateLimit',
                     message: 'Rate limited',
+                    retryAfterMs,
+                }),
+            );
+        }
+
+        if (!sustained.success) {
+            const retryAfterMs = Math.max(0, sustained.reset - Date.now());
+            return yield* Effect.fail(
+                new RateLimitedError({
+                    service: 'sustainedRateLimit',
+                    message: 'Rate limited (sustained)',
                     retryAfterMs,
                 }),
             );

@@ -87,6 +87,12 @@ variable "cloud_run_max_instances" {
   default = 10
 }
 
+variable "cloud_run_assets_max_instances" {
+  type        = number
+  description = "Max instances for the `assets` Cloud Run service. Overrides cloud_run_max_instances because assets sits behind every asset read, so pegging its cap rejects requests across the whole API. Null falls back to cloud_run_max_instances."
+  default     = null
+}
+
 variable "cloud_run_assets_cpu" {
   type        = string
   description = "CPU limit for the `assets` Cloud Run service. Overrides the module default because prd composite handlers (curated/search) are CPU-bound on 1 vCPU; other services stay on default."

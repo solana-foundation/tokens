@@ -18,6 +18,7 @@ export interface AuthenticateApiKeyResult {
     scopes: string[];
     limits?: {
         rateLimit?: { requests: number; windowSeconds: number };
+        sustainedRateLimit?: { requests: number; windowSeconds: number };
         quota?: { requestsPerMonth: number };
     };
 }

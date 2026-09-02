@@ -72,6 +72,7 @@ module "env" {
   memorystore_memory_size_gb = 1
 
   cloud_run_max_instances              = 10
+  cloud_run_assets_max_instances       = 20
   cloud_run_assets_cpu                 = "8"
   cloud_run_assets_memory              = "8Gi"
   cloud_run_assets_request_concurrency = 40

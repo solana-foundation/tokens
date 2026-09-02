@@ -1,6 +1,13 @@
 import { describe, expect, it } from 'bun:test';
+import { Effect } from 'effect';
 
-import { pickBestTokenizedCoinId, type CoinGeckoCoinSearchResult } from './_resolve-coingecko-coin-id';
+import type { RedisClient, RedisSetOptions } from '@/lib/redis';
+import {
+    coinIdCacheGet,
+    coinIdCacheSet,
+    pickBestTokenizedCoinId,
+    type CoinGeckoCoinSearchResult,
+} from './_resolve-coingecko-coin-id';
 
 function coin(partial: Partial<CoinGeckoCoinSearchResult> & Pick<CoinGeckoCoinSearchResult, 'id' | 'name' | 'symbol'>) {
     return {
@@ -40,5 +47,42 @@ describe('pickBestTokenizedCoinId', () => {
         expect(pickBestTokenizedCoinId(coins, { name: 'AMC Entertainment', symbol: 'AMC' })).toBe(
             'amc-entertainment-ondo-tokenized-stocks',
         );
+    });
+});
+
+function stubRedis(store: Map<string, string>): () => RedisClient {
+    const client = {
+        get: async <T = string>(key: string) => (store.get(key) ?? null) as T | null,
+        set: async (key: string, value: string | number, _options?: RedisSetOptions) => {
+            store.set(key, String(value));
+            return 'OK' as const;
+        },
+    } as RedisClient;
+    return () => client;
+}
+
+describe('coinIdCache', () => {
+    it('roundtrips a resolved coin id', async () => {
+        const redis = stubRedis(new Map());
+        await Effect.runPromise(coinIdCacheSet('verizon', 'verizon-ondo-tokenized', redis));
+        expect(await Effect.runPromise(coinIdCacheGet('verizon', redis))).toBe('verizon-ondo-tokenized');
+    });
+
+    it('roundtrips a null resolution as null, not a miss', async () => {
+        const redis = stubRedis(new Map());
+        await Effect.runPromise(coinIdCacheSet('spacex', null, redis));
+        expect(await Effect.runPromise(coinIdCacheGet('spacex', redis))).toBeNull();
+    });
+
+    it('returns undefined on cache miss', async () => {
+        expect(await Effect.runPromise(coinIdCacheGet('spacex', stubRedis(new Map())))).toBe(undefined);
+    });
+
+    it('fails open when redis is unavailable', async () => {
+        const broken = () => {
+            throw new Error('redis down');
+        };
+        expect(await Effect.runPromise(coinIdCacheGet('spacex', broken))).toBe(undefined);
+        await Effect.runPromise(coinIdCacheSet('spacex', null, broken));
     });
 });

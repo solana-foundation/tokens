@@ -100,6 +100,14 @@ export interface DashboardRepo {
     /** Insert membership if missing (idempotent). */
     ensureMembership(projectId: string, clerkUserId: string, role: ProjectRole, nowMs: number): Promise<void>;
     updateProject(projectId: string, name: string, description: string, nowMs: number): Promise<void>;
+    setProjectRateLimit(
+        projectId: string,
+        rateLimit: {
+            rateLimit: { requests: number; windowSeconds: number };
+            sustainedRateLimit?: { requests: number; windowSeconds: number };
+        } | null,
+        nowMs: number,
+    ): Promise<{ id: string; name: string; limits: unknown } | null>;
     /** Transaction: delete api keys + project (memberships cascade). */
     deleteProjectCascade(projectId: string): Promise<void>;
 
@@ -321,6 +329,51 @@ export async function usersUpdateProject(
 
     await deps.repo.updateProject(projectId, name, description, now(deps));
     return null;
+}
+
+function readWindow(
+    a: Record<string, unknown>,
+    requestsField: string,
+    windowField: string,
+    defaultWindowSeconds: number,
+): { requests: number; windowSeconds: number } {
+    const requests = a[requestsField];
+    if (typeof requests !== 'number' || !Number.isInteger(requests) || requests < 1 || requests > 1_000_000) {
+        throw new InvalidArgsError(`${requestsField} must be an integer between 1 and 1000000`);
+    }
+    const windowSeconds = a[windowField] ?? defaultWindowSeconds;
+    if (
+        typeof windowSeconds !== 'number' ||
+        !Number.isInteger(windowSeconds) ||
+        windowSeconds < 1 ||
+        windowSeconds > 86_400
+    ) {
+        throw new InvalidArgsError(`${windowField} must be an integer between 1 and 86400`);
+    }
+    return { requests, windowSeconds };
+}
+
+export async function projectsSetRateLimit(
+    deps: DashboardDeps,
+    args: unknown,
+): Promise<{ id: string; name: string; limits: unknown }> {
+    const a = requireObject(args);
+    const projectId = requireString(a, 'projectId');
+
+    let limits: {
+        rateLimit: { requests: number; windowSeconds: number };
+        sustainedRateLimit?: { requests: number; windowSeconds: number };
+    } | null = null;
+    if (a.clear !== true) {
+        limits = { rateLimit: readWindow(a, 'requests', 'windowSeconds', 10) };
+        if (a.sustainedRequests !== undefined) {
+            limits.sustainedRateLimit = readWindow(a, 'sustainedRequests', 'sustainedWindowSeconds', 60);
+        }
+    }
+
+    const updated = await deps.repo.setProjectRateLimit(projectId, limits, now(deps));
+    if (!updated) throw new InvalidArgsError(`Unknown project: ${projectId}`);
+    return updated;
 }
 
 /** Port of `users.deleteProject` — requires owner role; cascades keys + memberships. */

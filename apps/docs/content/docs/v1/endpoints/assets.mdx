@@ -593,7 +593,7 @@ Get curated assets from a list.
 - `limit` (optional): opt into pagination with this page size (default `250` when `offset` is provided, max `500`)
 - `offset` (optional): opt into pagination from this zero-based result offset
 - `variantsMode=all` (optional): disable the default Solana LST liquidity filter (applies to `groupBy=mint` rows and to nested `variants[]`)
-- `variants=all` (optional): include every known variant for each canonical asset as `variants[]` (each with per-variant `market` and `executionQuality`, sorted by `market.liquidity` descending). Only applies to `groupBy=asset`; ignored for `groupBy=mint`. By default only `primaryVariant` is returned.
+- `variants=all` (optional): include every known variant for each canonical asset as `variants[]` (each with per-variant `market` and `executionQuality`, sorted by `market.liquidity` descending). Only applies to `groupBy=asset`; ignored for `groupBy=mint`. By default only `primaryVariant` is returned. Composes with `limit`/`offset`; because every variant carries its own `market` snapshot and `executionQuality`, responses are substantially larger (`list=stocks` is roughly 1 MB uncompressed, versus roughly 560 KB without), so pagination is recommended for large lists.
 - `primaryVariantStrategy` (optional): `liquidity` (default), `execution_quality`, or `stock_redeemability`
 
 ### Notes
@@ -603,6 +603,7 @@ Get curated assets from a list.
 - `list=lsts` is backed by the same dynamic, capped Solana yield-variant set used by the variants API, rather than a fixed static mint list. `list=all` includes that same dynamic LST membership.
 - For Solana LST mint rows, the default response only includes active LSTs with at least `$250k` liquidity. Pass `variantsMode=all` to return all active LST rows.
 - `groupBy=mint` expands the response to one row per variant mint.
+- Pagination is available on every combination of params, including `variants=all`, and is opt-in: omit `limit` and `offset` and the response contains every matching asset with no truncation (it just has no `pagination` object). Opting in is for controlling payload size, not for lifting a cap.
 - `imageUrl` is curated canonical imagery (including storage-backed URLs when configured). `primaryVariant.market.logoURI` is a best-effort per-token icon from indexed/cache sources and may be `null` (the server may fall back to `imageUrl` when missing).
 - `stats.liquidity`, `stats.volume24hUSD`, and `stats.volume30dUSD` are canonical aggregates across the asset’s spot-like variants (fallback to all variants if none exist). In `groupBy=mint`, `primaryVariant.market` is mint-specific but `stats` remains canonical for the asset.
 - When available, `primaryVariant.market.metricsSource="clickhouse_trades"` means the mint-specific market metrics were materialized from direct USD-stable Solana trades into Convex.
@@ -683,7 +684,7 @@ interface AssetsCuratedResponse {
 Notes:
 
 - If `groupBy=mint`, `assets[]` becomes “one row per mint” and `primaryVariant` is always present for returned rows.
-- Pagination is opt-in. Pass `limit` or `offset` to receive `pagination`, then use `pagination.nextOffset` with the same `list` and `groupBy` params to fetch the next page.
+- Pagination is opt-in. Pass `limit` or `offset` to receive `pagination`, then use `pagination.nextOffset` with the same `list`, `groupBy`, and `variants` params to fetch the next page. Stop when `hasMore` is `false` (`nextOffset` is then `null`).
 - Compatibility: clients that previously expected a complete curated list from one request still receive all matching rows unless they opt into pagination. Clients that need all active LST mint rows should add `variantsMode=all`.
 
 ### Example
@@ -705,6 +706,18 @@ curl -sS "$API_BASE_URL/v1/assets/curated?list=lsts&groupBy=mint&variantsMode=al
 
 ```bash
 curl -sS "$API_BASE_URL/v1/assets/curated?list=stocks&variants=all" \
+  -H "x-api-key: $API_KEY"
+```
+
+Paginate the same request by adding `limit` (max `500`), then follow `pagination.nextOffset`:
+
+```bash
+curl -sS "$API_BASE_URL/v1/assets/curated?list=stocks&variants=all&limit=100" \
+  -H "x-api-key: $API_KEY"
+```
+
+```bash
+curl -sS "$API_BASE_URL/v1/assets/curated?list=stocks&variants=all&limit=100&offset=100" \
   -H "x-api-key: $API_KEY"
 ```
 

@@ -1,11 +1,11 @@
 {
-  "uid": "tokens-api-rate-limit-spike",
-  "title": "tokens-api: rate-limit denials spike",
+  "uid": "tokens-assets-cloudrun-no-instance",
+  "title": "tokens-assets: Cloud Run rejecting requests (no available instance)",
   "ruleGroup": "tokens-api-availability",
   "folderUID": "tokens-xyz",
   "noDataState": "OK",
   "execErrState": "OK",
-  "for": "15m",
+  "for": "2m",
   "data": [
     {
       "refId": "A",
@@ -16,7 +16,7 @@
         "to": 0
       },
       "model": {
-        "expr": "sum(rate({service=\"tokens-api\"} | json | event=\"http_request\" | status=\"429\" [5m]))",
+        "expr": "sum by (service) (rate({service=~\"tokens-(assets|prices|usage|admin)-prd-us\"} |= \"no available instance\" [5m]))",
         "queryType": "range",
         "refId": "A"
       }
@@ -57,7 +57,7 @@
             "evaluator": {
               "type": "gt",
               "params": [
-                3.0
+                0.1
               ]
             },
             "operator": {
@@ -80,14 +80,14 @@
   ],
   "condition": "C",
   "labels": {
-    "service": "tokens-api",
-    "severity": "warning",
-    "pagerduty": "false",
+    "service": "tokens-cloudrun",
+    "severity": "critical",
+    "pagerduty": "true",
     "slack": "true"
   },
   "annotations": {
-    "summary": "tokens-api 429 rate above 3/sec",
-    "description": "tokens-api returned HTTP 429 (rate-limited) at more than 3/sec sustained for 15 minutes. Known bursty consumers bouncing off the per-key default (100/10s) sit well below this; sustained firing means a denial storm — a runaway client or an over-firing limiter. Check 429s by key_prefix in Loki, then raise the project's limit via scripts/set-project-rate-limit.mjs or contact the owner.",
-    "runbook_url": "https://example.com/runbooks/api-rate-limit-spike"
+    "summary": "Cloud Run is aborting requests: instance cap reached (label: service)",
+    "description": "A Cloud Run service is rejecting requests with 'no available instance' (HTTP 429 to its callers) at more than ~6/min sustained — it is pegged at its max-instances cap or instances are failing to start. This is the earliest saturation signal: tokens-api degrades to fallbacks and returns 429/504 to users while this fires. Check instance count vs maxScale on the named service, then look for a traffic burst (per-key request rates on the API overview dashboard) or a stuck revision. Raising cloud_run_assets_max_instances in terraform is the capacity lever.",
+    "runbook_url": "https://example.com/runbooks/assets-cloudrun-no-instance"
   }
 }
