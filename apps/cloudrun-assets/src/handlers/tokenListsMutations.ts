@@ -24,7 +24,7 @@ export function isReservedTokenListSlug(slug: string): boolean {
 
 const SOLANA_MINT_REGEX = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
 
-export const TOKEN_LIST_STATUSES = ['draft', 'published', 'archived'] as const;
+export const TOKEN_LIST_STATUSES = ['draft', 'unlisted', 'published', 'archived'] as const;
 export type TokenListStatus = (typeof TOKEN_LIST_STATUSES)[number];
 
 /** Infrastructure bounds (env-tunable at wiring time; see index.ts). */

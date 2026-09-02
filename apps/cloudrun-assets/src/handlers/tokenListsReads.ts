@@ -10,6 +10,7 @@ export interface TokenListSummaryRow {
     slug: string;
     name: string;
     owner_project_id: string;
+    status: string;
     member_count: number;
     /** Unix ms. */
     updated_at: number;
@@ -49,6 +50,8 @@ export interface TokenListMintSlugRow {
 
 export interface TokenListsReadsRepo {
     listPublished(limit: number, offset: number): Promise<TokenListSummaryRow[]>;
+    /** Every list owned by the project except archived — the dashboard's "my lists" source. */
+    listByOwner(ownerProjectId: string, limit: number, offset: number): Promise<TokenListSummaryRow[]>;
     /** Any status — callers decide visibility (public reads show published only). */
     getBySlug(slug: string): Promise<TokenListRow | null>;
     listMembersBySlug(slug: string, limit: number, offset: number): Promise<TokenListMemberRow[]>;
@@ -60,6 +63,7 @@ export interface TokenListSummary {
     slug: string;
     name: string;
     ownerProjectId: string;
+    status: string;
     tokenCount: number;
     updatedAt: number;
 }
@@ -104,15 +108,13 @@ function summaryFromRow(row: TokenListSummaryRow): TokenListSummary {
         slug: row.slug,
         name: row.name,
         ownerProjectId: row.owner_project_id,
+        status: row.status,
         tokenCount: row.member_count,
         updatedAt: Number(row.updated_at),
     };
 }
 
-export async function listPublished(
-    repo: TokenListsReadsRepo,
-    args: unknown,
-): Promise<TokenListSummary[]> {
+export async function listPublished(repo: TokenListsReadsRepo, args: unknown): Promise<TokenListSummary[]> {
     if (typeof args !== 'object' || args === null) {
         throw new InvalidArgsError('args must be an object');
     }
@@ -122,10 +124,21 @@ export async function listPublished(
     return rows.map(summaryFromRow);
 }
 
-export async function getBySlug(
-    repo: TokenListsReadsRepo,
-    args: unknown,
-): Promise<TokenListDetail | null> {
+/** Owner-scoped catalog: any status except archived, status included per row. */
+export async function listByOwner(repo: TokenListsReadsRepo, args: unknown): Promise<TokenListSummary[]> {
+    if (typeof args !== 'object' || args === null) {
+        throw new InvalidArgsError('args must be an object');
+    }
+    const a = args as { ownerProjectId?: unknown; limit?: unknown; offset?: unknown };
+    if (typeof a.ownerProjectId !== 'string' || !a.ownerProjectId.trim()) {
+        throw new InvalidArgsError('ownerProjectId must be a non-empty string');
+    }
+    const { limit, offset } = decodePagination(a, { limit: 100, maxLimit: 500 });
+    const rows = await repo.listByOwner(a.ownerProjectId.trim(), limit, offset);
+    return rows.map(summaryFromRow);
+}
+
+export async function getBySlug(repo: TokenListsReadsRepo, args: unknown): Promise<TokenListDetail | null> {
     if (typeof args !== 'object' || args === null) {
         throw new InvalidArgsError('args must be an object');
     }
@@ -168,10 +181,7 @@ export async function getSlugsByMints(
     return Array.from(byMint.entries(), ([mint, slugs]) => ({ mint, slugs }));
 }
 
-export async function getMembers(
-    repo: TokenListsReadsRepo,
-    args: unknown,
-): Promise<TokenListMember[]> {
+export async function getMembers(repo: TokenListsReadsRepo, args: unknown): Promise<TokenListMember[]> {
     if (typeof args !== 'object' || args === null) {
         throw new InvalidArgsError('args must be an object');
     }

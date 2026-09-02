@@ -14,6 +14,7 @@ export type TokenListSummary = {
     slug: string;
     name: string;
     ownerProjectId: string;
+    status: string;
     tokenCount: number;
     updatedAt: number;
 };
@@ -40,6 +41,15 @@ export function tokenListsList(args: {
     offset?: number;
 }): Effect.Effect<TokenListSummary[], CloudRunError> {
     return cloudRunQuery<TokenListSummary[]>('assets', 'tokenListsList', { ...args }, { maxRetries: 1 });
+}
+
+/** Owner-scoped catalog: every list the project owns except archived, status included. */
+export function tokenListsListByOwner(args: {
+    ownerProjectId: string;
+    limit?: number;
+    offset?: number;
+}): Effect.Effect<TokenListSummary[], CloudRunError> {
+    return cloudRunQuery<TokenListSummary[]>('assets', 'tokenListsListByOwner', { ...args }, { maxRetries: 1 });
 }
 
 export function tokenListsGetBySlug(args: { slug: string }): Effect.Effect<TokenListDetail | null, CloudRunError> {

@@ -179,6 +179,7 @@ export {
 
 export {
     tokenListsList,
+    tokenListsListByOwner,
     tokenListsGetBySlug,
     tokenListsGetMembers,
     tokenListsGetSlugsByMints,

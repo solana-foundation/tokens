@@ -56,7 +56,8 @@ export const GET = route(
                 }
 
                 const detail = yield* tokenListsGetBySlug({ slug });
-                if (!detail || detail.status !== 'published') {
+                // Unlisted lists are link-readable: hidden from the catalog only.
+                if (!detail || (detail.status !== 'published' && detail.status !== 'unlisted')) {
                     return yield* Effect.fail(new NotFoundError({ message: 'List not found', resource: 'token_list' }));
                 }
                 const members = yield* tokenListsGetMembers({ slug, limit, offset });
@@ -90,7 +91,7 @@ const patchBodySchema = Schema.Struct({
     /** Rename. The old path stops resolving immediately and frees the slug. */
     slug: Schema.optional(Schema.String),
     name: Schema.optional(Schema.String),
-    status: Schema.optional(Schema.Literals(['draft', 'published', 'archived'])),
+    status: Schema.optional(Schema.Literals(['draft', 'unlisted', 'published', 'archived'])),
 });
 
 /**

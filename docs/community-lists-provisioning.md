@@ -17,6 +17,15 @@ These bound infrastructure cost, not access: batch size protects request timeout
 provider budget protects the Birdeye bill, the member cap bounds storage. Over-budget
 unknown mints fail individually as `unknown_mint` and can be retried in later batches.
 
+## Visibility
+
+- `status: "unlisted"` (the dashboard calls it **Private**) hides a list from the public
+  catalog (`GET /v2/lists`) and from `inLists` annotations, while `GET /v2/lists/{slug}`
+  and `/v2/lists/tokens` still serve anyone with the link. `draft` remains fully hidden
+  from public reads. Set at create (`POST /v2/lists` with `status`) or later via `PATCH`.
+- Owners see all their non-archived lists (status included per row) via
+  `GET /v2/lists?mine=true` — that is what feeds the dashboard's "My lists" rail.
+
 ## Abuse response
 
 - Reversible hide: `PATCH /v2/lists/{slug}` with `{"status":"archived"}` (or the admin

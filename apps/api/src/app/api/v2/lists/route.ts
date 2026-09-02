@@ -3,7 +3,7 @@ import { Effect, Schema } from 'effect';
 import { route, type PlatformAuthContext } from '@/effect/next-route';
 import { withStaleFallback } from '@/effect/stale-response-cache';
 import { decodeLimit, decodeOffset, decodeUnknownOrBadRequest, tapErrorAndDefault } from '@tokens/effect';
-import { tokenListsCreate, tokenListsList, type TokenListSummary } from '@/lib/cloudrun';
+import { tokenListsCreate, tokenListsList, tokenListsListByOwner, type TokenListSummary } from '@/lib/cloudrun';
 
 import { curatedListSummaries, unwrapOutcome, type V2ListSummary } from './_shared';
 
@@ -14,11 +14,34 @@ import { curatedListSummaries, unwrapOutcome, type V2ListSummary } from './_shar
  * /api/v2/lists/tokens?lists=a,b,c.
  */
 export const GET = route(
-    (request: Request) =>
+    (request: Request, ctx: { platformAuth: PlatformAuthContext }) =>
         Effect.gen(function* () {
             const url = new URL(request.url);
             const limit = yield* decodeLimit(url.searchParams.get('limit'), { defaultValue: '100', max: 500 });
             const offset = yield* decodeOffset(url.searchParams.get('offset'));
+
+            // Owner-scoped catalog: the caller's own lists in any status except
+            // archived, `status` included so dashboards can label private
+            // (unlisted) lists. No curated rows, and no stale-fallback cache —
+            // the shared catalog cache key has no project dimension.
+            if (url.searchParams.get('mine') === 'true') {
+                const mine = yield* tokenListsListByOwner({
+                    ownerProjectId: ctx.platformAuth.projectId,
+                    limit,
+                    offset,
+                });
+                const lists: V2ListSummary[] = mine.map(list => ({
+                    slug: list.slug,
+                    name: list.name,
+                    description: null,
+                    curated: false,
+                    owner: { projectId: list.ownerProjectId },
+                    tokenCount: list.tokenCount,
+                    updatedAt: list.updatedAt,
+                    status: list.status,
+                }));
+                return { lists, total: lists.length };
+            }
 
             const main = Effect.gen(function* () {
                 // Membership failures propagate to the stale-fallback wrapper —
@@ -61,7 +84,8 @@ export const GET = route(
 const createBodySchema = Schema.Struct({
     slug: Schema.String,
     name: Schema.String,
-    status: Schema.optional(Schema.Literals(['draft', 'published'])),
+    /** `unlisted` = hidden from the catalog, still readable at the direct URL. */
+    status: Schema.optional(Schema.Literals(['draft', 'unlisted', 'published'])),
 });
 
 /** POST /api/v2/lists — create a community list, owned by the caller's project. */

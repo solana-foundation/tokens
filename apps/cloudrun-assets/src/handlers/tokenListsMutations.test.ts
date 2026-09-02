@@ -109,6 +109,23 @@ describe('createList', () => {
         });
     });
 
+    it('round-trips the unlisted status', async () => {
+        const result = await createList(makeDeps(), {
+            ownerProjectId: 'proj_1',
+            slug: 'quiet-list',
+            name: 'Quiet List',
+            status: 'unlisted',
+        });
+        expect(result).toMatchObject({ ok: true, value: { slug: 'quiet-list', status: 'unlisted' } });
+
+        const updated = await updateList(makeDeps(), {
+            ownerProjectId: 'proj_1',
+            slug: 'ownership-core',
+            status: 'unlisted',
+        });
+        expect(updated).toMatchObject({ ok: true, value: { status: 'unlisted' } });
+    });
+
     it('rejects invalid status via InvalidArgsError', async () => {
         await expect(
             createList(makeDeps(), { ownerProjectId: 'p', slug: 'ok-slug', name: 'x', status: 'live' }),

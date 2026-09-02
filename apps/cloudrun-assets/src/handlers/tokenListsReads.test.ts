@@ -5,6 +5,7 @@ import {
     getBySlug,
     getMembers,
     getSlugsByMints,
+    listByOwner,
     listPublished,
     type TokenListMemberRow,
     type TokenListRow,
@@ -16,6 +17,7 @@ const SUMMARY_ROW: TokenListSummaryRow = {
     slug: 'ownership-core',
     name: 'Ownership Core',
     owner_project_id: 'proj_1',
+    status: 'published',
     member_count: 3,
     updated_at: 1_780_000_000_000,
 };
@@ -46,12 +48,38 @@ const MEMBER_ROW: TokenListMemberRow = {
 function makeRepo(overrides: Partial<TokenListsReadsRepo> = {}): TokenListsReadsRepo {
     return {
         listPublished: async () => [SUMMARY_ROW],
+        listByOwner: async () => [SUMMARY_ROW],
         getBySlug: async () => LIST_ROW,
         listMembersBySlug: async () => [MEMBER_ROW],
         listSlugsByMints: async () => [],
         ...overrides,
     };
 }
+
+describe('tokenListsReads.listByOwner', () => {
+    it('requires ownerProjectId and includes status in each summary', async () => {
+        await expect(listByOwner(makeRepo(), {})).rejects.toBeInstanceOf(InvalidArgsError);
+        const captured: unknown[] = [];
+        const repo = makeRepo({
+            listByOwner: async (ownerProjectId, limit, offset) => {
+                captured.push([ownerProjectId, limit, offset]);
+                return [{ ...SUMMARY_ROW, status: 'unlisted' }];
+            },
+        });
+        const result = await listByOwner(repo, { ownerProjectId: ' proj_1 ', limit: 9999 });
+        expect(captured).toEqual([['proj_1', 500, 0]]);
+        expect(result).toEqual([
+            {
+                slug: 'ownership-core',
+                name: 'Ownership Core',
+                ownerProjectId: 'proj_1',
+                status: 'unlisted',
+                tokenCount: 3,
+                updatedAt: 1_780_000_000_000,
+            },
+        ]);
+    });
+});
 
 describe('tokenListsReads.listPublished', () => {
     it('maps rows to camelCase summaries', async () => {
@@ -61,6 +89,7 @@ describe('tokenListsReads.listPublished', () => {
                 slug: 'ownership-core',
                 name: 'Ownership Core',
                 ownerProjectId: 'proj_1',
+                status: 'published',
                 tokenCount: 3,
                 updatedAt: 1_780_000_000_000,
             },
@@ -80,9 +109,7 @@ describe('tokenListsReads.listPublished', () => {
     });
 
     it('rejects non-numeric limit', async () => {
-        await expect(listPublished(makeRepo(), { limit: 'lots' })).rejects.toBeInstanceOf(
-            InvalidArgsError,
-        );
+        await expect(listPublished(makeRepo(), { limit: 'lots' })).rejects.toBeInstanceOf(InvalidArgsError);
     });
 });
 

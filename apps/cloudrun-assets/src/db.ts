@@ -3509,10 +3509,26 @@ export function makePostgresTokenListsReadsRepo(sql: Sql): TokenListsReadsRepo {
                 SELECT tl.slug,
                        tl.name,
                        tl.owner_project_id,
+                       tl.status,
                        (SELECT COUNT(*)::int FROM token_list_members m WHERE m.list_id = tl.id) AS member_count,
                        (EXTRACT(EPOCH FROM tl.updated_at) * 1000)::bigint AS updated_at
                 FROM token_lists tl
                 WHERE tl.status = 'published'
+                ORDER BY tl.updated_at DESC, tl.slug ASC
+                LIMIT ${limit} OFFSET ${offset}
+            `;
+            return rows;
+        },
+        async listByOwner(ownerProjectId, limit, offset) {
+            const rows = await sql<TokenListSummaryRow[]>`
+                SELECT tl.slug,
+                       tl.name,
+                       tl.owner_project_id,
+                       tl.status,
+                       (SELECT COUNT(*)::int FROM token_list_members m WHERE m.list_id = tl.id) AS member_count,
+                       (EXTRACT(EPOCH FROM tl.updated_at) * 1000)::bigint AS updated_at
+                FROM token_lists tl
+                WHERE tl.owner_project_id = ${ownerProjectId} AND tl.status <> 'archived'
                 ORDER BY tl.updated_at DESC, tl.slug ASC
                 LIMIT ${limit} OFFSET ${offset}
             `;

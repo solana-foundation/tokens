@@ -102,6 +102,7 @@ const noopFillQualityReadsRepo: FillQualityReadsRepo = {
 };
 const noopTokenListsReadsRepo: TokenListsReadsRepo = {
     async listPublished() { return []; },
+    async listByOwner() { return []; },
     async getBySlug() { return null; },
     async listMembersBySlug() { return []; },
     async listSlugsByMints() { return []; },

@@ -3461,6 +3461,9 @@ function emptyTokenListsReadsRepo(): TokenListsReadsRepo {
         async listPublished() {
             return [];
         },
+        async listByOwner() {
+            return [];
+        },
         async getBySlug() {
             return null;
         },

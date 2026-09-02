@@ -38,6 +38,8 @@ export interface V2ListSummary {
     owner: { name: string } | { projectId: string };
     tokenCount: number;
     updatedAt: number | null;
+    /** Only on owner-scoped responses (`GET /v2/lists?mine=true`): draft | unlisted | published. */
+    status?: string;
 }
 
 export interface V2ListToken {
@@ -274,7 +276,9 @@ export function failMutationError(
                 new BadRequestError({ message: 'This list is at its member capacity', details: { code } }),
             );
         case 'batch_too_large':
-            return Effect.fail(new BadRequestError({ message: 'Batch exceeds the per-call mint cap', details: { code } }));
+            return Effect.fail(
+                new BadRequestError({ message: 'Batch exceeds the per-call mint cap', details: { code } }),
+            );
     }
 }
 
