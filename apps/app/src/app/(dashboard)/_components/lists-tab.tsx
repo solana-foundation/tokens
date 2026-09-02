@@ -25,6 +25,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '@tokens/ui/tooltip';
 import { CopyButton } from '@/components/app-ui/copy-button';
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/app-ui/dialog';
 import { EmptyState } from '@/components/global/empty-state';
+import { Logo } from '@/components/logo';
 import { TabNavigation } from '@/components/global/tab-navigation';
 import { ComposeEndpointSheet, type ComposableList } from './compose-endpoint-dialog';
 import { ImportMembersDialog } from './import-members-dialog';
@@ -287,24 +288,16 @@ function CommunityRailRow({
             <Badge variant="secondary" className="shrink-0 px-1.5 font-berkeley-mono text-[10px]">
                 {list.tokenCount}
             </Badge>
-            <span className="ml-auto shrink-0">
-                {list.curated ? (
-                    <Badge variant="outline" className="px-1.5 text-[10px]">
-                        Curated
+            {list.curated && (
+                <span className="ml-auto shrink-0">
+                    <Badge variant="outline" className="flex items-center gap-1 px-1.5 text-[10px]">
+                        <Logo className="size-2.5" />
+                        Tokens
                     </Badge>
-                ) : (
-                    <span className="font-berkeley-mono text-[10px] text-muted-foreground">
-                        {shortOwnerId(list.owner.projectId)}
-                    </span>
-                )}
-            </span>
+                </span>
+            )}
         </div>
     );
-}
-
-function shortOwnerId(projectId: string | undefined): string {
-    if (!projectId) return '—';
-    return projectId.length > 12 ? `${projectId.slice(0, 8)}…` : projectId;
 }
 
 /** Rail header action: icon-only button with a hover tooltip naming what it does. */
@@ -651,9 +644,14 @@ export function ListsTab(): React.JSX.Element {
         [allLists, projectId],
     );
 
+    // Owned lists first: private (unlisted) lists exist only in the owner-scoped
+    // catalog, so resolving from the public one alone would blank the detail pane.
     const selectedList = useMemo(
-        () => allLists?.find(list => list.slug === selectedSlug) ?? null,
-        [allLists, selectedSlug],
+        () =>
+            ownedLists?.find(list => list.slug === selectedSlug) ??
+            allLists?.find(list => list.slug === selectedSlug) ??
+            null,
+        [ownedLists, allLists, selectedSlug],
     );
     const selectedIsOwned = useMemo(
         () => Boolean(selectedList && !selectedList.curated && selectedList.owner.projectId === projectId),
@@ -1116,18 +1114,15 @@ export function ListsTab(): React.JSX.Element {
                                     <div className="space-y-1">
                                         <div className="flex items-center gap-1.5">
                                             <h2 className="text-xl font-inter-semibold">{selectedList.name}</h2>
-                                            {selectedList.curated ? (
-                                                <Badge variant="outline" className="px-1.5 text-[10px]">
-                                                    Curated
-                                                </Badge>
-                                            ) : !selectedIsOwned ? (
+                                            {selectedList.curated && (
                                                 <Badge
-                                                    variant="secondary"
-                                                    className="px-1.5 font-berkeley-mono text-[10px]"
+                                                    variant="outline"
+                                                    className="flex items-center gap-1 px-1.5 text-[10px]"
                                                 >
-                                                    {shortOwnerId(selectedList.owner.projectId)}
+                                                    <Logo className="size-2.5" />
+                                                    Tokens
                                                 </Badge>
-                                            ) : null}
+                                            )}
                                             <Tooltip delayDuration={300}>
                                                 <TooltipTrigger asChild>
                                                     <button
