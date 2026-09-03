@@ -9,7 +9,7 @@ for all published lists.
 
 | Env var | Default | Bounds |
 |---|---|---|
-| `TOKEN_LIST_BATCH_CAP` | 1000 | mints per `POST /members` batch call |
+| `TOKEN_LIST_BATCH_CAP` | 250 | mints per `POST /members` batch call |
 | `TOKEN_LIST_MEMBERS_PER_LIST_CAP` | 5000 | members a single list may hold (`list_full`) |
 | `TOKEN_LIST_PROVIDER_LOOKUP_BUDGET` | 50 | Birdeye lookups a batch call may spend on locally-unknown mints |
 

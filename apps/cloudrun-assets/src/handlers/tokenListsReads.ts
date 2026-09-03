@@ -129,11 +129,15 @@ export async function countPublished(repo: TokenListsReadsRepo): Promise<{ total
     return { total: await repo.countPublished() };
 }
 
-/** Hold state for check-slug: `{ hold: { ownerProjectId, releasedAt } | null }`. */
+/**
+ * Hold state for check-slug. `expiresAt` is computed HERE from the same env
+ * the enforcing mutations read (TOKEN_LIST_SLUG_HOLD_DAYS), so the advisory
+ * check-slug endpoint cannot drift from enforcement.
+ */
 export async function getSlugHold(
     repo: TokenListsReadsRepo,
     args: unknown,
-): Promise<{ hold: { ownerProjectId: string; releasedAt: number } | null }> {
+): Promise<{ hold: { ownerProjectId: string; releasedAt: number; expiresAt: number } | null }> {
     if (typeof args !== 'object' || args === null) {
         throw new InvalidArgsError('args must be an object');
     }
@@ -141,7 +145,10 @@ export async function getSlugHold(
     if (typeof a.slug !== 'string' || !a.slug.trim()) {
         throw new InvalidArgsError('slug must be a non-empty string');
     }
-    return { hold: await repo.getSlugHold(a.slug.trim().toLowerCase()) };
+    const hold = await repo.getSlugHold(a.slug.trim().toLowerCase());
+    if (!hold) return { hold: null };
+    const holdMs = (Number(process.env.TOKEN_LIST_SLUG_HOLD_DAYS) || 30) * 24 * 60 * 60 * 1000;
+    return { hold: { ...hold, expiresAt: hold.releasedAt + holdMs } };
 }
 
 export async function getBySlug(repo: TokenListsReadsRepo, args: unknown): Promise<TokenListDetail | null> {

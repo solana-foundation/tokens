@@ -531,7 +531,9 @@ export function makePostgresCuratedMembershipSource(sql: Sql): CuratedMembership
         if (memberRows.length === 0) {
             throw new Error('curated membership snapshot has 0 member rows — refusing to commit');
         }
-        const maxShrinkPct = Number(process.env.CURATED_SNAPSHOT_MAX_SHRINK_PCT) || 50;
+        const shrinkEnv = Number(process.env.CURATED_SNAPSHOT_MAX_SHRINK_PCT);
+        // 0 is meaningful ("refuse any shrink"), so no || coercion here.
+        const maxShrinkPct = Number.isFinite(shrinkEnv) && shrinkEnv >= 0 ? shrinkEnv : 50;
         if (lastMemberRowCount > 0 && memberRows.length < lastMemberRowCount * (1 - maxShrinkPct / 100)) {
             throw new Error(
                 `curated membership snapshot shrank ${lastMemberRowCount} -> ${memberRows.length} rows ` +
@@ -3668,9 +3670,20 @@ export function makePostgresTokenListsMutationsRepo(sql: Sql): TokenListsMutatio
             }
             return getRowById(listId);
         },
-        async deleteList(listId) {
-            // token_list_members.list_id is ON DELETE CASCADE, so members go with it.
-            await sql`DELETE FROM token_lists WHERE id = ${listId}`;
+        async deleteList(listId, hold) {
+            // One transaction: the row disappearing and the hold appearing are
+            // atomic, so a crash cannot leave the slug momentarily free.
+            // token_list_members.list_id is ON DELETE CASCADE.
+            await sql.begin(async tx => {
+                await tx`DELETE FROM token_lists WHERE id = ${listId}`;
+                await tx`
+                    INSERT INTO token_list_slug_holds (slug, owner_project_id, released_at)
+                    VALUES (${hold.slug}, ${hold.ownerProjectId}, ${hold.releasedAt})
+                    ON CONFLICT (slug) DO UPDATE SET
+                        owner_project_id = EXCLUDED.owner_project_id,
+                        released_at = EXCLUDED.released_at
+                `;
+            });
         },
         async getSlugHold(slug) {
             const rows = await sql<{ owner_project_id: string; released_at: string | number }[]>`
@@ -3693,27 +3706,47 @@ export function makePostgresTokenListsMutationsRepo(sql: Sql): TokenListsMutatio
         },
         async upsertMember(args) {
             const rank = args.rank;
-            await sql`
-                INSERT INTO token_list_members (id, list_id, mint, rank, note, added_at, symbol, name, logo_uri, decimals)
-                VALUES (
-                    ${randomId('tlm')}, ${args.listId}, ${args.mint},
-                    COALESCE(${rank}, (
-                        SELECT COALESCE(MAX(rank), -1) + 1 FROM token_list_members WHERE list_id = ${args.listId}
-                    )),
-                    ${args.note}, ${args.addedAt},
-                    ${args.snapshot?.symbol ?? null}, ${args.snapshot?.name ?? null},
-                    ${args.snapshot?.logoUri ?? null}, ${args.snapshot?.decimals ?? null}
-                )
-                ON CONFLICT (list_id, mint) DO UPDATE SET
-                    rank = COALESCE(${rank}, token_list_members.rank),
-                    note = EXCLUDED.note,
-                    symbol = EXCLUDED.symbol,
-                    name = EXCLUDED.name,
-                    logo_uri = EXCLUDED.logo_uri,
-                    decimals = EXCLUDED.decimals
-            `;
-            // Discovery updatedAt must reflect member changes, not just metadata edits.
-            await sql`UPDATE token_lists SET updated_at = ${new Date(args.addedAt)} WHERE id = ${args.listId}`;
+            let inserted = true;
+            // Same locking discipline as upsertMembersBulk: cap and default
+            // rank are read with the list row locked, so a single PUT cannot
+            // race a batch into cap overshoot or duplicate ranks.
+            await sql.begin(async tx => {
+                await tx`SELECT id FROM token_lists WHERE id = ${args.listId} FOR UPDATE`;
+                const existingRows = await tx<{ id: string }[]>`
+                    SELECT id FROM token_list_members WHERE list_id = ${args.listId} AND mint = ${args.mint}
+                `;
+                if (existingRows.length === 0) {
+                    const countRows = await tx<{ count: number }[]>`
+                        SELECT COUNT(*)::int AS count FROM token_list_members WHERE list_id = ${args.listId}
+                    `;
+                    if ((countRows[0]?.count ?? 0) >= args.membersPerListCap) {
+                        inserted = false;
+                        return;
+                    }
+                }
+                await tx`
+                    INSERT INTO token_list_members (id, list_id, mint, rank, note, added_at, symbol, name, logo_uri, decimals)
+                    VALUES (
+                        ${randomId('tlm')}, ${args.listId}, ${args.mint},
+                        COALESCE(${rank}, (
+                            SELECT COALESCE(MAX(rank), -1) + 1 FROM token_list_members WHERE list_id = ${args.listId}
+                        )),
+                        ${args.note}, ${args.addedAt},
+                        ${args.snapshot?.symbol ?? null}, ${args.snapshot?.name ?? null},
+                        ${args.snapshot?.logoUri ?? null}, ${args.snapshot?.decimals ?? null}
+                    )
+                    ON CONFLICT (list_id, mint) DO UPDATE SET
+                        rank = COALESCE(${rank}, token_list_members.rank),
+                        note = EXCLUDED.note,
+                        symbol = EXCLUDED.symbol,
+                        name = EXCLUDED.name,
+                        logo_uri = EXCLUDED.logo_uri,
+                        decimals = EXCLUDED.decimals
+                `;
+                // Discovery updatedAt must reflect member changes, not just metadata edits.
+                await tx`UPDATE token_lists SET updated_at = ${new Date(args.addedAt)} WHERE id = ${args.listId}`;
+            });
+            return inserted;
         },
         async removeMember(listId, mint, nowMs) {
             const rows = await sql<{ id: string }[]>`
