@@ -12,8 +12,15 @@ interface RouteCtx {
     platformAuth: PlatformAuthContext;
 }
 
+/**
+ * Edge mirror of the prod TOKEN_LIST_BATCH_CAP default (250) — keeps oversized
+ * payloads from round-tripping to Cloud Run just to get batch_too_large. The
+ * env-tunable Cloud Run cap remains authoritative.
+ */
+const BATCH_ITEM_CAP = 250;
+
 const bodySchema = Schema.Struct({
-    mints: Schema.optional(Schema.Array(Schema.String).check(Schema.isMaxLength(1000))),
+    mints: Schema.optional(Schema.Array(Schema.String).check(Schema.isMaxLength(BATCH_ITEM_CAP))),
     /** CSV-shaped alternative: row order becomes rank order, `note` lands on the member. */
     members: Schema.optional(
         Schema.Array(
@@ -21,12 +28,12 @@ const bodySchema = Schema.Struct({
                 mint: Schema.String,
                 note: Schema.optional(Schema.String.check(Schema.isMaxLength(500))),
             }),
-        ).check(Schema.isMaxLength(1000)),
+        ).check(Schema.isMaxLength(BATCH_ITEM_CAP)),
     ),
 });
 
 /**
- * POST /api/v2/lists/{slug}/members — bulk add (≤1000 mints per call, for
+ * POST /api/v2/lists/{slug}/members — bulk add (≤250 mints per call, for
  * onboarding an existing list). Body is `{ mints: string[] }` or
  * `{ members: [{ mint, note? }] }` (or both). Per-mint failures are reported
  * in `failed` without failing the batch.
