@@ -83,6 +83,7 @@ export type TokenListMutationErrorCode =
     | 'invalid_mint'
     | 'unknown_mint'
     | 'batch_too_large'
+    | 'project_lists_limit'
     | 'list_full';
 
 export type TokenListMutationOutcome<T> = { ok: true; value: T } | { ok: false; error: TokenListMutationErrorCode };

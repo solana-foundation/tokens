@@ -262,6 +262,13 @@ export function failMutationError(
                     details: { code },
                 }),
             );
+        case 'project_lists_limit':
+            return Effect.fail(
+                new BadRequestError({
+                    message: 'This project is at its list limit — delete a list before creating another',
+                    details: { code },
+                }),
+            );
         case 'list_full':
             return Effect.fail(
                 new BadRequestError({ message: 'This list is at its member capacity', details: { code } }),
@@ -277,7 +284,9 @@ export function failMutationError(
         case 'admin_locked':
             return Effect.fail(new ForbiddenError({ message: 'This list has been locked by moderators' }));
         case 'batch_too_large':
-            return Effect.fail(new BadRequestError({ message: 'Batch exceeds the per-call mint cap', details: { code } }));
+            return Effect.fail(
+                new BadRequestError({ message: 'Batch exceeds the per-call mint cap', details: { code } }),
+            );
     }
 }
 

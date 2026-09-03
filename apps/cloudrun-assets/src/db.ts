@@ -3551,50 +3551,94 @@ export function makePostgresTokenListsMutationsRepo(sql: Sql): TokenListsMutatio
             `;
             return rows[0]?.count ?? 0;
         },
-        async upsertMembersBulk(listId, rows) {
-            if (rows.length === 0) return;
-            // New mints append after the current max rank in array order;
-            // conflicts keep their rank and refresh note/snapshot.
-            const baseRows = await sql<{ next: number }[]>`
-                SELECT COALESCE(MAX(rank), -1) + 1 AS next FROM token_list_members WHERE list_id = ${listId}
-            `;
-            let nextRank = baseRows[0]?.next ?? 0;
-            for (const part of chunkArray(rows, 500)) {
-                const values = part.map(row => ({
-                    id: randomId('tlm'),
-                    list_id: listId,
-                    mint: row.mint,
-                    rank: nextRank++,
-                    note: row.note,
-                    added_at: row.addedAt,
-                    symbol: row.snapshot?.symbol ?? null,
-                    name: row.snapshot?.name ?? null,
-                    logo_uri: row.snapshot?.logoUri ?? null,
-                    decimals: row.snapshot?.decimals ?? null,
-                }));
-                await sql`
-                    INSERT INTO token_list_members ${sql(
-                        values,
-                        'id',
-                        'list_id',
-                        'mint',
-                        'rank',
-                        'note',
-                        'added_at',
-                        'symbol',
-                        'name',
-                        'logo_uri',
-                        'decimals',
-                    )}
-                    ON CONFLICT (list_id, mint) DO UPDATE SET
-                        note = EXCLUDED.note,
-                        symbol = EXCLUDED.symbol,
-                        name = EXCLUDED.name,
-                        logo_uri = EXCLUDED.logo_uri,
-                        decimals = EXCLUDED.decimals
+        async upsertMembersBulk(listId, rows, membersPerListCap) {
+            if (rows.length === 0) return { overflowMints: [] };
+            const overflowMints: string[] = [];
+            // One transaction, list row locked: the cap and MAX(rank) are read
+            // under the lock so concurrent batches serialize per-list — no cap
+            // overshoot, no duplicate ranks.
+            await sql.begin(async tx => {
+                await tx`SELECT id FROM token_lists WHERE id = ${listId} FOR UPDATE`;
+
+                const existing = new Set<string>();
+                for (const part of chunkStrings(
+                    rows.map(row => row.mint),
+                    500,
+                )) {
+                    const found = await tx<{ mint: string }[]>`
+                        SELECT mint FROM token_list_members
+                        WHERE list_id = ${listId} AND mint IN ${tx([...part])}
+                    `;
+                    for (const row of found) existing.add(row.mint);
+                }
+                const countRows = await tx<{ count: number }[]>`
+                    SELECT COUNT(*)::int AS count FROM token_list_members WHERE list_id = ${listId}
                 `;
-            }
-            await sql`UPDATE token_lists SET updated_at = now() WHERE id = ${listId}`;
+                let slots = Math.max(0, membersPerListCap - (countRows[0]?.count ?? 0));
+
+                const insertable: typeof rows = [];
+                for (const row of rows) {
+                    if (!existing.has(row.mint)) {
+                        if (slots === 0) {
+                            overflowMints.push(row.mint);
+                            continue;
+                        }
+                        slots -= 1;
+                    }
+                    insertable.push(row);
+                }
+                if (insertable.length === 0) return;
+
+                const baseRows = await tx<{ next: number }[]>`
+                    SELECT COALESCE(MAX(rank), -1) + 1 AS next FROM token_list_members WHERE list_id = ${listId}
+                `;
+                let nextRank = baseRows[0]?.next ?? 0;
+                for (const part of chunkArray(insertable, 500)) {
+                    const values = part.map(row => ({
+                        id: randomId('tlm'),
+                        list_id: listId,
+                        mint: row.mint,
+                        rank: nextRank++,
+                        note: row.note,
+                        added_at: row.addedAt,
+                        symbol: row.snapshot?.symbol ?? null,
+                        name: row.snapshot?.name ?? null,
+                        logo_uri: row.snapshot?.logoUri ?? null,
+                        decimals: row.snapshot?.decimals ?? null,
+                    }));
+                    await tx`
+                        INSERT INTO token_list_members ${tx(
+                            values,
+                            'id',
+                            'list_id',
+                            'mint',
+                            'rank',
+                            'note',
+                            'added_at',
+                            'symbol',
+                            'name',
+                            'logo_uri',
+                            'decimals',
+                        )}
+                        ON CONFLICT (list_id, mint) DO UPDATE SET
+                            note = EXCLUDED.note,
+                            symbol = EXCLUDED.symbol,
+                            name = EXCLUDED.name,
+                            logo_uri = EXCLUDED.logo_uri,
+                            decimals = EXCLUDED.decimals
+                    `;
+                }
+                await tx`UPDATE token_lists SET updated_at = now() WHERE id = ${listId}`;
+            });
+            return { overflowMints };
+        },
+        async countListsByOwner(ownerProjectId) {
+            const rows = await sql<{ count: number }[]>`
+                SELECT COUNT(*)::int AS count
+                FROM token_lists
+                WHERE owner_project_id = ${ownerProjectId} AND status <> 'archived'
+            `;
+            return rows[0]?.count ?? 0;
         },
     };
 }

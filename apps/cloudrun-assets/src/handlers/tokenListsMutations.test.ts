@@ -12,6 +12,7 @@ import {
     removeMember,
     updateList,
     upsertMember,
+    withOverviewMissCache,
     type TokenListMutationRow,
     type TokenListsMutationsDeps,
     type TokenListsMutationsRepo,
@@ -58,7 +59,8 @@ function makeDeps(
             filterMintsKnownTokens: async () => [],
             filterMintsExistingMembers: async () => [],
             countMembers: async () => 0,
-            upsertMembersBulk: async () => {},
+            upsertMembersBulk: async () => ({ overflowMints: [] }),
+            countListsByOwner: async () => 0,
             getSlugHold: async () => null,
             recordSlugHold: async () => {},
             clearSlugHold: async () => {},
@@ -298,6 +300,78 @@ describe('text caps and rank validation', () => {
     });
 });
 
+describe('lists-per-project cap', () => {
+    it('refuses creation once the project owns caps.listsPerProject lists', async () => {
+        const deps = makeDeps({ countListsByOwner: async () => 100 });
+        expect(await createList(deps, { ownerProjectId: 'proj_1', slug: 'one-more', name: 'X' })).toEqual({
+            ok: false,
+            error: 'project_lists_limit',
+        });
+        const under = makeDeps({ countListsByOwner: async () => 99 });
+        expect(await createList(under, { ownerProjectId: 'proj_1', slug: 'one-more', name: 'X' })).toMatchObject({
+            ok: true,
+        });
+    });
+});
+
+describe('withOverviewMissCache', () => {
+    it('serves misses from the cache within the TTL and retries after it', async () => {
+        let calls = 0;
+        let clock = 0;
+        const fetch = withOverviewMissCache(
+            async () => {
+                calls += 1;
+                return null;
+            },
+            { ttlMs: 1000, now: () => clock },
+        );
+        expect(await fetch('MintA')).toBeNull();
+        expect(await fetch('MintA')).toBeNull();
+        expect(calls).toBe(1);
+        clock = 1001;
+        expect(await fetch('MintA')).toBeNull();
+        expect(calls).toBe(2);
+    });
+
+    it('does not cache hits and evicts FIFO past maxEntries', async () => {
+        let calls = 0;
+        const fetch = withOverviewMissCache(
+            async mint => {
+                calls += 1;
+                return mint === 'Known' ? ({ symbol: 'K' } as never) : null;
+            },
+            { maxEntries: 1 },
+        );
+        await fetch('Known');
+        await fetch('Known');
+        expect(calls).toBe(2);
+        await fetch('MissA');
+        await fetch('MissB'); // evicts MissA
+        await fetch('MissA'); // refetches
+        expect(calls).toBe(5);
+    });
+});
+
+describe('bulk cap reconciliation', () => {
+    it('moves txn-detected overflow mints from added to failed', async () => {
+        const deps = makeDeps({
+            upsertMembersBulk: async () => ({ overflowMints: [MEME_MINT] }),
+        });
+        const result = await addMembersBatch(deps, {
+            ownerProjectId: 'proj_1',
+            slug: 'ownership-core',
+            mints: [USDC_MINT, MEME_MINT],
+        });
+        expect(result).toMatchObject({
+            ok: true,
+            value: {
+                added: [{ mint: USDC_MINT }],
+                failed: [{ mint: MEME_MINT, error: 'list_full' }],
+            },
+        });
+    });
+});
+
 describe('upsertMember mint resolution', () => {
     it('registry-known mint → verified, no snapshot', async () => {
         const result = await upsertMember(makeDeps(), {
@@ -408,7 +482,10 @@ describe('addMembersBatch', () => {
         const bulkCalls: number[] = [];
         let singleCalls = 0;
         const deps = makeDeps({
-            upsertMembersBulk: async (_listId, rows) => void bulkCalls.push(rows.length),
+            upsertMembersBulk: async (_listId, rows) => {
+                bulkCalls.push(rows.length);
+                return { overflowMints: [] };
+            },
             upsertMember: async () => {
                 singleCalls += 1;
             },

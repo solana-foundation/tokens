@@ -3492,16 +3492,29 @@ function emptyTokenListsMutationsDeps(): TokenListsMutationsDeps {
             async hasTokenForAddress() {
                 return false;
             },
-        async filterMintsWithActiveVariants() { return []; },
-        async filterMintsKnownTokens() { return []; },
-        async filterMintsExistingMembers() { return []; },
-        async countMembers() { return 0; },
-        async upsertMembersBulk() {},
+            async filterMintsWithActiveVariants() {
+                return [];
+            },
+            async filterMintsKnownTokens() {
+                return [];
+            },
+            async filterMintsExistingMembers() {
+                return [];
+            },
+            async countMembers() {
+                return 0;
+            },
+            async upsertMembersBulk() {
+                return { overflowMints: [] };
+            },
+            async countListsByOwner() {
+                return 0;
+            },
         },
         fetchTokenOverview: async () => null,
         slugHoldMs: 30 * 24 * 60 * 60 * 1000,
         now: () => 0,
-        caps: { batch: 1000, membersPerList: 5000, providerLookups: 50 },
+        caps: { batch: 250, membersPerList: 5000, providerLookups: 50, listsPerProject: 100 },
     };
 }
 

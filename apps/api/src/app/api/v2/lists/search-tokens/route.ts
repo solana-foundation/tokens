@@ -1,6 +1,7 @@
 import { Effect } from 'effect';
 
-import { route } from '@/effect/next-route';
+import { route, type PlatformAuthContext } from '@/effect/next-route';
+import { enforceProviderBudget } from '@/effect/provider-budget';
 import { BadRequestError, decodeLimit, tapErrorAndDefault } from '@tokens/effect';
 import { tokenListsGetSlugsByMints } from '@/lib/cloudrun';
 
@@ -20,8 +21,11 @@ import { SCORING_VERSION } from '@/lib/judgment/types';
  * (curated + community lists already containing the mint — prior art).
  */
 export const GET = route(
-    (request: Request) =>
+    (request: Request, ctx: { platformAuth: PlatformAuthContext }) =>
         Effect.gen(function* () {
+            // Unique-q searches bypass the 30s response cache; the per-key
+            // window budget bounds sustained provider spend.
+            yield* enforceProviderBudget(ctx.platformAuth, 'search');
             const url = new URL(request.url);
             const q = (url.searchParams.get('q') ?? '').trim();
             if (!q) {
@@ -50,10 +54,16 @@ export const GET = route(
             const policy = POLICIES[policyId];
 
             const { candidates, sources } = yield* gatherCandidates(q, interpretation);
-            const { results, suppressed } = judgeCandidates(candidates, interpretation, policy, getProtectedSymbolIndex(), {
-                nowMs: Date.now(),
-                limit,
-            });
+            const { results, suppressed } = judgeCandidates(
+                candidates,
+                interpretation,
+                policy,
+                getProtectedSymbolIndex(),
+                {
+                    nowMs: Date.now(),
+                    limit,
+                },
+            );
 
             // Prior art for the curator: which lists (curated ∪ published
             // community) already contain each candidate. Fail-open — membership
@@ -70,10 +80,7 @@ export const GET = route(
 
             const annotated = results.map(result => {
                 const registry = registryByMint.get(result.mint) ?? null;
-                const inLists = [
-                    ...(registry?.curatedListIds ?? []),
-                    ...(communityByMint.get(result.mint) ?? []),
-                ];
+                const inLists = [...(registry?.curatedListIds ?? []), ...(communityByMint.get(result.mint) ?? [])];
                 return { ...result, verified: registry !== null, inLists };
             });
 

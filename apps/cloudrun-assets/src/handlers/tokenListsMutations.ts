@@ -39,13 +39,50 @@ export interface TokenListCaps {
     membersPerList: number;
     /** Max Birdeye lookups a single batch call may spend on unknown mints. */
     providerLookups: number;
+    /** Max non-archived lists a single project may own. */
+    listsPerProject: number;
 }
 
 export const DEFAULT_TOKEN_LIST_CAPS: TokenListCaps = {
-    batch: 1000,
+    // 250 bounds per-call wall time (~3 chunked IN-queries + inserts); large
+    // imports chunk client-side. Was 1000, which let a burst of multi-second
+    // calls park on the service (see the #121 review).
+    batch: 250,
     membersPerList: 5000,
     providerLookups: 50,
+    listsPerProject: 100,
 };
+
+/**
+ * Negative cache for provider lookups: a mint Birdeye doesn't know keeps not
+ * existing for a while — without this, replayed batches of the same unknown
+ * mints burn the provider budget forever. FIFO-evicted, per-instance.
+ */
+export function withOverviewMissCache(
+    inner: (mint: string) => Promise<BirdeyeOverview | null>,
+    options: { ttlMs?: number; maxEntries?: number; now?: () => number } = {},
+): (mint: string) => Promise<BirdeyeOverview | null> {
+    const ttlMs = options.ttlMs ?? 15 * 60 * 1000;
+    const maxEntries = options.maxEntries ?? 50_000;
+    const now = options.now ?? (() => Date.now());
+    const misses = new Map<string, number>();
+    return async mint => {
+        const missedAt = misses.get(mint);
+        if (missedAt !== undefined) {
+            if (now() - missedAt < ttlMs) return null;
+            misses.delete(mint);
+        }
+        const overview = await inner(mint);
+        if (overview === null) {
+            misses.set(mint, now());
+            if (misses.size > maxEntries) {
+                const oldest = misses.keys().next().value;
+                if (oldest !== undefined) misses.delete(oldest);
+            }
+        }
+        return overview;
+    };
+}
 
 export interface TokenListMutationRow {
     id: string;
@@ -95,6 +132,8 @@ export interface TokenListsMutationsRepo {
     recordSlugHold(slug: string, ownerProjectId: string, releasedAt: number): Promise<void>;
     /** Drop a hold once the slug is claimed again. */
     clearSlugHold(slug: string): Promise<void>;
+    /** Non-archived lists owned by the project (lists-per-project cap). */
+    countListsByOwner(ownerProjectId: string): Promise<number>;
     /** Upsert on (list_id, mint); missing rank appends after the current max. Touches the parent list. */
     upsertMember(args: {
         listId: string;
@@ -118,14 +157,19 @@ export interface TokenListsMutationsRepo {
     filterMintsExistingMembers(listId: string, mints: readonly string[]): Promise<string[]>;
     countMembers(listId: string): Promise<number>;
     /**
-     * Multi-row upsert (chunked): new mints append after the current max rank
-     * in array order, existing mints keep their rank and refresh note/snapshot.
+     * Multi-row upsert inside ONE transaction that locks the list row
+     * (FOR UPDATE): the members-per-list cap and MAX(rank) are re-read under
+     * the lock, so concurrent batches can neither overshoot the cap nor mint
+     * duplicate ranks. New mints append after the current max rank in array
+     * order; existing mints keep their rank and refresh note/snapshot; net-new
+     * rows beyond the cap are skipped and returned as `overflowMints`.
      * Touches the parent list's updated_at ONCE.
      */
     upsertMembersBulk(
         listId: string,
         rows: Array<{ mint: string; note: string | null; addedAt: number; snapshot: MemberSnapshot | null }>,
-    ): Promise<void>;
+        membersPerListCap: number,
+    ): Promise<{ overflowMints: string[] }>;
 }
 
 export class SlugConflictError extends Error {
@@ -156,7 +200,8 @@ export type TokenListMutationErrorCode =
     | 'invalid_mint'
     | 'unknown_mint'
     | 'batch_too_large'
-    | 'list_full';
+    | 'list_full'
+    | 'project_lists_limit';
 
 export interface TokenListResult {
     id: string;
@@ -264,6 +309,9 @@ export async function createList(
     if (!TOKEN_LIST_SLUG_REGEX.test(slug)) return { ok: false, error: 'invalid_slug' };
     if (isReservedTokenListSlug(slug)) return { ok: false, error: 'reserved_slug' };
     if (await slugHeldForOther(deps, slug, ownerProjectId)) return { ok: false, error: 'slug_held' };
+    if ((await deps.repo.countListsByOwner(ownerProjectId)) >= deps.caps.listsPerProject) {
+        return { ok: false, error: 'project_lists_limit' };
+    }
 
     try {
         const row = await deps.repo.insertList({
@@ -464,11 +512,7 @@ export interface BatchAddResult {
 }
 
 /** Run `fn` over `items` with at most `limit` in flight. Results keep item order. */
-async function mapWithConcurrency<T, R>(
-    items: readonly T[],
-    limit: number,
-    fn: (item: T) => Promise<R>,
-): Promise<R[]> {
+async function mapWithConcurrency<T, R>(items: readonly T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
     const results: R[] = new Array(items.length);
     let next = 0;
     async function worker() {
@@ -548,7 +592,10 @@ export async function addMembersBatch(
     // inserts consume slots in request order, and the overflow fails as
     // list_full without sinking the rest of the batch.
     const existingSet = new Set(
-        await deps.repo.filterMintsExistingMembers(listId, resolved.map(member => member.mint)),
+        await deps.repo.filterMintsExistingMembers(
+            listId,
+            resolved.map(member => member.mint),
+        ),
     );
     const currentCount = await deps.repo.countMembers(listId);
     let slots = Math.max(0, deps.caps.membersPerList - currentCount);
@@ -567,6 +614,17 @@ export async function addMembersBatch(
         added.push(member);
     }
 
-    if (rows.length > 0) await deps.repo.upsertMembersBulk(listId, rows);
+    if (rows.length > 0) {
+        // The pre-check above is a fast path only; the repo re-checks the cap
+        // under a row lock, so concurrent batches cannot overshoot it.
+        const { overflowMints } = await deps.repo.upsertMembersBulk(listId, rows, deps.caps.membersPerList);
+        if (overflowMints.length > 0) {
+            const overflow = new Set(overflowMints);
+            for (const mint of overflowMints) failed.push({ mint, error: 'list_full' });
+            const kept = added.filter(member => !overflow.has(member.mint));
+            added.length = 0;
+            added.push(...kept);
+        }
+    }
     return { ok: true, value: { added, failed } };
 }
