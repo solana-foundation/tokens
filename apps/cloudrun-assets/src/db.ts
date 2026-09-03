@@ -361,6 +361,8 @@ export function makePostgresCuratedMembershipSource(sql: Sql): CuratedMembership
     let listSlugsByMint: Map<string, CuratedListSlug[]> = new Map();
     let loadedAtMs = 0;
     let inflight: Promise<void> | null = null;
+    /** Member-row count of the last committed snapshot, for the shrink guard. */
+    let lastMemberRowCount = 0;
 
     async function load(): Promise<void> {
         // Every active sibling variant inherits its asset's membership, but
@@ -419,7 +421,8 @@ export function makePostgresCuratedMembershipSource(sql: Sql): CuratedMembership
         const viewJson = viewRows[0]?.variants_json;
         if (viewJson) {
             try {
-                const parsed = JSON.parse(viewJson) as { variants?: Array<{ kind?: string; mint?: string }> } | Array<{ kind?: string; mint?: string }>;
+                const parsed = JSON.parse(viewJson) as
+                    { variants?: Array<{ kind?: string; mint?: string }> } | Array<{ kind?: string; mint?: string }>;
                 const variants = Array.isArray(parsed) ? parsed : (parsed.variants ?? []);
                 const seen = new Set<string>();
                 for (const v of variants) {
@@ -520,6 +523,21 @@ export function makePostgresCuratedMembershipSource(sql: Sql): CuratedMembership
             slugsByMint.set(mint, entry.listSlugs);
         }
 
+        // Guards against committing a bogus snapshot (same class as the
+        // trending empty-row wipeout): a reachable DB with wiped membership
+        // yields a *successful* empty result, and a mass deactivation shrinks
+        // it silently. Refusing keeps the last good snapshot serving.
+        if (memberRows.length === 0) {
+            throw new Error('curated membership snapshot has 0 member rows — refusing to commit');
+        }
+        const maxShrinkPct = Number(process.env.CURATED_SNAPSHOT_MAX_SHRINK_PCT) || 50;
+        if (lastMemberRowCount > 0 && memberRows.length < lastMemberRowCount * (1 - maxShrinkPct / 100)) {
+            throw new Error(
+                `curated membership snapshot shrank ${lastMemberRowCount} -> ${memberRows.length} rows ` +
+                    `(> ${maxShrinkPct}% drop) — refusing to commit`,
+            );
+        }
+
         snapshot = {
             loadedAt: Date.now(),
             mintsByList,
@@ -530,6 +548,7 @@ export function makePostgresCuratedMembershipSource(sql: Sql): CuratedMembership
         cronMintRank = rank;
         listSlugsByMint = slugsByMint;
         loadedAtMs = Date.now();
+        lastMemberRowCount = memberRows.length;
     }
 
     function refreshIfStale(): void {
@@ -537,8 +556,17 @@ export function makePostgresCuratedMembershipSource(sql: Sql): CuratedMembership
         if (snapshot && Date.now() - loadedAtMs < CURATED_MEMBERSHIP_TTL_MS) return;
         inflight = load()
             .catch(err => {
-                // Stale-forever: keep serving the last good snapshot.
-                console.error('[cloudrun-assets] curated membership refresh failed', err);
+                // Keep serving the last good snapshot, but loudly: this line is
+                // the alert hook for a silently-frozen membership snapshot.
+                const stalenessMs = loadedAtMs > 0 ? Date.now() - loadedAtMs : null;
+                console.error(
+                    JSON.stringify({
+                        event: 'curated_snapshot_refresh_failed',
+                        staleness_ms: stalenessMs,
+                        stale_over_30m: stalenessMs !== null && stalenessMs > 30 * 60 * 1000,
+                        error: err instanceof Error ? err.message : String(err),
+                    }),
+                );
             })
             .finally(() => {
                 inflight = null;
@@ -3481,7 +3509,8 @@ export function makePostgresAssetCollectionsReadsRepo(sql: Sql): AssetCollection
                 description: r.description,
                 member_count: r.member_count,
                 last_added_asset_id: r.last_added_asset_id,
-                last_added_at: r.last_added_at === null || r.last_added_at === undefined ? null : Number(r.last_added_at),
+                last_added_at:
+                    r.last_added_at === null || r.last_added_at === undefined ? null : Number(r.last_added_at),
             }));
         },
     };
