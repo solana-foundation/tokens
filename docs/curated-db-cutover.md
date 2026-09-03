@@ -34,6 +34,10 @@ one-off job is a manual `POST /jobs/*` invocation.
    Sanctum view, `?category=stables` normalizes. Then run the one-off
    `POST /jobs/cleanup-materialized-all-collection` (the `all` collection is a
    live union now; the materialized rows are dead weight).
+   **⚠️ Point of no easy return:** after this cleanup, a rolled-back API's
+   `getDbMemberMints('all')` returns nothing and admin-added tokens vanish
+   from the old `all` list — rolling back past this step means re-seeding
+   the materialized `all` rows, not just redeploying.
 7. Admin add/remove test: changes surface in `/api/v2/lists/{slug}` and
    `/api/v1/assets/curated?list=` within ~60s (snapshot TTL) + HTTP cache,
    with NO seed run.

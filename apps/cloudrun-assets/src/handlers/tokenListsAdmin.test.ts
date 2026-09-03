@@ -21,6 +21,7 @@ const LIST_ROW: TokenListMutationRow = {
     owner_project_id: 'proj_partner',
     name: 'Ownership Core',
     status: 'published',
+    admin_locked_at: null,
     created_at: FIXED_NOW,
     updated_at: FIXED_NOW,
 };
@@ -48,12 +49,17 @@ function makeDeps(repoOverrides: Partial<TokenListsMutationsRepo> = {}): TokenLi
                 filterMintsKnownTokens: async () => [],
                 filterMintsExistingMembers: async () => [],
                 countMembers: async () => 0,
-                upsertMembersBulk: async () => {},
+                upsertMembersBulk: async () => ({ overflowMints: [] }),
+                getSlugHold: async () => null,
+                recordSlugHold: async () => {},
+                clearSlugHold: async () => {},
+                countListsByOwner: async () => 0,
                 ...repoOverrides,
             },
             fetchTokenOverview: async () => null,
             now: () => FIXED_NOW,
             caps: { ...DEFAULT_TOKEN_LIST_CAPS },
+            slugHoldMs: 30 * 24 * 60 * 60 * 1000,
         },
     };
 }
@@ -107,6 +113,7 @@ describe('adminImportTokenListMembers', () => {
         const deps = makeDeps({
             upsertMembersBulk: async (_listId, rows) => {
                 bulk = rows;
+                return { overflowMints: [] };
             },
         });
         const result = await adminImportTokenListMembers(

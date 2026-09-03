@@ -1,5 +1,7 @@
 import { Effect } from 'effect';
 
+import { CURATED_LIST_ORDER, getCuratedTokenAddresses, getCuratedTokenList } from '@tokens/asset-registry/compat';
+
 import { curatedMembershipGetSnapshot, type CuratedMembershipSnapshot } from '@/lib/cloudrun';
 
 /**
@@ -109,9 +111,33 @@ export async function getCuratedListSlugsForMint(mint: string): Promise<string[]
         const map = await getCuratedListSlugsByMint();
         return map.get(mint) ?? [];
     } catch (error) {
-        console.error('[api] curated membership unavailable for risk input', error);
-        return [];
+        // Compiled-registry fallback (the pre-cutover source): on cold start or
+        // membership outage, curated stablecoins/stocks must not lose their
+        // risk exemptions and visibly drop in score.
+        console.error('[api] curated membership unavailable for risk input — using compiled registry', error);
+        return compiledRegistrySlugsForMint(mint);
     }
+}
+
+let compiledSlugsByMint: Map<string, string[]> | null = null;
+
+/** Static membership from the compiled registry — never throws, built once. */
+function compiledRegistrySlugsForMint(mint: string): string[] {
+    if (!compiledSlugsByMint) {
+        const map = new Map<string, string[]>();
+        for (const id of CURATED_LIST_ORDER) {
+            for (const address of getCuratedTokenAddresses(getCuratedTokenList(id))) {
+                const slugs = map.get(address);
+                if (slugs) {
+                    if (!slugs.includes(id)) slugs.push(id);
+                } else {
+                    map.set(address, [id]);
+                }
+            }
+        }
+        compiledSlugsByMint = map;
+    }
+    return compiledSlugsByMint.get(mint) ?? [];
 }
 
 /** Test seam: inject or clear the cached snapshot. */

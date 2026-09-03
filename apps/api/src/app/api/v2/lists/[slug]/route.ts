@@ -88,9 +88,9 @@ export const GET = route(
 );
 
 const patchBodySchema = Schema.Struct({
-    /** Rename. The old path stops resolving immediately and frees the slug. */
+    /** Rename. The old path stops resolving immediately and is held for this owner. */
     slug: Schema.optional(Schema.String),
-    name: Schema.optional(Schema.String),
+    name: Schema.optional(Schema.String.check(Schema.isMaxLength(80))),
     status: Schema.optional(Schema.Literals(['draft', 'unlisted', 'published', 'archived'])),
 });
 

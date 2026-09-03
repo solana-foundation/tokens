@@ -28,6 +28,11 @@ export const GET = route(() =>
             operation: 'v1.assetsCuratedLists',
             cacheKey: 'v1:assets:curated:lists',
             ttlSeconds: 10 * 60,
+            // An all-zero-counts rollup means the DB answered but membership is
+            // hollow — don't overwrite the last good entry with it.
+            isHealthy: payload =>
+                Array.isArray((payload as { lists?: Array<{ count?: number }> }).lists) &&
+                (payload as { lists: Array<{ count?: number }> }).lists.some(list => (list.count ?? 0) > 0),
         },
         Effect.gen(function* () {
             const dbSummaries = yield* assetCollectionsGetSummaries({ slugs: [...HOME_CATEGORY_SLUGS] });

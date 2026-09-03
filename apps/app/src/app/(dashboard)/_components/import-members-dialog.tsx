@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
 import { toast } from 'sonner';
 
 import { Button } from '@tokens/ui/button';
@@ -78,7 +78,10 @@ export function ImportMembersDialog({
         setSummary(null);
     }, [open]);
 
-    const parsed = useMemo(() => parseMintsCsv(text), [text]);
+    // Deferred: a giant paste re-parses off the urgent path instead of on
+    // every keystroke (a 1M-row paste froze the tab when parsed inline).
+    const deferredText = useDeferredValue(text);
+    const parsed = useMemo(() => parseMintsCsv(deferredText), [deferredText]);
     const importing = progress !== null;
 
     async function handleFile(file: File | undefined) {
@@ -96,12 +99,23 @@ export function ImportMembersDialog({
         try {
             for (let i = 0; i < parsed.rows.length; i += CHUNK_SIZE) {
                 const chunk = parsed.rows.slice(i, i + CHUNK_SIZE);
-                const res = await fetcher(`/api/v2/lists/${slug}/members`, {
-                    method: 'POST',
-                    body: {
-                        members: chunk.map(row => ({ mint: row.mint, ...(row.note ? { note: row.note } : {}) })),
-                    },
-                });
+                const post = () =>
+                    fetcher(`/api/v2/lists/${slug}/members`, {
+                        method: 'POST',
+                        body: {
+                            members: chunk.map(row => ({ mint: row.mint, ...(row.note ? { note: row.note } : {}) })),
+                        },
+                    });
+                let res = await post();
+                if (res.status === 429) {
+                    // The sequential chunk loop can trip the caller's own rate
+                    // limit mid-import; honour Retry-After once and continue.
+                    const retryAfterSeconds = Number(res.headers.get('retry-after'));
+                    const waitMs =
+                        Number.isFinite(retryAfterSeconds) && retryAfterSeconds > 0 ? retryAfterSeconds * 1000 : 1200;
+                    await new Promise(resolve => setTimeout(resolve, Math.min(waitMs, 15_000)));
+                    res = await post();
+                }
                 if (!res.ok) {
                     const body = (await res.json().catch(() => null)) as { error?: { message?: string } } | null;
                     throw new Error(body?.error?.message ?? `Import failed (HTTP ${res.status})`);

@@ -3,7 +3,13 @@ import { Effect, Schema } from 'effect';
 import { route, type PlatformAuthContext } from '@/effect/next-route';
 import { withStaleFallback } from '@/effect/stale-response-cache';
 import { decodeLimit, decodeOffset, decodeUnknownOrBadRequest, tapErrorAndDefault } from '@tokens/effect';
-import { tokenListsCreate, tokenListsList, tokenListsListByOwner, type TokenListSummary } from '@/lib/cloudrun';
+import {
+    tokenListsCountPublished,
+    tokenListsCreate,
+    tokenListsList,
+    tokenListsListByOwner,
+    type TokenListSummary,
+} from '@/lib/cloudrun';
 
 import { curatedListSummaries, unwrapOutcome, type V2ListSummary } from './_shared';
 
@@ -51,6 +57,10 @@ export const GET = route(
                 const community = yield* tokenListsList({ limit, offset }).pipe(
                     tapErrorAndDefault('v2.lists.community', [] as TokenListSummary[]),
                 );
+                // Real catalog total, not the page length; fail-open to the page size.
+                const communityTotal = yield* tokenListsCountPublished().pipe(
+                    tapErrorAndDefault('v2.lists.communityTotal', { total: community.length }),
+                );
 
                 const communitySummaries: V2ListSummary[] = community.map(list => ({
                     slug: list.slug,
@@ -66,7 +76,7 @@ export const GET = route(
                 // Curated lists lead the catalog; pagination applies to community lists
                 // (the curated set is small and fixed).
                 const lists = offset === 0 ? [...curated, ...communitySummaries] : communitySummaries;
-                return { lists, total: lists.length };
+                return { lists, total: curated.length + communityTotal.total };
             });
 
             return yield* withStaleFallback(
@@ -77,13 +87,14 @@ export const GET = route(
                 },
                 main,
             );
+
         }),
     { platform: { requiredScopes: ['assets:read'] }, cache: { maxAge: 300 } },
 );
 
 const createBodySchema = Schema.Struct({
     slug: Schema.String,
-    name: Schema.String,
+    name: Schema.String.check(Schema.isMaxLength(80)),
     /** `unlisted` = hidden from the catalog, still readable at the direct URL. */
     status: Schema.optional(Schema.Literals(['draft', 'unlisted', 'published'])),
 });

@@ -54,12 +54,27 @@ function resolveCurated(curatedId: NonNullable<ReturnType<typeof normalizeCurate
     });
 }
 
+/** Hard ceiling on members fetched per composed list (matches the members-per-list cap). */
+const COMPOSE_MEMBER_FETCH_CAP = 5000;
+const COMPOSE_MEMBER_PAGE = 2000;
+
 function resolveCommunity(slug: string) {
     return Effect.gen(function* () {
         const detail = yield* tokenListsGetBySlug({ slug });
         // Unlisted lists compose by direct slug — hidden from discovery only.
         if (!detail || (detail.status !== 'published' && detail.status !== 'unlisted')) return null;
-        const members = yield* tokenListsGetMembers({ slug, limit: 2000, offset: 0 });
+        // Page until the list's full membership (or the hard cap) is covered —
+        // a single fixed-limit fetch silently truncated large lists.
+        const members: TokenListMember[] = [];
+        for (
+            let offset = 0;
+            offset < Math.min(detail.tokenCount, COMPOSE_MEMBER_FETCH_CAP);
+            offset += COMPOSE_MEMBER_PAGE
+        ) {
+            const page = yield* tokenListsGetMembers({ slug, limit: COMPOSE_MEMBER_PAGE, offset });
+            members.push(...page);
+            if (page.length < COMPOSE_MEMBER_PAGE) break;
+        }
         const resolved: ResolvedList = {
             summary: {
                 slug: detail.slug,

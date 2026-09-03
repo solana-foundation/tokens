@@ -49,6 +49,8 @@ function makeRepo(overrides: Partial<TokenListsReadsRepo> = {}): TokenListsReads
     return {
         listPublished: async () => [SUMMARY_ROW],
         listByOwner: async () => [SUMMARY_ROW],
+        countPublished: async () => 1,
+        getSlugHold: async () => null,
         getBySlug: async () => LIST_ROW,
         listMembersBySlug: async () => [MEMBER_ROW],
         listSlugsByMints: async () => [],

@@ -66,7 +66,7 @@ const LATENCY_BOUNDS_MS: ReadonlyArray<number> = [
  * `TOKENS_REDIS_TARGET=memorystore` flag (PR #189) flips us between Upstash
  * and Memorystore without touching callsites. Defaults to Upstash.
  */
-function getRedisClientEffect(): Effect.Effect<RedisClient, MissingEnvError, never> {
+export function getRedisClientEffect(): Effect.Effect<RedisClient, MissingEnvError, never> {
     return Effect.gen(function* () {
         const upstash = loadEnv().upstash;
         const target = (process.env.TOKENS_REDIS_TARGET ?? '').trim().toLowerCase();
@@ -165,9 +165,7 @@ function requirePlatformAuth(request: Request) {
 
         if (rawKey) {
             const keyHash = yield* Effect.tryPromise(() => sha256Hex(rawKey));
-            const cachedAuth = yield* getCachedPlatformAuth(keyHash).pipe(
-                Effect.catch(() => Effect.succeed(null)),
-            );
+            const cachedAuth = yield* getCachedPlatformAuth(keyHash).pipe(Effect.catch(() => Effect.succeed(null)));
             if (cachedAuth) return cachedAuth;
 
             const auth = yield* authenticateApiKey(keyHash);
@@ -184,9 +182,7 @@ function requirePlatformAuth(request: Request) {
                 ...(auth.limits ? { limits: auth.limits } : {}),
             } satisfies PlatformAuthContext;
 
-            yield* cachePlatformAuth(keyHash, authContext).pipe(
-                Effect.catch(() => Effect.succeed(undefined)),
-            );
+            yield* cachePlatformAuth(keyHash, authContext).pipe(Effect.catch(() => Effect.succeed(undefined)));
 
             return authContext;
         }
@@ -347,18 +343,20 @@ async function tryLogRequest(params: {
     errorTag?: string;
 }): Promise<void> {
     try {
-        await Effect.runPromise(logApiRequest({
-            projectId: params.platformAuth.projectId,
-            apiKeyId: params.platformAuth.apiKeyId,
-            keyPrefix: params.platformAuth.keyPrefix,
-            method: params.method,
-            path: params.path,
-            endpoint: normalizeEndpointPath(params.path),
-            status: params.status,
-            latencyMs: params.latencyMs,
-            ts: params.ts,
-            ...(params.errorTag ? { errorTag: params.errorTag } : {}),
-        }));
+        await Effect.runPromise(
+            logApiRequest({
+                projectId: params.platformAuth.projectId,
+                apiKeyId: params.platformAuth.apiKeyId,
+                keyPrefix: params.platformAuth.keyPrefix,
+                method: params.method,
+                path: params.path,
+                endpoint: normalizeEndpointPath(params.path),
+                status: params.status,
+                latencyMs: params.latencyMs,
+                ts: params.ts,
+                ...(params.errorTag ? { errorTag: params.errorTag } : {}),
+            }),
+        );
     } catch {
         // Best-effort logging; never fail the API request due to analytics.
     }
@@ -374,39 +372,39 @@ function recordUsageAggregate(params: {
     ts: number;
 }): Effect.Effect<void, unknown> {
     return Effect.gen(function* () {
-    const env = loadEnv();
-    const redis = yield* getRedisClientEffect();
-    const endpoint = normalizeEndpointPath(params.path);
-    const day = dateKeyUtc(params.ts);
-    const endpointHash = yield* Effect.tryPromise(() => sha256Hex(endpoint));
-    const ttl = env.usageAggregationTtlSeconds;
-    const dayKey = `usage:v1:day:${day}:${params.platformAuth.projectId}`;
-    const endpointKey = `usage:v1:endpoint:${day}:${params.platformAuth.projectId}:${endpointHash}`;
-    const endpointNameKey = `usage:v1:endpoint-name:${endpointHash}`;
-    const assetCallDelta = isAssetEndpoint(endpoint) ? 1 : 0;
-    const successDelta = params.status < 400 ? 1 : 0;
-    const latencyMs = Math.max(0, Math.floor(params.latencyMs));
-    const statusField = statusClassField(params.status);
-    const histogramField = `hist:${binLatencyMs(latencyMs)}`;
+        const env = loadEnv();
+        const redis = yield* getRedisClientEffect();
+        const endpoint = normalizeEndpointPath(params.path);
+        const day = dateKeyUtc(params.ts);
+        const endpointHash = yield* Effect.tryPromise(() => sha256Hex(endpoint));
+        const ttl = env.usageAggregationTtlSeconds;
+        const dayKey = `usage:v1:day:${day}:${params.platformAuth.projectId}`;
+        const endpointKey = `usage:v1:endpoint:${day}:${params.platformAuth.projectId}:${endpointHash}`;
+        const endpointNameKey = `usage:v1:endpoint-name:${endpointHash}`;
+        const assetCallDelta = isAssetEndpoint(endpoint) ? 1 : 0;
+        const successDelta = params.status < 400 ? 1 : 0;
+        const latencyMs = Math.max(0, Math.floor(params.latencyMs));
+        const statusField = statusClassField(params.status);
+        const histogramField = `hist:${binLatencyMs(latencyMs)}`;
 
-    yield* Effect.tryPromise(() =>
-        redis
-            .pipeline()
-            .hincrby(dayKey, 'totalCalls', 1)
-            .hincrby(dayKey, 'assetCalls', assetCallDelta)
-            .hincrby(dayKey, 'successCalls', successDelta)
-            .hincrby(dayKey, 'sumLatencyMs', latencyMs)
-            .hincrby(dayKey, statusField, 1)
-            .expire(dayKey, ttl)
-            .hincrby(endpointKey, 'calls', 1)
-            .hincrby(endpointKey, 'successCalls', successDelta)
-            .hincrby(endpointKey, 'sumLatencyMs', latencyMs)
-            .hincrby(endpointKey, statusField, 1)
-            .hincrby(endpointKey, histogramField, 1)
-            .expire(endpointKey, ttl)
-            .set(endpointNameKey, endpoint, { ex: ttl })
-            .exec(),
-    );
+        yield* Effect.tryPromise(() =>
+            redis
+                .pipeline()
+                .hincrby(dayKey, 'totalCalls', 1)
+                .hincrby(dayKey, 'assetCalls', assetCallDelta)
+                .hincrby(dayKey, 'successCalls', successDelta)
+                .hincrby(dayKey, 'sumLatencyMs', latencyMs)
+                .hincrby(dayKey, statusField, 1)
+                .expire(dayKey, ttl)
+                .hincrby(endpointKey, 'calls', 1)
+                .hincrby(endpointKey, 'successCalls', successDelta)
+                .hincrby(endpointKey, 'sumLatencyMs', latencyMs)
+                .hincrby(endpointKey, statusField, 1)
+                .hincrby(endpointKey, histogramField, 1)
+                .expire(endpointKey, ttl)
+                .set(endpointNameKey, endpoint, { ex: ttl })
+                .exec(),
+        );
     });
 }
 
@@ -535,10 +533,9 @@ export function route<T, Ctx = unknown>(
               )
             : handler(request, ctx as Ctx);
 
-        const exit = await Effect.runPromiseExit(
-            effect.pipe(Effect.provideService(CurrentRequestId, requestId)),
-            { signal: request.signal },
-        );
+        const exit = await Effect.runPromiseExit(effect.pipe(Effect.provideService(CurrentRequestId, requestId)), {
+            signal: request.signal,
+        });
 
         const latencyMs = Date.now() - startedAt;
         const url = (() => {

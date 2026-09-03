@@ -43,13 +43,25 @@ export function tokenListsList(args: {
     return cloudRunQuery<TokenListSummary[]>('assets', 'tokenListsList', { ...args }, { maxRetries: 1 });
 }
 
-/** Owner-scoped catalog: every list the project owns except archived, status included. */
+/** Owner-scoped catalog: every list the project owns (archived included), status per row. */
 export function tokenListsListByOwner(args: {
     ownerProjectId: string;
     limit?: number;
     offset?: number;
 }): Effect.Effect<TokenListSummary[], CloudRunError> {
     return cloudRunQuery<TokenListSummary[]>('assets', 'tokenListsListByOwner', { ...args }, { maxRetries: 1 });
+}
+
+/** Real published-community-list count for catalog `total`. */
+export function tokenListsCountPublished(): Effect.Effect<{ total: number }, CloudRunError> {
+    return cloudRunQuery<{ total: number }>('assets', 'tokenListsCountPublished', {}, { maxRetries: 1 });
+}
+
+/** Hold on a freed slug (owner-only reclaim window), or null. */
+export function tokenListsGetSlugHold(args: {
+    slug: string;
+}): Effect.Effect<{ hold: { ownerProjectId: string; releasedAt: number } | null }, CloudRunError> {
+    return cloudRunQuery('assets', 'tokenListsGetSlugHold', { ...args }, { maxRetries: 1 });
 }
 
 export function tokenListsGetBySlug(args: { slug: string }): Effect.Effect<TokenListDetail | null, CloudRunError> {
@@ -74,11 +86,14 @@ export type TokenListMutationErrorCode =
     | 'invalid_slug'
     | 'reserved_slug'
     | 'slug_conflict'
+    | 'slug_held'
+    | 'admin_locked'
     | 'not_found'
     | 'forbidden'
     | 'invalid_mint'
     | 'unknown_mint'
     | 'batch_too_large'
+    | 'project_lists_limit'
     | 'list_full';
 
 export type TokenListMutationOutcome<T> = { ok: true; value: T } | { ok: false; error: TokenListMutationErrorCode };
