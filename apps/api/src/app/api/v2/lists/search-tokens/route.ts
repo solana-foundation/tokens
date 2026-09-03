@@ -1,6 +1,7 @@
 import { Effect } from 'effect';
 
-import { route } from '@/effect/next-route';
+import { route, type PlatformAuthContext } from '@/effect/next-route';
+import { enforceProviderBudget } from '@/effect/provider-budget';
 import { BadRequestError, decodeLimit, tapErrorAndDefault } from '@tokens/effect';
 import { tokenListsGetSlugsByMints } from '@/lib/cloudrun';
 
@@ -20,8 +21,11 @@ import { SCORING_VERSION } from '@/lib/judgment/types';
  * (curated + community lists already containing the mint — prior art).
  */
 export const GET = route(
-    (request: Request) =>
+    (request: Request, ctx: { platformAuth: PlatformAuthContext }) =>
         Effect.gen(function* () {
+            // Unique-q searches bypass the 30s response cache; the per-key
+            // window budget bounds sustained provider spend.
+            yield* enforceProviderBudget(ctx.platformAuth, 'search');
             const url = new URL(request.url);
             const q = (url.searchParams.get('q') ?? '').trim();
             if (!q) {

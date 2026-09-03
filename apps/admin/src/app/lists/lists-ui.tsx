@@ -17,6 +17,7 @@ import { ImportMembersDialog } from './import-members-dialog';
 export function ListsUi() {
     const { data: lists, isLoading, refetch } = useAdminQuery<TokenListAdminRow[]>('adminListTokenLists', {});
     const archiveList = useAdminMutation<{ archived: boolean }>('adminArchiveTokenList');
+    const unlockList = useAdminMutation<{ unlocked: boolean }>('adminUnlockTokenList');
     const [confirmSlug, setConfirmSlug] = useState<string | null>(null);
     const [busySlug, setBusySlug] = useState<string | null>(null);
     const [error, setError] = useState<string | null>(null);
@@ -33,6 +34,19 @@ export function ListsUi() {
         setImportSlug(pendingImportSlug);
         setPendingImportSlug(null);
     }, [pendingImportSlug, lists]);
+
+    async function handleUnlock(slug: string) {
+        setError(null);
+        setBusySlug(slug);
+        try {
+            await unlockList({ slug });
+            refetch();
+        } catch (err) {
+            setError(err instanceof Error ? err.message : String(err));
+        } finally {
+            setBusySlug(null);
+        }
+    }
 
     async function handleArchive(slug: string) {
         setError(null);
@@ -97,11 +111,28 @@ export function ListsUi() {
                                     <td className="p-3 font-mono text-sm">{list.slug}</td>
                                     <td className="p-3">{list.name}</td>
                                     <td className="p-3 font-mono text-sm">{list.ownerProjectId}</td>
-                                    <td className="p-3">{list.status}</td>
+                                    <td className="p-3">
+                                        {list.status}
+                                        {list.adminLockedAt !== null && (
+                                            <span className="ml-2 rounded-sm bg-red-100 px-1.5 py-0.5 text-xs text-red-800">
+                                                locked
+                                            </span>
+                                        )}
+                                    </td>
                                     <td className="p-3">{list.memberCount}</td>
                                     <td className="p-3">{new Date(list.updatedAt).toLocaleString()}</td>
                                     <td className="p-3 text-right">
                                         <span className="inline-flex items-center gap-2">
+                                            {list.adminLockedAt !== null && (
+                                                <button
+                                                    type="button"
+                                                    className="rounded-md border border-border-medium px-2 py-1 text-sm disabled:opacity-50"
+                                                    disabled={busySlug === list.slug}
+                                                    onClick={() => void handleUnlock(list.slug)}
+                                                >
+                                                    {busySlug === list.slug ? 'Unlocking…' : 'Unlock'}
+                                                </button>
+                                            )}
                                             {list.status !== 'archived' && (
                                                 <button
                                                     type="button"

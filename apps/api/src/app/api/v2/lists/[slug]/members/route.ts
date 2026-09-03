@@ -2,6 +2,7 @@ import { Effect, Schema } from 'effect';
 
 import { route, type PlatformAuthContext } from '@/effect/next-route';
 import { BadRequestError, decodeUnknownOrBadRequest } from '@tokens/effect';
+import { enforceProviderBudget } from '@/effect/provider-budget';
 import { tokenListsAddMembersBatch } from '@/lib/cloudrun';
 
 import { unwrapOutcome } from '../../_shared';
@@ -34,6 +35,9 @@ export const POST = route(
             if (body.mints === undefined && body.members === undefined) {
                 return yield* Effect.fail(new BadRequestError({ message: 'Body needs `mints` or `members`' }));
             }
+            // Per-key window budget: bounds sustained provider (Birdeye) spend
+            // regardless of the per-call lookup cap.
+            yield* enforceProviderBudget(ctx.platformAuth, 'batch');
 
             const outcome = yield* tokenListsAddMembersBatch({
                 ownerProjectId: ctx.platformAuth.projectId,

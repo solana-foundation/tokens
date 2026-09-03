@@ -97,12 +97,16 @@ interface ComposeResponse {
 
 ## Managing lists
 
-Any API key can create lists. The key's project owns the lists it creates; keys from
-other projects get `403` on writes. Caps (all generous, env-tunable server-side):
-**1000 mints per batch call**, **5000 members per list** (`400` with
-`details.code: "list_full"` beyond it), and **~50 provider lookups per batch call**
+Any API key can create lists — project ownership is the security boundary: every key
+on a project (regardless of read scopes) may manage that project's lists, and keys
+from other projects get `403` on writes. Caps (env-tunable server-side):
+**250 mints per batch call**, **5000 members per list** (`400` with
+`details.code: "list_full"` beyond it), **100 lists per project** (`400` with
+`details.code: "project_lists_limit"`), and **~50 provider lookups per batch call**
 for mints unknown to the registry/token index — over-budget unknowns fail individually
-as `unknown_mint` and can be retried in a later batch.
+as `unknown_mint` and can be retried in a later batch. Batch adds and curator search
+additionally draw from a per-key provider budget (30 batch calls / 120 searches per
+10 minutes by default) and return `429` when it is exhausted.
 
 **Recommended automation flow**: create the list, load it with one (or a few) batch
 calls, then keep it fresh with individual `PUT`/`DELETE /members/{mint}` calls as your
@@ -143,7 +147,7 @@ Remove a member. `404` when the mint was not in the list.
 
 ### `POST /v2/lists/{slug}/members`
 
-Bulk add: `{ mints: string[] }`, max 1000 per call, deduped. Mints are resolved in
+Bulk add: `{ mints: string[] }`, max 250 per call, deduped. Mints are resolved in
 bulk (registry → token index → budgeted provider lookups). Per-mint failures are
 reported without failing the batch:
 

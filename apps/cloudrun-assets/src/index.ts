@@ -45,7 +45,11 @@ import {
     makePostgresVariantMarketsRepo,
 } from './db';
 import type { AdminActionsDeps } from './handlers/adminActions';
-import { DEFAULT_TOKEN_LIST_CAPS, type TokenListsMutationsDeps } from './handlers/tokenListsMutations';
+import {
+    DEFAULT_TOKEN_LIST_CAPS,
+    withOverviewMissCache,
+    type TokenListsMutationsDeps,
+} from './handlers/tokenListsMutations';
 import type { CacheWarmDeps } from './handlers/cacheWarm';
 import type { CronDeps } from './handlers/crons';
 import type { ClickhouseCronDeps } from './handlers/crons.clickhouse';
@@ -298,13 +302,19 @@ const tokenListsMutationsDeps: TokenListsMutationsDeps = {
     repo: makePostgresTokenListsMutationsRepo(sql),
     // Without a Birdeye key, mints unknown to the registry/tokens table
     // simply resolve as unknown_mint instead of snapshotting metadata.
-    fetchTokenOverview: async mint => (cronDeps ? cronDeps.birdeye.fetchTokenOverview(mint) : null),
+    // Miss-cached: unknown mints stop replaying against the provider.
+    fetchTokenOverview: withOverviewMissCache(async mint =>
+        cronDeps ? cronDeps.birdeye.fetchTokenOverview(mint) : null,
+    ),
     now: () => Date.now(),
     caps: {
         batch: envInt('TOKEN_LIST_BATCH_CAP', DEFAULT_TOKEN_LIST_CAPS.batch),
         membersPerList: envInt('TOKEN_LIST_MEMBERS_PER_LIST_CAP', DEFAULT_TOKEN_LIST_CAPS.membersPerList),
         providerLookups: envInt('TOKEN_LIST_PROVIDER_LOOKUP_BUDGET', DEFAULT_TOKEN_LIST_CAPS.providerLookups),
+        listsPerProject: envInt('TOKEN_LIST_LISTS_PER_PROJECT_CAP', DEFAULT_TOKEN_LIST_CAPS.listsPerProject),
     },
+    // Freed slugs are reclaimable only by their previous owner for this window.
+    slugHoldMs: (Number(process.env.TOKEN_LIST_SLUG_HOLD_DAYS) || 30) * 24 * 60 * 60 * 1000,
 };
 
 const app = createApp({
