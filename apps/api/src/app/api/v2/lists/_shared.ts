@@ -155,14 +155,14 @@ export function hydrateCuratedMints(mints: string[], rankOffset: number): Effect
  * The code is echoed in `details.code` so clients can branch without parsing
  * messages (the taxonomy has no 409/422 variants; those map to 400).
  */
-export function failMutationError(code: TokenListMutationErrorCode): Effect.Effect<never, BadRequestError | ForbiddenError | NotFoundError> {
+export function failMutationError(
+    code: TokenListMutationErrorCode,
+): Effect.Effect<never, BadRequestError | ForbiddenError | NotFoundError> {
     switch (code) {
         case 'not_found':
             return Effect.fail(new NotFoundError({ message: 'List not found', resource: 'token_list' }));
         case 'forbidden':
-            return Effect.fail(
-                new ForbiddenError({ message: 'This API key’s project does not own the list' }),
-            );
+            return Effect.fail(new ForbiddenError({ message: 'This API key’s project does not own the list' }));
         case 'slug_conflict':
             return Effect.fail(
                 new BadRequestError({ message: 'A list with this slug already exists', details: { code } }),
@@ -185,6 +185,16 @@ export function failMutationError(code: TokenListMutationErrorCode): Effect.Effe
                     details: { code },
                 }),
             );
+        case 'slug_held':
+            return Effect.fail(
+                new BadRequestError({
+                    message:
+                        'This slug was recently released and is reclaimable only by its previous owner for a hold-down period',
+                    details: { code },
+                }),
+            );
+        case 'admin_locked':
+            return Effect.fail(new ForbiddenError({ message: 'This list has been locked by moderators' }));
         case 'batch_too_large':
             return Effect.fail(new BadRequestError({ message: 'Batch exceeds the 100-mint cap', details: { code } }));
     }

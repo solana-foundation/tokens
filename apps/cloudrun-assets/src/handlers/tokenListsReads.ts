@@ -23,6 +23,8 @@ export interface TokenListRow {
     name: string;
     description: string | null;
     status: string;
+    /** Unix ms; admin takedown lock. */
+    admin_locked_at?: number | null;
     member_count: number;
     /** Unix ms. */
     created_at: number;
@@ -51,6 +53,10 @@ export interface TokenListMintSlugRow {
 
 export interface TokenListsReadsRepo {
     listPublished(limit: number, offset: number): Promise<TokenListSummaryRow[]>;
+    /** Total published community lists — real catalog total, not page length. */
+    countPublished(): Promise<number>;
+    /** Active hold on a freed slug (see token_list_slug_holds), or null. */
+    getSlugHold(slug: string): Promise<{ ownerProjectId: string; releasedAt: number } | null>;
     /** Any status — callers decide visibility (public reads show published only). */
     getBySlug(slug: string): Promise<TokenListRow | null>;
     listMembersBySlug(slug: string, limit: number, offset: number): Promise<TokenListMemberRow[]>;
@@ -113,10 +119,7 @@ function summaryFromRow(row: TokenListSummaryRow): TokenListSummary {
     };
 }
 
-export async function listPublished(
-    repo: TokenListsReadsRepo,
-    args: unknown,
-): Promise<TokenListSummary[]> {
+export async function listPublished(repo: TokenListsReadsRepo, args: unknown): Promise<TokenListSummary[]> {
     if (typeof args !== 'object' || args === null) {
         throw new InvalidArgsError('args must be an object');
     }
@@ -126,10 +129,26 @@ export async function listPublished(
     return rows.map(summaryFromRow);
 }
 
-export async function getBySlug(
+export async function countPublished(repo: TokenListsReadsRepo): Promise<{ total: number }> {
+    return { total: await repo.countPublished() };
+}
+
+/** Hold state for check-slug: `{ hold: { ownerProjectId, releasedAt } | null }`. */
+export async function getSlugHold(
     repo: TokenListsReadsRepo,
     args: unknown,
-): Promise<TokenListDetail | null> {
+): Promise<{ hold: { ownerProjectId: string; releasedAt: number } | null }> {
+    if (typeof args !== 'object' || args === null) {
+        throw new InvalidArgsError('args must be an object');
+    }
+    const a = args as { slug?: unknown };
+    if (typeof a.slug !== 'string' || !a.slug.trim()) {
+        throw new InvalidArgsError('slug must be a non-empty string');
+    }
+    return { hold: await repo.getSlugHold(a.slug.trim().toLowerCase()) };
+}
+
+export async function getBySlug(repo: TokenListsReadsRepo, args: unknown): Promise<TokenListDetail | null> {
     if (typeof args !== 'object' || args === null) {
         throw new InvalidArgsError('args must be an object');
     }
@@ -172,10 +191,7 @@ export async function getSlugsByMints(
     return Array.from(byMint.entries(), ([mint, slugs]) => ({ mint, slugs }));
 }
 
-export async function getMembers(
-    repo: TokenListsReadsRepo,
-    args: unknown,
-): Promise<TokenListMember[]> {
+export async function getMembers(repo: TokenListsReadsRepo, args: unknown): Promise<TokenListMember[]> {
     if (typeof args !== 'object' || args === null) {
         throw new InvalidArgsError('args must be an object');
     }

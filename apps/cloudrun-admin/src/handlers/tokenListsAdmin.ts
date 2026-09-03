@@ -16,6 +16,8 @@ export interface TokenListAdminRow {
     name: string;
     description: string | null;
     status: string;
+    /** Unix ms; set while the admin takedown lock is active. */
+    adminLockedAt: number | null;
     memberCount: number;
     /** Unix ms. */
     createdAt: number;
@@ -25,8 +27,10 @@ export interface TokenListAdminRow {
 
 export interface TokenListsAdminRepo {
     listAll(limit: number, offset: number): Promise<TokenListAdminRow[]>;
-    /** Returns false when no list has the slug. */
+    /** Archives AND locks (admin_locked_at) in one write. Returns false when no list has the slug. */
     archiveBySlug(slug: string, nowMs: number): Promise<boolean>;
+    /** Clears the takedown lock (list stays archived; the owner may then restore it). */
+    unlockBySlug(slug: string, nowMs: number): Promise<boolean>;
 }
 
 export interface TokenListsAdminDeps {
@@ -57,4 +61,21 @@ export async function adminArchiveTokenList(
     const slug = requireString(a, 'slug');
     const archived = await deps.repo.archiveBySlug(slug, deps.now());
     return { archived };
+}
+
+/**
+ * Releases the takedown lock set by `adminArchiveTokenList`. The list remains
+ * archived — the owner regains the ability to mutate it (including restoring
+ * status) through the normal v2 API.
+ */
+export async function adminUnlockTokenList(
+    deps: TokenListsAdminDeps,
+    args: unknown,
+    identity: CallerIdentity | null,
+): Promise<{ unlocked: boolean }> {
+    requireAdmin(deps.adminAllowlist, identity);
+    const a = asArgsObject(args);
+    const slug = requireString(a, 'slug');
+    const unlocked = await deps.repo.unlockBySlug(slug, deps.now());
+    return { unlocked };
 }

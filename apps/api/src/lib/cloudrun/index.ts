@@ -45,23 +45,11 @@ export {
     type SearchResult,
 } from './assets';
 
-export {
-    loadAssetBaseForApi,
-    type LoadAssetBaseForApiArgs,
-    type LoadAssetBaseForApiResult,
-} from './assetsApi';
+export { loadAssetBaseForApi, type LoadAssetBaseForApiArgs, type LoadAssetBaseForApiResult } from './assetsApi';
 
-export {
-    curatedPrefetchForApi,
-    type CuratedPrefetchArgs,
-    type CuratedPrefetchResult,
-} from './curated';
+export { curatedPrefetchForApi, type CuratedPrefetchArgs, type CuratedPrefetchResult } from './curated';
 
-export {
-    searchPrefetchForApi,
-    type SearchPrefetchArgs,
-    type SearchPrefetchResult,
-} from './search';
+export { searchPrefetchForApi, type SearchPrefetchArgs, type SearchPrefetchResult } from './search';
 
 export {
     authenticateApiKey,
@@ -70,11 +58,7 @@ export {
     type LogApiRequestArgs,
 } from './platformAuth';
 
-export {
-    listDeletedRefs,
-    type ListDeletedRefsArgs,
-    type ListDeletedRefsResult,
-} from './assetDeletionTombstones';
+export { listDeletedRefs, type ListDeletedRefsArgs, type ListDeletedRefsResult } from './assetDeletionTombstones';
 
 export {
     listActive as sanctumListActive,
@@ -173,6 +157,8 @@ export {
 
 export {
     tokenListsList,
+    tokenListsCountPublished,
+    tokenListsGetSlugHold,
     tokenListsGetBySlug,
     tokenListsGetMembers,
     tokenListsGetSlugsByMints,

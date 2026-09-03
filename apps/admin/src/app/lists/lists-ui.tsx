@@ -13,9 +13,23 @@ import type { TokenListAdminRow } from '@/lib/admin-types';
 export function ListsUi() {
     const { data: lists, isLoading, refetch } = useAdminQuery<TokenListAdminRow[]>('adminListTokenLists', {});
     const archiveList = useAdminMutation<{ archived: boolean }>('adminArchiveTokenList');
+    const unlockList = useAdminMutation<{ unlocked: boolean }>('adminUnlockTokenList');
     const [confirmSlug, setConfirmSlug] = useState<string | null>(null);
     const [busySlug, setBusySlug] = useState<string | null>(null);
     const [error, setError] = useState<string | null>(null);
+
+    async function handleUnlock(slug: string) {
+        setError(null);
+        setBusySlug(slug);
+        try {
+            await unlockList({ slug });
+            refetch();
+        } catch (err) {
+            setError(err instanceof Error ? err.message : String(err));
+        } finally {
+            setBusySlug(null);
+        }
+    }
 
     async function handleArchive(slug: string) {
         setError(null);
@@ -36,8 +50,8 @@ export function ListsUi() {
             <div>
                 <h1 className="text-xl font-inter-medium">Community token lists</h1>
                 <p className="text-body-md text-muted-foreground">
-                    Every list across projects, including drafts and archived. Archive is the emergency takedown —
-                    it removes the list from discovery, reads, and composition.
+                    Every list across projects, including drafts and archived. Archive is the emergency takedown — it
+                    removes the list from discovery, reads, and composition.
                 </p>
             </div>
 
@@ -71,10 +85,27 @@ export function ListsUi() {
                                     <td className="p-3 font-mono text-sm">{list.slug}</td>
                                     <td className="p-3">{list.name}</td>
                                     <td className="p-3 font-mono text-sm">{list.ownerProjectId}</td>
-                                    <td className="p-3">{list.status}</td>
+                                    <td className="p-3">
+                                        {list.status}
+                                        {list.adminLockedAt !== null && (
+                                            <span className="ml-2 rounded-sm bg-red-100 px-1.5 py-0.5 text-xs text-red-800">
+                                                locked
+                                            </span>
+                                        )}
+                                    </td>
                                     <td className="p-3">{list.memberCount}</td>
                                     <td className="p-3">{new Date(list.updatedAt).toLocaleString()}</td>
                                     <td className="p-3 text-right">
+                                        {list.adminLockedAt !== null && (
+                                            <button
+                                                type="button"
+                                                className="mr-2 rounded-md border border-border-medium px-2 py-1 text-sm disabled:opacity-50"
+                                                disabled={busySlug === list.slug}
+                                                onClick={() => void handleUnlock(list.slug)}
+                                            >
+                                                {busySlug === list.slug ? 'Unlocking…' : 'Unlock'}
+                                            </button>
+                                        )}
                                         {list.status !== 'archived' &&
                                             (confirmSlug === list.slug ? (
                                                 <span className="inline-flex items-center gap-2">

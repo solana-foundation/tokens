@@ -270,6 +270,8 @@ export type TokenListAdminRow = {
     name: string;
     description: string | null;
     status: string;
+    /** Unix ms; set while the admin takedown lock is active. */
+    adminLockedAt: number | null;
     memberCount: number;
     createdAt: number;
     updatedAt: number;

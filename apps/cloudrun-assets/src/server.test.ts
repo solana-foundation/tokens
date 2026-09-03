@@ -3444,6 +3444,12 @@ function emptyTokenListsReadsRepo(): TokenListsReadsRepo {
         async listPublished() {
             return [];
         },
+        async countPublished() {
+            return 0;
+        },
+        async getSlugHold() {
+            return null;
+        },
         async getBySlug() {
             return null;
         },
@@ -3471,6 +3477,11 @@ function emptyTokenListsMutationsDeps(): TokenListsMutationsDeps {
             async deleteList() {
                 throw new Error('not implemented');
             },
+            async getSlugHold() {
+                return null;
+            },
+            async recordSlugHold() {},
+            async clearSlugHold() {},
             async upsertMember() {},
             async removeMember() {
                 return false;
@@ -3483,6 +3494,7 @@ function emptyTokenListsMutationsDeps(): TokenListsMutationsDeps {
             },
         },
         fetchTokenOverview: async () => null,
+        slugHoldMs: 30 * 24 * 60 * 60 * 1000,
         now: () => 0,
     };
 }

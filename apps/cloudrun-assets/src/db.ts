@@ -3292,6 +3292,7 @@ const TOKEN_LIST_ROW_COLUMNS = `
     tl.name,
     tl.description,
     tl.status,
+    tl.admin_locked_at,
     (SELECT COUNT(*)::int FROM token_list_members m WHERE m.list_id = tl.id) AS member_count,
     (EXTRACT(EPOCH FROM tl.created_at) * 1000)::bigint AS created_at,
     (EXTRACT(EPOCH FROM tl.updated_at) * 1000)::bigint AS updated_at
@@ -3313,6 +3314,19 @@ export function makePostgresTokenListsReadsRepo(sql: Sql): TokenListsReadsRepo {
                 LIMIT ${limit} OFFSET ${offset}
             `;
             return rows;
+        },
+        async countPublished() {
+            const rows = await sql<{ count: string | number }[]>`
+                SELECT COUNT(*)::int AS count FROM token_lists tl WHERE tl.status = 'published'
+            `;
+            return Number(rows[0]?.count ?? 0);
+        },
+        async getSlugHold(slug) {
+            const rows = await sql<{ owner_project_id: string; released_at: string | number }[]>`
+                SELECT owner_project_id, released_at FROM token_list_slug_holds WHERE slug = ${slug}
+            `;
+            const row = rows[0];
+            return row ? { ownerProjectId: row.owner_project_id, releasedAt: Number(row.released_at) } : null;
         },
         async getBySlug(slug) {
             const rows = await sql<TokenListRow[]>`
@@ -3426,6 +3440,25 @@ export function makePostgresTokenListsMutationsRepo(sql: Sql): TokenListsMutatio
         async deleteList(listId) {
             // token_list_members.list_id is ON DELETE CASCADE, so members go with it.
             await sql`DELETE FROM token_lists WHERE id = ${listId}`;
+        },
+        async getSlugHold(slug) {
+            const rows = await sql<{ owner_project_id: string; released_at: string | number }[]>`
+                SELECT owner_project_id, released_at FROM token_list_slug_holds WHERE slug = ${slug}
+            `;
+            const row = rows[0];
+            return row ? { ownerProjectId: row.owner_project_id, releasedAt: Number(row.released_at) } : null;
+        },
+        async recordSlugHold(slug, ownerProjectId, releasedAt) {
+            await sql`
+                INSERT INTO token_list_slug_holds (slug, owner_project_id, released_at)
+                VALUES (${slug}, ${ownerProjectId}, ${releasedAt})
+                ON CONFLICT (slug) DO UPDATE SET
+                    owner_project_id = EXCLUDED.owner_project_id,
+                    released_at = EXCLUDED.released_at
+            `;
+        },
+        async clearSlugHold(slug) {
+            await sql`DELETE FROM token_list_slug_holds WHERE slug = ${slug}`;
         },
         async upsertMember(args) {
             const rank = args.rank;
