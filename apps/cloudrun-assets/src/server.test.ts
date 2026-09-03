@@ -3499,7 +3499,9 @@ function emptyTokenListsMutationsDeps(): TokenListsMutationsDeps {
             },
             async recordSlugHold() {},
             async clearSlugHold() {},
-            async upsertMember() {},
+            async upsertMember() {
+                return true;
+            },
             async removeMember() {
                 return false;
             },

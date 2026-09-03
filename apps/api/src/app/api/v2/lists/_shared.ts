@@ -38,6 +38,8 @@ export interface V2ListSummary {
     owner: { name: string } | { projectId: string };
     tokenCount: number;
     updatedAt: number | null;
+    /** Compose only: membership exceeded the per-list fetch ceiling; the union is partial. */
+    truncated?: boolean;
 }
 
 export interface V2ListToken {

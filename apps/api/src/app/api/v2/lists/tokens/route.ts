@@ -64,7 +64,7 @@ function resolveCommunity(slug: string) {
         if (!detail || detail.status !== 'published') return null;
         // Page until the list's full membership (or the hard cap) is covered —
         // a single fixed-limit fetch silently truncated large lists.
-        const members: TokenListMember[] = [];
+        let members: TokenListMember[] = [];
         for (
             let offset = 0;
             offset < Math.min(detail.tokenCount, COMPOSE_MEMBER_FETCH_CAP);
@@ -74,6 +74,10 @@ function resolveCommunity(slug: string) {
             members.push(...page);
             if (page.length < COMPOSE_MEMBER_PAGE) break;
         }
+        // The loop reads whole pages, so trim the tail past the ceiling and
+        // say so instead of silently under-reporting membership.
+        const truncated = detail.tokenCount > COMPOSE_MEMBER_FETCH_CAP;
+        if (members.length > COMPOSE_MEMBER_FETCH_CAP) members = members.slice(0, COMPOSE_MEMBER_FETCH_CAP);
         const resolved: ResolvedList = {
             summary: {
                 slug: detail.slug,
@@ -84,6 +88,7 @@ function resolveCommunity(slug: string) {
                 owner: { projectId: detail.ownerProjectId },
                 tokenCount: detail.tokenCount,
                 updatedAt: detail.updatedAt,
+                ...(truncated ? { truncated: true } : {}),
             },
             mints: members.map(m => m.mint),
             membersByMint: new Map(members.map(m => [m.mint, m] as const)),

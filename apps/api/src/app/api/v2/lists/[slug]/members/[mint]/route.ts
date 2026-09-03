@@ -2,6 +2,7 @@ import { Effect, Schema } from 'effect';
 
 import { route, type PlatformAuthContext } from '@/effect/next-route';
 import { decodeUnknownOrBadRequest } from '@tokens/effect';
+import { enforceProviderBudget } from '@/effect/provider-budget';
 import { tokenListsRemoveMember, tokenListsUpsertMember } from '@/lib/cloudrun';
 
 import { unwrapOutcome } from '../../../_shared';
@@ -12,7 +13,11 @@ interface RouteCtx {
 }
 
 const putBodySchema = Schema.Struct({
-    rank: Schema.optional(Schema.Number),
+    // int4 column: reject non-finite/overflow at the edge (a 1e12 rank
+    // otherwise round-trips to Cloud Run just to fail).
+    rank: Schema.optional(
+        Schema.Number.check(Schema.isInt(), Schema.isBetween({ minimum: -2_147_483_648, maximum: 2_147_483_647 })),
+    ),
     note: Schema.optional(Schema.String.check(Schema.isMaxLength(500))),
 });
 
@@ -30,6 +35,9 @@ export const PUT = route(
                 return text.trim() ? (JSON.parse(text) as unknown) : {};
             });
             const body = yield* decodeUnknownOrBadRequest(putBodySchema, raw, 'Invalid body');
+            // Same provider budget as the batch path: unknown mints resolve via
+            // Birdeye here too, so single PUTs must not be a budget side door.
+            yield* enforceProviderBudget(ctx.platformAuth, 'batch');
 
             const outcome = yield* tokenListsUpsertMember({
                 ownerProjectId: ctx.platformAuth.projectId,
