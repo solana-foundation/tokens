@@ -266,6 +266,16 @@ export function failMutationError(
             return Effect.fail(
                 new BadRequestError({ message: 'This list is at its member capacity', details: { code } }),
             );
+        case 'slug_held':
+            return Effect.fail(
+                new BadRequestError({
+                    message:
+                        'This slug was recently released and is reclaimable only by its previous owner for a hold-down period',
+                    details: { code },
+                }),
+            );
+        case 'admin_locked':
+            return Effect.fail(new ForbiddenError({ message: 'This list has been locked by moderators' }));
         case 'batch_too_large':
             return Effect.fail(new BadRequestError({ message: 'Batch exceeds the per-call mint cap', details: { code } }));
     }

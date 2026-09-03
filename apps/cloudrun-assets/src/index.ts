@@ -312,6 +312,8 @@ const app = createApp({
             membersPerList: envInt('TOKEN_LIST_MEMBERS_PER_LIST_CAP', DEFAULT_TOKEN_LIST_CAPS.membersPerList),
             providerLookups: envInt('TOKEN_LIST_PROVIDER_LOOKUP_BUDGET', DEFAULT_TOKEN_LIST_CAPS.providerLookups),
         },
+        // Freed slugs are reclaimable only by their previous owner for this window.
+        slugHoldMs: (Number(process.env.TOKEN_LIST_SLUG_HOLD_DAYS) || 30) * 24 * 60 * 60 * 1000,
     },
     coingeckoReadsRepo: makePostgresCoingeckoReadsRepo(sql),
     stockReadsRepo: makePostgresStockReadsRepo(sql),

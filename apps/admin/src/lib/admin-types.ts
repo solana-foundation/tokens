@@ -269,6 +269,8 @@ export type TokenListAdminRow = {
     ownerProjectId: string;
     name: string;
     status: string;
+    /** Unix ms; set while the admin takedown lock is active. */
+    adminLockedAt: number | null;
     memberCount: number;
     createdAt: number;
     updatedAt: number;
