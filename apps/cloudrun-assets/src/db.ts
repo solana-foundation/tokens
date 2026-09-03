@@ -3433,9 +3433,20 @@ export function makePostgresTokenListsMutationsRepo(sql: Sql): TokenListsMutatio
             }
             return getRowById(listId);
         },
-        async deleteList(listId) {
-            // token_list_members.list_id is ON DELETE CASCADE, so members go with it.
-            await sql`DELETE FROM token_lists WHERE id = ${listId}`;
+        async deleteList(listId, hold) {
+            // One transaction: the row disappearing and the hold appearing are
+            // atomic, so a crash cannot leave the slug momentarily free.
+            // token_list_members.list_id is ON DELETE CASCADE.
+            await sql.begin(async tx => {
+                await tx`DELETE FROM token_lists WHERE id = ${listId}`;
+                await tx`
+                    INSERT INTO token_list_slug_holds (slug, owner_project_id, released_at)
+                    VALUES (${hold.slug}, ${hold.ownerProjectId}, ${hold.releasedAt})
+                    ON CONFLICT (slug) DO UPDATE SET
+                        owner_project_id = EXCLUDED.owner_project_id,
+                        released_at = EXCLUDED.released_at
+                `;
+            });
         },
         async getSlugHold(slug) {
             const rows = await sql<{ owner_project_id: string; released_at: string | number }[]>`

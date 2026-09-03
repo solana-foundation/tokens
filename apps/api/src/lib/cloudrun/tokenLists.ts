@@ -47,10 +47,10 @@ export function tokenListsCountPublished(): Effect.Effect<{ total: number }, Clo
     return cloudRunQuery<{ total: number }>('assets', 'tokenListsCountPublished', {}, { maxRetries: 1 });
 }
 
-/** Hold on a freed slug (owner-only reclaim window), or null. */
+/** Hold on a freed slug (owner-only reclaim window), or null. `expiresAt` is authoritative. */
 export function tokenListsGetSlugHold(args: {
     slug: string;
-}): Effect.Effect<{ hold: { ownerProjectId: string; releasedAt: number } | null }, CloudRunError> {
+}): Effect.Effect<{ hold: { ownerProjectId: string; releasedAt: number; expiresAt: number } | null }, CloudRunError> {
     return cloudRunQuery('assets', 'tokenListsGetSlugHold', { ...args }, { maxRetries: 1 });
 }
 

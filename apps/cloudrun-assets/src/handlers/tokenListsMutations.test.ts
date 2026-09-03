@@ -240,16 +240,18 @@ describe('slug hold-down', () => {
         });
     });
 
-    it('records a hold on delete and on rename-away', async () => {
+    it('records a hold on delete (atomically, via the repo) and on rename-away', async () => {
         const holds: unknown[] = [];
         const deps = makeDeps({
-            recordSlugHold: async (slug, owner, at) => void holds.push([slug, owner, at]),
+            deleteList: async (_listId, hold) =>
+                void holds.push(['delete', hold.slug, hold.ownerProjectId, hold.releasedAt]),
+            recordSlugHold: async (slug, owner, at) => void holds.push(['rename', slug, owner, at]),
         });
         await deleteList(deps, { ownerProjectId: 'proj_1', slug: 'ownership-core' });
         await updateList(deps, { ownerProjectId: 'proj_1', slug: 'ownership-core', newSlug: 'renamed-core' });
         expect(holds).toEqual([
-            ['ownership-core', 'proj_1', FIXED_NOW],
-            ['ownership-core', 'proj_1', FIXED_NOW],
+            ['delete', 'ownership-core', 'proj_1', FIXED_NOW],
+            ['rename', 'ownership-core', 'proj_1', FIXED_NOW],
         ]);
     });
 
