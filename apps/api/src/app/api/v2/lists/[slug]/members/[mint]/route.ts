@@ -2,6 +2,7 @@ import { Effect, Schema } from 'effect';
 
 import { route, type PlatformAuthContext } from '@/effect/next-route';
 import { decodeUnknownOrBadRequest } from '@tokens/effect';
+import { enforceProviderBudget } from '@/effect/provider-budget';
 import { tokenListsRemoveMember, tokenListsUpsertMember } from '@/lib/cloudrun';
 
 import { unwrapOutcome } from '../../../_shared';
@@ -34,6 +35,9 @@ export const PUT = route(
                 return text.trim() ? (JSON.parse(text) as unknown) : {};
             });
             const body = yield* decodeUnknownOrBadRequest(putBodySchema, raw, 'Invalid body');
+            // Same provider budget as the batch path: unknown mints resolve via
+            // Birdeye here too, so single PUTs must not be a budget side door.
+            yield* enforceProviderBudget(ctx.platformAuth, 'batch');
 
             const outcome = yield* tokenListsUpsertMember({
                 ownerProjectId: ctx.platformAuth.projectId,

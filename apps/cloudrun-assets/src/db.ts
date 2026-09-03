@@ -3469,27 +3469,47 @@ export function makePostgresTokenListsMutationsRepo(sql: Sql): TokenListsMutatio
         },
         async upsertMember(args) {
             const rank = args.rank;
-            await sql`
-                INSERT INTO token_list_members (id, list_id, mint, rank, note, added_at, symbol, name, logo_uri, decimals)
-                VALUES (
-                    ${randomId('tlm')}, ${args.listId}, ${args.mint},
-                    COALESCE(${rank}, (
-                        SELECT COALESCE(MAX(rank), -1) + 1 FROM token_list_members WHERE list_id = ${args.listId}
-                    )),
-                    ${args.note}, ${args.addedAt},
-                    ${args.snapshot?.symbol ?? null}, ${args.snapshot?.name ?? null},
-                    ${args.snapshot?.logoUri ?? null}, ${args.snapshot?.decimals ?? null}
-                )
-                ON CONFLICT (list_id, mint) DO UPDATE SET
-                    rank = COALESCE(${rank}, token_list_members.rank),
-                    note = EXCLUDED.note,
-                    symbol = EXCLUDED.symbol,
-                    name = EXCLUDED.name,
-                    logo_uri = EXCLUDED.logo_uri,
-                    decimals = EXCLUDED.decimals
-            `;
-            // Discovery updatedAt must reflect member changes, not just metadata edits.
-            await sql`UPDATE token_lists SET updated_at = ${new Date(args.addedAt)} WHERE id = ${args.listId}`;
+            let inserted = true;
+            // Same locking discipline as upsertMembersBulk: cap and default
+            // rank are read with the list row locked, so a single PUT cannot
+            // race a batch into cap overshoot or duplicate ranks.
+            await sql.begin(async tx => {
+                await tx`SELECT id FROM token_lists WHERE id = ${args.listId} FOR UPDATE`;
+                const existingRows = await tx<{ id: string }[]>`
+                    SELECT id FROM token_list_members WHERE list_id = ${args.listId} AND mint = ${args.mint}
+                `;
+                if (existingRows.length === 0) {
+                    const countRows = await tx<{ count: number }[]>`
+                        SELECT COUNT(*)::int AS count FROM token_list_members WHERE list_id = ${args.listId}
+                    `;
+                    if ((countRows[0]?.count ?? 0) >= args.membersPerListCap) {
+                        inserted = false;
+                        return;
+                    }
+                }
+                await tx`
+                    INSERT INTO token_list_members (id, list_id, mint, rank, note, added_at, symbol, name, logo_uri, decimals)
+                    VALUES (
+                        ${randomId('tlm')}, ${args.listId}, ${args.mint},
+                        COALESCE(${rank}, (
+                            SELECT COALESCE(MAX(rank), -1) + 1 FROM token_list_members WHERE list_id = ${args.listId}
+                        )),
+                        ${args.note}, ${args.addedAt},
+                        ${args.snapshot?.symbol ?? null}, ${args.snapshot?.name ?? null},
+                        ${args.snapshot?.logoUri ?? null}, ${args.snapshot?.decimals ?? null}
+                    )
+                    ON CONFLICT (list_id, mint) DO UPDATE SET
+                        rank = COALESCE(${rank}, token_list_members.rank),
+                        note = EXCLUDED.note,
+                        symbol = EXCLUDED.symbol,
+                        name = EXCLUDED.name,
+                        logo_uri = EXCLUDED.logo_uri,
+                        decimals = EXCLUDED.decimals
+                `;
+                // Discovery updatedAt must reflect member changes, not just metadata edits.
+                await tx`UPDATE token_lists SET updated_at = ${new Date(args.addedAt)} WHERE id = ${args.listId}`;
+            });
+            return inserted;
         },
         async removeMember(listId, mint, nowMs) {
             const rows = await sql<{ id: string }[]>`

@@ -168,7 +168,7 @@ export function tokenListsAddMembersBatch(args: {
     slug: string;
     mints: string[];
 }): Effect.Effect<TokenListMutationOutcome<TokenListBatchAddResult>, CloudRunError> {
-    // A 1000-mint batch legitimately outlives the default 15s client timeout
+    // A max-size (250-mint) batch legitimately outlives the default 15s client timeout
     // (chunked DB upserts + up to ~50 budgeted provider lookups).
     return cloudRunMutation('assets', 'tokenListsAddMembersBatch', { ...args }, { timeoutMs: 60_000 });
 }

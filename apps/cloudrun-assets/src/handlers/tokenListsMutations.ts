@@ -135,6 +135,12 @@ export interface TokenListsMutationsRepo {
     /** Non-archived lists owned by the project (lists-per-project cap). */
     countListsByOwner(ownerProjectId: string): Promise<number>;
     /** Upsert on (list_id, mint); missing rank appends after the current max. Touches the parent list. */
+    /**
+     * Single upsert in ONE transaction with the list row locked (FOR UPDATE):
+     * the members-per-list cap and default rank are read under the lock, same
+     * guarantees as the bulk path. Returns false when a net-new insert would
+     * exceed the cap (updates of existing members always succeed).
+     */
     upsertMember(args: {
         listId: string;
         mint: string;
@@ -142,7 +148,8 @@ export interface TokenListsMutationsRepo {
         note: string | null;
         addedAt: number;
         snapshot: MemberSnapshot | null;
-    }): Promise<void>;
+        membersPerListCap: number;
+    }): Promise<boolean>;
     /** Returns false when the mint was not a member. Touches the parent list when it was. */
     removeMember(listId: string, mint: string, nowMs: number): Promise<boolean>;
     /** An active registry variant exists for the mint (tombstone-filtered). */
@@ -473,24 +480,21 @@ export async function upsertMember(
     const owned = await requireOwnedList(deps, slug, ownerProjectId);
     if (!owned.ok) return owned;
 
-    // Updating an existing member never consumes a slot; only net-new inserts
-    // count against the members-per-list cap.
-    if ((await deps.repo.countMembers(owned.value.id)) >= deps.caps.membersPerList) {
-        const existing = await deps.repo.filterMintsExistingMembers(owned.value.id, [mint]);
-        if (existing.length === 0) return { ok: false, error: 'list_full' };
-    }
-
     const resolved = await resolveMint(deps, mint);
     if (!resolved.ok) return resolved;
 
-    await deps.repo.upsertMember({
+    // Cap enforcement happens inside the repo transaction (list row locked),
+    // so a PUT racing a batch cannot overshoot or duplicate ranks.
+    const inserted = await deps.repo.upsertMember({
         listId: owned.value.id,
         mint,
         rank,
         note,
         addedAt: deps.now(),
         snapshot: resolved.value.snapshot,
+        membersPerListCap: deps.caps.membersPerList,
     });
+    if (!inserted) return { ok: false, error: 'list_full' };
     return resolved;
 }
 
