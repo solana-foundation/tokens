@@ -47,8 +47,18 @@ function refreshInBackground(): void {
     if (snapshot && Date.now() - loadedAtMs < SNAPSHOT_TTL_MS) return;
     inflight = load()
         .catch(err => {
-            // Stale-forever: keep serving the last good snapshot.
-            console.error('[api] curated membership refresh failed', err);
+            // Stale-forever: keep serving the last good snapshot — but loudly
+            // and with staleness age, so a frozen snapshot is alertable (same
+            // event name as the cloudrun-assets side).
+            console.error(
+                JSON.stringify({
+                    event: 'curated_snapshot_refresh_failed',
+                    side: 'api',
+                    staleness_ms: loadedAtMs > 0 ? Date.now() - loadedAtMs : null,
+                    stale_over_30m: loadedAtMs > 0 && Date.now() - loadedAtMs > 30 * 60 * 1000,
+                    error: err instanceof Error ? err.message : String(err),
+                }),
+            );
             if (!snapshot) throw err;
             return snapshot;
         })

@@ -530,7 +530,9 @@ export function makePostgresCuratedMembershipSource(sql: Sql): CuratedMembership
         if (memberRows.length === 0) {
             throw new Error('curated membership snapshot has 0 member rows — refusing to commit');
         }
-        const maxShrinkPct = Number(process.env.CURATED_SNAPSHOT_MAX_SHRINK_PCT) || 50;
+        const shrinkEnv = Number(process.env.CURATED_SNAPSHOT_MAX_SHRINK_PCT);
+        // 0 is meaningful ("refuse any shrink"), so no || coercion here.
+        const maxShrinkPct = Number.isFinite(shrinkEnv) && shrinkEnv >= 0 ? shrinkEnv : 50;
         if (lastMemberRowCount > 0 && memberRows.length < lastMemberRowCount * (1 - maxShrinkPct / 100)) {
             throw new Error(
                 `curated membership snapshot shrank ${lastMemberRowCount} -> ${memberRows.length} rows ` +
