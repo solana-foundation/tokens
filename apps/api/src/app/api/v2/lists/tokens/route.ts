@@ -54,11 +54,26 @@ function resolveCurated(curatedId: NonNullable<ReturnType<typeof normalizeCurate
     });
 }
 
+/** Hard ceiling on members fetched per composed list (matches the members-per-list cap). */
+const COMPOSE_MEMBER_FETCH_CAP = 5000;
+const COMPOSE_MEMBER_PAGE = 2000;
+
 function resolveCommunity(slug: string) {
     return Effect.gen(function* () {
         const detail = yield* tokenListsGetBySlug({ slug });
         if (!detail || detail.status !== 'published') return null;
-        const members = yield* tokenListsGetMembers({ slug, limit: 2000, offset: 0 });
+        // Page until the list's full membership (or the hard cap) is covered —
+        // a single fixed-limit fetch silently truncated large lists.
+        const members: TokenListMember[] = [];
+        for (
+            let offset = 0;
+            offset < Math.min(detail.tokenCount, COMPOSE_MEMBER_FETCH_CAP);
+            offset += COMPOSE_MEMBER_PAGE
+        ) {
+            const page = yield* tokenListsGetMembers({ slug, limit: COMPOSE_MEMBER_PAGE, offset });
+            members.push(...page);
+            if (page.length < COMPOSE_MEMBER_PAGE) break;
+        }
         const resolved: ResolvedList = {
             summary: {
                 slug: detail.slug,
@@ -95,7 +110,14 @@ export const GET = route(
                     new BadRequestError({ message: 'Missing required query param: lists (comma-separated slugs)' }),
                 );
             }
-            const slugs = [...new Set(rawLists.split(',').map(s => s.trim().toLowerCase()).filter(Boolean))];
+            const slugs = [
+                ...new Set(
+                    rawLists
+                        .split(',')
+                        .map(s => s.trim().toLowerCase())
+                        .filter(Boolean),
+                ),
+            ];
             if (slugs.length === 0) {
                 return yield* Effect.fail(new BadRequestError({ message: 'lists must name at least one slug' }));
             }
@@ -119,9 +141,7 @@ export const GET = route(
                     resolved.push({ slug, list });
                 }
 
-                const found = resolved.filter(
-                    (r): r is { slug: string; list: ResolvedList } => r.list !== null,
-                );
+                const found = resolved.filter((r): r is { slug: string; list: ResolvedList } => r.list !== null);
                 const notFound = resolved.filter(r => r.list === null).map(r => r.slug);
 
                 // Union in request order, deduped by mint; membership annotations
@@ -149,9 +169,7 @@ export const GET = route(
                 // by construction.
                 const pageMembers: TokenListMember[] = page.map(mint => {
                     const member = memberByMint.get(mint);
-                    const curatedMember = listsByMint
-                        .get(mint)!
-                        .some(slug => normalizeCuratedSlug(slug) !== null);
+                    const curatedMember = listsByMint.get(mint)!.some(slug => normalizeCuratedSlug(slug) !== null);
                     if (member) {
                         return curatedMember ? { ...member, verified: true } : member;
                     }

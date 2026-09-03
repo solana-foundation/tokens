@@ -74,6 +74,8 @@ import {
     getBySlug as tokenListsGetBySlug,
     getMembers as tokenListsGetMembers,
     getSlugsByMints as tokenListsGetSlugsByMints,
+    countPublished as tokenListsCountPublished,
+    getSlugHold as tokenListsGetSlugHold,
     listPublished as tokenListsListPublished,
     type TokenListsReadsRepo,
 } from './handlers/tokenListsReads';
@@ -254,6 +256,8 @@ const ATOMIC_RETRY_QUERY_NAMES = new Set([
     'assetCollectionsGetSummaries',
     'curatedMembershipGetSnapshot',
     'tokenListsList',
+    'tokenListsCountPublished',
+    'tokenListsGetSlugHold',
     'tokenListsGetBySlug',
     'tokenListsGetMembers',
     'tokenListsGetSlugsByMints',
@@ -434,6 +438,8 @@ export function createApp(deps: ServerDeps) {
     queries.assetCollectionsGetSummaries = args => assetCollectionsGetSummaries(deps.assetCollectionsReadsRepo, args);
     queries.curatedMembershipGetSnapshot = args => curatedMembershipGetSnapshot(deps.curatedMembershipSource, args);
     queries.tokenListsList = args => tokenListsListPublished(deps.tokenListsReadsRepo, args);
+    queries.tokenListsCountPublished = () => tokenListsCountPublished(deps.tokenListsReadsRepo);
+    queries.tokenListsGetSlugHold = args => tokenListsGetSlugHold(deps.tokenListsReadsRepo, args);
     queries.tokenListsGetBySlug = args => tokenListsGetBySlug(deps.tokenListsReadsRepo, args);
     queries.tokenListsGetMembers = args => tokenListsGetMembers(deps.tokenListsReadsRepo, args);
     queries.tokenListsGetSlugsByMints = args => tokenListsGetSlugsByMints(deps.tokenListsReadsRepo, args);

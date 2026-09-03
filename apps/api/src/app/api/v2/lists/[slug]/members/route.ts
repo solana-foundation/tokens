@@ -2,6 +2,7 @@ import { Effect, Schema } from 'effect';
 
 import { route, type PlatformAuthContext } from '@/effect/next-route';
 import { decodeUnknownOrBadRequest } from '@tokens/effect';
+import { enforceProviderBudget } from '@/effect/provider-budget';
 import { tokenListsAddMembersBatch } from '@/lib/cloudrun';
 
 import { unwrapOutcome } from '../../_shared';
@@ -26,6 +27,9 @@ export const POST = route(
             const { slug } = yield* Effect.tryPromise(() => ctx.params);
             const json = yield* Effect.tryPromise(() => request.json());
             const body = yield* decodeUnknownOrBadRequest(bodySchema, json, 'Invalid body');
+            // Per-key window budget: bounds sustained provider (Birdeye) spend
+            // regardless of the per-call lookup cap.
+            yield* enforceProviderBudget(ctx.platformAuth, 'batch');
 
             const outcome = yield* tokenListsAddMembersBatch({
                 ownerProjectId: ctx.platformAuth.projectId,
