@@ -300,6 +300,8 @@ const app = createApp({
         // simply resolve as unknown_mint instead of snapshotting metadata.
         fetchTokenOverview: async mint => (cronDeps ? cronDeps.birdeye.fetchTokenOverview(mint) : null),
         now: () => Date.now(),
+        // Freed slugs are reclaimable only by their previous owner for this window.
+        slugHoldMs: (Number(process.env.TOKEN_LIST_SLUG_HOLD_DAYS) || 30) * 24 * 60 * 60 * 1000,
     },
     coingeckoReadsRepo: makePostgresCoingeckoReadsRepo(sql),
     stockReadsRepo: makePostgresStockReadsRepo(sql),

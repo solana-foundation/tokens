@@ -13,7 +13,7 @@ interface RouteCtx {
 
 const putBodySchema = Schema.Struct({
     rank: Schema.optional(Schema.Number),
-    note: Schema.optional(Schema.String),
+    note: Schema.optional(Schema.String.check(Schema.isMaxLength(500))),
 });
 
 /**

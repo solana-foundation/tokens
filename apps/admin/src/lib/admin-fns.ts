@@ -40,6 +40,7 @@ export const ADMIN_FNS: Record<string, AdminFnSpec> = {
     removeFromCategory: { service: 'admin', kind: 'mutation' },
     generateCanonicalLogoUploadUrl: { service: 'admin', kind: 'mutation' },
     adminArchiveTokenList: { service: 'admin', kind: 'mutation' },
+    adminUnlockTokenList: { service: 'admin', kind: 'mutation' },
 
     // cloudrun-assets admin actions (awaited warms → long timeouts)
     adminCheckVariantMintForCanonical: { service: 'assets', kind: 'mutation', timeoutMs: 30_000 },

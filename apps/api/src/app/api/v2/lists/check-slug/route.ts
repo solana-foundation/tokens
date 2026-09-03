@@ -2,7 +2,7 @@ import { Effect } from 'effect';
 
 import { route } from '@/effect/next-route';
 import { BadRequestError } from '@tokens/effect';
-import { tokenListsGetBySlug } from '@/lib/cloudrun';
+import { tokenListsGetBySlug, tokenListsGetSlugHold } from '@/lib/cloudrun';
 
 import { normalizeCuratedSlug } from '../_shared';
 
@@ -15,7 +15,10 @@ import { normalizeCuratedSlug } from '../_shared';
 const SLUG_REGEX = /^[a-z][a-z0-9-]{2,62}$/;
 const RESERVED_SEGMENTS = new Set(['all', 'lists', 'curated', 'tokens', 'search-tokens', 'check-slug']);
 
-export type SlugUnavailableReason = 'invalid' | 'reserved' | 'taken';
+export type SlugUnavailableReason = 'invalid' | 'reserved' | 'taken' | 'held';
+
+/** Mirrors TOKEN_LIST_SLUG_HOLD_DAYS on cloudrun-assets (default 30). */
+const SLUG_HOLD_MS = (Number(process.env.TOKEN_LIST_SLUG_HOLD_DAYS) || 30) * 24 * 60 * 60 * 1000;
 
 /**
  * GET /api/v2/lists/check-slug?slug=… — is this slug claimable right now?
@@ -44,6 +47,10 @@ export const GET = route(
 
             const existing = yield* tokenListsGetBySlug({ slug: raw });
             if (existing) return unavailable('taken');
+
+            // Freed slugs stay reserved for their previous owner for a window.
+            const { hold } = yield* tokenListsGetSlugHold({ slug: raw });
+            if (hold && Date.now() - hold.releasedAt < SLUG_HOLD_MS) return unavailable('held');
 
             return { slug: raw, available: true };
         }),

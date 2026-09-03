@@ -46,6 +46,8 @@ const MEMBER_ROW: TokenListMemberRow = {
 function makeRepo(overrides: Partial<TokenListsReadsRepo> = {}): TokenListsReadsRepo {
     return {
         listPublished: async () => [SUMMARY_ROW],
+        countPublished: async () => 1,
+        getSlugHold: async () => null,
         getBySlug: async () => LIST_ROW,
         listMembersBySlug: async () => [MEMBER_ROW],
         listSlugsByMints: async () => [],
@@ -80,9 +82,7 @@ describe('tokenListsReads.listPublished', () => {
     });
 
     it('rejects non-numeric limit', async () => {
-        await expect(listPublished(makeRepo(), { limit: 'lots' })).rejects.toBeInstanceOf(
-            InvalidArgsError,
-        );
+        await expect(listPublished(makeRepo(), { limit: 'lots' })).rejects.toBeInstanceOf(InvalidArgsError);
     });
 });
 
