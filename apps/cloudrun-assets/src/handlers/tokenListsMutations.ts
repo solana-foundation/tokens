@@ -664,6 +664,11 @@ export function decodeMemberEntries(raw: unknown): MemberEntry[] {
         if (row.note !== undefined && row.note !== null && typeof row.note !== 'string') {
             throw new InvalidArgsError(`members[${index}].note must be a string when present`);
         }
+        if (typeof row.note === 'string' && row.note.length > TOKEN_LIST_TEXT_CAPS.note) {
+            throw new InvalidArgsError(
+                `members[${index}].note must be at most ${TOKEN_LIST_TEXT_CAPS.note} characters`,
+            );
+        }
         return { mint: row.mint.trim(), note: typeof row.note === 'string' ? row.note : null };
     });
 }
@@ -703,5 +708,4 @@ export async function addMembersBatch(
 
     const result = await addMembersToList(deps, owned.value.id, entries);
     return { ok: true, value: result };
-
 }

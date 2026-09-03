@@ -1,9 +1,9 @@
 'use client';
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
 import { toast } from 'sonner';
 
-import { useAdminMutation } from '@/hooks/use-admin-api';
+import { AdminApiError, useAdminMutation } from '@/hooks/use-admin-api';
 import type {
     AdminImportTokenListMembersResult,
     TokenListAdminRow,
@@ -71,7 +71,10 @@ export function ImportMembersDialog({ list, open, onOpenChange, onImported }: Im
         setSummary(null);
     }, [open]);
 
-    const parsed = useMemo(() => parseMintsCsv(text), [text]);
+    // Deferred: a giant paste re-parses off the urgent path instead of on
+    // every keystroke.
+    const deferredText = useDeferredValue(text);
+    const parsed = useMemo(() => parseMintsCsv(deferredText), [deferredText]);
     const importing = progress !== null;
 
     async function handleFile(file: File | undefined) {
@@ -89,10 +92,24 @@ export function ImportMembersDialog({ list, open, onOpenChange, onImported }: Im
         try {
             for (let i = 0; i < parsed.rows.length; i += CHUNK_SIZE) {
                 const chunk = parsed.rows.slice(i, i + CHUNK_SIZE);
-                const result = await importMembers({
-                    slug: list.slug,
-                    members: chunk.map(row => ({ mint: row.mint, ...(row.note ? { note: row.note } : {}) })),
-                });
+                const send = () =>
+                    importMembers({
+                        slug: list.slug,
+                        members: chunk.map(row => ({ mint: row.mint, ...(row.note ? { note: row.note } : {}) })),
+                    });
+                let result;
+                try {
+                    result = await send();
+                } catch (err) {
+                    // Sequential chunks can trip the proxy's rate limit; wait
+                    // once and retry before surfacing the failure.
+                    if (err instanceof AdminApiError && err.status === 429) {
+                        await new Promise(resolve => setTimeout(resolve, 1200));
+                        result = await send();
+                    } else {
+                        throw err;
+                    }
+                }
                 if (!result.ok) throw new Error(`Import failed: ${FAILURE_COPY[result.error] ?? result.error}`);
                 acc.added += result.value.added.length;
                 acc.verified += result.value.added.filter(m => m.verified).length;

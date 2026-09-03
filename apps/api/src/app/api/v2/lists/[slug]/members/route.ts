@@ -13,10 +13,15 @@ interface RouteCtx {
 }
 
 const bodySchema = Schema.Struct({
-    mints: Schema.optional(Schema.Array(Schema.String)),
+    mints: Schema.optional(Schema.Array(Schema.String).check(Schema.isMaxLength(1000))),
     /** CSV-shaped alternative: row order becomes rank order, `note` lands on the member. */
     members: Schema.optional(
-        Schema.Array(Schema.Struct({ mint: Schema.String, note: Schema.optional(Schema.String) })),
+        Schema.Array(
+            Schema.Struct({
+                mint: Schema.String,
+                note: Schema.optional(Schema.String.check(Schema.isMaxLength(500))),
+            }),
+        ).check(Schema.isMaxLength(1000)),
     ),
 });
 
