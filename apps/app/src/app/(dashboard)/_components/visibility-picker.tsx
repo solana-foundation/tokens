@@ -3,9 +3,10 @@
 import { Label } from '@tokens/ui/label';
 
 /**
- * Public/Private choice for a community list, shared by the create dialog and
- * the settings modal. "Private" maps to the API's `unlisted` status: hidden
- * from the catalog (GET /api/v2/lists) but still readable at the direct URL.
+ * Public/Unlisted choice for a community list, shared by the create dialog
+ * and the settings modal. "Unlisted" maps to the API's `unlisted` status:
+ * hidden from the catalog (GET /api/v2/lists) but readable by anyone with
+ * the link — deliberately NOT called "private" (see the #96 review).
  */
 export function VisibilityPicker({
     isPrivate,
@@ -18,7 +19,7 @@ export function VisibilityPicker({
 }) {
     const options = [
         { value: false, title: 'Public', description: 'Shown in community lists' },
-        { value: true, title: 'Private', description: 'Hidden from the catalog — link-only' },
+        { value: true, title: 'Unlisted', description: 'Hidden from the catalog. Anyone with the link can read it.' },
     ] as const;
     return (
         <div className="space-y-1.5">

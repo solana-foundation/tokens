@@ -120,12 +120,15 @@ Create a list.
   - `slug`: globally unique, `^[a-z][a-z0-9-]{2,62}$`. Curated ids and route words
     (`all`, `lists`, `curated`, `tokens`, `search-tokens`) are reserved. Prefix by convention:
     `ownership-core`.
-  - `status`: `draft` or `published` (default `published`).
+  - `status`: `draft`, `unlisted`, or `published` (default `published`). `unlisted`
+    hides the list from the catalog and `inLists` annotations while the direct
+    `GET /v2/lists/{slug}` stays readable by anyone with the link.
 - **Errors** (`400` with `details.code`): `invalid_slug`, `reserved_slug`, `slug_conflict`.
 
 ### `PATCH /v2/lists/{slug}`
 
-Update `name`, `slug` (rename — the old path stops resolving), or `status` (`draft` | `published` | `archived`).
+Update `name`, `slug` (rename — the old path stops resolving and is held for this owner
+for a 30-day window), or `status` (`draft` | `unlisted` | `published` | `archived`).
 
 ### `DELETE /v2/lists/{slug}`
 

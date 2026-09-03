@@ -19,7 +19,7 @@ unknown mints fail individually as `unknown_mint` and can be retried in later ba
 
 ## Visibility
 
-- `status: "unlisted"` (the dashboard calls it **Private**) hides a list from the public
+- `status: "unlisted"` (the dashboard calls it **Unlisted**) hides a list from the public
   catalog (`GET /v2/lists`) and from `inLists` annotations, while `GET /v2/lists/{slug}`
   and `/v2/lists/tokens` still serve anyone with the link. `draft` remains fully hidden
   from public reads. Set at create (`POST /v2/lists` with `status`) or later via `PATCH`.

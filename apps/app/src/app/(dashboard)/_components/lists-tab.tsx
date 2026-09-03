@@ -197,12 +197,17 @@ function ListRailRow({
             </Badge>
             {list.status === 'unlisted' && (
                 <Badge variant="warning" className="shrink-0 px-1.5 text-[10px]">
-                    Private
+                    Unlisted
                 </Badge>
             )}
             {list.status === 'draft' && (
                 <Badge variant="outline" className="shrink-0 px-1.5 text-[10px]">
                     Draft
+                </Badge>
+            )}
+            {list.status === 'archived' && (
+                <Badge variant="secondary" className="shrink-0 px-1.5 text-[10px] opacity-70">
+                    Archived
                 </Badge>
             )}
 

@@ -56,7 +56,7 @@ const SLUG_REGEX = /^[a-z][a-z0-9-]{2,62}$/;
 export function ListSettingsDialog({ list, isOpen, onClose, fetcher, onSave, onDelete }: ListSettingsDialogProps) {
     const [slug, setSlug] = useState(list?.slug ?? '');
     const [name, setName] = useState(list?.name ?? '');
-    // Draft lists (API-only) present as Private too — they are also hidden.
+    // Draft lists (API-only) present as Unlisted too — they are also hidden.
     const [isPrivate, setIsPrivate] = useState((list?.status ?? 'published') !== 'published');
     const [isSaving, setIsSaving] = useState(false);
     const [isDeleting, setIsDeleting] = useState(false);
@@ -86,7 +86,8 @@ export function ListSettingsDialog({ list, isOpen, onClose, fetcher, onSave, onD
     const busy = isSaving || isDeleting;
     const slugValid = SLUG_REGEX.test(nextSlug);
     const visibilityChanged = isPrivate !== ((list.status ?? 'published') !== 'published');
-    const dirty = slugChanged || name.trim() !== list.name || visibilityChanged;
+    // Archived lists are always savable: saving restores them.
+    const dirty = slugChanged || name.trim() !== list.name || visibilityChanged || list.status === 'archived';
     const availabilityMessage = slugAvailabilityMessage(availability);
     const slugBlocked = availability.state === 'unavailable';
 
@@ -103,8 +104,20 @@ export function ListSettingsDialog({ list, isOpen, onClose, fetcher, onSave, onD
         setIsSaving(true);
         try {
             // Untouched visibility keeps the current status (a draft stays a
-            // draft); a toggle maps Private → unlisted, Public → published.
-            const status = visibilityChanged ? (isPrivate ? 'unlisted' : 'published') : (list.status ?? 'published');
+            // draft); a toggle maps Unlisted → unlisted, Public → published.
+            // Saving an archived list always restores it to the picked
+            // visibility — that is the owner's un-archive path (refused with a
+            // moderator message while the admin takedown lock is set).
+            const status =
+                list.status === 'archived'
+                    ? isPrivate
+                        ? 'unlisted'
+                        : 'published'
+                    : visibilityChanged
+                      ? isPrivate
+                          ? 'unlisted'
+                          : 'published'
+                      : (list.status ?? 'published');
             await onSave({ slug: nextSlug, name: name.trim(), status });
             toast.success(slugChanged ? `List moved to /api/v2/lists/${nextSlug}` : 'List updated');
             onClose();
@@ -209,6 +222,12 @@ export function ListSettingsDialog({ list, isOpen, onClose, fetcher, onSave, onD
                         </div>
 
                         <VisibilityPicker isPrivate={isPrivate} onChange={setIsPrivate} disabled={busy} />
+                        {list.status === 'archived' && (
+                            <p className="rounded-lg border border-amber-500/30 bg-amber-500/5 p-2 text-xs text-muted-foreground">
+                                This list is archived. Saving restores it with the visibility picked above (unless it
+                                was locked by moderators).
+                            </p>
+                        )}
                     </div>
 
                     <DialogFooter className="flex !flex-col gap-2">
