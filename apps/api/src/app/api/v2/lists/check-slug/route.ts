@@ -1,6 +1,6 @@
 import { Effect } from 'effect';
 
-import { route } from '@/effect/next-route';
+import { route, type PlatformAuthContext } from '@/effect/next-route';
 import { BadRequestError } from '@tokens/effect';
 import { tokenListsGetBySlug, tokenListsGetSlugHold } from '@/lib/cloudrun';
 
@@ -17,9 +17,6 @@ const RESERVED_SEGMENTS = new Set(['all', 'lists', 'curated', 'tokens', 'search-
 
 export type SlugUnavailableReason = 'invalid' | 'reserved' | 'taken' | 'held';
 
-/** Mirrors TOKEN_LIST_SLUG_HOLD_DAYS on cloudrun-assets (default 30). */
-const SLUG_HOLD_MS = (Number(process.env.TOKEN_LIST_SLUG_HOLD_DAYS) || 30) * 24 * 60 * 60 * 1000;
-
 /**
  * GET /api/v2/lists/check-slug?slug=… — is this slug claimable right now?
  *
@@ -30,7 +27,7 @@ const SLUG_HOLD_MS = (Number(process.env.TOKEN_LIST_SLUG_HOLD_DAYS) || 30) * 24 
  * so the create path stays authoritative.
  */
 export const GET = route(
-    (request: Request) =>
+    (request: Request, ctx: { platformAuth: PlatformAuthContext }) =>
         Effect.gen(function* () {
             const raw = (new URL(request.url).searchParams.get('slug') ?? '').trim().toLowerCase();
             if (!raw) {
@@ -49,8 +46,13 @@ export const GET = route(
             if (existing) return unavailable('taken');
 
             // Freed slugs stay reserved for their previous owner for a window.
+            // `expiresAt` comes from the enforcing service, so this advisory
+            // answer cannot drift from what create/rename will actually do —
+            // and the previous owner, who may reclaim, sees `available`.
             const { hold } = yield* tokenListsGetSlugHold({ slug: raw });
-            if (hold && Date.now() - hold.releasedAt < SLUG_HOLD_MS) return unavailable('held');
+            if (hold && Date.now() < hold.expiresAt && hold.ownerProjectId !== ctx.platformAuth.projectId) {
+                return unavailable('held');
+            }
 
             return { slug: raw, available: true };
         }),

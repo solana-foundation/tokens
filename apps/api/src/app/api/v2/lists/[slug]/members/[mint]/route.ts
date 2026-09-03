@@ -12,7 +12,11 @@ interface RouteCtx {
 }
 
 const putBodySchema = Schema.Struct({
-    rank: Schema.optional(Schema.Number),
+    // int4 column: reject non-finite/overflow at the edge (a 1e12 rank
+    // otherwise round-trips to Cloud Run just to fail).
+    rank: Schema.optional(
+        Schema.Number.check(Schema.isInt(), Schema.isBetween({ minimum: -2_147_483_648, maximum: 2_147_483_647 })),
+    ),
     note: Schema.optional(Schema.String.check(Schema.isMaxLength(500))),
 });
 

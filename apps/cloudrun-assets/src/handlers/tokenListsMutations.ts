@@ -124,8 +124,8 @@ export interface TokenListsMutationsRepo {
         patch: { slug?: string; name?: string; status?: TokenListStatus },
         nowMs: number,
     ): Promise<TokenListMutationRow>;
-    /** Hard delete — members cascade, and the slug goes back to the pool. */
-    deleteList(listId: string): Promise<void>;
+    /** Hard delete in ONE transaction — members cascade, and the freed slug's hold is recorded atomically. */
+    deleteList(listId: string, hold: { slug: string; ownerProjectId: string; releasedAt: number }): Promise<void>;
     /** Active hold on a freed slug, or null. */
     getSlugHold(slug: string): Promise<{ ownerProjectId: string; releasedAt: number } | null>;
     /** Upsert a hold recording who released the slug and when. */
@@ -410,8 +410,13 @@ export async function deleteList(
     const owned = await requireOwnedList(deps, slug, ownerProjectId);
     if (!owned.ok) return owned;
 
-    await deps.repo.deleteList(owned.value.id);
-    await deps.repo.recordSlugHold(owned.value.slug, ownerProjectId, deps.now());
+    // Delete + hold in one repo transaction: a crash between the two must not
+    // reopen the slug-hijack window, however briefly.
+    await deps.repo.deleteList(owned.value.id, {
+        slug: owned.value.slug,
+        ownerProjectId,
+        releasedAt: deps.now(),
+    });
     return { ok: true, value: listResult(owned.value) };
 }
 
@@ -460,7 +465,7 @@ export async function upsertMember(
         throw new InvalidArgsError('rank must be a number when present');
     }
     // int4 column: NaN/±Infinity/overflow must 400 here, not 500 at the insert.
-    if (typeof a.rank === 'number' && (!Number.isFinite(a.rank) || Math.abs(a.rank) > 2_147_483_647)) {
+    if (typeof a.rank === 'number' && (!Number.isFinite(a.rank) || a.rank < -2_147_483_648 || a.rank > 2_147_483_647)) {
         throw new InvalidArgsError('rank must be a finite 32-bit integer');
     }
     const rank = typeof a.rank === 'number' ? Math.floor(a.rank) : null;
