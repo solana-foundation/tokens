@@ -49,7 +49,7 @@ function makeDeps(
             }),
             updateList: async (_listId, patch) => ({ ...LIST_ROW, ...patch }),
             deleteList: async () => {},
-            upsertMember: async () => {},
+            upsertMember: async () => true,
             removeMember: async () => true,
             hasActiveVariantForMint: async () => true,
             hasTokenForAddress: async () => false,
@@ -267,16 +267,18 @@ describe('slug hold-down', () => {
         });
     });
 
-    it('records a hold on delete and on rename-away', async () => {
+    it('records a hold on delete (atomically, via the repo) and on rename-away', async () => {
         const holds: unknown[] = [];
         const deps = makeDeps({
-            recordSlugHold: async (slug, owner, at) => void holds.push([slug, owner, at]),
+            deleteList: async (_listId, hold) =>
+                void holds.push(['delete', hold.slug, hold.ownerProjectId, hold.releasedAt]),
+            recordSlugHold: async (slug, owner, at) => void holds.push(['rename', slug, owner, at]),
         });
         await deleteList(deps, { ownerProjectId: 'proj_1', slug: 'ownership-core' });
         await updateList(deps, { ownerProjectId: 'proj_1', slug: 'ownership-core', newSlug: 'renamed-core' });
         expect(holds).toEqual([
-            ['ownership-core', 'proj_1', FIXED_NOW],
-            ['ownership-core', 'proj_1', FIXED_NOW],
+            ['delete', 'ownership-core', 'proj_1', FIXED_NOW],
+            ['rename', 'ownership-core', 'proj_1', FIXED_NOW],
         ]);
     });
 
@@ -505,6 +507,7 @@ describe('addMembersBatch', () => {
             },
             upsertMember: async () => {
                 singleCalls += 1;
+                return true;
             },
         });
         await addMembersBatch(deps, {
@@ -565,19 +568,23 @@ describe('addMembersBatch', () => {
 });
 
 describe('upsertMember list_full', () => {
-    it('rejects a net-new member on a full list but allows updating an existing one', async () => {
-        const fullDeps = makeDeps({ countMembers: async () => 5000, filterMintsExistingMembers: async () => [] });
+    it('surfaces the repo cap verdict (enforced under the list lock) and passes the cap through', async () => {
+        const caps: number[] = [];
+        const fullDeps = makeDeps({
+            upsertMember: async args => {
+                caps.push(args.membersPerListCap);
+                return false;
+            },
+        });
         expect(
             await upsertMember(fullDeps, { ownerProjectId: 'proj_1', slug: 'ownership-core', mint: USDC_MINT }),
         ).toEqual({ ok: false, error: 'list_full' });
+        expect(caps).toEqual([5000]);
 
-        const updateDeps = makeDeps({
-            countMembers: async () => 5000,
-            filterMintsExistingMembers: async () => [USDC_MINT],
-        });
+        const updateDeps = makeDeps({ upsertMember: async () => true });
         expect(
             await upsertMember(updateDeps, { ownerProjectId: 'proj_1', slug: 'ownership-core', mint: USDC_MINT }),
-        ).toEqual({ ok: true, value: { mint: USDC_MINT, verified: true, snapshot: null } });
+        ).toMatchObject({ ok: true });
     });
 });
 

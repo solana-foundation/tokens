@@ -66,8 +66,16 @@ authoritative.
   `seed-curated-mint.mjs`.
 - `backfillCuratedAddedAt` in `crons.seed.ts` + its job entry (after its
   final prod run in step 3).
+- **Exemption (post-review):** `apps/api/src/lib/curated-membership.ts` now uses
+  `CURATED_LIST_ORDER` / `getCuratedTokenList` / `getCuratedTokenAddresses` from
+  `compat.ts` as the risk-exemption fallback when the DB membership snapshot is
+  unavailable (cold start/outage). Those compat exports and the compiled list
+  data behind them must NOT be deleted until the fallback has a DB-backed
+  replacement (e.g. a persisted last-good snapshot) — deleting them as
+  originally written breaks the build or silently removes the fallback.
 - Grep gate: `CURATED_TOKEN_LISTS|getCuratedTokenList|CURATED_TOKEN_ADDED_AT`
-  must only hit `list-mints.ts` / `curated-lists.ts` internals.
+  must only hit `list-mints.ts` / `curated-lists.ts` internals — plus the
+  exempted `curated-membership.ts` fallback above.
 
 ## Eventual consistency notes
 

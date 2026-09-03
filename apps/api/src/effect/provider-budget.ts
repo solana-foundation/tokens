@@ -45,6 +45,8 @@ export function enforceProviderBudget(
         const windowSeconds = envInt('TOKEN_LIST_PROVIDER_BUDGET_WINDOW_SECONDS', 600);
 
         const redis = yield* getRedisClientEffect();
+        // Keyed per API key, not per project: a project can multiply its budget
+        // by minting keys, bounded by the keys-per-project ceiling. Accepted.
         const result = yield* slidingWindowLimit({
             redis,
             identifier: `provider-budget:${kind}:${auth.apiKeyId}`,
@@ -61,7 +63,18 @@ export function enforceProviderBudget(
             );
         }
     }).pipe(
-        // Redis/env failures fail open (per-call lookup caps still bound cost).
-        Effect.catch(error => (error instanceof RateLimitedError ? Effect.fail(error) : Effect.void)),
+        // Redis/env failures fail open (per-call lookup caps still bound cost)
+        // — but loudly, so a silently-broken budget stays observable.
+        Effect.catch(error => {
+            if (error instanceof RateLimitedError) return Effect.fail(error);
+            console.error(
+                JSON.stringify({
+                    event: 'provider_budget_degraded',
+                    kind,
+                    error: error instanceof Error ? error.message : String(error),
+                }),
+            );
+            return Effect.void;
+        }),
     );
 }

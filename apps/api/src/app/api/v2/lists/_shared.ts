@@ -38,8 +38,10 @@ export interface V2ListSummary {
     owner: { name: string } | { projectId: string };
     tokenCount: number;
     updatedAt: number | null;
-    /** Only on owner-scoped responses (`GET /v2/lists?mine=true`): draft | unlisted | published. */
+    /** Only on owner-scoped responses (`GET /v2/lists?mine=true`): draft | unlisted | published | archived. */
     status?: string;
+    /** Compose only: membership exceeded the per-list fetch ceiling; the union is partial. */
+    truncated?: boolean;
 }
 
 export interface V2ListToken {
