@@ -26,9 +26,9 @@ export const GET = route(
             const limit = yield* decodeLimit(url.searchParams.get('limit'), { defaultValue: '100', max: 500 });
             const offset = yield* decodeOffset(url.searchParams.get('offset'));
 
-            // Owner-scoped catalog: the caller's own lists in any status except
-            // archived, `status` included so dashboards can label private
-            // (unlisted) lists. No curated rows, and no stale-fallback cache —
+            // Owner-scoped catalog: the caller's own lists in EVERY status —
+            // archived included, since the dashboard's restore flow depends on
+            // seeing them — with `status` per row for badges. No curated rows, and no stale-fallback cache —
             // the shared catalog cache key has no project dimension.
             if (url.searchParams.get('mine') === 'true') {
                 const mine = yield* tokenListsListByOwner({

@@ -2,7 +2,7 @@
 --
 -- Unlisted = hidden from the public catalog (GET /api/v2/lists) and from
 -- mint→slug annotations, but the direct read path (/api/v2/lists/{slug})
--- still serves anyone with the link. The dashboard presents it as "Private".
+-- still serves anyone with the link. The dashboard presents it as "Unlisted".
 -- 'draft' keeps its stricter meaning (hidden from all public reads).
 
 ALTER TABLE token_lists DROP CONSTRAINT token_lists_status_check;
