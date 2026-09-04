@@ -475,10 +475,10 @@ jobs:
       needs.deploy_stage.result == 'success' &&
       (needs.cloudrun_prd.result == 'success' || needs.cloudrun_prd.result == 'skipped')
     runs-on: ubuntu-latest
-    # Includes up to 75 min waiting for the manual assets-candidate promotion
-    # when the release touches assets: the resilience runbook holds ≥15 min at
-    # 10% and again at 50% before 100%, plus operator response time.
-    timeout-minutes: 100
+    # Budget: ~5 min setup + up to 75 min waiting for the manual assets
+    # candidate promotion (runbook holds ≥15 min at 10% and at 50%) + ~40 min
+    # for the prod deploys, canaries, and a full rollback.
+    timeout-minutes: 120
     env:
       DOPPLER_TOKEN: ${{ secrets.DOPPLER_TOKEN }}
       DOPPLER_PROJECT: tokens
@@ -789,8 +789,14 @@ jobs:
           SMOKE_REQUIRE_PROD_CLERK: true
         run: bun scripts/smoke-canary.ts
 
+      # cancelled() included deliberately: a job-timeout is a cancellation, and
+      # without it a timeout after an app went live would strand a partial
+      # release with no rollback (steps with failure()-only conditions are
+      # skipped on cancel).
       - name: Rollback (post-prod-deploy failure)
-        if: failure() && (steps.deploy_api_prod.outcome == 'success' || steps.deploy_app_prod.outcome == 'success' || steps.deploy_admin_prod.outcome == 'success')
+        if: >-
+          (failure() || cancelled()) &&
+          (steps.deploy_api_prod.outcome == 'success' || steps.deploy_app_prod.outcome == 'success' || steps.deploy_admin_prod.outcome == 'success')
         env:
           VERCEL_TOKEN: ${{ steps.secrets.outputs.VERCEL_TOKEN }}
           PREV_API: ${{ steps.prev_api.outputs.deployment_id }}
