@@ -1,5 +1,5 @@
 {
-    "uid": "tokens-assets-curated-snapshot-refresh-failed",
+    "uid": "tokens-assets-curated-snapshot-stale",
     "title": "tokens-assets: curated membership snapshot refresh failing",
     "ruleGroup": "tokens-assets-availability",
     "folderUID": "tokens-xyz",
