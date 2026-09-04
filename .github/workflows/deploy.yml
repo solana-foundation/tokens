@@ -475,10 +475,11 @@ jobs:
       needs.deploy_stage.result == 'success' &&
       (needs.cloudrun_prd.result == 'success' || needs.cloudrun_prd.result == 'skipped')
     runs-on: ubuntu-latest
-    # Budget: ~5 min setup + up to 75 min waiting for the manual assets
-    # candidate promotion (runbook holds ≥15 min at 10% and at 50%) + ~40 min
-    # for the prod deploys, canaries, and a full rollback.
-    timeout-minutes: 120
+    # Budget with deliberate slack: ~5 min setup + a hard-capped 75-min
+    # promotion gate + ~15 min deploys/canaries + rollback, leaving ~50 min of
+    # headroom so the job-level deadline can never land mid-rollback (a job
+    # timeout is a cancellation, and cancelled steps get no extra time).
+    timeout-minutes: 150
     env:
       DOPPLER_TOKEN: ${{ secrets.DOPPLER_TOKEN }}
       DOPPLER_PROJECT: tokens
