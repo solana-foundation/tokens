@@ -41,7 +41,7 @@ function makeDeps(repoOverrides: Partial<TokenListsMutationsRepo> = {}): TokenLi
                 }),
                 updateList: async (_listId, patch) => ({ ...LIST_ROW, ...patch }),
                 deleteList: async () => {},
-                upsertMember: async () => {},
+                upsertMember: async () => true,
                 removeMember: async () => true,
                 hasActiveVariantForMint: async () => true,
                 hasTokenForAddress: async () => false,
