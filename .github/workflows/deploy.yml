@@ -475,7 +475,9 @@ jobs:
       needs.deploy_stage.result == 'success' &&
       (needs.cloudrun_prd.result == 'success' || needs.cloudrun_prd.result == 'skipped')
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    # Includes up to 30 min waiting for the manual assets-candidate promotion
+    # when the release touches the assets service.
+    timeout-minutes: 60
     env:
       DOPPLER_TOKEN: ${{ secrets.DOPPLER_TOKEN }}
       DOPPLER_PROJECT: tokens
@@ -553,6 +555,65 @@ jobs:
 
       - name: Install Vercel CLI
         run: bun add -g vercel@54.9.0
+
+      # The assets prod deploy is a deliberate 0%-traffic candidate (manual
+      # 10→50→100 promotion per the DB-resilience runbook). Shipping the new
+      # API while assets traffic is still on the old revision recreates the
+      # 2026-09-04 incident, so when this release touches assets we hold the
+      # Vercel prod deploys until the candidate serves 100% of traffic.
+      - id: gcp_auth
+        if: contains(fromJson(needs.changes.outputs.services), 'assets')
+        uses: google-github-actions/auth@71f986410dfbc7added4569d411d040a91dc6935 # v2
+        with:
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_CLOUDRUN_DEPLOYER_SA }}
+
+      - if: contains(fromJson(needs.changes.outputs.services), 'assets')
+        uses: google-github-actions/setup-gcloud@77e7a554d41e2ee56fc945c52dfd3f33d12def9a # v2
+
+      - name: Wait for assets candidate promotion (manual)
+        if: contains(fromJson(needs.changes.outputs.services), 'assets')
+        env:
+          SLACK_WEBHOOK: ${{ steps.secrets.outputs.SLACK_DEPLOY_WEBHOOK_URL }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          TAG="resilience-${GITHUB_SHA:0:12}"
+          describe() {
+            gcloud run services describe tokens-assets-prd-us \
+              --region=us-east4 --project=${{ vars.GCP_PROJECT }} --format=json
+          }
+          candidate=$(describe | jq -r --arg tag "$TAG" \
+            '.status.traffic[] | select(.tag == $tag) | .revisionName' | head -1)
+          if [ -z "$candidate" ]; then
+            echo "::error::No assets candidate revision tagged $TAG — did cloudrun_prd deploy?"
+            exit 1
+          fi
+          served=$(describe | jq -r --arg rev "$candidate" \
+            '[.status.traffic[] | select(.revisionName == $rev) | (.percent // 0)] | add')
+          if [ "$served" = "100" ]; then
+            echo "Candidate $candidate already serving 100% — continuing."
+            exit 0
+          fi
+          MSG="Tokens Deploy is holding the prod Vercel deploys until assets candidate \\`$candidate\\` is promoted to 100% (currently ${served}%). Promote via: gcloud run services update-traffic tokens-assets-prd-us --region=us-east4 --project=${{ vars.GCP_PROJECT }} --to-revisions=$candidate=100 (10→50→100 per the resilience runbook). Run: $RUN_URL"
+          echo "$MSG"
+          echo "### Waiting for assets promotion" >> "$GITHUB_STEP_SUMMARY"
+          echo "$MSG" >> "$GITHUB_STEP_SUMMARY"
+          curl -sS -X POST -H 'Content-Type: application/json' \
+            --data "$(jq -n --arg t "$MSG" '{text: ("⏳ " + $t)}')" "$SLACK_WEBHOOK" || true
+          deadline=$(( $(date +%s) + 1800 ))
+          while [ "$(date +%s)" -lt "$deadline" ]; do
+            served=$(describe | jq -r --arg rev "$candidate" \
+              '[.status.traffic[] | select(.revisionName == $rev) | (.percent // 0)] | add')
+            echo "candidate $candidate serving ${served}%"
+            if [ "$served" = "100" ]; then
+              echo "Promotion complete — continuing with prod Vercel deploys."
+              exit 0
+            fi
+            sleep 30
+          done
+          echo "::error::Assets candidate $candidate was not promoted to 100% within 30 minutes. Promote it, then re-run this workflow — the prod Vercel deploys did NOT happen."
+          exit 1
 
       # teamId is required for team-owned projects; without it the API returns
       # no deployments and rollback silently breaks.
