@@ -475,9 +475,10 @@ jobs:
       needs.deploy_stage.result == 'success' &&
       (needs.cloudrun_prd.result == 'success' || needs.cloudrun_prd.result == 'skipped')
     runs-on: ubuntu-latest
-    # Includes up to 30 min waiting for the manual assets-candidate promotion
-    # when the release touches the assets service.
-    timeout-minutes: 60
+    # Includes up to 75 min waiting for the manual assets-candidate promotion
+    # when the release touches assets: the resilience runbook holds ≥15 min at
+    # 10% and again at 50% before 100%, plus operator response time.
+    timeout-minutes: 100
     env:
       DOPPLER_TOKEN: ${{ secrets.DOPPLER_TOKEN }}
       DOPPLER_PROJECT: tokens
@@ -601,7 +602,9 @@ jobs:
           echo "$MSG" >> "$GITHUB_STEP_SUMMARY"
           curl -sS -X POST -H 'Content-Type: application/json' \
             --data "$(jq -n --arg t "$MSG" '{text: ("⏳ " + $t)}')" "$SLACK_WEBHOOK" || true
-          deadline=$(( $(date +%s) + 1800 ))
+          # 75 min: runbook-compliant promotion is ≥15 min observation at 10%
+          # + ≥15 min at 50% + operator response/command time.
+          deadline=$(( $(date +%s) + 4500 ))
           while [ "$(date +%s)" -lt "$deadline" ]; do
             served=$(describe | jq -r --arg rev "$candidate" \
               '[.status.traffic[] | select(.revisionName == $rev) | (.percent // 0)] | add')
@@ -612,7 +615,7 @@ jobs:
             fi
             sleep 30
           done
-          echo "::error::Assets candidate $candidate was not promoted to 100% within 30 minutes. Promote it, then re-run this workflow — the prod Vercel deploys did NOT happen."
+          echo "::error::Assets candidate $candidate was not promoted to 100% within 75 minutes. Promote it, then re-run this workflow — the prod Vercel deploys did NOT happen (the gate exits immediately on re-run once the candidate serves 100%)."
           exit 1
 
       # teamId is required for team-owned projects; without it the API returns
