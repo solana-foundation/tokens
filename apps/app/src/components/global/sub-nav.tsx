@@ -21,8 +21,8 @@ const SubNav = memo(function SubNav() {
     );
 
     return (
-        <div className="w-full flex justify-start px-4 pt-2 border-b border-border bg-zinc-50 dark:bg-zinc-900">
-            <div className="container max-w-7xl mx-auto px-4">
+        <div className="w-full border-b border-border bg-zinc-50 pt-2 dark:bg-zinc-900">
+            <div className="w-full px-4">
                 <TabNavigation
                     tabs={DASHBOARD_TABS}
                     activeIndex={activeIndex}

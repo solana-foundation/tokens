@@ -1,5 +1,5 @@
 import type { CanonicalAsset } from '../types';
-import { CURATED_TOKEN_LISTS } from './curated-token-lists';
+import { CURRENCY_MINTS } from './list-mints';
 import { uniqueStrings } from '../utils/unique-strings';
 
 interface StablecoinOverride {
@@ -162,7 +162,7 @@ export const STABLECOIN_ASSETS: CanonicalAsset[] = (() => {
     const eurVariants: CanonicalAsset['variants'] = [];
     const usedEurVariantSuffixes = new Set<string>();
 
-    for (const mint of CURATED_TOKEN_LISTS.currencies.addresses) {
+    for (const mint of CURRENCY_MINTS) {
         const override = STABLECOIN_OVERRIDES[mint];
 
         if (override && isUsdStableVariant(override)) {

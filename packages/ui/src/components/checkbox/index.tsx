@@ -7,6 +7,11 @@ import { cn } from '../../lib/utils';
 
 /**
  * Checkbox component for binary input selection.
+ *
+ * Borders/focus follow the same tokens as Input and Switch (`border-input`,
+ * `ring-ring`) rather than the heavier `border-primary`, and hover is a real
+ * state — an unchecked box in a table row needs to look interactive before
+ * you click it.
  */
 const Checkbox = React.forwardRef<
     React.ElementRef<typeof CheckboxPrimitive.Root>,
@@ -15,13 +20,17 @@ const Checkbox = React.forwardRef<
     <CheckboxPrimitive.Root
         ref={ref}
         className={cn(
-            'peer h-4 w-4 shrink-0 rounded-sm border border-primary shadow focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50 data-[state=checked]:bg-primary data-[state=checked]:text-primary-foreground',
+            'peer size-4 shrink-0 cursor-pointer rounded-[5px] border border-input bg-transparent shadow-sm transition-colors',
+            'hover:border-primary/40 hover:bg-accent',
+            'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40',
+            'data-[state=checked]:border-primary data-[state=checked]:bg-primary data-[state=checked]:text-primary-foreground data-[state=checked]:hover:bg-primary/90',
+            'disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:border-input disabled:hover:bg-transparent',
             className,
         )}
         {...props}
     >
         <CheckboxPrimitive.Indicator className={cn('flex items-center justify-center text-current')}>
-            <Check className="h-4 w-4" />
+            <Check className="size-3" strokeWidth={3} />
         </CheckboxPrimitive.Indicator>
     </CheckboxPrimitive.Root>
 ));

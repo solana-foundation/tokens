@@ -15,92 +15,279 @@ import type { TokensReadsRepo } from './handlers/tokensReads';
 import type { TrendingReadsRepo } from './handlers/trendingReads';
 import type { FillQualityReadsRepo } from './handlers/fillQualityReads';
 import type { AssetCollectionsReadsRepo } from './handlers/assetCollectionsReads';
+import type { TokenListsReadsRepo } from './handlers/tokenListsReads';
+import type { TokenListsMutationsDeps } from './handlers/tokenListsMutations';
 import type { CronDeps } from './handlers/crons';
+import type { CuratedMembershipSource } from './handlers/curatedMembershipReads';
 import { OidcAuthError, type VerifyOidc } from './oidc';
 import { createApp } from './server';
 
 const noopDeletionTombstonesRepo: AssetDeletionTombstonesRepo = {
-    async findDeletedNormalizedRefs() { return []; },
+    async findDeletedNormalizedRefs() {
+        return [];
+    },
 };
 const noopSanctumLstsRepo: SanctumLstsRepo = {
-    async listActive() { return []; },
-    async findByMint() { return null; },
-    async findActiveBySymbolLower() { return []; },
+    async listActive() {
+        return [];
+    },
+    async findByMint() {
+        return null;
+    },
+    async findActiveBySymbolLower() {
+        return [];
+    },
 };
 const noopAssetMarketsRepo: AssetMarketsRepo = {
-    async findLatestByAssetId() { return null; },
-    async findLatestByAssetIds() { return []; },
+    async findLatestByAssetId() {
+        return null;
+    },
+    async findLatestByAssetIds() {
+        return [];
+    },
 };
 const noopVariantMarketsRepo: VariantMarketsRepo = {
-    async findLatestByMints() { return []; },
+    async findLatestByMints() {
+        return [];
+    },
 };
 const noopAssetVariantsRepo: AssetVariantsRepo = {
-    async findVariantByMint() { return null; },
-    async findVariantsByMints() { return []; },
-    async findVariantsByAssetIds() { return []; },
-    async findActiveSolanaVariants() { return []; },
-    async findAssetIsActive() { return null; },
-    async findSolanaDefaultVariantsView() { return null; },
+    async findVariantByMint() {
+        return null;
+    },
+    async findVariantsByMints() {
+        return [];
+    },
+    async findVariantsByAssetIds() {
+        return [];
+    },
+    async findActiveSolanaVariants() {
+        return [];
+    },
+    async findAssetIsActive() {
+        return null;
+    },
+    async findSolanaDefaultVariantsView() {
+        return null;
+    },
     async upsertSolanaDefaultVariantsView() {},
-    async findVariantMarketsByMints() { return []; },
-    async findTokenMarketsByMints() { return []; },
+    async findVariantMarketsByMints() {
+        return [];
+    },
+    async findTokenMarketsByMints() {
+        return [];
+    },
 };
 const noopAssetsApiRepo: AssetsApiRepo = {
-    async findAssetByAssetId() { return null; },
-    async findActiveVariantsByAssetId() { return []; },
-    async findVariantMarketsLatestByMint() { return null; },
-    async findVariantMarketsLatestByMints() { return []; },
-    async findVariantFillQualityLatestByMint() { return null; },
-    async findVariantFillQualityLatestByMints() { return []; },
-    async findAssetMarketsLatestByAssetId() { return null; },
-    async findCoingeckoCoinByCoinId() { return null; },
-    async findStockInstrumentsLatestByAssetId() { return null; },
-    async findStockPricesLatestByAssetId() { return null; },
+    async findAssetByAssetId() {
+        return null;
+    },
+    async findActiveVariantsByAssetId() {
+        return [];
+    },
+    async findVariantMarketsLatestByMint() {
+        return null;
+    },
+    async findVariantMarketsLatestByMints() {
+        return [];
+    },
+    async findVariantFillQualityLatestByMint() {
+        return null;
+    },
+    async findVariantFillQualityLatestByMints() {
+        return [];
+    },
+    async findAssetMarketsLatestByAssetId() {
+        return null;
+    },
+    async findCoingeckoCoinByCoinId() {
+        return null;
+    },
+    async findStockInstrumentsLatestByAssetId() {
+        return null;
+    },
+    async findStockPricesLatestByAssetId() {
+        return null;
+    },
 };
 const noopCoingeckoReadsRepo: CoingeckoReadsRepo = {
-    async findCoinByCoinId() { return null; },
-    async searchCoinsById() { return []; },
-    async searchCoinsBySymbol() { return []; },
-    async searchCoinsByName() { return []; },
-    async listOhlcv() { return []; },
-    async findPriceLatestByCoinId() { return null; },
-    async findPriceLatestByCoinIds() { return []; },
-    async findTickersLatestByCoinId() { return null; },
+    async findCoinByCoinId() {
+        return null;
+    },
+    async searchCoinsById() {
+        return [];
+    },
+    async searchCoinsBySymbol() {
+        return [];
+    },
+    async searchCoinsByName() {
+        return [];
+    },
+    async listOhlcv() {
+        return [];
+    },
+    async findPriceLatestByCoinId() {
+        return null;
+    },
+    async findPriceLatestByCoinIds() {
+        return [];
+    },
+    async findTickersLatestByCoinId() {
+        return null;
+    },
 };
 const noopStockReadsRepo: StockReadsRepo = {
-    async findInstrumentByAssetId() { return null; },
-    async findInstrumentsByAssetIds() { return []; },
-    async findPriceByAssetId() { return null; },
-    async findPricesByAssetIds() { return []; },
+    async findInstrumentByAssetId() {
+        return null;
+    },
+    async findInstrumentsByAssetIds() {
+        return [];
+    },
+    async findPriceByAssetId() {
+        return null;
+    },
+    async findPricesByAssetIds() {
+        return [];
+    },
 };
 const noopOhlcvReadsRepo: OhlcvReadsRepo = {
-    async listByAddressAndInterval() { return []; },
-    async getBoundsByAddressAndInterval() { return { minTime: null, maxTime: null }; },
-    async listByAssetIdAndInterval() { return []; },
+    async listByAddressAndInterval() {
+        return [];
+    },
+    async getBoundsByAddressAndInterval() {
+        return { minTime: null, maxTime: null };
+    },
+    async listByAssetIdAndInterval() {
+        return [];
+    },
 };
 const noopPrestocksReadsRepo: PrestocksReadsRepo = {
-    async findLatestByMints() { return []; },
+    async findLatestByMints() {
+        return [];
+    },
 };
 const noopTokensReadsRepo: TokensReadsRepo = {
-    async findTokenByAddress() { return null; },
-    async findTokensByAddresses() { return []; },
-    async searchTokensBySymbol() { return []; },
-    async searchTokensByName() { return []; },
-    async findTokenMarketsLatestByMint() { return null; },
-    async findTokenMarketsLatestByMints() { return []; },
-    async findTokenDescriptionSummaryByAddress() { return null; },
+    async findTokenByAddress() {
+        return null;
+    },
+    async findTokensByAddresses() {
+        return [];
+    },
+    async searchTokensBySymbol() {
+        return [];
+    },
+    async searchTokensByName() {
+        return [];
+    },
+    async findTokenMarketsLatestByMint() {
+        return null;
+    },
+    async findTokenMarketsLatestByMints() {
+        return [];
+    },
+    async findTokenDescriptionSummaryByAddress() {
+        return null;
+    },
 };
 const noopTrendingReadsRepo: TrendingReadsRepo = {
-    async listTrending() { return []; },
-    async listFreshTrending() { return []; },
+    async listTrending() {
+        return [];
+    },
+    async listFreshTrending() {
+        return [];
+    },
 };
 const noopFillQualityReadsRepo: FillQualityReadsRepo = {
-    async findLatestByMints() { return []; },
+    async findLatestByMints() {
+        return [];
+    },
+};
+const noopTokenListsReadsRepo: TokenListsReadsRepo = {
+    async listPublished() { return []; },
+    async listByOwner() { return []; },
+    async countPublished() { return 0; },
+    async getSlugHold() { return null; },
+    async getBySlug() { return null; },
+    async listMembersBySlug() { return []; },
+    async listSlugsByMints() { return []; },
+};
+const noopTokenListsMutationsDeps: TokenListsMutationsDeps = {
+    repo: {
+        async getListBySlug() {
+            return null;
+        },
+        async insertList() {
+            throw new Error('not implemented');
+        },
+        async updateList() {
+            throw new Error('not implemented');
+        },
+        async deleteList() {
+            throw new Error('not implemented');
+        },
+        async getSlugHold() {
+            return null;
+        },
+        async recordSlugHold() {},
+        async clearSlugHold() {},
+        async upsertMember() {
+            return true;
+        },
+        async removeMember() {
+            return false;
+        },
+        async hasActiveVariantForMint() {
+            return false;
+        },
+        async hasTokenForAddress() {
+            return false;
+        },
+        async filterMintsWithActiveVariants() {
+            return [];
+        },
+        async filterMintsKnownTokens() {
+            return [];
+        },
+        async filterMintsExistingMembers() {
+            return [];
+        },
+        async countMembers() {
+            return 0;
+        },
+        async upsertMembersBulk() {
+            return { overflowMints: [] };
+        },
+        async countListsByOwner() {
+            return 0;
+        },
+    },
+    fetchTokenOverview: async () => null,
+    slugHoldMs: 30 * 24 * 60 * 60 * 1000,
+    now: () => 0,
+    caps: { batch: 250, membersPerList: 5000, providerLookups: 50, listsPerProject: 100 },
 };
 const noopAssetCollectionsReadsRepo: AssetCollectionsReadsRepo = {
-    async listMembersBySlug() { return []; },
-    async listMemberMintsBySlug() { return []; },
-    async getSummariesBySlugs() { return []; },
+    async listMembersBySlug() {
+        return [];
+    },
+    async listMemberMintsBySlug() {
+        return [];
+    },
+    async getSummariesBySlugs() {
+        return [];
+    },
+};
+const noopCuratedMembershipSource: CuratedMembershipSource = {
+    warmup: async () => {},
+    getSnapshot: async () => ({
+        loadedAt: 0,
+        mintsByList: { majors: [], lsts: [], currencies: [], rwas: [], etfs: [], metals: [], stocks: [] },
+        allMints: [],
+        entriesByMint: {},
+    }),
+    getAllCuratedMintsInOrder: () => [],
+    getCuratedMintRank: () => new Map(),
+    getListSlugsByMint: () => new Map(),
 };
 const baseDeps = {
     repo: undefined as unknown as AssetsRepo,
@@ -118,6 +305,9 @@ const baseDeps = {
     trendingReadsRepo: noopTrendingReadsRepo,
     fillQualityReadsRepo: noopFillQualityReadsRepo,
     assetCollectionsReadsRepo: noopAssetCollectionsReadsRepo,
+    tokenListsReadsRepo: noopTokenListsReadsRepo,
+    tokenListsMutationsDeps: noopTokenListsMutationsDeps,
+    curatedMembershipSource: noopCuratedMembershipSource,
 };
 
 const noopRepo: AssetsRepo = {
@@ -172,45 +362,88 @@ function emptyCronDeps(): CronDeps {
         repo: {
             async upsertVariantMarketFromBirdeye() {},
             async touchVariantMarket() {},
-            async getOverviewLastFetchedAtByMint() { return null; },
-            async listStaleVariantMints() { return []; },
-            async listCuratedAssetIds() { return []; },
-            async listVariantsForRollup() { return []; },
-            async listVariantLastComputedByAssetIds() { return new Map(); },
-            async sumDailyOhlcvVolumeByAddresses() { return new Map(); },
+            async getOverviewLastFetchedAtByMint() {
+                return null;
+            },
+            async listStaleVariantMints() {
+                return [];
+            },
+            async listCuratedAssetIds() {
+                return [];
+            },
+            async listVariantsForRollup() {
+                return [];
+            },
+            async listVariantLastComputedByAssetIds() {
+                return new Map();
+            },
+            async sumDailyOhlcvVolumeByAddresses() {
+                return new Map();
+            },
             async upsertAssetAggregate() {},
-            async listActiveSanctumLstCount() { return 0; },
-            async listSanctumSourceRanks() { return new Map(); },
+            async listActiveSanctumLstCount() {
+                return 0;
+            },
+            async listSanctumSourceRanks() {
+                return new Map();
+            },
             async upsertSanctumLstLatest() {},
-            async deactivateMissingSanctumLsts() { return 0; },
-            async findVariantByMint() { return null; },
-            async getAssetRiskLastFetchedAtByMint() { return null; },
+            async deactivateMissingSanctumLsts() {
+                return 0;
+            },
+            async findVariantByMint() {
+                return null;
+            },
+            async getAssetRiskLastFetchedAtByMint() {
+                return null;
+            },
             async upsertAssetRiskLatest() {},
-            async findVariantMarketForRiskByMint() { return null; },
+            async findVariantMarketForRiskByMint() {
+                return null;
+            },
             async upsertWebacyTokenLatest() {},
             async upsertWebacyTradingLiteLatest() {},
             async upsertWebacyHolderAnalysisLatest() {},
-            async findRwaXyzAssetLatestByAssetId() { return null; },
-            async findRwaXyzTokenLatestByNetworkAndAddress() { return null; },
+            async findRwaXyzAssetLatestByAssetId() {
+                return null;
+            },
+            async findRwaXyzTokenLatestByNetworkAndAddress() {
+                return null;
+            },
             async upsertRwaXyzAssetLatest() {},
             async upsertRwaXyzTokenLatest() {},
-            async listRecentActiveProjects() { return []; },
-            async getRollupStateForProject() { return null; },
-            async tryAcquireRollupLock() { return true; },
+            async listRecentActiveProjects() {
+                return [];
+            },
+            async getRollupStateForProject() {
+                return null;
+            },
+            async tryAcquireRollupLock() {
+                return true;
+            },
             async releaseRollupLock() {},
-            async listProjectEventsForRollup() { return []; },
+            async listProjectEventsForRollup() {
+                return [];
+            },
             async applyDailyRollupDelta() {},
             async applyEndpointDailyRollupDelta() {},
-            async listAllProjectIds() { return []; },
-            async pruneApiRequestEventsForProject() { return 0; },
-            async getOhlcvBounds() { return { minTime: null, maxTime: null }; },
-            async upsertOhlcvCandles() { return { inserted: 0, updated: 0, skipped: 0 }; },
-            async applyRollupBatchAtomic() { return true; },
+            async listAllProjectIds() {
+                return [];
+            },
+            async pruneApiRequestEventsForProject() {
+                return 0;
+            },
+            async getOhlcvBounds() {
+                return { minTime: null, maxTime: null };
+            },
+            async upsertOhlcvCandles() {
+                return { inserted: 0, updated: 0, skipped: 0 };
+            },
+            async applyRollupBatchAtomic() {
+                return true;
+            },
         },
-        curated: {
-            getAllCuratedMintsInOrder: () => [],
-            getCuratedMintRank: () => new Map(),
-        },
+        curated: noopCuratedMembershipSource,
         birdeye: { async fetchTokenOverview() { return null; } },
         birdeyeOhlcv: { async fetchOhlcv() { return []; } },
         sanctum: { async fetchAndNormalizeLsts() { return { ok: false, reason: 'missing_env' as const }; } },
@@ -235,7 +468,8 @@ async function call(app: ReturnType<typeof createApp>, path: string, init: Reque
 describe('POST /jobs/:name', () => {
     it('returns 404 clickhouse_jobs_disabled for clickhouse jobs when those deps are missing', async () => {
         const app = createApp({
-            ...baseDeps, repo: noopRepo,
+            ...baseDeps,
+            repo: noopRepo,
             authToken: 'tok',
             cronDeps: emptyCronDeps(),
             verifyOidc: allowOidc,
@@ -262,7 +496,8 @@ describe('POST /jobs/:name', () => {
 
     it('returns 401 when no bearer is present', async () => {
         const app = createApp({
-            ...baseDeps, repo: noopRepo,
+            ...baseDeps,
+            repo: noopRepo,
             authToken: 'tok',
             cronDeps: emptyCronDeps(),
             verifyOidc: allowOidc,
@@ -273,7 +508,8 @@ describe('POST /jobs/:name', () => {
 
     it('returns 401 when OIDC verification fails', async () => {
         const app = createApp({
-            ...baseDeps, repo: noopRepo,
+            ...baseDeps,
+            repo: noopRepo,
             authToken: 'tok',
             cronDeps: emptyCronDeps(),
             verifyOidc: denyOidc,
@@ -288,7 +524,8 @@ describe('POST /jobs/:name', () => {
 
     it('rejects bearer-shared-secret tokens (OIDC required)', async () => {
         const app = createApp({
-            ...baseDeps, repo: noopRepo,
+            ...baseDeps,
+            repo: noopRepo,
             authToken: 'tok',
             cronDeps: emptyCronDeps(),
             verifyOidc: denyOidc,
@@ -303,7 +540,8 @@ describe('POST /jobs/:name', () => {
 
     it('returns 404 for unknown job name', async () => {
         const app = createApp({
-            ...baseDeps, repo: noopRepo,
+            ...baseDeps,
+            repo: noopRepo,
             authToken: 'tok',
             cronDeps: emptyCronDeps(),
             verifyOidc: allowOidc,
@@ -318,7 +556,8 @@ describe('POST /jobs/:name', () => {
 
     it('returns 404 for prototype-method job names', async () => {
         const app = createApp({
-            ...baseDeps, repo: noopRepo,
+            ...baseDeps,
+            repo: noopRepo,
             authToken: 'tok',
             cronDeps: emptyCronDeps(),
             verifyOidc: allowOidc,
@@ -335,7 +574,8 @@ describe('POST /jobs/:name', () => {
 
     it('runs a known job after OIDC passes', async () => {
         const app = createApp({
-            ...baseDeps, repo: noopRepo,
+            ...baseDeps,
+            repo: noopRepo,
             authToken: 'tok',
             cronDeps: emptyCronDeps(),
             verifyOidc: allowOidc,
@@ -360,7 +600,8 @@ describe('POST /jobs/:name', () => {
             },
         };
         const app = createApp({
-            ...baseDeps, repo: noopRepo,
+            ...baseDeps,
+            repo: noopRepo,
             authToken: 'tok',
             cronDeps: deps,
             verifyOidc: allowOidc,

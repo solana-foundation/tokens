@@ -1,0 +1,88 @@
+{
+    "uid": "tokens-assets-curated-snapshot-stale",
+    "title": "tokens-assets: curated membership snapshot refresh failing",
+    "ruleGroup": "tokens-assets-availability",
+    "folderUID": "tokens-xyz",
+    "noDataState": "OK",
+    "execErrState": "OK",
+    "for": "10m",
+    "data": [
+        {
+            "refId": "A",
+            "datasourceUid": "grafanacloud-logs",
+            "queryType": "range",
+            "relativeTimeRange": {
+                "from": 900,
+                "to": 0
+            },
+            "model": {
+                "expr": "sum(count_over_time({service=\"tokens-assets-prd-us\"} |= \"curated_snapshot_refresh_failed\" [15m]))",
+                "queryType": "range",
+                "refId": "A"
+            }
+        },
+        {
+            "refId": "B",
+            "datasourceUid": "__expr__",
+            "queryType": "",
+            "relativeTimeRange": {
+                "from": 0,
+                "to": 0
+            },
+            "model": {
+                "type": "reduce",
+                "refId": "B",
+                "expression": "A",
+                "reducer": "last",
+                "settings": {
+                    "mode": "replaceNN",
+                    "replaceWithValue": 0
+                }
+            }
+        },
+        {
+            "refId": "C",
+            "datasourceUid": "__expr__",
+            "queryType": "",
+            "relativeTimeRange": {
+                "from": 0,
+                "to": 0
+            },
+            "model": {
+                "type": "threshold",
+                "refId": "C",
+                "expression": "B",
+                "conditions": [
+                    {
+                        "evaluator": {
+                            "type": "gt",
+                            "params": [2]
+                        },
+                        "operator": {
+                            "type": "and"
+                        },
+                        "query": {
+                            "params": ["B"]
+                        },
+                        "reducer": {
+                            "type": "last",
+                            "params": []
+                        },
+                        "type": "query"
+                    }
+                ]
+            }
+        }
+    ],
+    "condition": "C",
+    "labels": {
+        "service": "tokens-assets",
+        "severity": "warning",
+        "slack": "true"
+    },
+    "annotations": {
+        "summary": "tokens-assets: curated membership snapshot refresh is failing (serving stale-forever)",
+        "description": "The curated membership snapshot has failed to refresh repeatedly over the last 15 minutes (event: curated_snapshot_refresh_failed, includes staleness_ms and stale_over_30m). The service keeps serving the last good snapshot, so curated lists silently freeze — admin adds/removes stop surfacing and, if this persists, membership drifts from the DB. The log line carries the underlying error (DB unreachable, 0-row refusal, or shrink-guard refusal); a guard refusal means membership rows genuinely vanished or shrank and needs a human before the guard is overridden.",
+        "runbook_url": "https://example.com/runbooks/assets-curated-snapshot-refresh-failed"
+    }
+}

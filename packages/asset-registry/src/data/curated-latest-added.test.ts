@@ -2,22 +2,40 @@ import { describe, expect, test } from 'bun:test';
 
 import { CURATED_TOKEN_ADDED_AT } from './curated-token-added-at';
 import { getLatestAddedToken } from './curated-latest-added';
-import { CURATED_TOKEN_LISTS, type CuratedTokenList } from './curated-token-lists';
+import type { CuratedTokenList } from './curated-token-lists';
+import {
+    CURRENCY_MINTS,
+    ETF_MINTS,
+    LST_MINTS,
+    MAJORS_MINTS,
+    METALS_MINTS,
+    RWA_MINTS,
+    STOCKS_MINTS,
+} from './list-mints';
 
 describe('curated token added-at coverage', () => {
-    test('every curated address has a generated added-at entry', () => {
+    test('every registry list mint has a generated added-at entry', () => {
+        const lists: Array<[string, readonly string[]]> = [
+            ['majors', MAJORS_MINTS],
+            ['lsts', LST_MINTS],
+            ['currencies', CURRENCY_MINTS],
+            ['rwas', RWA_MINTS],
+            ['etfs', ETF_MINTS],
+            ['metals', METALS_MINTS],
+            ['stocks', STOCKS_MINTS],
+        ];
         const missing: string[] = [];
-        for (const list of Object.values(CURATED_TOKEN_LISTS)) {
-            for (const address of list.addresses) {
-                if (CURATED_TOKEN_ADDED_AT[address] === undefined) missing.push(`${list.id}: ${address}`);
+        for (const [listId, addresses] of lists) {
+            for (const address of addresses) {
+                if (CURATED_TOKEN_ADDED_AT[address] === undefined) missing.push(`${listId}: ${address}`);
             }
         }
 
-        expect(
-            missing,
-            `Addresses missing from curated-token-added-at.ts — regenerate it with:\n` +
-                `  bun scripts/generate-curated-token-added-at.ts\n(after committing the new addresses)`,
-        ).toEqual([]);
+        // NOTE: never regenerate curated-token-added-at.ts in this repo — the
+        // generator walks git history that the OSS squash destroyed. The
+        // committed values are the final seed input; new members get their
+        // added_at stamped in the database by the admin app.
+        expect(missing).toEqual([]);
     });
 });
 

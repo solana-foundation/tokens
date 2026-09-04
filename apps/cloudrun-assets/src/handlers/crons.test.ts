@@ -19,7 +19,6 @@ import {
     type BirdeyeOhlcvClient,
     type BirdeyeOverview,
     type CronDeps,
-    type CuratedMintsSource,
     type DailyRollupDelta,
     type EndpointDailyRollupDelta,
     type JobsRepo,
@@ -30,6 +29,7 @@ import {
     type VariantMarketUpsertFromBirdeye,
     type WebacyClient,
 } from './crons';
+import type { CuratedMembershipSource } from './curatedMembershipReads';
 
 const FIXED_NOW = 1_780_000_000_000;
 
@@ -232,12 +232,20 @@ function makeRepo(state: MockRepoState = {}): JobsRepo {
     };
 }
 
-function makeCurated(mints: readonly string[] = []): CuratedMintsSource {
+function makeCurated(mints: readonly string[] = []): CuratedMembershipSource {
     const rank = new Map<string, number>();
     for (let i = 0; i < mints.length; i++) rank.set(mints[i]!, i);
     return {
+        warmup: async () => {},
+        getSnapshot: async () => ({
+            loadedAt: 0,
+            mintsByList: { majors: [...mints], lsts: [], currencies: [], rwas: [], etfs: [], metals: [], stocks: [] },
+            allMints: [...mints],
+            entriesByMint: {},
+        }),
         getAllCuratedMintsInOrder: () => Array.from(mints),
         getCuratedMintRank: () => rank,
+        getListSlugsByMint: () => new Map(),
     };
 }
 

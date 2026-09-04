@@ -9,7 +9,7 @@ import {
     type StockVariantTier,
     type TrustTier,
 } from '@tokens/asset-registry';
-import { CURATED_LIST_ORDER, getCuratedTokenAddresses, getCuratedTokenList } from '@tokens/asset-registry/compat';
+import { getCuratedMintRankSync } from '@/lib/curated-membership';
 import { getTokenLogoURLWithSecondarySymbol } from '@/lib/logo-overrides';
 
 const CANONICAL_LOGO_PATH_BY_ASSET_ID: Record<string, string> = {
@@ -453,18 +453,14 @@ export function withDerivedVariantTier<T extends object>(
     return { ...value, ...deriveVariantTierFields(liquidity) };
 }
 
+/**
+ * Curated rank is the primary-variant tiebreaker, sourced from the DB-backed
+ * effective-membership snapshot. Synchronous last-good read: a cold instance
+ * serves an empty map (selection falls through to liquidity/fill-quality)
+ * while the snapshot loads in the background.
+ */
 export function buildCuratedMintRank(): Map<string, number> {
-    const rank = new Map<string, number>();
-    let i = 0;
-
-    for (const listId of CURATED_LIST_ORDER) {
-        const list = getCuratedTokenList(listId);
-        for (const mint of getCuratedTokenAddresses(list)) {
-            if (!rank.has(mint)) rank.set(mint, i++);
-        }
-    }
-
-    return rank;
+    return getCuratedMintRankSync();
 }
 
 function isSpotLikeKind(kind: AssetVariant['kind']): boolean {

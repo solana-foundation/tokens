@@ -2,7 +2,7 @@ import { Effect } from 'effect';
 
 import { scheduleCacheWarm } from '@/lib/cloudrun/cacheWarm';
 import { variantMarketsGetLatestByMints } from '@/lib/cloudrun';
-import { CURATED_LIST_ORDER, type CuratedTokenListId } from '@tokens/asset-registry/compat';
+import { CURATED_LIST_ORDER, type CuratedListSlug as CuratedTokenListId } from '@tokens/asset-registry/curated-lists';
 import { route } from '@/effect/next-route';
 import type { Token } from '@/lib/types';
 import { getEffectiveCuratedAddresses } from '../../_curated-addresses';

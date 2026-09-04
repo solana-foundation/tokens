@@ -1,0 +1,220 @@
+---
+title: Lists
+description: Discover, read, compose, and manage community token lists.
+---
+
+All endpoints on this page are Platform API endpoints authenticated with `x-api-key`.
+
+Every endpoint requires only the default `assets:read` scope. Writes are bound to the
+API key's project: the key that creates a list owns it, and only keys from that project
+can modify it. Anyone can read any published list.
+
+## `GET /v2/lists`
+
+The list catalog: every curated list plus every published community list, metadata only.
+
+- **Scope**: `assets:read`
+- **Query params**: `limit` (1–500, default 100), `offset` (community lists only; curated lists always lead page one)
+
+```ts
+interface ListsResponse {
+    lists: Array<{
+        slug: string;
+        name: string;
+        description: string | null; // curated lists only; null for community lists
+        curated: boolean;
+        owner: { name: string } | { projectId: string };
+        tokenCount: number;
+        updatedAt: number | null; // unix ms
+    }>;
+    total: number;
+}
+```
+
+## `GET /v2/lists/{slug}`
+
+One list with hydrated tokens. Curated slugs serve the effective curated membership
+(registry ∪ admin-added); community slugs serve published lists only (drafts and archived
+lists 404).
+
+- **Scope**: `assets:read`
+- **Query params**: `limit` (1–2000, default 500), `offset`
+
+```ts
+interface ListDetailResponse {
+    slug: string;
+    name: string;
+    description: string | null; // curated lists only; null for community lists
+    curated: boolean;
+    owner: { name: string } | { projectId: string };
+    tokenCount: number;
+    updatedAt: number | null;
+    tokens: Array<{
+        mint: string;
+        symbol: string | null;
+        name: string | null;
+        decimals: number | null;
+        logoURI: string | null;
+        verified: boolean; // an active registry variant exists for this mint
+        rank: number;
+        note?: string;
+        addedAt?: number;
+    }>;
+}
+```
+
+## `GET /v2/lists/tokens`
+
+The composition call — the one request a consuming app makes for its subscribed lists.
+Returns the union of the named lists, deduped by mint, each token annotated with which of
+the requested lists contains it.
+
+- **Scope**: `assets:read`
+- **Query params**:
+  - `lists` (**required**): comma-separated slugs, max 10. Curated and community slugs mix freely.
+    There is no "all lists" value — apps must name the curators they trust.
+  - `limit` (1–2000, default 500), `offset` — pagination over the deduped union.
+
+Unknown, draft, or archived slugs are reported in `notFound` instead of failing the call.
+
+```ts
+interface ComposeResponse {
+    lists: ListsResponse['lists'];
+    notFound: string[];
+    total: number; // size of the deduped union
+    tokens: Array<{
+        mint: string;
+        symbol: string | null;
+        name: string | null;
+        decimals: number | null;
+        logoURI: string | null;
+        verified: boolean;
+        rank: number;
+        lists: string[]; // requested slugs containing this mint
+    }>;
+}
+```
+
+## Managing lists
+
+Any API key can create lists — project ownership is the security boundary: every key
+on a project (regardless of read scopes) may manage that project's lists, and keys
+from other projects get `403` on writes. Caps (env-tunable server-side):
+**250 mints per batch call**, **5000 members per list** (`400` with
+`details.code: "list_full"` beyond it), **100 lists per project** (`400` with
+`details.code: "project_lists_limit"`), and **~50 provider lookups per batch call**
+for mints unknown to the registry/token index — over-budget unknowns fail individually
+as `unknown_mint` and can be retried in a later batch. Batch adds and curator search
+additionally draw from a per-key provider budget (30 batch calls / 120 searches per
+10 minutes by default) and return `429` when it is exhausted.
+
+**Recommended automation flow**: create the list, load it with one (or a few) batch
+calls, then keep it fresh with individual `PUT`/`DELETE /members/{mint}` calls as your
+own filters decide.
+
+### `POST /v2/lists`
+
+Create a list.
+
+- **Body**: `{ slug, name, status? }`
+  - `slug`: globally unique, `^[a-z][a-z0-9-]{2,62}$`. Curated ids and route words
+    (`all`, `lists`, `curated`, `tokens`, `search-tokens`) are reserved. Prefix by convention:
+    `ownership-core`.
+  - `status`: `draft`, `unlisted`, or `published` (default `published`). `unlisted`
+    hides the list from the catalog and `inLists` annotations while the direct
+    `GET /v2/lists/{slug}` stays readable by anyone with the link.
+- **Errors** (`400` with `details.code`): `invalid_slug`, `reserved_slug`, `slug_conflict`.
+
+### `PATCH /v2/lists/{slug}`
+
+Update `name`, `slug` (rename — the old path stops resolving and is held for this owner
+for a 30-day window), or `status` (`draft` | `unlisted` | `published` | `archived`).
+
+### `DELETE /v2/lists/{slug}`
+
+Permanently deletes the list and its members, releasing the slug for anyone to claim again.
+Irreversible — `PATCH { status: 'archived' }` is the reversible hide-it option.
+
+### `PUT /v2/lists/{slug}/members/{mint}`
+
+Add or update a member. Body (optional): `{ rank?, note? }`. Omitted `rank` appends to the end.
+
+The mint must resolve somewhere: canonical registry (→ `verified: true`) → our token index →
+live provider lookup (metadata snapshotted onto the member). A mint unknown everywhere is
+rejected with `400` and `details.code: "unknown_mint"`; a malformed address with
+`details.code: "invalid_mint"`.
+
+### `DELETE /v2/lists/{slug}/members/{mint}`
+
+Remove a member. `404` when the mint was not in the list.
+
+### `POST /v2/lists/{slug}/members`
+
+Bulk add: `{ mints: string[] }`, max 250 per call, deduped. Mints are resolved in
+bulk (registry → token index → budgeted provider lookups). Per-mint failures are
+reported without failing the batch:
+
+```ts
+interface BatchAddResponse {
+    added: Array<{ mint: string; verified: boolean; snapshot: object | null }>;
+    failed: Array<{ mint: string; error: 'invalid_mint' | 'unknown_mint' | 'list_full' }>;
+}
+```
+
+## `GET /v2/lists/search-tokens`
+
+Curator-assist search: decision support for a list owner choosing which mint to add. This is
+**not** a public ranking — it defaults to the strict policy and always returns the suppressed
+set with reasons so the curator sees what was filtered and why.
+
+- **Scope**: `assets:read`
+- **Query params**:
+  - `q` (**required**): symbol, name, or mint address (max 100 chars)
+  - `policy` (optional): `strict` (default), `default`, or `degen` — bundles of hard gates +
+    score weights. `strict` suppresses low-liquidity/day-old tokens and likely impersonators;
+    `degen` shows everything and lets the warnings speak.
+  - `limit` (1–50, default 10)
+
+```ts
+interface SearchTokensResponse {
+    query: string;
+    interpretation: { intent: 'mint' | 'ticker' | 'name'; normalizedQuery: string };
+    policy: string;
+    policyVersion: string;
+    scoringVersion: string;
+    sources: { provider: 'ok' | 'degraded' | 'disabled'; db: 'ok' | 'degraded'; registry: 'ok' };
+    latencyMs: number;
+    results: Array<{
+        mint: string;
+        claims: { symbol: string | null; name: string | null; attestations: object[] };
+        market: object; // price, liquidityUsd, volume24hUsd, marketCapUsd, holderCount, …
+        score: { total: number; components: object };
+        reasons: string[];   // e.g. exact_symbol_match, curated_list_member, deep_liquidity
+        warnings: string[];  // e.g. possible_impersonation, suspicious_characters, new_token, unverified
+        badges: string[];    // e.g. curated:majors, grade:A
+        verified: boolean;
+        inLists: string[];   // curated + community lists already containing this mint
+    }>;
+    suppressed: Array<{
+        mint: string;
+        symbol: string | null;
+        name: string | null;
+        liquidityUsd: number | null;
+        suppressedBy: string[]; // which policy gates fired
+        warnings: string[];
+    }>;
+}
+```
+
+### Reading the output
+
+- **`reasons`** explain rank: match quality (`mint_match`, `exact_symbol_match`, …),
+  curation (`curated_list_member`, `registry_variant`), and market context
+  (`market_leader`, `deep_liquidity`, `high_activity`, `established_token`).
+- **`warnings`** are the curator's caution signals: `possible_impersonation` and
+  `symbol_collision` (claims a symbol a protected token holds), `suspicious_characters`
+  (homoglyphs/invisible chars in the claim), `new_token` (younger than 7 days),
+  `low_liquidity`, `no_market_data`, `unverified` (not in the registry), `stale_data`,
+  `high_bot_volume`.
+- **`suppressed`** lists candidates a gate removed (`min_liquidity`, `impersonation`,
+  `tombstoned`, …). Re-run with `policy=degen` to see them ranked instead.

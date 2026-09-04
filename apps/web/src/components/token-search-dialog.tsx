@@ -13,8 +13,8 @@ import { useLocalStorage, useMediaQuery } from '@tokens/ui/hooks';
 import { fetchCuratedTokens, useCuratedTokens, useSearchTokens } from '@/hooks/queries/use-token-search';
 import { cleanTokenName } from '@/lib/logo-overrides';
 import { formatLargeNumber, formatPrice } from '@/lib/format';
-import { CURATED_LIST_ORDER_WITHOUT_LSTS, type CuratedTokenListIdWithoutLsts } from '@/lib/curated-token-lists';
-import { getCuratedTokenList, type CuratedTokenListId } from '@tokens/asset-registry/compat';
+import { CURATED_LIST_ORDER_WITHOUT_LSTS } from '@/lib/curated-lists';
+import type { CuratedListSlug } from '@tokens/asset-registry/curated-lists';
 import { getVariantByMint } from '@tokens/asset-registry';
 import type { Token } from '@/lib/types';
 import { apiJson } from '@/effect/api-client';
@@ -22,12 +22,6 @@ import { apiJson } from '@/effect/api-client';
 interface RecentSolanaTokenEntry {
     token: Token;
     selectedAt: number;
-}
-
-interface TokenSearchCategory {
-    id: CuratedTokenListIdWithoutLsts;
-    name: string;
-    addresses: readonly string[];
 }
 
 interface CuratedMintResponse {
@@ -39,17 +33,7 @@ interface CuratedMintResponse {
 }
 
 const TOKEN_SEARCH_LIST_ORDER = CURATED_LIST_ORDER_WITHOUT_LSTS;
-const STATIC_LST_MINTS = new Set(getCuratedTokenList('lsts').addresses);
-
-const TOKEN_SEARCH_CATEGORIES: TokenSearchCategory[] = TOKEN_SEARCH_LIST_ORDER.map(listId => {
-    const list = getCuratedTokenList(listId);
-    return {
-        id: listId,
-        name: list.name,
-        addresses: list.addresses,
-    } satisfies TokenSearchCategory;
-});
-const TOP_TOKENS_LIST_ID: CuratedTokenListId = 'majors';
+const TOP_TOKENS_LIST_ID: CuratedListSlug = 'majors';
 
 function tokenMatchesQuery(token: Token, query: string): boolean {
     const q = query.trim().toLowerCase();
@@ -181,15 +165,12 @@ function useTokenSearchData(open: boolean, query: string) {
         enabled: open,
         staleTime: 60 * 1000,
     });
-    const lstMints = React.useMemo(
-        () => new Set((dynamicLstMints?.length ?? 0) > 0 ? dynamicLstMints : Array.from(STATIC_LST_MINTS)),
-        [dynamicLstMints],
-    );
+    const lstMints = React.useMemo(() => new Set(dynamicLstMints ?? []), [dynamicLstMints]);
 
     const curatedCategoryQueries = useQueries({
-        queries: TOKEN_SEARCH_CATEGORIES.map(category => ({
-            queryKey: ['tokens', 'curated', category.id],
-            queryFn: ({ signal }) => fetchCuratedTokens(category.id, signal),
+        queries: TOKEN_SEARCH_LIST_ORDER.map(listId => ({
+            queryKey: ['tokens', 'curated', listId],
+            queryFn: ({ signal }: { signal?: AbortSignal }) => fetchCuratedTokens(listId, signal),
             staleTime: 60 * 1000,
             enabled: open && hasQuery,
         })),

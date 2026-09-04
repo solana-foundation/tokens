@@ -1,0 +1,5 @@
+{
+  "title": "API v2",
+  "defaultOpen": false,
+  "pages": ["overview", "---Reference---", "./endpoints"]
+}

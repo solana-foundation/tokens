@@ -1,4 +1,4 @@
-import { normalizeCuratedTokenListId } from '@tokens/asset-registry/compat';
+import { normalizeCuratedListSlug } from '@tokens/asset-registry/curated-lists';
 
 import { InvalidArgsError } from './assets';
 
@@ -12,6 +12,8 @@ export interface AssetCollectionMemberMintRow {
 
 export interface AssetCollectionSummaryRow {
     collection_slug: string;
+    title: string | null;
+    description: string | null;
     member_count: number;
     last_added_asset_id: string | null;
     last_added_at: number | null;
@@ -36,6 +38,8 @@ export interface AssetCollectionsReadsRepo {
 
 export interface AssetCollectionSummary {
     slug: string;
+    title: string | null;
+    description: string | null;
     count: number;
     lastAddedAssetId: string | null;
     lastAddedAt: number | null;
@@ -57,7 +61,7 @@ export async function getMembers(
     }
     const rawSlug = a.slug.trim();
     if (!rawSlug) return [];
-    const slug = normalizeCuratedTokenListId(rawSlug) ?? rawSlug;
+    const slug = normalizeCuratedListSlug(rawSlug) ?? rawSlug;
     const limit = Math.min(Math.max(typeof a.limit === 'number' ? a.limit : 500, 1), 2000);
     const rows = await repo.listMembersBySlug(slug, limit);
     return rows.map(r => r.asset_id);
@@ -79,7 +83,7 @@ export async function getMemberMints(
     }
     const rawSlug = a.slug.trim();
     if (!rawSlug) return [];
-    const slug = normalizeCuratedTokenListId(rawSlug) ?? rawSlug;
+    const slug = normalizeCuratedListSlug(rawSlug) ?? rawSlug;
     const limit = Math.min(Math.max(typeof a.limit === 'number' ? a.limit : 2000, 1), 5000);
     const rows = await repo.listMemberMintsBySlug(slug, limit);
     return rows.map(r => r.mint);
@@ -107,7 +111,7 @@ export async function getSummaries(
         const trimmed = raw.trim();
         if (!trimmed) continue;
         requested.push(trimmed);
-        normalizedByRequested.set(trimmed, normalizeCuratedTokenListId(trimmed) ?? trimmed);
+        normalizedByRequested.set(trimmed, normalizeCuratedListSlug(trimmed) ?? trimmed);
     }
     if (requested.length === 0) return [];
 
@@ -119,6 +123,8 @@ export async function getSummaries(
         const row = bySlug.get(normalizedByRequested.get(slug) ?? slug);
         return {
             slug,
+            title: row?.title ?? null,
+            description: row?.description ?? null,
             count: row?.member_count ?? 0,
             lastAddedAssetId: row?.last_added_asset_id ?? null,
             lastAddedAt: row?.last_added_at ?? null,

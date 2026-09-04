@@ -5,11 +5,11 @@ import { HeroSearch } from '@/components/hero-search';
 import { CategoryTabs, HighlightsSection, HomeTokensProvider } from '@/components/home';
 import { SiteFooter } from '@/components/site-footer';
 import { fetchApiAppJsonOrNull } from '@/lib/api-app';
-import { CURATED_LIST_ORDER_WITHOUT_LSTS, type CuratedTokenListIdWithoutLsts } from '@/lib/curated-token-lists';
+import { CURATED_LIST_ORDER_WITHOUT_LSTS, type CuratedTokenListIdWithoutLsts } from '@/lib/curated-lists';
 import { createHomeHighlights, type HomeTabId } from '@/lib/home-highlights';
 import { getTokenLogoURLWithSecondarySymbol } from '@/lib/logo-overrides';
 import type { Token } from '@/lib/types';
-import { type CuratedTokenListId } from '@tokens/asset-registry/compat';
+import { type CuratedListSlug as CuratedTokenListId } from '@tokens/asset-registry/curated-lists';
 import { Skeleton } from '@tokens/ui/skeleton';
 
 export const metadata: Metadata = {

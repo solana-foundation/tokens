@@ -2,7 +2,7 @@ import { Array as Arr, Effect } from 'effect';
 
 import { ohlcvBounds } from '@/lib/cloudrun';
 import { getTokenOHLCV, type TimeInterval } from '@/lib/birdeye';
-import { CURATED_LIST_ORDER, type CuratedTokenListId } from '@tokens/asset-registry/compat';
+import { CURATED_LIST_ORDER, type CuratedListSlug as CuratedTokenListId } from '@tokens/asset-registry/curated-lists';
 import { MissingEnvError, NotFoundError } from '@tokens/effect';
 import { route } from '@/effect/next-route';
 import {

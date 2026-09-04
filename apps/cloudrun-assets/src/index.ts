@@ -26,13 +26,15 @@ import {
     makePostgresCoingeckoCuratedSource,
     makePostgresCoingeckoReadsRepo,
     makePostgresCoingeckoRepo,
-    makePostgresCuratedMintsSource,
+    makePostgresCuratedMembershipSource,
     makePostgresFillQualityReadsRepo,
     makePostgresJobsRepo,
     makePostgresMiscJobsRepo,
     makePostgresOhlcvReadsRepo,
     makePostgresSanctumLstsRepo,
     makePostgresSeedRepo,
+    makePostgresTokenListsMutationsRepo,
+    makePostgresTokenListsReadsRepo,
     makePostgresTokensReadsRepo,
     makePostgresTrendingReadsRepo,
     makePostgresTrendingRepo,
@@ -43,6 +45,11 @@ import {
     makePostgresVariantMarketsRepo,
 } from './db';
 import type { AdminActionsDeps } from './handlers/adminActions';
+import {
+    DEFAULT_TOKEN_LIST_CAPS,
+    withOverviewMissCache,
+    type TokenListsMutationsDeps,
+} from './handlers/tokenListsMutations';
 import type { CacheWarmDeps } from './handlers/cacheWarm';
 import type { CronDeps } from './handlers/crons';
 import type { ClickhouseCronDeps } from './handlers/crons.clickhouse';
@@ -54,6 +61,12 @@ import type { ClickhouseExtrasCronDeps } from './handlers/crons.clickhouse.extra
 import type { PrestocksCronDeps } from './handlers/crons.prestocks';
 import { makeGoogleOidcVerifier } from './oidc';
 import { createApp, type ServiceRole } from './server';
+
+/** Positive-integer env override with a default. */
+function envInt(name: string, fallback: number): number {
+    const parsed = Number.parseInt(process.env[name] ?? '', 10);
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
 
 const authToken = process.env.TOKENS_CLOUDRUN_AUTH_TOKEN?.trim();
 if (!authToken) {
@@ -92,6 +105,15 @@ let trendingCronDeps: TrendingCronDeps | undefined;
 let clickhouseExtrasCronDeps: ClickhouseExtrasCronDeps | undefined;
 let prestocksCronDeps: PrestocksCronDeps | undefined;
 let verifyOidc: ReturnType<typeof makeGoogleOidcVerifier> | undefined;
+
+// Effective curated membership is served on the read path too (the
+// curatedMembershipGetSnapshot RPC), so the source exists regardless of
+// whether /jobs/* is enabled.
+const curated = makePostgresCuratedMembershipSource(sql);
+curated.warmup().catch(err => {
+    console.error('[cloudrun-assets] curated membership warmup failed', err);
+});
+
 if (birdeyeApiKey) {
     if (!cronAudience && !cronInvokerSa) {
         console.error(
@@ -99,7 +121,6 @@ if (birdeyeApiKey) {
         );
         process.exit(1);
     }
-    const curated = makePostgresCuratedMintsSource(sql);
     const coingeckoCurated = makePostgresCoingeckoCuratedSource(sql);
     const baseDeps: CronDeps = {
         repo: makePostgresJobsRepo(sql),
@@ -171,6 +192,7 @@ if (birdeyeApiKey) {
     trendingCronDeps = {
         repo: makePostgresTrendingRepo(sql),
         now: () => Date.now(),
+        listCanonicalCuratedMints: () => curated.getAllCuratedMintsInOrder(),
     };
     // PreStocks needs no API key — the reference endpoint is unauthenticated.
     prestocksCronDeps = {
@@ -222,9 +244,6 @@ if (birdeyeApiKey) {
     verifyOidc = makeGoogleOidcVerifier({
         ...(cronAudience ? { audience: cronAudience } : {}),
         ...(cronInvokerSa ? { invokerEmail: cronInvokerSa } : {}),
-    });
-    curated.warmup().catch(err => {
-        console.error('[cloudrun-assets] curated mints warmup failed', err);
     });
 } else {
     console.warn('[cloudrun-assets] BIRDEYE_API_KEY not set — /jobs/* endpoints disabled');
@@ -279,6 +298,25 @@ if (cronDeps && miscCronDeps && seedCronDeps) {
     console.warn('[cloudrun-assets] cron deps not fully set — /mutation/admin* endpoints disabled');
 }
 
+const tokenListsMutationsDeps: TokenListsMutationsDeps = {
+    repo: makePostgresTokenListsMutationsRepo(sql),
+    // Without a Birdeye key, mints unknown to the registry/tokens table
+    // simply resolve as unknown_mint instead of snapshotting metadata.
+    // Miss-cached: unknown mints stop replaying against the provider.
+    fetchTokenOverview: withOverviewMissCache(async mint =>
+        cronDeps ? cronDeps.birdeye.fetchTokenOverview(mint) : null,
+    ),
+    now: () => Date.now(),
+    caps: {
+        batch: envInt('TOKEN_LIST_BATCH_CAP', DEFAULT_TOKEN_LIST_CAPS.batch),
+        membersPerList: envInt('TOKEN_LIST_MEMBERS_PER_LIST_CAP', DEFAULT_TOKEN_LIST_CAPS.membersPerList),
+        providerLookups: envInt('TOKEN_LIST_PROVIDER_LOOKUP_BUDGET', DEFAULT_TOKEN_LIST_CAPS.providerLookups),
+        listsPerProject: envInt('TOKEN_LIST_LISTS_PER_PROJECT_CAP', DEFAULT_TOKEN_LIST_CAPS.listsPerProject),
+    },
+    // Freed slugs are reclaimable only by their previous owner for this window.
+    slugHoldMs: (Number(process.env.TOKEN_LIST_SLUG_HOLD_DAYS) || 30) * 24 * 60 * 60 * 1000,
+};
+
 const app = createApp({
     repo: makePostgresAssetsRepo(sql),
     assetsApiRepo: makePostgresAssetsApiRepo(sql),
@@ -291,6 +329,9 @@ const app = createApp({
     trendingReadsRepo: makePostgresTrendingReadsRepo(sql),
     fillQualityReadsRepo: makePostgresFillQualityReadsRepo(sql),
     assetCollectionsReadsRepo: makePostgresAssetCollectionsReadsRepo(sql),
+    curatedMembershipSource: curated,
+    tokenListsReadsRepo: makePostgresTokenListsReadsRepo(sql),
+    tokenListsMutationsDeps,
     coingeckoReadsRepo: makePostgresCoingeckoReadsRepo(sql),
     stockReadsRepo: makePostgresStockReadsRepo(sql),
     ohlcvReadsRepo: makePostgresOhlcvReadsRepo(sql),
@@ -311,6 +352,7 @@ const app = createApp({
     ...(prestocksCronDeps ? { prestocksCronDeps } : {}),
     ...(cacheWarmDeps ? { cacheWarmDeps } : {}),
     ...(adminActionsDeps ? { adminActionsDeps } : {}),
+    tokenListsAdminDeps: { adminAllowlist, lists: tokenListsMutationsDeps },
 });
 
 registerGracefulShutdown({ sql, serviceName: 'cloudrun-assets' });

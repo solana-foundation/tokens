@@ -82,7 +82,7 @@ export function TopNav() {
     return (
         <>
             <div className="border-b sticky border-black/10 border-b top-0 bg-zinc-100 dark:bg-zinc-900/80 backdrop-blur-sm z-40">
-                <div className="container max-w-7xl mx-auto px-4">
+                <div className="w-full px-4">
                     <div className="flex justify-between items-center h-16">
                         <div className="flex items-center gap-3">
                             <Link

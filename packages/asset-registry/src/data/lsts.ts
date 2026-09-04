@@ -1,5 +1,5 @@
 import type { CanonicalAsset } from '../types';
-import { CURATED_TOKEN_LISTS } from './curated-token-lists';
+import { LST_MINTS } from './list-mints';
 
 interface LstOverride {
     name: string;
@@ -37,7 +37,7 @@ export const LST_ASSETS: CanonicalAsset[] = [
         assetId: 'solana',
         category: 'crypto',
         aliases: [],
-        variants: CURATED_TOKEN_LISTS.lsts.addresses.map(mint => {
+        variants: LST_MINTS.map(mint => {
             const override = LST_OVERRIDES[mint];
             const suffix = override?.symbol
                 ? normalizeVariantIdSuffix(override.symbol)

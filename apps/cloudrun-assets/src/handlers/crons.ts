@@ -18,6 +18,8 @@ export interface CronResult {
 
 export { InvalidArgsError } from '@tokens/cloudrun-shutdown/http-errors';
 import { InvalidArgsError } from '@tokens/cloudrun-shutdown/http-errors';
+// Type-only: no runtime cycle with curatedMembershipReads.
+import type { CuratedMembershipSource } from './curatedMembershipReads';
 
 export interface VariantMarketUpsertFromBirdeye {
     mint: string;
@@ -451,7 +453,7 @@ export interface BirdeyeOhlcvClient {
 
 export interface CronDeps {
     repo: JobsRepo;
-    curated: CuratedMintsSource;
+    curated: CuratedMembershipSource;
     birdeye: BirdeyeClient;
     birdeyeOhlcv: BirdeyeOhlcvClient;
     sanctum: SanctumClient;
@@ -1303,6 +1305,8 @@ export interface ComputedAssetRisk {
         volume24hUsd: number | null;
         volume7dUsd: number | null;
         tokenMintTime: string | null;
+        /** DB-backed curated membership; drives concentration/trusted-launch exemptions. */
+        curatedListSlugs?: readonly string[];
     };
     tags: RiskTag[];
     riskScore10: number | null;
@@ -1502,6 +1506,7 @@ export async function refreshCuratedAssetRisk(deps: CronDeps, rawArgs: unknown):
                     tradingData: all.trading.ok ? all.trading.data : null,
                     holderData: all.holder.ok ? all.holder.data : null,
                 });
+                computed.marketScoreInput.curatedListSlugs = deps.curated.getListSlugsByMint().get(mint) ?? [];
                 const marketScore = deps.computeMarketScore
                     ? deps.computeMarketScore(computed.marketScoreInput)
                     : null;

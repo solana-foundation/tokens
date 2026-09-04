@@ -4,6 +4,7 @@ import { getSql, makePostgresAdminRepo } from './db';
 import { makePostgresAdminMutationsRepo } from './db/curatedTokensMutations';
 import { makePostgresAdminReadsRepo } from './db/curatedTokensReads';
 import { makePostgresHardDeleteRepo } from './db/hardDelete';
+import { makePostgresTokenListsAdminRepo } from './db/tokenListsAdmin';
 import { makeGcsLogoSigner } from './gcs';
 import { makeGoogleOidcVerifier } from './oidc';
 import { createApp } from './server';
@@ -44,6 +45,7 @@ const app = createApp({
     reads: makePostgresAdminReadsRepo(sql),
     mutations: makePostgresAdminMutationsRepo(sql),
     hardDelete: makePostgresHardDeleteRepo(sql),
+    tokenListsAdmin: makePostgresTokenListsAdminRepo(sql),
     ...(gcsLogoBucket
         ? { logoSigner: makeGcsLogoSigner(gcsLogoBucket, process.env.GCS_LOGO_PUBLIC_BASE_URL?.trim()) }
         : {}),

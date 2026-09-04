@@ -9,6 +9,7 @@ const isPublicRoute = createRouteMatcher([
     '/api/v1/health(.*)',
     '/api/v1/assets(.*)',
     '/api/v1/news(.*)',
+    '/api/v2/lists(.*)',
     '/api/token(.*)',
     '/api/coingecko(.*)',
     '/api/x/tokens-feed',

@@ -5,20 +5,17 @@
 
 import { getCanonicalFallbackLogoPath } from '@tokens/asset-registry';
 import type { AssetCategory, StockVariantTier, VariantKind } from '@tokens/asset-registry';
+import { ADMIN_ASSIGNABLE_CURATED_SLUGS, CURATED_LIST_SLUGS } from '@tokens/asset-registry/curated-lists';
+import type { AdminAssignableCuratedSlug } from '@tokens/asset-registry/curated-lists';
 
 import { InvalidArgsError } from './errors';
 
-export const CURATED_CATEGORY_SLUGS = ['majors', 'currencies', 'rwas', 'etfs', 'metals', 'stocks'] as const;
-export const HARD_DELETE_COLLECTION_SLUGS = [
-    'majors',
-    'lsts',
-    'currencies',
-    'rwas',
-    'etfs',
-    'metals',
-    'stocks',
-] as const;
-export type CuratedCategorySlug = (typeof CURATED_CATEGORY_SLUGS)[number];
+// Assignable slugs exclude `lsts` (Sanctum-dynamic; syncCollections would
+// otherwise strip LST membership on every category edit). Hard delete may
+// still purge membership from every curated collection.
+export const CURATED_CATEGORY_SLUGS = ADMIN_ASSIGNABLE_CURATED_SLUGS;
+export const HARD_DELETE_COLLECTION_SLUGS = CURATED_LIST_SLUGS;
+export type CuratedCategorySlug = AdminAssignableCuratedSlug;
 
 export const ASSET_ALIAS_KINDS = [
     'assetId',

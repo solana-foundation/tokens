@@ -107,6 +107,11 @@ const ToolTabs = dynamic<ApiManagerToolTabsProps>(
     },
 );
 
+const ListsTab = dynamic(() => import('./lists-tab').then(mod => mod.ListsTab), {
+    ssr: false,
+    loading: () => <ToolTabsLoading />,
+});
+
 class UsageQueryErrorBoundary extends Component<{ children: ReactNode; fallback: ReactNode }, { hasError: boolean }> {
     state = { hasError: false };
 
@@ -453,6 +458,9 @@ export default function DashboardTabs() {
                         />
                     </div>
                 );
+            }
+            case 'lists': {
+                return <ListsTab />;
             }
             default:
                 return null;

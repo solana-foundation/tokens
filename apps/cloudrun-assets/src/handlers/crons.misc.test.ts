@@ -71,8 +71,18 @@ function makeBase(overrides: Partial<CronDeps> = {}, curatedMints: readonly stri
     return {
         repo: overrides.repo ?? ({} as never),
         curated: overrides.curated ?? {
+            warmup: async () => {},
+            getSnapshot: async () => ({
+                loadedAt: 0,
+                mintsByList: {
+                    majors: [...curatedMints], lsts: [], currencies: [], rwas: [], etfs: [], metals: [], stocks: [],
+                },
+                allMints: [...curatedMints],
+                entriesByMint: {},
+            }),
             getAllCuratedMintsInOrder: () => Array.from(curatedMints),
             getCuratedMintRank: () => rank,
+            getListSlugsByMint: () => new Map(),
         },
         birdeye: overrides.birdeye ?? { async fetchTokenOverview() { return null; } },
         birdeyeOhlcv: overrides.birdeyeOhlcv ?? { async fetchOhlcv() { return []; } },

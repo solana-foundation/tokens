@@ -41,4 +41,29 @@ describe('computeMarketScore', () => {
         expect(mediumConcentration.components.holderDistribution.score).toBe(40);
         expect(highConcentration.components.holderDistribution.score).toBe(0);
     });
+
+    test('exempts concentration-exempt curated lists from the high-concentration cap', () => {
+        const concentrated = { ...BASE_INPUT, top10HoldersPercent: 51 };
+
+        const capped = computeMarketScore(concentrated);
+        expect(capped.caps).toContain('High Concentration (>50% top 10)');
+        expect(capped.score).toBe(84);
+
+        const exempt = computeMarketScore({ ...concentrated, curatedListSlugs: ['currencies'] });
+        expect(exempt.caps).not.toContain('High Concentration (>50% top 10)');
+        expect(exempt.components.holderDistribution.score).toBe(100);
+        expect(exempt.score).toBeGreaterThan(capped.score);
+    });
+
+    test('flags young tokens on trusted curated lists as trusted launches', () => {
+        const tenDaysAgo = new Date(Date.now() - 10 * 24 * 60 * 60 * 1000);
+        const young = { ...BASE_INPUT, tokenMintTime: tenDaysAgo };
+
+        const untrusted = computeMarketScore(young);
+        expect(untrusted.isTrustedLaunch).toBe(false);
+
+        const trusted = computeMarketScore({ ...young, curatedListSlugs: ['majors'] });
+        expect(trusted.isTrustedLaunch).toBe(true);
+        expect(trusted.score).toBeGreaterThanOrEqual(70);
+    });
 });

@@ -1,8 +1,14 @@
-import fs from 'node:fs/promises';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { loadLocalEnv } from './_env.mjs';
 import { callCloudRun, cloudRunEnabled } from './_cloudrun.mjs';
+import {
+    CURRENCY_MINTS,
+    ETF_MINTS,
+    LST_MINTS,
+    MAJORS_MINTS,
+    METALS_MINTS,
+    RWA_MINTS,
+    STOCKS_MINTS,
+} from '../packages/asset-registry/src/data/list-mints.ts';
 
 function getFlag(name) {
     return process.argv.includes(`--${name}`);
@@ -90,37 +96,19 @@ function chunk(items, size) {
     return chunks;
 }
 
-function getCuratedListAddresses(fileContents, listId) {
-    const lines = fileContents.split('\n');
-    const target = `${listId}: {`;
-
-    let inList = false;
-    let inAddresses = false;
-
-    /** @type {string[]} */
-    const addresses = [];
-
-    for (const line of lines) {
-        const trimmed = line.trim();
-
-        if (!inList) {
-            if (trimmed.startsWith(target)) inList = true;
-            continue;
-        }
-
-        if (!inAddresses) {
-            if (line.includes('addresses: [')) inAddresses = true;
-            continue;
-        }
-
-        // End of this list's address array.
-        if (line.trimStart().startsWith('],')) break;
-
-        const match = line.match(/'([^']+)'/);
-        if (match) addresses.push(match[1]);
-    }
-
-    return addresses;
+function getCuratedListAddresses(listId) {
+    const byListId = {
+        majors: MAJORS_MINTS,
+        lsts: LST_MINTS,
+        currencies: CURRENCY_MINTS,
+        rwas: RWA_MINTS,
+        etfs: ETF_MINTS,
+        metals: METALS_MINTS,
+        stocks: STOCKS_MINTS,
+    };
+    const addresses = byListId[listId];
+    if (!addresses) throw new Error(`Unknown curated list id: ${listId}`);
+    return [...addresses];
 }
 
 async function getSearchTokensByAddresses(addresses) {
@@ -134,9 +122,6 @@ async function getSearchTokensByAddresses(addresses) {
 }
 
 async function main() {
-    const __filename = fileURLToPath(import.meta.url);
-    const __dirname = path.dirname(__filename);
-    const repoRoot = path.resolve(__dirname, '..');
 
     await loadLocalEnv();
 
@@ -146,7 +131,6 @@ async function main() {
         );
     }
 
-    const curatedFilePath = path.join(repoRoot, 'packages/asset-registry/src/data/curated-token-lists.ts');
     // Default to the Stocks tab; Ondo mints are filtered below unless overridden.
     const listId = getArg('list-id', 'stocks');
 
@@ -159,8 +143,7 @@ async function main() {
     const force = getFlag('force');
     const includeNonOndo = getFlag('include-non-ondo');
 
-    const fileContents = await fs.readFile(curatedFilePath, 'utf8');
-    const listAddressesRaw = getCuratedListAddresses(fileContents, listId);
+    const listAddressesRaw = getCuratedListAddresses(listId);
     let listAddresses = getUniqueAddresses(listAddressesRaw);
 
     // By default, keep this script scoped to Ondo mints (addresses ending in "ondo").
@@ -169,7 +152,7 @@ async function main() {
     }
 
     if (listAddresses.length === 0) {
-        throw new Error(`No addresses found for listId="${listId}" in ${path.relative(repoRoot, curatedFilePath)}`);
+        throw new Error(`No addresses found for listId="${listId}" in list-mints.ts`);
     }
 
     const limit = Math.min(parsePositiveInt(limitRaw ?? String(listAddresses.length), listAddresses.length), 5000);
