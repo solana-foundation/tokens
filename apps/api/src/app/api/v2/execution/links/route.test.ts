@@ -84,6 +84,7 @@ describe('GET /api/v2/execution/links', () => {
             'jupiter',
             'dflow',
             'sunrise',
+            'jtx',
             'omfg',
             'kamino',
             'orca',

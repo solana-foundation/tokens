@@ -2,7 +2,8 @@ import { Effect, Option } from 'effect';
 
 import { getTokenOverview } from '@/lib/birdeye';
 import { getGlobalTokenStats } from '@/lib/coingecko';
-import { CURATED_LIST_ORDER, getWrapperGroupByAddress, type CuratedTokenListId } from '@tokens/asset-registry/compat';
+import { getWrapperGroupByAddress } from '@tokens/asset-registry/compat';
+import { CURATED_LIST_ORDER, type CuratedListSlug as CuratedTokenListId } from '@tokens/asset-registry/curated-lists';
 import { cleanTokenName, getTokenLogoURL } from '@/lib/logo-overrides';
 import { MissingEnvError, NotFoundError } from '@tokens/effect';
 import { route } from '@/effect/next-route';

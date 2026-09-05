@@ -233,13 +233,13 @@ describe('golden: attested off-AMM asset (Ondo-style tokenized stock)', () => {
         tokenMintTime: null,
         risk: null,
         fillQuality: null,
+        curatedListIds: [],
         registry: {
             assetId: 'spacex',
             symbol: 'SPCXon',
             name: 'SpaceX (Ondo Tokenized)',
             kind: 'tokenized_equity',
             trustTier: 'tier3',
-            curatedListIds: [],
         },
     });
 

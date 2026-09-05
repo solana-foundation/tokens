@@ -70,6 +70,7 @@ function riskComponent(candidate: EnrichedCandidate): number {
         volume7dUsd: null,
         tokenMintTime: candidate.tokenMintTime,
         tokenAddress: candidate.mint,
+        curatedListSlugs: candidate.curatedListIds,
     });
 
     // Unknown is neutral, not bad: candidates outside the risk-refresh rotation

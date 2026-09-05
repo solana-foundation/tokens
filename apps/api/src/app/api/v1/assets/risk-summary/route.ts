@@ -5,6 +5,7 @@ import { route } from '@/effect/next-route';
 import { decodeUnknownOrBadRequest, SolanaAddress } from '@tokens/effect';
 import { variantMarketsGetLatestByMints } from '@/lib/cloudrun';
 import { computeMarketScore, type MarketScoreInput } from '@/lib/token-risk-helpers';
+import { getCuratedListSlugsForMint } from '@/lib/curated-membership';
 
 const SOL_MINT = 'So11111111111111111111111111111111111111112';
 
@@ -87,7 +88,11 @@ export const GET = route(
             const address = yield* decodeUnknownOrBadRequest(SolanaAddress, mintInput, 'Invalid mint');
 
             if (address === SOL_MINT) {
-                const marketScore = computeMarketScore(buildMarketScoreInput(address));
+                const solSlugs = yield* Effect.promise(() => getCuratedListSlugsForMint(address));
+                const marketScore = computeMarketScore({
+                    ...buildMarketScoreInput(address),
+                    curatedListSlugs: solSlugs,
+                });
 
                 return {
                     score: marketScore.score,
@@ -108,7 +113,11 @@ export const GET = route(
             const market = rows[0]?.market ?? null;
             if (!market) return insufficient('Market snapshot not available in cache');
 
-            const marketScore = computeMarketScore(buildMarketScoreInput(address, market));
+            const curatedListSlugs = yield* Effect.promise(() => getCuratedListSlugsForMint(address));
+            const marketScore = computeMarketScore({
+                ...buildMarketScoreInput(address, market),
+                curatedListSlugs,
+            });
 
             return {
                 score: marketScore.score,

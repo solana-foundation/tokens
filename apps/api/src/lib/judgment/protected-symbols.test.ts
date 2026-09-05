@@ -1,7 +1,16 @@
-import { describe, expect, it } from 'bun:test';
+import { afterEach, describe, expect, it } from 'bun:test';
+
+import type { CuratedMembershipSnapshot } from '@/lib/cloudrun';
+import { __setCuratedMembershipSnapshotForTests } from '@/lib/curated-membership';
 
 import { buildIndexFromEntries, checkSymbolCollision, getProtectedSymbolIndex, registryClaimedSymbol } from './protected-symbols';
 import { NOW_MS, USDC_MINT, fakeUsdc, homoglyphUsdc, realUsdc, newDogToken } from './fixtures';
+
+function membershipSnapshot(
+    overrides: Partial<CuratedMembershipSnapshot> & { loadedAt: number },
+): CuratedMembershipSnapshot {
+    return { mintsByList: {}, allMints: [], entriesByMint: {}, ...overrides };
+}
 
 const index = buildIndexFromEntries([
     { symbol: 'USDC', mints: [USDC_MINT], protectedBy: ['curated:currencies'] },
@@ -31,13 +40,13 @@ describe('checkSymbolCollision', () => {
             ...fakeUsdc(),
             liquidityUsd: 5_000_000,
             tokenMintTime: '2023-01-01T00:00:00Z',
+            curatedListIds: [],
             registry: {
                 assetId: 'other-usdc-like',
                 symbol: 'USDC',
                 name: 'Other',
                 kind: 'native',
                 trustTier: 'tier2',
-                curatedListIds: [],
             },
         };
         const verdict = checkSymbolCollision(established, index, NOW_MS);
@@ -46,11 +55,57 @@ describe('checkSymbolCollision', () => {
 });
 
 describe('getProtectedSymbolIndex', () => {
-    it('builds a real index containing majors like SOL and USDC', () => {
-        const realIndex = getProtectedSymbolIndex();
+    afterEach(() => {
+        __setCuratedMembershipSnapshotForTests(null);
+    });
+
+    it('builds a real index containing majors like SOL and USDC', async () => {
+        // Note: the index is memoized per snapshot `loadedAt` — each injected
+        // snapshot in this file uses a distinct value.
+        __setCuratedMembershipSnapshotForTests(
+            membershipSnapshot({
+                loadedAt: 1,
+                mintsByList: { currencies: [USDC_MINT] },
+                allMints: [USDC_MINT],
+                entriesByMint: {
+                    [USDC_MINT]: { assetId: 'usd-coin', listSlugs: ['currencies'], symbol: 'USDC' },
+                },
+            }),
+        );
+
+        const realIndex = await getProtectedSymbolIndex();
         expect(realIndex.size).toBeGreaterThan(50);
         expect(realIndex.has('USDC')).toBe(true);
         expect(realIndex.has('SOL')).toBe(true);
+        expect(realIndex.get('USDC')?.protectedBy).toContain('curated:currencies');
+    });
+
+    it('protects curated admin-only mints unknown to the compiled registry', async () => {
+        const newcoMint = 'NewCoAdminOnlyMint11111111111111111111111111';
+        __setCuratedMembershipSnapshotForTests(
+            membershipSnapshot({
+                loadedAt: 2,
+                mintsByList: { community: [newcoMint] },
+                allMints: [newcoMint],
+                entriesByMint: {
+                    [newcoMint]: { assetId: null, listSlugs: ['community'], symbol: 'NEWCO' },
+                },
+            }),
+        );
+
+        const realIndex = await getProtectedSymbolIndex();
+        const entry = realIndex.get('NEWCO');
+        expect(entry).toBeDefined();
+        expect(entry?.mints.has(newcoMint)).toBe(true);
+        expect(entry?.protectedBy).toContain('curated:community');
+
+        // The curated admin-only mint itself is the protected holder.
+        const holder = { ...newDogToken(), mint: newcoMint, symbol: 'NEWCO', curatedListIds: ['community'] };
+        expect(checkSymbolCollision(holder, realIndex, NOW_MS)).toEqual({ kind: 'protected_holder' });
+
+        // A fresh unattested claimer of NEWCO is flagged as impersonation.
+        const impostor = { ...fakeUsdc(), symbol: 'NEWCO' };
+        expect(checkSymbolCollision(impostor, realIndex, NOW_MS).kind).toBe('impersonation');
     });
 });
 

@@ -7,6 +7,7 @@ const { resetEnvForTests } = await import('@/lib/env');
 const { signPlaygroundProxyAuthPayload } = await import('@/effect/playground-proxy-auth');
 const { getAsset } = await import('@tokens/asset-registry');
 const { GET: routeGet } = await import('./route');
+const { __setCuratedMembershipSnapshotForTests } = await import('@/lib/curated-membership');
 
 const ORIGINAL_FETCH = globalThis.fetch;
 const ORIGINAL_LOG = console.log;
@@ -135,7 +136,23 @@ function stubCloudRun(): void {
     }) as typeof fetch;
 }
 
+/**
+ * Curated membership is DB-backed and empty in tests. Real membership ranks
+ * cbBTC (and only cbBTC) among the bitcoin variants, which is what makes it
+ * the editorial reference for parity — so seed exactly that.
+ */
+function seedCuratedRank(): void {
+    const cbbtc = BITCOIN_MINTS[1]!;
+    __setCuratedMembershipSnapshotForTests({
+        loadedAt: 1,
+        mintsByList: { majors: [cbbtc] },
+        allMints: [cbbtc],
+        entriesByMint: { [cbbtc]: { assetId: 'bitcoin', listSlugs: ['majors'], symbol: 'cbBTC' } },
+    });
+}
+
 beforeEach(() => {
+    seedCuratedRank();
     for (const key of ENV_KEYS) {
         const value = process.env[key];
         if (value !== undefined) savedEnv[key] = value;
@@ -163,6 +180,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+    __setCuratedMembershipSnapshotForTests(null);
     globalThis.fetch = ORIGINAL_FETCH;
     console.log = ORIGINAL_LOG;
     console.warn = ORIGINAL_WARN;

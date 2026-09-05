@@ -140,7 +140,10 @@ function makeAdminRepo(state: FakeState): AdminActionsRepo {
         async upsertAssetCollectionMember(args) {
             state.upsertedMembers.push(args);
         },
-        async upsertAssetCollectionTitle(slug, title) {
+        async ensureAssetCollection(slug, title) {
+            // Mirrors the repo's INSERT ... ON CONFLICT (slug) DO NOTHING:
+            // an existing row keeps its admin-owned title.
+            if (state.upsertedCollections.some(c => c.slug === slug)) return;
             state.upsertedCollections.push({ slug, title });
         },
         async clearDeletedRefs(refs) {
@@ -162,12 +165,20 @@ function makeSeedRepo(state: FakeState): SeedRepo {
             state.seedAliases.push(args);
         },
         async ensureVariantMarketRow() {},
-        async upsertAssetCollection() {},
-        async mergeAssetCollectionMembers() {},
-        async listTombstonedRefs() {
+        async insertCollectionIfMissing() {},
+        async insertCollectionMembersIfMissing() {
+            return 0;
+        },
+        async countCollectionMembers() {
+            return 0;
+        },
+        async listTombstonedAssetIds() {
             return [];
         },
-        async listCollectionMemberUnion() {
+        async deleteCollectionCascade() {
+            return 0;
+        },
+        async listTombstonedRefs() {
             return [];
         },
         async lowerCollectionMemberAddedAtByMint() {
@@ -290,8 +301,16 @@ function makeCronDeps(state: FakeState): CronDeps {
     return {
         repo: makeJobsRepo(state),
         curated: {
+            warmup: async () => {},
+            getSnapshot: async () => ({
+                loadedAt: 0,
+                mintsByList: { majors: [], lsts: [], currencies: [], rwas: [], etfs: [], metals: [], stocks: [] },
+                allMints: [],
+                entriesByMint: {},
+            }),
             getAllCuratedMintsInOrder: () => [],
             getCuratedMintRank: () => new Map(),
+            getListSlugsByMint: () => new Map(),
         },
         birdeye: {
             async fetchTokenOverview() {
@@ -719,6 +738,30 @@ describe('adminSeedAsset', () => {
         expect(state.birdeyeOhlcvFetches.map(f => f.interval)).toEqual(['15m', '1H', '4H', '1D']);
     });
 
+    it('uses the public list vocabulary, not admin-only names', async () => {
+        // `asset_collections.title` is what /api/v2/lists and
+        // /api/v1/assets/curated/lists serve, so the seed must not write the
+        // old admin-internal names ("Majors"/"RWAs") into the public column.
+        const majors = makeState();
+        await adminSeedAsset(makeDeps(majors), { mint: MINT, slug: 'majors' }, ADMIN);
+        expect(majors.upsertedCollections).toEqual([{ slug: 'majors', title: 'Crypto' }]);
+
+        const rwas = makeState();
+        await adminSeedAsset(makeDeps(rwas), { mint: MINT, slug: 'rwas' }, ADMIN);
+        expect(rwas.upsertedCollections).toEqual([{ slug: 'rwas', title: 'Treasuries' }]);
+    });
+
+    it('never rewrites an existing list title (ensureAssetCollection is insert-if-missing)', async () => {
+        // Regression: this used to be an unconditional upsert, so seeding a
+        // token reverted any admin-edited title on the next add.
+        const state = makeState();
+        state.upsertedCollections.push({ slug: 'stocks', title: 'Tokenized Equities' });
+
+        await adminSeedAsset(makeDeps(state), { mint: MINT, slug: 'stocks' }, ADMIN);
+
+        expect(state.upsertedCollections).toEqual([{ slug: 'stocks', title: 'Tokenized Equities' }]);
+    });
+
     it('seeds without a slug using seeded:admin tags and no collection writes', async () => {
         const state = makeState();
         const result = await adminSeedAsset(makeDeps(state), { mint: MINT }, ADMIN);
@@ -746,13 +789,15 @@ describe('adminSeedAsset', () => {
         expect(result.assetId).toBe('bitcoin');
     });
 
-    it('rejects when the asset is already in a different curated category', async () => {
+    it('adds membership additively when the asset is already in another curated category', async () => {
         const state = makeState({
             collectionsByAssetId: { [`solana-${MINT}`]: ['majors'] },
         });
-        await expect(adminSeedAsset(makeDeps(state), { mint: MINT, slug: 'stocks' }, ADMIN)).rejects.toThrow(
-            'Asset already exists in category: majors',
-        );
+        const result = await adminSeedAsset(makeDeps(state), { mint: MINT, slug: 'stocks' }, ADMIN);
+        expect(result.assetId).toBe(`solana-${MINT}`);
+        expect(state.upsertedMembers).toEqual([
+            expect.objectContaining({ collectionSlug: 'stocks', assetId: `solana-${MINT}` }),
+        ]);
     });
 
     it('rejects when Birdeye has no symbol', async () => {

@@ -50,8 +50,8 @@ function buildReasons(
             break;
     }
 
+    if (candidate.curatedListIds.length > 0) reasons.push('curated_list_member');
     if (candidate.registry) {
-        if (candidate.registry.curatedListIds.length > 0) reasons.push('curated_list_member');
         reasons.push('registry_variant');
     }
     if (dominance) reasons.push('market_leader');
@@ -112,8 +112,8 @@ function buildWarnings(
 
 function buildBadges(candidate: EnrichedCandidate): string[] {
     const badges: string[] = [];
+    for (const listId of candidate.curatedListIds) badges.push(`curated:${listId}`);
     if (candidate.registry) {
-        for (const listId of candidate.registry.curatedListIds) badges.push(`curated:${listId}`);
         if (candidate.registry.trustTier) badges.push(candidate.registry.trustTier);
     }
     if (candidate.risk?.grade) badges.push(`grade:${candidate.risk.grade}`);

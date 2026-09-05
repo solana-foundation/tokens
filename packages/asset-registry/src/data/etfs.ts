@@ -1,5 +1,5 @@
 import type { CanonicalAsset, TrustTier, VariantKind } from '../types';
-import { CURATED_TOKEN_LISTS } from './curated-token-lists';
+import { ETF_MINTS } from './list-mints';
 import { uniqueStrings } from '../utils/unique-strings';
 
 interface EtfOverride {
@@ -62,7 +62,7 @@ function defaultTrustTierForMint(_mint: string): TrustTier {
     return 'tier3';
 }
 
-export const ETF_ASSETS: CanonicalAsset[] = CURATED_TOKEN_LISTS.etfs.addresses.map(mint => {
+export const ETF_ASSETS: CanonicalAsset[] = ETF_MINTS.map(mint => {
     const override = ETF_OVERRIDES[mint];
     const assetId = override ? slugify(override.symbol ?? override.name) : fallbackEtfAssetId(mint);
     const kind: VariantKind = override?.kind ?? 'etf';

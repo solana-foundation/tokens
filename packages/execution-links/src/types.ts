@@ -3,6 +3,7 @@ export const VENUE_IDS = [
     'jupiter',
     'dflow',
     'sunrise',
+    'jtx',
     'omfg',
     'kamino',
     'orca',

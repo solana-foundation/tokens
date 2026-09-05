@@ -1,4 +1,4 @@
-import { normalizeCuratedTokenListId } from '@tokens/asset-registry/compat';
+import { isReservedListSlug } from '@tokens/asset-registry/curated-lists';
 
 import { InvalidArgsError } from './assets';
 import type { BirdeyeOverview } from './crons';
@@ -17,21 +17,68 @@ import type { BirdeyeOverview } from './crons';
 
 export const TOKEN_LIST_SLUG_REGEX = /^[a-z][a-z0-9-]{2,62}$/;
 
-/** Route segments + derived ids that must never become community list slugs. */
-const STATIC_RESERVED_SLUGS = new Set(['all', 'lists', 'curated', 'tokens', 'search-tokens', 'check-slug']);
-
+/** Route segments, curated slugs, and their aliases must never become community list slugs. */
 export function isReservedTokenListSlug(slug: string): boolean {
-    if (STATIC_RESERVED_SLUGS.has(slug)) return true;
-    // Curated list ids (and their aliases, e.g. 'stables') stay ours.
-    return normalizeCuratedTokenListId(slug) !== null;
+    return isReservedListSlug(slug);
 }
 
 const SOLANA_MINT_REGEX = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
 
-export const TOKEN_LIST_STATUSES = ['draft', 'published', 'archived'] as const;
+export const TOKEN_LIST_STATUSES = ['draft', 'unlisted', 'published', 'archived'] as const;
 export type TokenListStatus = (typeof TOKEN_LIST_STATUSES)[number];
 
-export const MEMBER_BATCH_CAP = 100;
+/** Infrastructure bounds (env-tunable at wiring time; see index.ts). */
+export interface TokenListCaps {
+    /** Max mints per addMembersBatch call. */
+    batch: number;
+    /** Max members a single list may hold. */
+    membersPerList: number;
+    /** Max Birdeye lookups a single batch call may spend on unknown mints. */
+    providerLookups: number;
+    /** Max non-archived lists a single project may own. */
+    listsPerProject: number;
+}
+
+export const DEFAULT_TOKEN_LIST_CAPS: TokenListCaps = {
+    // 250 bounds per-call wall time (~3 chunked IN-queries + inserts); large
+    // imports chunk client-side. Was 1000, which let a burst of multi-second
+    // calls park on the service (see the #121 review).
+    batch: 250,
+    membersPerList: 5000,
+    providerLookups: 50,
+    listsPerProject: 100,
+};
+
+/**
+ * Negative cache for provider lookups: a mint Birdeye doesn't know keeps not
+ * existing for a while — without this, replayed batches of the same unknown
+ * mints burn the provider budget forever. FIFO-evicted, per-instance.
+ */
+export function withOverviewMissCache(
+    inner: (mint: string) => Promise<BirdeyeOverview | null>,
+    options: { ttlMs?: number; maxEntries?: number; now?: () => number } = {},
+): (mint: string) => Promise<BirdeyeOverview | null> {
+    const ttlMs = options.ttlMs ?? 15 * 60 * 1000;
+    const maxEntries = options.maxEntries ?? 50_000;
+    const now = options.now ?? (() => Date.now());
+    const misses = new Map<string, number>();
+    return async mint => {
+        const missedAt = misses.get(mint);
+        if (missedAt !== undefined) {
+            if (now() - missedAt < ttlMs) return null;
+            misses.delete(mint);
+        }
+        const overview = await inner(mint);
+        if (overview === null) {
+            misses.set(mint, now());
+            if (misses.size > maxEntries) {
+                const oldest = misses.keys().next().value;
+                if (oldest !== undefined) misses.delete(oldest);
+            }
+        }
+        return overview;
+    };
+}
 
 export interface TokenListMutationRow {
     id: string;
@@ -39,11 +86,16 @@ export interface TokenListMutationRow {
     owner_project_id: string;
     name: string;
     status: string;
+    /** Unix ms; set by the admin takedown lock, null otherwise. */
+    admin_locked_at: number | null;
     /** Unix ms. */
     created_at: number;
     /** Unix ms. */
     updated_at: number;
 }
+
+/** Field caps for stored text served back on public reads (response-bloat guard). */
+export const TOKEN_LIST_TEXT_CAPS = { name: 80, note: 500 } as const;
 
 export interface MemberSnapshot {
     symbol: string | null;
@@ -68,9 +120,23 @@ export interface TokenListsMutationsRepo {
         patch: { slug?: string; name?: string; status?: TokenListStatus },
         nowMs: number,
     ): Promise<TokenListMutationRow>;
-    /** Hard delete — members cascade, and the slug goes back to the pool. */
-    deleteList(listId: string): Promise<void>;
+    /** Hard delete in ONE transaction — members cascade, and the freed slug's hold is recorded atomically. */
+    deleteList(listId: string, hold: { slug: string; ownerProjectId: string; releasedAt: number }): Promise<void>;
+    /** Active hold on a freed slug, or null. */
+    getSlugHold(slug: string): Promise<{ ownerProjectId: string; releasedAt: number } | null>;
+    /** Upsert a hold recording who released the slug and when. */
+    recordSlugHold(slug: string, ownerProjectId: string, releasedAt: number): Promise<void>;
+    /** Drop a hold once the slug is claimed again. */
+    clearSlugHold(slug: string): Promise<void>;
+    /** Non-archived lists owned by the project (lists-per-project cap). */
+    countListsByOwner(ownerProjectId: string): Promise<number>;
     /** Upsert on (list_id, mint); missing rank appends after the current max. Touches the parent list. */
+    /**
+     * Single upsert in ONE transaction with the list row locked (FOR UPDATE):
+     * the members-per-list cap and default rank are read under the lock, same
+     * guarantees as the bulk path. Returns false when a net-new insert would
+     * exceed the cap (updates of existing members always succeed).
+     */
     upsertMember(args: {
         listId: string;
         mint: string;
@@ -78,13 +144,35 @@ export interface TokenListsMutationsRepo {
         note: string | null;
         addedAt: number;
         snapshot: MemberSnapshot | null;
-    }): Promise<void>;
+        membersPerListCap: number;
+    }): Promise<boolean>;
     /** Returns false when the mint was not a member. Touches the parent list when it was. */
     removeMember(listId: string, mint: string, nowMs: number): Promise<boolean>;
     /** An active registry variant exists for the mint (tombstone-filtered). */
     hasActiveVariantForMint(mint: string): Promise<boolean>;
     /** The mint exists in the tokens table (read-time hydration will cover metadata). */
     hasTokenForAddress(mint: string): Promise<boolean>;
+    /** Subset of `mints` with an active, non-tombstoned registry variant. One IN-query, chunked. */
+    filterMintsWithActiveVariants(mints: readonly string[]): Promise<string[]>;
+    /** Subset of `mints` present in the tokens table. One IN-query, chunked. */
+    filterMintsKnownTokens(mints: readonly string[]): Promise<string[]>;
+    /** Subset of `mints` already members of the list. */
+    filterMintsExistingMembers(listId: string, mints: readonly string[]): Promise<string[]>;
+    countMembers(listId: string): Promise<number>;
+    /**
+     * Multi-row upsert inside ONE transaction that locks the list row
+     * (FOR UPDATE): the members-per-list cap and MAX(rank) are re-read under
+     * the lock, so concurrent batches can neither overshoot the cap nor mint
+     * duplicate ranks. New mints append after the current max rank in array
+     * order; existing mints keep their rank and refresh note/snapshot; net-new
+     * rows beyond the cap are skipped and returned as `overflowMints`.
+     * Touches the parent list's updated_at ONCE.
+     */
+    upsertMembersBulk(
+        listId: string,
+        rows: Array<{ mint: string; note: string | null; addedAt: number; snapshot: MemberSnapshot | null }>,
+        membersPerListCap: number,
+    ): Promise<{ overflowMints: string[] }>;
 }
 
 export class SlugConflictError extends Error {
@@ -94,22 +182,38 @@ export class SlugConflictError extends Error {
     }
 }
 
+/** Thrown by the repo when owner_project_id fails its FK — the project does not exist. */
+export class UnknownProjectError extends Error {
+    constructor(projectId: string) {
+        super(`project does not exist: ${projectId}`);
+        this.name = 'UnknownProjectError';
+    }
+}
+
 export interface TokenListsMutationsDeps {
     repo: TokenListsMutationsRepo;
     /** Birdeye token_overview for mints unknown locally; null when the provider has nothing. */
     fetchTokenOverview(mint: string): Promise<BirdeyeOverview | null>;
     now(): number;
+    caps: TokenListCaps;
+    /** Freed slugs stay reclaimable only by their previous owner for this long. */
+    slugHoldMs: number;
 }
 
 export type TokenListMutationErrorCode =
     | 'invalid_slug'
     | 'reserved_slug'
     | 'slug_conflict'
+    | 'unknown_project'
+    | 'slug_held'
+    | 'admin_locked'
     | 'not_found'
     | 'forbidden'
     | 'invalid_mint'
     | 'unknown_mint'
-    | 'batch_too_large';
+    | 'batch_too_large'
+    | 'list_full'
+    | 'project_lists_limit';
 
 export interface TokenListResult {
     id: string;
@@ -148,18 +252,25 @@ function asObject(args: unknown): Record<string, unknown> {
     return args as Record<string, unknown>;
 }
 
-function requireString(a: Record<string, unknown>, key: string): string {
+function requireString(a: Record<string, unknown>, key: string, maxLength?: number): string {
     const value = a[key];
     if (typeof value !== 'string' || !value.trim()) {
         throw new InvalidArgsError(`${key} must be a non-empty string`);
     }
-    return value.trim();
+    const trimmed = value.trim();
+    if (maxLength !== undefined && trimmed.length > maxLength) {
+        throw new InvalidArgsError(`${key} must be at most ${maxLength} characters`);
+    }
+    return trimmed;
 }
 
-function optionalString(a: Record<string, unknown>, key: string): string | undefined {
+function optionalString(a: Record<string, unknown>, key: string, maxLength?: number): string | undefined {
     const value = a[key];
     if (value === undefined || value === null) return undefined;
     if (typeof value !== 'string') throw new InvalidArgsError(`${key} must be a string when present`);
+    if (maxLength !== undefined && value.length > maxLength) {
+        throw new InvalidArgsError(`${key} must be at most ${maxLength} characters`);
+    }
     return value;
 }
 
@@ -181,7 +292,20 @@ async function requireOwnedList(
     const row = await deps.repo.getListBySlug(slug);
     if (!row) return { ok: false, error: 'not_found' };
     if (row.owner_project_id !== ownerProjectId) return { ok: false, error: 'forbidden' };
+    // Admin takedown lock: while set, the owner cannot mutate the list at all
+    // (in particular cannot flip an archived list back to published).
+    if (row.admin_locked_at !== null && row.admin_locked_at !== undefined) {
+        return { ok: false, error: 'admin_locked' };
+    }
     return { ok: true, value: row };
+}
+
+/** A freed slug is claimable by anyone after the hold window, and by its previous owner always. */
+async function slugHeldForOther(deps: TokenListsMutationsDeps, slug: string, ownerProjectId: string): Promise<boolean> {
+    const hold = await deps.repo.getSlugHold(slug);
+    if (!hold) return false;
+    if (hold.ownerProjectId === ownerProjectId) return false;
+    return deps.now() - hold.releasedAt < deps.slugHoldMs;
 }
 
 export async function createList(
@@ -191,11 +315,15 @@ export async function createList(
     const a = asObject(args);
     const ownerProjectId = requireString(a, 'ownerProjectId');
     const slug = requireString(a, 'slug').toLowerCase();
-    const name = requireString(a, 'name');
+    const name = requireString(a, 'name', TOKEN_LIST_TEXT_CAPS.name);
     const status = optionalStatus(a) ?? 'published';
 
     if (!TOKEN_LIST_SLUG_REGEX.test(slug)) return { ok: false, error: 'invalid_slug' };
     if (isReservedTokenListSlug(slug)) return { ok: false, error: 'reserved_slug' };
+    if (await slugHeldForOther(deps, slug, ownerProjectId)) return { ok: false, error: 'slug_held' };
+    if ((await deps.repo.countListsByOwner(ownerProjectId)) >= deps.caps.listsPerProject) {
+        return { ok: false, error: 'project_lists_limit' };
+    }
 
     try {
         const row = await deps.repo.insertList({
@@ -205,9 +333,11 @@ export async function createList(
             status,
             nowMs: deps.now(),
         });
+        await deps.repo.clearSlugHold(slug);
         return { ok: true, value: listResult(row) };
     } catch (err) {
         if (err instanceof SlugConflictError) return { ok: false, error: 'slug_conflict' };
+        if (err instanceof UnknownProjectError) return { ok: false, error: 'unknown_project' };
         throw err;
     }
 }
@@ -225,12 +355,13 @@ export async function updateList(
     const ownerProjectId = requireString(a, 'ownerProjectId');
     const slug = requireString(a, 'slug');
     const newSlug = optionalString(a, 'newSlug')?.trim().toLowerCase();
-    const name = optionalString(a, 'name');
+    const name = optionalString(a, 'name', TOKEN_LIST_TEXT_CAPS.name);
     const status = optionalStatus(a);
 
     if (newSlug !== undefined && newSlug.length > 0) {
         if (!TOKEN_LIST_SLUG_REGEX.test(newSlug)) return { ok: false, error: 'invalid_slug' };
         if (isReservedTokenListSlug(newSlug)) return { ok: false, error: 'reserved_slug' };
+        if (await slugHeldForOther(deps, newSlug, ownerProjectId)) return { ok: false, error: 'slug_held' };
     }
 
     const owned = await requireOwnedList(deps, slug, ownerProjectId);
@@ -244,6 +375,11 @@ export async function updateList(
 
     try {
         const row = await deps.repo.updateList(owned.value.id, patch, deps.now());
+        if (patch.slug !== undefined) {
+            // The old path is freed but held for this owner; the new one is claimed.
+            await deps.repo.recordSlugHold(owned.value.slug, ownerProjectId, deps.now());
+            await deps.repo.clearSlugHold(patch.slug);
+        }
         return { ok: true, value: listResult(row) };
     } catch (err) {
         if (err instanceof SlugConflictError) return { ok: false, error: 'slug_conflict' };
@@ -287,7 +423,13 @@ export async function deleteList(
     const owned = await requireOwnedList(deps, slug, ownerProjectId);
     if (!owned.ok) return owned;
 
-    await deps.repo.deleteList(owned.value.id);
+    // Delete + hold in one repo transaction: a crash between the two must not
+    // reopen the slug-hijack window, however briefly.
+    await deps.repo.deleteList(owned.value.id, {
+        slug: owned.value.slug,
+        ownerProjectId,
+        releasedAt: deps.now(),
+    });
     return { ok: true, value: listResult(owned.value) };
 }
 
@@ -331,9 +473,13 @@ export async function upsertMember(
     const ownerProjectId = requireString(a, 'ownerProjectId');
     const slug = requireString(a, 'slug');
     const mint = requireString(a, 'mint');
-    const note = optionalString(a, 'note') ?? null;
+    const note = optionalString(a, 'note', TOKEN_LIST_TEXT_CAPS.note) ?? null;
     if (a.rank !== undefined && a.rank !== null && typeof a.rank !== 'number') {
         throw new InvalidArgsError('rank must be a number when present');
+    }
+    // int4 column: NaN/±Infinity/overflow must 400 here, not 500 at the insert.
+    if (typeof a.rank === 'number' && (!Number.isFinite(a.rank) || a.rank < -2_147_483_648 || a.rank > 2_147_483_647)) {
+        throw new InvalidArgsError('rank must be a finite 32-bit integer');
     }
     const rank = typeof a.rank === 'number' ? Math.floor(a.rank) : null;
 
@@ -343,14 +489,18 @@ export async function upsertMember(
     const resolved = await resolveMint(deps, mint);
     if (!resolved.ok) return resolved;
 
-    await deps.repo.upsertMember({
+    // Cap enforcement happens inside the repo transaction (list row locked),
+    // so a PUT racing a batch cannot overshoot or duplicate ranks.
+    const inserted = await deps.repo.upsertMember({
         listId: owned.value.id,
         mint,
         rank,
         note,
         addedAt: deps.now(),
         snapshot: resolved.value.snapshot,
+        membersPerListCap: deps.caps.membersPerList,
     });
+    if (!inserted) return { ok: false, error: 'list_full' };
     return resolved;
 }
 
@@ -376,6 +526,167 @@ export interface BatchAddResult {
     failed: Array<{ mint: string; error: TokenListMutationErrorCode }>;
 }
 
+/** Run `fn` over `items` with at most `limit` in flight. Results keep item order. */
+async function mapWithConcurrency<T, R>(items: readonly T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
+    const results: R[] = new Array(items.length);
+    let next = 0;
+    async function worker() {
+        while (next < items.length) {
+            const index = next++;
+            results[index] = await fn(items[index] as T);
+        }
+    }
+    await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+    return results;
+}
+
+const PROVIDER_LOOKUP_CONCURRENCY = 5;
+
+/** One requested member: mint plus an optional curator note carried into the row. */
+export interface MemberEntry {
+    mint: string;
+    note: string | null;
+}
+
+/**
+ * Core of every bulk add. Resolves each mint (registry → tokens table →
+ * provider, budgeted), enforces the members-per-list cap, and upserts in
+ * request order — so a CSV's row order becomes rank order for net-new rows.
+ * Ownership is NOT checked here: `addMembersBatch` does that for partners,
+ * and the admin import deliberately skips it.
+ */
+export async function addMembersToList(
+    deps: TokenListsMutationsDeps,
+    listId: string,
+    entries: readonly MemberEntry[],
+): Promise<BatchAddResult> {
+    // Dedupe on mint, first note wins — a CSV with a repeated row should not
+    // flip-flop the note or double-count against the cap.
+    const byMint = new Map<string, MemberEntry>();
+    for (const entry of entries) {
+        const mint = entry.mint.trim();
+        if (!mint || byMint.has(mint)) continue;
+        byMint.set(mint, { mint, note: entry.note?.trim() || null });
+    }
+
+    const failed: BatchAddResult['failed'] = [];
+
+    // Format gate first — malformed strings never reach the DB or the provider.
+    const wellFormed = [...byMint.keys()].filter(mint => {
+        if (SOLANA_MINT_REGEX.test(mint)) return true;
+        failed.push({ mint, error: 'invalid_mint' });
+        return false;
+    });
+
+    // Batched local resolution: two IN-queries instead of 2N round trips.
+    const verifiedSet = new Set(await deps.repo.filterMintsWithActiveVariants(wellFormed));
+    const unverifiedCandidates = wellFormed.filter(mint => !verifiedSet.has(mint));
+    const knownSet = new Set(await deps.repo.filterMintsKnownTokens(unverifiedCandidates));
+    const providerCandidates = unverifiedCandidates.filter(mint => !knownSet.has(mint));
+
+    // Provider lookups are budgeted per call: a batch full of unknown mints
+    // must not turn into a thousand Birdeye requests. Over-budget unknowns
+    // fail individually and can be retried in a later batch.
+    const withinBudget = providerCandidates.slice(0, deps.caps.providerLookups);
+    for (const mint of providerCandidates.slice(deps.caps.providerLookups)) {
+        failed.push({ mint, error: 'unknown_mint' });
+    }
+    const providerResolved = new Map<string, MemberSnapshot>();
+    await mapWithConcurrency(withinBudget, PROVIDER_LOOKUP_CONCURRENCY, async mint => {
+        const overview = await deps.fetchTokenOverview(mint).catch(() => null);
+        if (!overview) {
+            failed.push({ mint, error: 'unknown_mint' });
+            return;
+        }
+        providerResolved.set(mint, {
+            symbol: typeof overview.symbol === 'string' ? overview.symbol : null,
+            name: typeof overview.name === 'string' ? overview.name : null,
+            logoUri: typeof overview.logoURI === 'string' ? overview.logoURI : null,
+            decimals: typeof overview.decimals === 'number' ? overview.decimals : null,
+        });
+    });
+
+    const resolved: MemberResult[] = wellFormed.flatMap((mint): MemberResult[] => {
+        if (verifiedSet.has(mint)) return [{ mint, verified: true, snapshot: null }];
+        if (knownSet.has(mint)) return [{ mint, verified: false, snapshot: null }];
+        const snapshot = providerResolved.get(mint);
+        return snapshot ? [{ mint, verified: false, snapshot }] : [];
+    });
+
+    // Members-per-list cap: updates of existing members are free; net-new
+    // inserts consume slots in request order, and the overflow fails as
+    // list_full without sinking the rest of the batch.
+    const existingSet = new Set(
+        await deps.repo.filterMintsExistingMembers(
+            listId,
+            resolved.map(member => member.mint),
+        ),
+    );
+    const currentCount = await deps.repo.countMembers(listId);
+    let slots = Math.max(0, deps.caps.membersPerList - currentCount);
+    const added: MemberResult[] = [];
+    const rows: Array<{ mint: string; note: string | null; addedAt: number; snapshot: MemberSnapshot | null }> = [];
+    const addedAt = deps.now();
+    for (const member of resolved) {
+        if (!existingSet.has(member.mint)) {
+            if (slots === 0) {
+                failed.push({ mint: member.mint, error: 'list_full' });
+                continue;
+            }
+            slots -= 1;
+        }
+        rows.push({
+            mint: member.mint,
+            note: byMint.get(member.mint)?.note ?? null,
+            addedAt,
+            snapshot: member.snapshot,
+        });
+        added.push(member);
+    }
+
+    if (rows.length > 0) {
+        // The pre-check above is a fast path only; the repo re-checks the cap
+        // under a row lock, so concurrent batches cannot overshoot it.
+        const { overflowMints } = await deps.repo.upsertMembersBulk(listId, rows, deps.caps.membersPerList);
+        if (overflowMints.length > 0) {
+            const overflow = new Set(overflowMints);
+            for (const mint of overflowMints) failed.push({ mint, error: 'list_full' });
+            const kept = added.filter(member => !overflow.has(member.mint));
+            added.length = 0;
+            added.push(...kept);
+        }
+    }
+    return { added, failed };
+}
+
+/** Decodes `members: [{ mint, note? }]` — the CSV-shaped batch input. */
+export function decodeMemberEntries(raw: unknown): MemberEntry[] {
+    if (!Array.isArray(raw)) throw new InvalidArgsError('members must be an array');
+    return raw.map((item, index) => {
+        if (typeof item !== 'object' || item === null) {
+            throw new InvalidArgsError(`members[${index}] must be an object`);
+        }
+        const row = item as Record<string, unknown>;
+        if (typeof row.mint !== 'string' || !row.mint.trim()) {
+            throw new InvalidArgsError(`members[${index}].mint must be a non-empty string`);
+        }
+        if (row.note !== undefined && row.note !== null && typeof row.note !== 'string') {
+            throw new InvalidArgsError(`members[${index}].note must be a string when present`);
+        }
+        if (typeof row.note === 'string' && row.note.length > TOKEN_LIST_TEXT_CAPS.note) {
+            throw new InvalidArgsError(
+                `members[${index}].note must be at most ${TOKEN_LIST_TEXT_CAPS.note} characters`,
+            );
+        }
+        return { mint: row.mint.trim(), note: typeof row.note === 'string' ? row.note : null };
+    });
+}
+
+/**
+ * Partner-facing batch add: owner-checked. Accepts either `mints: string[]`
+ * (original shape) or `members: [{ mint, note? }]` (CSV import); when both are
+ * present they are concatenated in that order.
+ */
 export async function addMembersBatch(
     deps: TokenListsMutationsDeps,
     args: unknown,
@@ -383,32 +694,27 @@ export async function addMembersBatch(
     const a = asObject(args);
     const ownerProjectId = requireString(a, 'ownerProjectId');
     const slug = requireString(a, 'slug');
-    if (!Array.isArray(a.mints) || a.mints.some(m => typeof m !== 'string')) {
-        throw new InvalidArgsError('mints must be an array of strings');
+
+    const entries: MemberEntry[] = [];
+    if (a.mints !== undefined) {
+        if (!Array.isArray(a.mints) || a.mints.some(m => typeof m !== 'string')) {
+            throw new InvalidArgsError('mints must be an array of strings');
+        }
+        for (const mint of a.mints as string[]) {
+            if (mint.trim()) entries.push({ mint: mint.trim(), note: null });
+        }
     }
-    const mints = [...new Set((a.mints as string[]).map(m => m.trim()).filter(Boolean))];
-    if (mints.length > MEMBER_BATCH_CAP) return { ok: false, error: 'batch_too_large' };
+    if (a.members !== undefined) entries.push(...decodeMemberEntries(a.members));
+    if (a.mints === undefined && a.members === undefined) {
+        throw new InvalidArgsError('one of mints or members is required');
+    }
+
+    const distinct = new Set(entries.map(entry => entry.mint));
+    if (distinct.size > deps.caps.batch) return { ok: false, error: 'batch_too_large' };
 
     const owned = await requireOwnedList(deps, slug, ownerProjectId);
     if (!owned.ok) return owned;
 
-    const added: MemberResult[] = [];
-    const failed: BatchAddResult['failed'] = [];
-    for (const mint of mints) {
-        const resolved = await resolveMint(deps, mint);
-        if (!resolved.ok) {
-            failed.push({ mint, error: resolved.error });
-            continue;
-        }
-        await deps.repo.upsertMember({
-            listId: owned.value.id,
-            mint,
-            rank: null,
-            note: null,
-            addedAt: deps.now(),
-            snapshot: resolved.value.snapshot,
-        });
-        added.push(resolved.value);
-    }
-    return { ok: true, value: { added, failed } };
+    const result = await addMembersToList(deps, owned.value.id, entries);
+    return { ok: true, value: result };
 }

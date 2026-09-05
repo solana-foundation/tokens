@@ -18,7 +18,8 @@ import { Effect } from 'effect';
 
 import { tapErrorAndDefault } from '@tokens/effect';
 import { getVariantByMint, resolveAlias, searchAssets } from '@tokens/asset-registry';
-import { CURATED_TOKEN_LISTS, getCuratedTokenList } from '@tokens/asset-registry/compat';
+
+import { getCuratedListSlugsByMint } from '@/lib/curated-membership';
 
 import { searchProviderTokens, type ProviderSearchToken } from '@/lib/birdeye-search';
 import {
@@ -118,23 +119,6 @@ function mergeDbToken(candidate: RawCandidate, token: DbSearchToken): void {
     candidate.volume24hUsd ??= token.volume24hUSD > 0 ? token.volume24hUSD : null;
     candidate.marketCapUsd ??= token.marketCap > 0 ? token.marketCap : null;
     candidate.priceChange24hPercent ??= token.priceChange24hPercent;
-}
-
-let curatedListIdsByMintCache: Map<string, string[]> | null = null;
-
-function curatedListIdsByMint(): Map<string, string[]> {
-    if (curatedListIdsByMintCache) return curatedListIdsByMintCache;
-    const map = new Map<string, string[]>();
-    for (const listId of Object.keys(CURATED_TOKEN_LISTS) as Array<keyof typeof CURATED_TOKEN_LISTS>) {
-        const list = getCuratedTokenList(listId);
-        for (const mint of list.addresses) {
-            const existing = map.get(mint);
-            if (existing) existing.push(list.id);
-            else map.set(mint, [list.id]);
-        }
-    }
-    curatedListIdsByMintCache = map;
-    return map;
 }
 
 function registryCandidateMints(query: string, interpretation: QueryInterpretation): string[] {
@@ -269,7 +253,15 @@ export function gatherCandidates(
             }
         }
 
-        const curatedByMint = curatedListIdsByMint();
+        // DB-backed effective membership; a transient failure degrades to
+        // no curated attestations for this request (last-good cache absorbs
+        // most outages) rather than failing the search.
+        const curatedByMint = yield* Effect.promise(() =>
+            getCuratedListSlugsByMint().catch((error: unknown) => {
+                console.error('[judgment] curated membership unavailable', error);
+                return new Map<string, string[]>();
+            }),
+        );
 
         // Live provider (Birdeye search) data was fetched seconds ago — a
         // candidate served from it without a cached market row is the
@@ -299,6 +291,9 @@ export function gatherCandidates(
                 top10HoldersPercent: null,
                 tokenMintTime: raw.tokenMintTime,
                 sources: Array.from(raw.sources.size > 0 ? raw.sources : new Set<CandidateSource>(['db'])),
+                // Outside the registry conditional: DB-only admin tokens get
+                // curated attestations/badges too.
+                curatedListIds: curatedByMint.get(raw.mint) ?? [],
                 registry: registryMatch
                     ? {
                           assetId: registryMatch.asset.assetId,
@@ -308,7 +303,6 @@ export function gatherCandidates(
                           name: registryMatch.variant.name ?? registryMatch.asset.name ?? null,
                           kind: registryMatch.variant.kind ?? null,
                           trustTier: registryMatch.variant.trustTier ?? null,
-                          curatedListIds: curatedByMint.get(raw.mint) ?? [],
                       }
                     : null,
                 risk: null,

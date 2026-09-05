@@ -47,9 +47,6 @@ const MAX_TARGET_USD = 50_000_000;
 const DEFAULT_MAX_VARIANTS = 4;
 const MAX_MAX_VARIANTS = 6;
 
-/** Editorial tiebreak for the registry ranking; computed once per deploy. */
-const CURATED_MINT_RANK = buildCuratedMintRank();
-
 function decodeTargetUsd(raw: string | null): Effect.Effect<number, BadRequestError> {
     if (raw === null || raw.trim() === '') return Effect.succeed(DEFAULT_TARGET_USD);
     const value = Number(raw.trim());
@@ -238,7 +235,11 @@ export const GET = route(
 
             const selection = selectVariants({
                 asset,
-                mintRank: CURATED_MINT_RANK,
+                // Editorial tiebreak, read per request: it is backed by the
+                // curated-membership snapshot, which is empty at module load
+                // and fills in asynchronously. Hoisting it to a module
+                // constant pins it empty for the life of the process.
+                mintRank: buildCuratedMintRank(),
                 marketByMint,
                 fillQualityByMint,
                 displayByMint,

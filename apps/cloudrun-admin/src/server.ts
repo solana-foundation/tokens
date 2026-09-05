@@ -84,7 +84,6 @@ export function decodeIdentityHeader(raw: string | undefined): CallerIdentity | 
     }
 }
 
-
 export function createApp(deps: ServerDeps) {
     const app = new Hono();
 
@@ -139,9 +138,13 @@ export function createApp(deps: ServerDeps) {
         mutationsHandlers.moveVariantToCanonical(mutationsDeps, args, identity);
     mutations.removeFromCategory = (args, identity) =>
         mutationsHandlers.removeFromCategory(mutationsDeps, args, identity);
+    mutations.updateCollectionMeta = (args, identity) =>
+        mutationsHandlers.updateCollectionMeta(mutationsDeps, args, identity);
     mutations.hardDeleteAsset = (args, identity) => hardDeleteHandlers.hardDeleteAsset(hardDeleteDeps, args, identity);
     mutations.adminArchiveTokenList = (args, identity) =>
         tokenListsAdminHandlers.adminArchiveTokenList(tokenListsAdminDeps, args, identity);
+    mutations.adminUnlockTokenList = (args, identity) =>
+        tokenListsAdminHandlers.adminUnlockTokenList(tokenListsAdminDeps, args, identity);
     const logoUploadsDeps: logoUploadsHandlers.LogoUploadsDeps = {
         ...(deps.logoSigner ? { signer: deps.logoSigner } : {}),
         adminAllowlist: deps.adminAllowlist,

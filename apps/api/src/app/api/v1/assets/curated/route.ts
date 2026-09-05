@@ -41,9 +41,9 @@ import {
 } from '@tokens/asset-registry';
 import {
     CURATED_LIST_ORDER,
-    normalizeCuratedTokenListId,
-    type CuratedTokenListId,
-} from '@tokens/asset-registry/compat';
+    normalizeCuratedListSlug as normalizeCuratedTokenListId,
+    type CuratedListSlug as CuratedTokenListId,
+} from '@tokens/asset-registry/curated-lists';
 import { getEffectiveCuratedAddresses } from '../../../_curated-addresses';
 
 import {
@@ -165,10 +165,15 @@ function curatedResponseLooksHealthy(payload: Record<string, unknown>): boolean 
     const assets = (payload as { assets?: unknown }).assets;
     if (!Array.isArray(assets)) return false;
     if (assets.length === 0) {
-        // An empty page past the end of the list is a legitimate response.
+        // An empty page past the end of the list is legitimate — but a curated
+        // list with total 0 never is (wiped membership must not cache as
+        // last-good; see the empty-snapshot guard on cloudrun-assets).
         const pagination = (payload as { pagination?: { total?: number; offset?: number } }).pagination;
         return Boolean(
-            pagination && typeof pagination.total === 'number' && (pagination.offset ?? 0) >= pagination.total,
+            pagination &&
+            typeof pagination.total === 'number' &&
+            pagination.total > 0 &&
+            (pagination.offset ?? 0) >= pagination.total,
         );
     }
     const withStats = assets.filter(
@@ -1124,9 +1129,7 @@ export const GET = route(
                                             shouldIncludeMintRow(asset, variant, tokenByMint.get(variant.mint)),
                                         )
                                         .map(buildVariantWithMarket)
-                                        .sort(
-                                            (a, b) => (b.market?.liquidity ?? 0) - (a.market?.liquidity ?? 0),
-                                        )
+                                        .sort((a, b) => (b.market?.liquidity ?? 0) - (a.market?.liquidity ?? 0))
                                   : null;
 
                               return {

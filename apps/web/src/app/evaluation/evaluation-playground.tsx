@@ -30,7 +30,7 @@ import { EndpointRequestPanel, type EndpointRequestState } from './endpoint-requ
 import { RouteResults } from './route-results';
 import { RouteSplitVisual } from './route-split-visual';
 import { buildRouteRequestPath, useExecutionRoute } from '@/hooks/queries/use-execution-route';
-import { CURATED_LIST_ORDER_WITHOUT_LSTS, type CuratedTokenListIdWithoutLsts } from '@/lib/curated-token-lists';
+import { CURATED_LIST_ORDER_WITHOUT_LSTS, type CuratedTokenListIdWithoutLsts } from '@/lib/curated-lists';
 import { cleanTokenName } from '@/lib/logo-overrides';
 import { trackEvent } from '@/lib/posthog-client';
 

@@ -1,5 +1,5 @@
 import type { CanonicalAsset, TrustTier, VariantKind } from '../types';
-import { CURATED_TOKEN_LISTS } from './curated-token-lists';
+import { RWA_MINTS } from './list-mints';
 import { uniqueStrings } from '../utils/unique-strings';
 
 interface RwaOverride {
@@ -54,7 +54,7 @@ function defaultTrustTierForMint(_mint: string): TrustTier {
     return 'tier3';
 }
 
-export const RWA_ASSETS: CanonicalAsset[] = CURATED_TOKEN_LISTS.rwas.addresses.map(mint => {
+export const RWA_ASSETS: CanonicalAsset[] = RWA_MINTS.map(mint => {
     const override = RWA_OVERRIDES[mint];
     const assetId = override ? slugify(override.symbol ?? override.name) : fallbackRwaAssetId(mint);
     const kind: VariantKind = override?.kind ?? 'wrapped';

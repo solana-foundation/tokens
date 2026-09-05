@@ -1,4 +1,4 @@
-import type { CuratedTokenListIdWithoutLsts } from '@/lib/curated-token-lists';
+import type { CuratedTokenListIdWithoutLsts } from '@/lib/curated-lists';
 import type { Token } from '@/lib/types';
 
 export type HomeTabId = 'trending' | CuratedTokenListIdWithoutLsts;

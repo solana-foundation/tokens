@@ -4,11 +4,11 @@ import { route } from '@/effect/next-route';
 import { withStaleFallback } from '@/effect/stale-response-cache';
 import { BadRequestError, decodeLimit, decodeOffset, tapErrorAndDefault } from '@tokens/effect';
 import { tokenListsGetBySlug, tokenListsGetMembers, type TokenListMember } from '@/lib/cloudrun';
-import { getCuratedTokenList } from '@tokens/asset-registry/compat';
 
 import { getEffectiveCuratedAddresses } from '../../../_curated-addresses';
 import {
     CURATED_OWNER,
+    curatedListMeta,
     hydrateCommunityMembers,
     normalizeCuratedSlug,
     type V2ListSummary,
@@ -25,18 +25,23 @@ interface ResolvedList {
     membersByMint: Map<string, TokenListMember>;
 }
 
-/** A curated slug resolves from the effective membership; failure yields an empty list (fail-open). */
-function resolveCurated(slug: string, curatedId: NonNullable<ReturnType<typeof normalizeCuratedSlug>>) {
+/**
+ * A curated slug resolves from the effective DB-backed membership. Membership
+ * failures propagate to the stale-fallback wrapper (a hollow list must not
+ * overwrite the last good composition).
+ */
+function resolveCurated(curatedId: NonNullable<ReturnType<typeof normalizeCuratedSlug>>) {
     return Effect.gen(function* () {
-        const list = getCuratedTokenList(curatedId);
-        const { addresses } = yield* Effect.tryPromise(() => getEffectiveCuratedAddresses(curatedId)).pipe(
-            tapErrorAndDefault(`v2.lists.compose.${slug}`, { addresses: [] as string[] }),
-        );
+        const meta = yield* curatedListMeta(curatedId);
+        const { addresses } = yield* Effect.tryPromise({
+            try: () => getEffectiveCuratedAddresses(curatedId),
+            catch: error => (error instanceof Error ? error : new Error(String(error))),
+        });
         const resolved: ResolvedList = {
             summary: {
                 slug: curatedId,
-                name: list.name.trim() || curatedId,
-                description: list.description.trim() || null,
+                name: meta.name,
+                description: meta.description,
                 curated: true,
                 owner: CURATED_OWNER,
                 tokenCount: addresses.length,
@@ -49,11 +54,31 @@ function resolveCurated(slug: string, curatedId: NonNullable<ReturnType<typeof n
     });
 }
 
+/** Hard ceiling on members fetched per composed list (matches the members-per-list cap). */
+const COMPOSE_MEMBER_FETCH_CAP = 5000;
+const COMPOSE_MEMBER_PAGE = 2000;
+
 function resolveCommunity(slug: string) {
     return Effect.gen(function* () {
         const detail = yield* tokenListsGetBySlug({ slug });
-        if (!detail || detail.status !== 'published') return null;
-        const members = yield* tokenListsGetMembers({ slug, limit: 2000, offset: 0 });
+        // Unlisted lists compose by direct slug — hidden from discovery only.
+        if (!detail || (detail.status !== 'published' && detail.status !== 'unlisted')) return null;
+        // Page until the list's full membership (or the hard cap) is covered —
+        // a single fixed-limit fetch silently truncated large lists.
+        let members: TokenListMember[] = [];
+        for (
+            let offset = 0;
+            offset < Math.min(detail.tokenCount, COMPOSE_MEMBER_FETCH_CAP);
+            offset += COMPOSE_MEMBER_PAGE
+        ) {
+            const page = yield* tokenListsGetMembers({ slug, limit: COMPOSE_MEMBER_PAGE, offset });
+            members.push(...page);
+            if (page.length < COMPOSE_MEMBER_PAGE) break;
+        }
+        // The loop reads whole pages, so trim the tail past the ceiling and
+        // say so instead of silently under-reporting membership.
+        const truncated = detail.tokenCount > COMPOSE_MEMBER_FETCH_CAP;
+        if (members.length > COMPOSE_MEMBER_FETCH_CAP) members = members.slice(0, COMPOSE_MEMBER_FETCH_CAP);
         const resolved: ResolvedList = {
             summary: {
                 slug: detail.slug,
@@ -64,6 +89,7 @@ function resolveCommunity(slug: string) {
                 owner: { projectId: detail.ownerProjectId },
                 tokenCount: detail.tokenCount,
                 updatedAt: detail.updatedAt,
+                ...(truncated ? { truncated: true } : {}),
             },
             mints: members.map(m => m.mint),
             membersByMint: new Map(members.map(m => [m.mint, m] as const)),
@@ -90,7 +116,14 @@ export const GET = route(
                     new BadRequestError({ message: 'Missing required query param: lists (comma-separated slugs)' }),
                 );
             }
-            const slugs = [...new Set(rawLists.split(',').map(s => s.trim().toLowerCase()).filter(Boolean))];
+            const slugs = [
+                ...new Set(
+                    rawLists
+                        .split(',')
+                        .map(s => s.trim().toLowerCase())
+                        .filter(Boolean),
+                ),
+            ];
             if (slugs.length === 0) {
                 return yield* Effect.fail(new BadRequestError({ message: 'lists must name at least one slug' }));
             }
@@ -107,16 +140,12 @@ export const GET = route(
                 for (const slug of slugs) {
                     const curatedId = normalizeCuratedSlug(slug);
                     const list = curatedId
-                        ? yield* resolveCurated(slug, curatedId)
-                        : yield* resolveCommunity(slug).pipe(
-                              tapErrorAndDefault(`v2.lists.compose.${slug}`, null),
-                          );
+                        ? yield* resolveCurated(curatedId)
+                        : yield* resolveCommunity(slug).pipe(tapErrorAndDefault(`v2.lists.compose.${slug}`, null));
                     resolved.push({ slug, list });
                 }
 
-                const found = resolved.filter(
-                    (r): r is { slug: string; list: ResolvedList } => r.list !== null,
-                );
+                const found = resolved.filter((r): r is { slug: string; list: ResolvedList } => r.list !== null);
                 const notFound = resolved.filter(r => r.list === null).map(r => r.slug);
 
                 // Union in request order, deduped by mint; membership annotations
@@ -144,9 +173,7 @@ export const GET = route(
                 // by construction.
                 const pageMembers: TokenListMember[] = page.map(mint => {
                     const member = memberByMint.get(mint);
-                    const curatedMember = listsByMint
-                        .get(mint)!
-                        .some(slug => normalizeCuratedSlug(slug) !== null);
+                    const curatedMember = listsByMint.get(mint)!.some(slug => normalizeCuratedSlug(slug) !== null);
                     if (member) {
                         return curatedMember ? { ...member, verified: true } : member;
                     }

@@ -34,6 +34,12 @@ export interface EnrichedCandidate {
     tokenMintTime: string | null;
     /** Where this candidate was found. */
     sources: CandidateSource[];
+    /**
+     * Curated list ids this mint belongs to (strongest attestation).
+     * DB-backed effective membership — populated for admin-added tokens the
+     * compiled registry has never heard of, not just registry variants.
+     */
+    curatedListIds: string[];
     /** Canonical-registry match, when the mint is a known variant. */
     registry: {
         assetId: string;
@@ -41,8 +47,6 @@ export interface EnrichedCandidate {
         name: string | null;
         kind: string | null;
         trustTier: string | null;
-        /** Curated list ids this mint belongs to (strongest attestation). */
-        curatedListIds: string[];
     } | null;
     /** Cached risk snapshot, when available. Absence means "unknown", not "bad". */
     risk: {

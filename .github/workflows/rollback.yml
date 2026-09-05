@@ -131,27 +131,60 @@ jobs:
         env:
           VERCEL_TOKEN: ${{ steps.secrets.outputs.VERCEL_TOKEN }}
           TARGET_ID: ${{ steps.targets.outputs.api_target }}
+          PROD_URL: ${{ steps.secrets.outputs.TOKENS_API_PROD_URL }}
         run: |
           set -euo pipefail
           vercel rollback "$TARGET_ID" --token="$VERCEL_TOKEN" --scope solana-foundation
+          # vercel rollback does not move custom-domain aliases — re-point the
+          # prod domain at the target explicitly (2026-09-04 incident).
+          domain="${PROD_URL#https://}"; domain="${domain#http://}"; domain="${domain%/}"
+          for attempt in 1 2 3; do
+            if vercel alias set "$TARGET_ID" "$domain" --token="$VERCEL_TOKEN" --scope solana-foundation; then
+              exit 0
+            fi
+            [ "$attempt" -lt 3 ] && sleep 5
+          done
+          echo "::error::alias restore failed for tokens-api ($domain)"; exit 1
 
       - name: Rollback tokens-app
         if: steps.targets.outputs.app_current != steps.targets.outputs.app_target
         env:
           VERCEL_TOKEN: ${{ steps.secrets.outputs.VERCEL_TOKEN }}
           TARGET_ID: ${{ steps.targets.outputs.app_target }}
+          PROD_URL: ${{ steps.secrets.outputs.TOKENS_APP_PROD_URL }}
         run: |
           set -euo pipefail
           vercel rollback "$TARGET_ID" --token="$VERCEL_TOKEN" --scope solana-foundation
+          # vercel rollback does not move custom-domain aliases — re-point the
+          # prod domain at the target explicitly (2026-09-04 incident).
+          domain="${PROD_URL#https://}"; domain="${domain#http://}"; domain="${domain%/}"
+          for attempt in 1 2 3; do
+            if vercel alias set "$TARGET_ID" "$domain" --token="$VERCEL_TOKEN" --scope solana-foundation; then
+              exit 0
+            fi
+            [ "$attempt" -lt 3 ] && sleep 5
+          done
+          echo "::error::alias restore failed for tokens-app ($domain)"; exit 1
 
       - name: Rollback tokens-admin
         if: steps.targets.outputs.admin_current != steps.targets.outputs.admin_target
         env:
           VERCEL_TOKEN: ${{ steps.secrets.outputs.VERCEL_TOKEN }}
           TARGET_ID: ${{ steps.targets.outputs.admin_target }}
+          PROD_URL: ${{ steps.secrets.outputs.TOKENS_ADMIN_PROD_URL }}
         run: |
           set -euo pipefail
           vercel rollback "$TARGET_ID" --token="$VERCEL_TOKEN" --scope solana-foundation
+          # vercel rollback does not move custom-domain aliases — re-point the
+          # prod domain at the target explicitly (2026-09-04 incident).
+          domain="${PROD_URL#https://}"; domain="${domain#http://}"; domain="${domain%/}"
+          for attempt in 1 2 3; do
+            if vercel alias set "$TARGET_ID" "$domain" --token="$VERCEL_TOKEN" --scope solana-foundation; then
+              exit 0
+            fi
+            [ "$attempt" -lt 3 ] && sleep 5
+          done
+          echo "::error::alias restore failed for tokens-admin ($domain)"; exit 1
 
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 

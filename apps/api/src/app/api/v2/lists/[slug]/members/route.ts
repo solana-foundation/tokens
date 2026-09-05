@@ -1,7 +1,8 @@
 import { Effect, Schema } from 'effect';
 
 import { route, type PlatformAuthContext } from '@/effect/next-route';
-import { decodeUnknownOrBadRequest } from '@tokens/effect';
+import { BadRequestError, decodeUnknownOrBadRequest } from '@tokens/effect';
+import { enforceProviderBudget } from '@/effect/provider-budget';
 import { tokenListsAddMembersBatch } from '@/lib/cloudrun';
 
 import { unwrapOutcome } from '../../_shared';
@@ -11,14 +12,31 @@ interface RouteCtx {
     platformAuth: PlatformAuthContext;
 }
 
+/**
+ * Edge mirror of the prod TOKEN_LIST_BATCH_CAP default (250) — keeps oversized
+ * payloads from round-tripping to Cloud Run just to get batch_too_large. The
+ * env-tunable Cloud Run cap remains authoritative.
+ */
+const BATCH_ITEM_CAP = 250;
+
 const bodySchema = Schema.Struct({
-    mints: Schema.Array(Schema.String),
+    mints: Schema.optional(Schema.Array(Schema.String).check(Schema.isMaxLength(BATCH_ITEM_CAP))),
+    /** CSV-shaped alternative: row order becomes rank order, `note` lands on the member. */
+    members: Schema.optional(
+        Schema.Array(
+            Schema.Struct({
+                mint: Schema.String,
+                note: Schema.optional(Schema.String.check(Schema.isMaxLength(500))),
+            }),
+        ).check(Schema.isMaxLength(BATCH_ITEM_CAP)),
+    ),
 });
 
 /**
- * POST /api/v2/lists/{slug}/members — bulk add (≤100 mints per call, for
- * onboarding an existing list). Per-mint failures are reported in `failed`
- * without failing the batch.
+ * POST /api/v2/lists/{slug}/members — bulk add (≤250 mints per call, for
+ * onboarding an existing list). Body is `{ mints: string[] }` or
+ * `{ members: [{ mint, note? }] }` (or both). Per-mint failures are reported
+ * in `failed` without failing the batch.
  */
 export const POST = route(
     (request: Request, ctx: RouteCtx) =>
@@ -26,13 +44,22 @@ export const POST = route(
             const { slug } = yield* Effect.tryPromise(() => ctx.params);
             const json = yield* Effect.tryPromise(() => request.json());
             const body = yield* decodeUnknownOrBadRequest(bodySchema, json, 'Invalid body');
+            if (body.mints === undefined && body.members === undefined) {
+                return yield* Effect.fail(new BadRequestError({ message: 'Body needs `mints` or `members`' }));
+            }
+            // Per-key window budget: bounds sustained provider (Birdeye) spend
+            // regardless of the per-call lookup cap.
+            yield* enforceProviderBudget(ctx.platformAuth, 'batch');
 
             const outcome = yield* tokenListsAddMembersBatch({
                 ownerProjectId: ctx.platformAuth.projectId,
                 slug: slug.trim().toLowerCase(),
-                mints: [...body.mints],
+                ...(body.mints ? { mints: [...body.mints] } : {}),
+                ...(body.members
+                    ? { members: body.members.map(m => ({ mint: m.mint, ...(m.note ? { note: m.note } : {}) })) }
+                    : {}),
             });
             return yield* unwrapOutcome(outcome);
         }),
-    { platform: { requiredScopes: ['lists:write'] } },
+    { platform: { requiredScopes: ['assets:read'] } },
 );

@@ -6,6 +6,8 @@ import type { CloudRunError } from './errors';
 export type AssetCollectionsGetSummariesArgs = { slugs: string[] };
 export type AssetCollectionSummary = {
     slug: string;
+    title: string | null;
+    description: string | null;
     count: number;
     lastAddedAssetId: string | null;
     lastAddedAt: number | null;

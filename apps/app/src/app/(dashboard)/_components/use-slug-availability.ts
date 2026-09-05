@@ -7,13 +7,14 @@ export type SlugAvailability =
     | { state: 'idle' }
     | { state: 'checking' }
     | { state: 'available' }
-    | { state: 'unavailable'; reason: 'invalid' | 'reserved' | 'taken' }
+    | { state: 'unavailable'; reason: 'invalid' | 'reserved' | 'taken' | 'held' }
     | { state: 'error' };
 
-const REASON_COPY: Record<'invalid' | 'reserved' | 'taken', string> = {
+const REASON_COPY: Record<'invalid' | 'reserved' | 'taken' | 'held', string> = {
     invalid: 'Must start with a letter, then 3–63 lowercase letters, numbers, or hyphens.',
     reserved: 'This slug is reserved for Solana Foundation lists or API routes.',
     taken: 'Already in use — delete that list first, or pick another slug.',
+    held: 'Recently released — reserved for its previous owner for a hold-down period.',
 };
 
 export function slugAvailabilityMessage(availability: SlugAvailability): string | null {

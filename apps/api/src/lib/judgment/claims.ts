@@ -82,10 +82,10 @@ export function buildAttestations(
 ): Attestation[] {
     const attestations: Attestation[] = [];
 
-    if (candidate.registry && candidate.registry.curatedListIds.length > 0) {
+    if (candidate.curatedListIds.length > 0) {
         attestations.push({
             code: 'curated_list',
-            detail: `curated list: ${candidate.registry.curatedListIds.join(', ')}`,
+            detail: `curated list: ${candidate.curatedListIds.join(', ')}`,
         });
     }
 

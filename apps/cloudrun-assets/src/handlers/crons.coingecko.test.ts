@@ -169,7 +169,18 @@ function makeDeps(overrides: {
     const state = overrides.state ?? {};
     const deps: CronDeps = {
         repo: {} as never,
-        curated: { getAllCuratedMintsInOrder: () => [], getCuratedMintRank: () => new Map() },
+        curated: {
+            warmup: async () => {},
+            getSnapshot: async () => ({
+                loadedAt: 0,
+                mintsByList: { majors: [], lsts: [], currencies: [], rwas: [], etfs: [], metals: [], stocks: [] },
+                allMints: [],
+                entriesByMint: {},
+            }),
+            getAllCuratedMintsInOrder: () => [],
+            getCuratedMintRank: () => new Map(),
+            getListSlugsByMint: () => new Map(),
+        },
         birdeye: { async fetchTokenOverview() { return null; } },
         birdeyeOhlcv: { async fetchOhlcv() { return []; } },
         sanctum: { async fetchAndNormalizeLsts() { return { ok: false, reason: 'missing_env' }; } },

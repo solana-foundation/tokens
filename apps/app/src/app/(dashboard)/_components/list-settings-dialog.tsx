@@ -18,12 +18,15 @@ import {
 } from '@/components/app-ui/dialog';
 
 import { slugAvailabilityMessage, useSlugAvailability } from './use-slug-availability';
+import { VisibilityPicker } from './visibility-picker';
 
-/** Shape this dialog needs from a `/api/v2/lists` summary row. */
+/** Shape this dialog needs from a `/api/v2/lists?mine=true` summary row. */
 export interface EditableList {
     slug: string;
     name: string;
     tokenCount: number;
+    /** draft | unlisted | published; absent rows are treated as published. */
+    status?: string;
 }
 
 interface ListSettingsDialogProps {
@@ -33,7 +36,7 @@ interface ListSettingsDialogProps {
     /** Authenticated fetch used for the live slug-availability check. */
     fetcher: (path: string) => Promise<Response>;
     /** Sends the PATCH; resolves on success, rejects with a user-facing message. */
-    onSave: (patch: { slug: string; name: string }) => Promise<void>;
+    onSave: (patch: { slug: string; name: string; status: string }) => Promise<void>;
     /** Permanently deletes the list; the caller owns navigation away from it. */
     onDelete: () => Promise<void>;
 }
@@ -53,6 +56,8 @@ const SLUG_REGEX = /^[a-z][a-z0-9-]{2,62}$/;
 export function ListSettingsDialog({ list, isOpen, onClose, fetcher, onSave, onDelete }: ListSettingsDialogProps) {
     const [slug, setSlug] = useState(list?.slug ?? '');
     const [name, setName] = useState(list?.name ?? '');
+    // Draft lists (API-only) present as Unlisted too — they are also hidden.
+    const [isPrivate, setIsPrivate] = useState((list?.status ?? 'published') !== 'published');
     const [isSaving, setIsSaving] = useState(false);
     const [isDeleting, setIsDeleting] = useState(false);
     const [confirmDelete, setConfirmDelete] = useState(false);
@@ -62,6 +67,7 @@ export function ListSettingsDialog({ list, isOpen, onClose, fetcher, onSave, onD
         if (!isOpen || !list) return;
         setSlug(list.slug);
         setName(list.name);
+        setIsPrivate((list.status ?? 'published') !== 'published');
         setConfirmDelete(false);
     }, [isOpen, list]);
 
@@ -79,7 +85,9 @@ export function ListSettingsDialog({ list, isOpen, onClose, fetcher, onSave, onD
 
     const busy = isSaving || isDeleting;
     const slugValid = SLUG_REGEX.test(nextSlug);
-    const dirty = slugChanged || name.trim() !== list.name;
+    const visibilityChanged = isPrivate !== ((list.status ?? 'published') !== 'published');
+    // Archived lists are always savable: saving restores them.
+    const dirty = slugChanged || name.trim() !== list.name || visibilityChanged || list.status === 'archived';
     const availabilityMessage = slugAvailabilityMessage(availability);
     const slugBlocked = availability.state === 'unavailable';
 
@@ -95,7 +103,22 @@ export function ListSettingsDialog({ list, isOpen, onClose, fetcher, onSave, onD
         }
         setIsSaving(true);
         try {
-            await onSave({ slug: nextSlug, name: name.trim() });
+            // Untouched visibility keeps the current status (a draft stays a
+            // draft); a toggle maps Unlisted → unlisted, Public → published.
+            // Saving an archived list always restores it to the picked
+            // visibility — that is the owner's un-archive path (refused with a
+            // moderator message while the admin takedown lock is set).
+            const status =
+                list.status === 'archived'
+                    ? isPrivate
+                        ? 'unlisted'
+                        : 'published'
+                    : visibilityChanged
+                      ? isPrivate
+                          ? 'unlisted'
+                          : 'published'
+                      : (list.status ?? 'published');
+            await onSave({ slug: nextSlug, name: name.trim(), status });
             toast.success(slugChanged ? `List moved to /api/v2/lists/${nextSlug}` : 'List updated');
             onClose();
         } catch (error) {
@@ -198,6 +221,13 @@ export function ListSettingsDialog({ list, isOpen, onClose, fetcher, onSave, onD
                             )}
                         </div>
 
+                        <VisibilityPicker isPrivate={isPrivate} onChange={setIsPrivate} disabled={busy} />
+                        {list.status === 'archived' && (
+                            <p className="rounded-lg border border-amber-500/30 bg-amber-500/5 p-2 text-xs text-muted-foreground">
+                                This list is archived. Saving restores it with the visibility picked above (unless it
+                                was locked by moderators).
+                            </p>
+                        )}
                     </div>
 
                     <DialogFooter className="flex !flex-col gap-2">

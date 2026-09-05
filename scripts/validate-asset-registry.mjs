@@ -1,4 +1,22 @@
-import { CURATED_TOKEN_LISTS } from '../packages/asset-registry/src/data/curated-token-lists.ts';
+import {
+    CURRENCY_MINTS,
+    ETF_MINTS,
+    LST_MINTS,
+    MAJORS_MINTS,
+    METALS_MINTS,
+    RWA_MINTS,
+    STOCKS_MINTS,
+} from '../packages/asset-registry/src/data/list-mints.ts';
+
+const REGISTRY_LIST_MINTS = [
+    { id: 'majors', addresses: MAJORS_MINTS },
+    { id: 'lsts', addresses: LST_MINTS },
+    { id: 'currencies', addresses: CURRENCY_MINTS },
+    { id: 'rwas', addresses: RWA_MINTS },
+    { id: 'etfs', addresses: ETF_MINTS },
+    { id: 'metals', addresses: METALS_MINTS },
+    { id: 'stocks', addresses: STOCKS_MINTS },
+];
 import { getVariantByMint, listAssets } from '../packages/asset-registry/src/registry.ts';
 
 const MINT_RE = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
@@ -8,7 +26,7 @@ const ALLOWED_MINT_LIKE_ASSET_IDS = new Set([]);
 
 function normalizeListEntries() {
     const entries = [];
-    for (const list of Object.values(CURATED_TOKEN_LISTS)) {
+    for (const list of REGISTRY_LIST_MINTS) {
         if (!list || typeof list !== 'object') continue;
         const listId = String(list.id ?? '');
         const addresses = Array.isArray(list.addresses) ? list.addresses : [];

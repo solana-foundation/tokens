@@ -41,6 +41,7 @@ import type { AssetCollectionMemberRow, AssetCollectionsReadsRepo } from './hand
 import type { TokenListsReadsRepo } from './handlers/tokenListsReads';
 import type { TokenListsMutationsDeps } from './handlers/tokenListsMutations';
 import type { CacheWarmDeps } from './handlers/cacheWarm';
+import type { CuratedMembershipSource } from './handlers/curatedMembershipReads';
 import type { AdminActionsDeps, AdminActionsRepo } from './handlers/adminActions';
 import { createApp, type ServerDeps } from './server';
 
@@ -303,6 +304,21 @@ function makeAssetsApiRepo(data: AssetsApiRepoData = {}): AssetsApiRepo {
 
 const noopAssetsApiRepo: AssetsApiRepo = makeAssetsApiRepo();
 
+function emptyCuratedMembershipSource(): CuratedMembershipSource {
+    return {
+        warmup: async () => {},
+        getSnapshot: async () => ({
+            loadedAt: 0,
+            mintsByList: { majors: [], lsts: [], currencies: [], rwas: [], etfs: [], metals: [], stocks: [] },
+            allMints: [],
+            entriesByMint: {},
+        }),
+        getAllCuratedMintsInOrder: () => [],
+        getCuratedMintRank: () => new Map(),
+        getListSlugsByMint: () => new Map(),
+    };
+}
+
 function deps(overrides: Partial<ServerDeps> = {}): ServerDeps {
     return {
         repo: overrides.repo ?? makeRepo(),
@@ -323,6 +339,7 @@ function deps(overrides: Partial<ServerDeps> = {}): ServerDeps {
         assetCollectionsReadsRepo: overrides.assetCollectionsReadsRepo ?? emptyAssetCollectionsReadsRepo(),
         tokenListsReadsRepo: overrides.tokenListsReadsRepo ?? emptyTokenListsReadsRepo(),
         tokenListsMutationsDeps: overrides.tokenListsMutationsDeps ?? emptyTokenListsMutationsDeps(),
+        curatedMembershipSource: overrides.curatedMembershipSource ?? emptyCuratedMembershipSource(),
         authToken: overrides.authToken ?? 'tok',
         ...(overrides.serviceRole ? { serviceRole: overrides.serviceRole } : {}),
         ...(overrides.checkDatabase ? { checkDatabase: overrides.checkDatabase } : {}),
@@ -3454,6 +3471,15 @@ function emptyTokenListsReadsRepo(): TokenListsReadsRepo {
         async listPublished() {
             return [];
         },
+        async listByOwner() {
+            return [];
+        },
+        async countPublished() {
+            return 0;
+        },
+        async getSlugHold() {
+            return null;
+        },
         async getBySlug() {
             return null;
         },
@@ -3481,7 +3507,14 @@ function emptyTokenListsMutationsDeps(): TokenListsMutationsDeps {
             async deleteList() {
                 throw new Error('not implemented');
             },
-            async upsertMember() {},
+            async getSlugHold() {
+                return null;
+            },
+            async recordSlugHold() {},
+            async clearSlugHold() {},
+            async upsertMember() {
+                return true;
+            },
             async removeMember() {
                 return false;
             },
@@ -3491,9 +3524,29 @@ function emptyTokenListsMutationsDeps(): TokenListsMutationsDeps {
             async hasTokenForAddress() {
                 return false;
             },
+            async filterMintsWithActiveVariants() {
+                return [];
+            },
+            async filterMintsKnownTokens() {
+                return [];
+            },
+            async filterMintsExistingMembers() {
+                return [];
+            },
+            async countMembers() {
+                return 0;
+            },
+            async upsertMembersBulk() {
+                return { overflowMints: [] };
+            },
+            async countListsByOwner() {
+                return 0;
+            },
         },
         fetchTokenOverview: async () => null,
+        slugHoldMs: 30 * 24 * 60 * 60 * 1000,
         now: () => 0,
+        caps: { batch: 250, membersPerList: 5000, providerLookups: 50, listsPerProject: 100 },
     };
 }
 
@@ -4198,7 +4251,7 @@ describe('admin mutations dispatch', () => {
                 return 0;
             },
             async upsertAssetCollectionMember() {},
-            async upsertAssetCollectionTitle() {},
+            async ensureAssetCollection() {},
             async clearDeletedRefs() {
                 return 0;
             },

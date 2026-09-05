@@ -2,6 +2,7 @@ import { Effect, Schema } from 'effect';
 
 import { route, type PlatformAuthContext } from '@/effect/next-route';
 import { decodeUnknownOrBadRequest } from '@tokens/effect';
+import { enforceProviderBudget } from '@/effect/provider-budget';
 import { tokenListsRemoveMember, tokenListsUpsertMember } from '@/lib/cloudrun';
 
 import { unwrapOutcome } from '../../../_shared';
@@ -12,8 +13,12 @@ interface RouteCtx {
 }
 
 const putBodySchema = Schema.Struct({
-    rank: Schema.optional(Schema.Number),
-    note: Schema.optional(Schema.String),
+    // int4 column: reject non-finite/overflow at the edge (a 1e12 rank
+    // otherwise round-trips to Cloud Run just to fail).
+    rank: Schema.optional(
+        Schema.Number.check(Schema.isInt(), Schema.isBetween({ minimum: -2_147_483_648, maximum: 2_147_483_647 })),
+    ),
+    note: Schema.optional(Schema.String.check(Schema.isMaxLength(500))),
 });
 
 /**
@@ -30,6 +35,9 @@ export const PUT = route(
                 return text.trim() ? (JSON.parse(text) as unknown) : {};
             });
             const body = yield* decodeUnknownOrBadRequest(putBodySchema, raw, 'Invalid body');
+            // Same provider budget as the batch path: unknown mints resolve via
+            // Birdeye here too, so single PUTs must not be a budget side door.
+            yield* enforceProviderBudget(ctx.platformAuth, 'batch');
 
             const outcome = yield* tokenListsUpsertMember({
                 ownerProjectId: ctx.platformAuth.projectId,
@@ -41,7 +49,7 @@ export const PUT = route(
             const member = yield* unwrapOutcome(outcome);
             return { member };
         }),
-    { platform: { requiredScopes: ['lists:write'] } },
+    { platform: { requiredScopes: ['assets:read'] } },
 );
 
 /** DELETE /api/v2/lists/{slug}/members/{mint} — remove a member. */
@@ -57,5 +65,5 @@ export const DELETE = route(
             const removed = yield* unwrapOutcome(outcome);
             return { removed };
         }),
-    { platform: { requiredScopes: ['lists:write'] } },
+    { platform: { requiredScopes: ['assets:read'] } },
 );

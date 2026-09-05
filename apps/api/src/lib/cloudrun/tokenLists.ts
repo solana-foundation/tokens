@@ -14,6 +14,7 @@ export type TokenListSummary = {
     slug: string;
     name: string;
     ownerProjectId: string;
+    status: string;
     tokenCount: number;
     updatedAt: number;
 };
@@ -42,6 +43,27 @@ export function tokenListsList(args: {
     return cloudRunQuery<TokenListSummary[]>('assets', 'tokenListsList', { ...args }, { maxRetries: 1 });
 }
 
+/** Owner-scoped catalog: every list the project owns (archived included), status per row. */
+export function tokenListsListByOwner(args: {
+    ownerProjectId: string;
+    limit?: number;
+    offset?: number;
+}): Effect.Effect<TokenListSummary[], CloudRunError> {
+    return cloudRunQuery<TokenListSummary[]>('assets', 'tokenListsListByOwner', { ...args }, { maxRetries: 1 });
+}
+
+/** Real published-community-list count for catalog `total`. */
+export function tokenListsCountPublished(): Effect.Effect<{ total: number }, CloudRunError> {
+    return cloudRunQuery<{ total: number }>('assets', 'tokenListsCountPublished', {}, { maxRetries: 1 });
+}
+
+/** Hold on a freed slug (owner-only reclaim window), or null. `expiresAt` is authoritative. */
+export function tokenListsGetSlugHold(args: {
+    slug: string;
+}): Effect.Effect<{ hold: { ownerProjectId: string; releasedAt: number; expiresAt: number } | null }, CloudRunError> {
+    return cloudRunQuery('assets', 'tokenListsGetSlugHold', { ...args }, { maxRetries: 1 });
+}
+
 export function tokenListsGetBySlug(args: { slug: string }): Effect.Effect<TokenListDetail | null, CloudRunError> {
     return cloudRunQuery<TokenListDetail | null>('assets', 'tokenListsGetBySlug', { ...args }, { maxRetries: 1 });
 }
@@ -64,11 +86,15 @@ export type TokenListMutationErrorCode =
     | 'invalid_slug'
     | 'reserved_slug'
     | 'slug_conflict'
+    | 'slug_held'
+    | 'admin_locked'
     | 'not_found'
     | 'forbidden'
     | 'invalid_mint'
     | 'unknown_mint'
-    | 'batch_too_large';
+    | 'batch_too_large'
+    | 'project_lists_limit'
+    | 'list_full';
 
 export type TokenListMutationOutcome<T> = { ok: true; value: T } | { ok: false; error: TokenListMutationErrorCode };
 
@@ -150,7 +176,11 @@ export type TokenListBatchAddResult = {
 export function tokenListsAddMembersBatch(args: {
     ownerProjectId: string;
     slug: string;
-    mints: string[];
+    mints?: string[];
+    /** CSV-shaped input: per-row note carried onto the member. */
+    members?: Array<{ mint: string; note?: string }>;
 }): Effect.Effect<TokenListMutationOutcome<TokenListBatchAddResult>, CloudRunError> {
-    return cloudRunMutation('assets', 'tokenListsAddMembersBatch', { ...args });
+    // A max-size (250-mint) batch legitimately outlives the default 15s client timeout
+    // (chunked DB upserts + up to ~50 budgeted provider lookups).
+    return cloudRunMutation('assets', 'tokenListsAddMembersBatch', { ...args }, { timeoutMs: 60_000 });
 }

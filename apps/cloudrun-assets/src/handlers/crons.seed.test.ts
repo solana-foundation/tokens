@@ -1,12 +1,16 @@
 import { describe, expect, it } from 'bun:test';
+import { readFileSync } from 'node:fs';
 
 import type { CanonicalAsset } from '@tokens/asset-registry';
+import { CURATED_LIST_SLUGS } from '@tokens/asset-registry/curated-lists';
 
+import { InvalidArgsError } from './assets';
 import {
     backfillMissingAssetIdentity,
+    cleanupMaterializedAllCollection,
     seedCanonicalAssetsRegistry,
+    seedCuratedCollectionsFixture,
     buildAssetAliases,
-    buildCollectionMembersFromMints,
     deriveFallbackName,
     deriveFallbackSymbol,
     type BirdeyeIdentityClient,
@@ -29,11 +33,15 @@ interface RecorderState {
     upsertedVariants: CanonicalAssetVariantUpsert[];
     upsertedAliases: CanonicalAssetAliasUpsert[];
     ensuredMarkets: string[];
-    upsertedCollections: CanonicalAssetCollectionUpsert[];
-    mergedCollectionSlugs: string[];
-    upsertedCollectionMembers: CanonicalAssetCollectionMemberUpsert[];
-    /** Simulated DB rows per slug (post-merge), backing listCollectionMemberUnion. */
-    membersBySlug: Map<string, CanonicalAssetCollectionMemberUpsert[]>;
+    insertedCollections: CanonicalAssetCollectionUpsert[];
+    insertedCollectionMembers: CanonicalAssetCollectionMemberUpsert[];
+    /** (slug, assetId) pairs already present — insertCollectionMembersIfMissing skips them. */
+    memberKeys: Set<string>;
+    /** Pre-existing membership rows (before any fixture insert this run). */
+    existingMemberCount: number;
+    tombstonedAssetIds: Set<string>;
+    deletedCollectionSlugs: string[];
+    deleteCascadeRows: number;
     tombstonedRefs: Set<string>;
     loweredAddedAtCalls: Array<{ mint: string; addedAtMs: number }>;
     refreshedViewCount: number;
@@ -49,10 +57,13 @@ function makeRepo(): { repo: SeedRepo; state: RecorderState } {
         upsertedVariants: [],
         upsertedAliases: [],
         ensuredMarkets: [],
-        upsertedCollections: [],
-        mergedCollectionSlugs: [],
-        upsertedCollectionMembers: [],
-        membersBySlug: new Map(),
+        insertedCollections: [],
+        insertedCollectionMembers: [],
+        memberKeys: new Set(),
+        existingMemberCount: 0,
+        tombstonedAssetIds: new Set(),
+        deletedCollectionSlugs: [],
+        deleteCascadeRows: 0,
         tombstonedRefs: new Set(),
         loweredAddedAtCalls: [],
         refreshedViewCount: 0,
@@ -67,28 +78,30 @@ function makeRepo(): { repo: SeedRepo; state: RecorderState } {
         async upsertCanonicalAssetVariant(args) { state.upsertedVariants.push(args); },
         async upsertCanonicalAssetAlias(args) { state.upsertedAliases.push(args); },
         async ensureVariantMarketRow(mint) { state.ensuredMarkets.push(mint); },
-        async upsertAssetCollection(args) { state.upsertedCollections.push(args); },
-        async mergeAssetCollectionMembers(slug, members) {
-            state.mergedCollectionSlugs.push(slug);
-            for (const m of members) state.upsertedCollectionMembers.push(m);
-            // Registry merge replaces registry rows wholesale; admin rows are
-            // simulated by pre-seeding membersBySlug before the run.
-            const existing = state.membersBySlug.get(slug) ?? [];
-            const preserved = existing.filter(row => !members.some(m => m.assetId === row.assetId));
-            state.membersBySlug.set(slug, [...preserved, ...members]);
+        async insertCollectionIfMissing(args) { state.insertedCollections.push(args); },
+        async insertCollectionMembersIfMissing(members) {
+            let inserted = 0;
+            for (const member of members) {
+                const key = `${member.collectionSlug}:${member.assetId}`;
+                if (state.memberKeys.has(key)) continue;
+                state.memberKeys.add(key);
+                state.insertedCollectionMembers.push(member);
+                inserted += 1;
+            }
+            return inserted;
+        },
+        async countCollectionMembers() {
+            return state.existingMemberCount + state.insertedCollectionMembers.length;
+        },
+        async listTombstonedAssetIds(assetIds) {
+            return assetIds.filter(id => state.tombstonedAssetIds.has(id));
+        },
+        async deleteCollectionCascade(slug) {
+            state.deletedCollectionSlugs.push(slug);
+            return state.deleteCascadeRows;
         },
         async listTombstonedRefs(normalizedRefs) {
             return normalizedRefs.filter(ref => state.tombstonedRefs.has(ref));
-        },
-        async listCollectionMemberUnion(excludeSlug) {
-            const out: Array<{ collectionSlug: string; assetId: string; rank: number; addedAt: number }> = [];
-            for (const [slug, members] of state.membersBySlug) {
-                if (slug === excludeSlug) continue;
-                for (const m of members) {
-                    out.push({ collectionSlug: slug, assetId: m.assetId, rank: m.rank, addedAt: m.addedAt });
-                }
-            }
-            return out;
         },
         async lowerCollectionMemberAddedAtByMint(mint, addedAtMs) {
             state.loweredAddedAtCalls.push({ mint, addedAtMs });
@@ -172,49 +185,16 @@ describe('buildAssetAliases', () => {
     });
 });
 
-describe('buildCollectionMembersFromMints', () => {
-    const resolve = (mint: string) => {
-        if (mint === 'mintA') return 'jup';
-        if (mint === 'mintB') return 'sol';
-        if (mint === 'mintA-dup') return 'jup';
-        return null;
-    };
-
-    it('preserves rank by first-occurrence and dedupes asset ids', () => {
-        const members = buildCollectionMembersFromMints(['mintA', 'mintB', 'mintA-dup'], resolve, () => null, FIXED_NOW);
-        expect(members).toEqual([
-            { assetId: 'jup', rank: 0, addedAt: FIXED_NOW },
-            { assetId: 'sol', rank: 1, addedAt: FIXED_NOW },
-        ]);
-    });
-
-    it('uses git added-at when known and keeps the min across an asset\'s mints', () => {
-        const addedAt = (mint: string) => (mint === 'mintA-dup' ? 1_000 : mint === 'mintB' ? 2_000 : null);
-        const members = buildCollectionMembersFromMints(['mintA', 'mintB', 'mintA-dup'], resolve, addedAt, FIXED_NOW);
-        expect(members).toEqual([
-            { assetId: 'jup', rank: 0, addedAt: 1_000 },
-            { assetId: 'sol', rank: 1, addedAt: 2_000 },
-        ]);
-    });
-});
-
 describe('seedCanonicalAssetsRegistry', () => {
-    const GIT_ADDED_AT = 1_700_000_000_000;
-
     function makeDeps(repo: SeedRepo) {
         return {
             repo,
             now: () => FIXED_NOW,
             listCanonicalAssets: () => [sampleAsset],
-            listCuratedListOrder: () => ['majors'],
-            getCuratedListMints: () => [sampleAsset.variants[0]!.mint],
-            getCuratedListTitle: () => ({ title: 'Majors', description: 'Major tokens' }),
-            resolveAssetIdByMint: (mint: string) => (mint === sampleAsset.variants[0]!.mint ? 'jup' : null),
-            getCuratedAddedAtMsByMint: (mint: string) => (mint === sampleAsset.variants[0]!.mint ? GIT_ADDED_AT : null),
         };
     }
 
-    it('upserts assets, variants, aliases, ensures markets, merges collections', async () => {
+    it('upserts assets, variants, aliases, and ensures markets — never touching collections', async () => {
         const { repo, state } = makeRepo();
         const res = await seedCanonicalAssetsRegistry(makeDeps(repo), {});
         expect(res.ok).toBe(true);
@@ -225,17 +205,12 @@ describe('seedCanonicalAssetsRegistry', () => {
         expect(state.upsertedVariants.length).toBe(1);
         expect(state.ensuredMarkets).toEqual([sampleAsset.variants[0]!.mint]);
         expect(state.upsertedAliases.length).toBeGreaterThan(0);
-        const collectionSlugs = state.upsertedCollections.map(c => c.slug);
-        expect(collectionSlugs).toEqual(['majors', 'all']);
-        expect(state.mergedCollectionSlugs).toEqual(['majors', 'all']);
-        const majorsMembers = state.upsertedCollectionMembers.filter(m => m.collectionSlug === 'majors');
-        expect(majorsMembers).toEqual([{ collectionSlug: 'majors', assetId: 'jup', rank: 0, addedAt: GIT_ADDED_AT }]);
-        const allMembers = state.upsertedCollectionMembers.filter(m => m.collectionSlug === 'all');
-        expect(allMembers).toEqual([{ collectionSlug: 'all', assetId: 'jup', rank: 0, addedAt: GIT_ADDED_AT }]);
+        expect(state.insertedCollections.length).toBe(0);
+        expect(state.insertedCollectionMembers.length).toBe(0);
         expect(state.refreshedViewCount).toBe(1);
     });
 
-    it('skips tombstoned assets entirely (no upsert, no membership)', async () => {
+    it('skips tombstoned assets entirely (no upsert)', async () => {
         const { repo, state } = makeRepo();
         state.tombstonedRefs.add(sampleAsset.variants[0]!.mint.toLowerCase());
         const res = await seedCanonicalAssetsRegistry(makeDeps(repo), {});
@@ -243,21 +218,6 @@ describe('seedCanonicalAssetsRegistry', () => {
         expect(res.tombstonedSkipped).toBe(1);
         expect(state.upsertedAssets.length).toBe(0);
         expect(state.upsertedVariants.length).toBe(0);
-        expect(state.upsertedCollectionMembers.length).toBe(0);
-    });
-
-    it("derives the 'all' collection from the DB union, including admin-added members", async () => {
-        const { repo, state } = makeRepo();
-        // Simulate a pre-existing admin-added membership in another slug.
-        state.membersBySlug.set('rwas', [
-            { collectionSlug: 'rwas', assetId: 'admin-token', rank: 5, addedAt: 42 },
-        ]);
-        await seedCanonicalAssetsRegistry(makeDeps(repo), {});
-        const allMembers = state.upsertedCollectionMembers.filter(m => m.collectionSlug === 'all');
-        expect(allMembers).toEqual([
-            { collectionSlug: 'all', assetId: 'jup', rank: 0, addedAt: GIT_ADDED_AT },
-            { collectionSlug: 'all', assetId: 'admin-token', rank: 1, addedAt: 42 },
-        ]);
     });
 
     it('skips view refresh when not provided', async () => {
@@ -269,12 +229,122 @@ describe('seedCanonicalAssetsRegistry', () => {
                 repo: repoNoView,
                 now: () => FIXED_NOW,
                 listCanonicalAssets: () => [],
-                listCuratedListOrder: () => [],
-                resolveAssetIdByMint: () => null,
             },
             {},
         );
         expect(state.refreshedViewCount).toBe(0);
+    });
+});
+
+interface FixtureCollection {
+    slug: string;
+    title: string;
+    description: string;
+    members: Array<{ assetId: string; rank: number; addedAtMs: number }>;
+}
+
+const fixture = JSON.parse(
+    readFileSync(new URL('../data/curated-collections-seed.json', import.meta.url), 'utf8'),
+) as FixtureCollection[];
+const fixtureMemberCount = fixture.reduce((sum, c) => sum + c.members.length, 0);
+
+describe('seedCuratedCollectionsFixture', () => {
+    it('bootstrap mode refuses to write when curated collections already have members', async () => {
+        const { repo, state } = makeRepo();
+        state.existingMemberCount = 3;
+        const res = await seedCuratedCollectionsFixture({ repo, now: () => FIXED_NOW }, {});
+        expect(res.ok).toBe(false);
+        expect(res.error).toBe('collections_not_empty');
+        expect(res.existingMembers).toBe(3);
+        expect(state.insertedCollections.length).toBe(0);
+        expect(state.insertedCollectionMembers.length).toBe(0);
+    });
+
+    it('recovery mode requires the explicit confirmation string', async () => {
+        const { repo, state } = makeRepo();
+        await expect(
+            seedCuratedCollectionsFixture({ repo, now: () => FIXED_NOW }, { mode: 'recovery' }),
+        ).rejects.toThrow(InvalidArgsError);
+        await expect(
+            seedCuratedCollectionsFixture({ repo, now: () => FIXED_NOW }, { mode: 'recovery', confirm: 'nope' }),
+        ).rejects.toThrow(InvalidArgsError);
+        expect(state.insertedCollectionMembers.length).toBe(0);
+    });
+
+    it('rejects unknown modes', async () => {
+        const { repo } = makeRepo();
+        await expect(
+            seedCuratedCollectionsFixture({ repo, now: () => FIXED_NOW }, { mode: 'yolo' }),
+        ).rejects.toThrow(InvalidArgsError);
+    });
+
+    it('bootstrap inserts every fixture collection and member into an empty database', async () => {
+        const { repo, state } = makeRepo();
+        const res = await seedCuratedCollectionsFixture({ repo, now: () => FIXED_NOW }, {});
+        expect(res.ok).toBe(true);
+        expect(res.mode).toBe('bootstrap');
+        expect(res.processed).toBe(fixture.length);
+        expect(res.membersInserted).toBe(fixtureMemberCount);
+        expect(res.tombstonedSkipped).toBe(0);
+        expect(state.insertedCollections.map(c => c.slug)).toEqual([...CURATED_LIST_SLUGS]);
+        expect(state.insertedCollectionMembers.length).toBe(fixtureMemberCount);
+        const majors = fixture.find(c => c.slug === 'majors')!;
+        const insertedMajors = state.insertedCollectionMembers.filter(m => m.collectionSlug === 'majors');
+        expect(insertedMajors).toEqual(
+            majors.members.map(m => ({
+                collectionSlug: 'majors',
+                assetId: m.assetId,
+                rank: m.rank,
+                addedAt: m.addedAtMs,
+            })),
+        );
+    });
+
+    it('skips tombstoned asset ids without inserting their membership rows', async () => {
+        const { repo, state } = makeRepo();
+        const tombstonedAssetId = fixture[0]!.members[0]!.assetId;
+        state.tombstonedAssetIds.add(tombstonedAssetId);
+        const occurrences = fixture.reduce(
+            (sum, c) => sum + c.members.filter(m => m.assetId === tombstonedAssetId).length,
+            0,
+        );
+        const res = await seedCuratedCollectionsFixture({ repo, now: () => FIXED_NOW }, {});
+        expect(res.ok).toBe(true);
+        expect(res.tombstonedSkipped).toBe(occurrences);
+        expect(res.membersInserted).toBe(fixtureMemberCount - occurrences);
+        expect(state.insertedCollectionMembers.some(m => m.assetId === tombstonedAssetId)).toBe(false);
+    });
+
+    it('is idempotent: a recovery re-run inserts nothing when all rows already exist', async () => {
+        const { repo, state } = makeRepo();
+        const first = await seedCuratedCollectionsFixture({ repo, now: () => FIXED_NOW }, {});
+        expect(first.ok).toBe(true);
+        expect(first.membersInserted).toBe(fixtureMemberCount);
+        // A second bootstrap run is refused outright (DB is no longer empty).
+        const secondBootstrap = await seedCuratedCollectionsFixture({ repo, now: () => FIXED_NOW }, {});
+        expect(secondBootstrap.ok).toBe(false);
+        expect(secondBootstrap.error).toBe('collections_not_empty');
+        // Recovery with the confirmation string runs, but ON CONFLICT DO NOTHING inserts 0.
+        const recovery = await seedCuratedCollectionsFixture(
+            { repo, now: () => FIXED_NOW },
+            { mode: 'recovery', confirm: 'RESEED_CURATED_COLLECTIONS' },
+        );
+        expect(recovery.ok).toBe(true);
+        expect(recovery.mode).toBe('recovery');
+        expect(recovery.membersInserted).toBe(0);
+        expect(state.insertedCollectionMembers.length).toBe(fixtureMemberCount);
+    });
+});
+
+describe('cleanupMaterializedAllCollection', () => {
+    it("cascades the materialized 'all' collection and reports rows removed", async () => {
+        const { repo, state } = makeRepo();
+        state.deleteCascadeRows = 12;
+        const res = await cleanupMaterializedAllCollection({ repo, now: () => FIXED_NOW }, {});
+        expect(res.ok).toBe(true);
+        expect(state.deletedCollectionSlugs).toEqual(['all']);
+        expect(res.rowsRemoved).toBe(12);
+        expect(res.processed).toBe(12);
     });
 });
 

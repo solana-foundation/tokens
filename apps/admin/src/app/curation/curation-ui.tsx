@@ -7,6 +7,7 @@ import {
     IconChevronRight,
     IconEllipsis,
     IconMagnifyingglass,
+    IconPencil,
     IconPlusCircleFill,
     IconSliderHorizontal3,
     IconTrayAndArrowDown,
@@ -63,6 +64,7 @@ import { RemoveConfirmDialog } from './remove-confirm-dialog';
 import { HardDeleteAssetDialog } from './hard-delete-asset-dialog';
 import { CreateCanonicalDialog } from './create-canonical-dialog';
 import { EditCanonicalDialog } from './edit-canonical-dialog';
+import { EditCategoriesDialog } from './edit-categories-dialog';
 import { AddVariantDialog } from './add-variant-dialog';
 import { EditVariantDialog } from './edit-variant-dialog';
 import { MoveVariantDialog } from './move-variant-dialog';
@@ -263,6 +265,7 @@ export function CurationUi(): React.JSX.Element {
     const [showInactive, setShowInactive] = useState(false);
     const [seedDialogOpen, setSeedDialogOpen] = useState(false);
     const [createCanonicalOpen, setCreateCanonicalOpen] = useState(false);
+    const [editCategoriesOpen, setEditCategoriesOpen] = useState(false);
     const [editingCanonicalId, setEditingCanonicalId] = useState<string | null>(null);
     const [editingVariantMint, setEditingVariantMint] = useState<string | null>(null);
     const [moveVariantMint, setMoveVariantMint] = useState<string | null>(null);
@@ -657,8 +660,19 @@ export function CurationUi(): React.JSX.Element {
                     </div>
 
                     <div>
-                        <div className="mb-2 text-xs font-inter-semibold uppercase tracking-[0.12em] text-muted-foreground">
-                            Front-page list
+                        <div className="mb-2 flex items-center justify-between gap-2">
+                            <span className="text-xs font-inter-semibold uppercase tracking-[0.12em] text-muted-foreground">
+                                Front-page list
+                            </span>
+                            <button
+                                type="button"
+                                onClick={() => setEditCategoriesOpen(true)}
+                                disabled={!isAdmin}
+                                className="inline-flex items-center gap-1 text-xs font-inter-semibold text-muted-foreground transition-colors hover:text-foreground disabled:pointer-events-none disabled:opacity-50"
+                            >
+                                <IconPencil className="h-3 w-3 fill-current" aria-hidden="true" />
+                                Edit
+                            </button>
                         </div>
                         <Select value={collectionFilter} onValueChange={setCollectionFilter}>
                             <SelectTrigger className="h-12 rounded-full border-border-medium bg-white px-4 shadow-none">
@@ -893,6 +907,7 @@ export function CurationUi(): React.JSX.Element {
 
             <SeedDialog open={seedDialogOpen} onOpenChange={setSeedDialogOpen} />
             <CreateCanonicalDialog open={createCanonicalOpen} onOpenChange={setCreateCanonicalOpen} />
+            <EditCategoriesDialog open={editCategoriesOpen} onOpenChange={setEditCategoriesOpen} />
             <EditCanonicalDialog
                 assetId={editingCanonicalId}
                 open={editingCanonicalId !== null}

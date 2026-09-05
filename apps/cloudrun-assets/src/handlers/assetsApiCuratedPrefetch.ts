@@ -31,7 +31,7 @@
  * handler targets is round-trip latency, not aggregation cost.
  */
 
-import { CURATED_LIST_ORDER, type CuratedTokenListId } from '@tokens/asset-registry/compat';
+import { CURATED_LIST_ORDER, type CuratedListSlug } from '@tokens/asset-registry/curated-lists';
 
 import { createConcurrencyLimiter } from '../concurrencyLimiter';
 import { isTransientDatabaseError } from '../transientDb';
@@ -80,7 +80,7 @@ import type { VariantMarketsRepo } from './variantMarkets';
 import type { FillQualityReadsRepo } from './fillQualityReads';
 import type { AssetMarketsRepo } from './assetMarkets';
 
-const KNOWN_LIST_IDS: readonly CuratedTokenListId[] = CURATED_LIST_ORDER;
+const KNOWN_LIST_IDS: readonly CuratedListSlug[] = CURATED_LIST_ORDER;
 
 export interface CuratedPrefetchDeps {
     assetsRepo: AssetsRepo;

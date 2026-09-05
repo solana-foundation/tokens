@@ -67,9 +67,16 @@ import {
     type AssetCollectionsReadsRepo,
 } from './handlers/assetCollectionsReads';
 import {
+    getSnapshot as curatedMembershipGetSnapshot,
+    type CuratedMembershipSource,
+} from './handlers/curatedMembershipReads';
+import {
     getBySlug as tokenListsGetBySlug,
     getMembers as tokenListsGetMembers,
     getSlugsByMints as tokenListsGetSlugsByMints,
+    countPublished as tokenListsCountPublished,
+    getSlugHold as tokenListsGetSlugHold,
+    listByOwner as tokenListsListByOwner,
     listPublished as tokenListsListPublished,
     type TokenListsReadsRepo,
 } from './handlers/tokenListsReads';
@@ -83,6 +90,11 @@ import {
     upsertMember as tokenListsUpsertMember,
     type TokenListsMutationsDeps,
 } from './handlers/tokenListsMutations';
+import {
+    adminCreateTokenList,
+    adminImportTokenListMembers,
+    type TokenListsAdminDeps,
+} from './handlers/tokenListsAdmin';
 import {
     getCoinById as coingeckoReadsGetCoinById,
     getPriceLatestByCoinId as coingeckoReadsGetPriceLatestByCoinId,
@@ -182,6 +194,7 @@ export interface ServerDeps {
     fillQualityReadsRepo: FillQualityReadsRepo;
     depthCurveReadsRepo: DepthCurveReadsRepo;
     assetCollectionsReadsRepo: AssetCollectionsReadsRepo;
+    curatedMembershipSource: CuratedMembershipSource;
     tokenListsReadsRepo: TokenListsReadsRepo;
     tokenListsMutationsDeps: TokenListsMutationsDeps;
     coingeckoReadsRepo: CoingeckoReadsRepo;
@@ -208,6 +221,8 @@ export interface ServerDeps {
     depthSampleDeps?: DepthSampleDeps;
     cacheWarmDeps?: CacheWarmDeps;
     adminActionsDeps?: AdminActionsDeps;
+    /** Admin-only token-list build tools (CSV import, create-for-project); allowlist-gated. */
+    tokenListsAdminDeps?: TokenListsAdminDeps;
     verifyOidc?: VerifyOidc;
     /**
      * When set, RPC routes also accept a Google OIDC ID token (audience/SA
@@ -264,7 +279,11 @@ const ATOMIC_RETRY_QUERY_NAMES = new Set([
     'assetCollectionsGetMembers',
     'assetCollectionsGetMemberMints',
     'assetCollectionsGetSummaries',
+    'curatedMembershipGetSnapshot',
     'tokenListsList',
+    'tokenListsListByOwner',
+    'tokenListsCountPublished',
+    'tokenListsGetSlugHold',
     'tokenListsGetBySlug',
     'tokenListsGetMembers',
     'tokenListsGetSlugsByMints',
@@ -455,7 +474,11 @@ export function createApp(deps: ServerDeps) {
     queries.assetCollectionsGetMemberMints = args =>
         assetCollectionsGetMemberMints(deps.assetCollectionsReadsRepo, args);
     queries.assetCollectionsGetSummaries = args => assetCollectionsGetSummaries(deps.assetCollectionsReadsRepo, args);
+    queries.curatedMembershipGetSnapshot = args => curatedMembershipGetSnapshot(deps.curatedMembershipSource, args);
     queries.tokenListsList = args => tokenListsListPublished(deps.tokenListsReadsRepo, args);
+    queries.tokenListsListByOwner = args => tokenListsListByOwner(deps.tokenListsReadsRepo, args);
+    queries.tokenListsCountPublished = () => tokenListsCountPublished(deps.tokenListsReadsRepo);
+    queries.tokenListsGetSlugHold = args => tokenListsGetSlugHold(deps.tokenListsReadsRepo, args);
     queries.tokenListsGetBySlug = args => tokenListsGetBySlug(deps.tokenListsReadsRepo, args);
     queries.tokenListsGetMembers = args => tokenListsGetMembers(deps.tokenListsReadsRepo, args);
     queries.tokenListsGetSlugsByMints = args => tokenListsGetSlugsByMints(deps.tokenListsReadsRepo, args);
@@ -530,6 +553,17 @@ export function createApp(deps: ServerDeps) {
         mutations.adminAddCheckedVariant = (args, identity) => adminAddCheckedVariant(adminActionsDeps, args, identity);
         mutations.adminSeedAsset = (args, identity) => adminSeedAsset(adminActionsDeps, args, identity);
         mutations.adminRefreshChartData = (args, identity) => adminRefreshChartData(adminActionsDeps, args, identity);
+    }
+
+    // Admin token-list build tools, called by the apps/admin proxy. Unlike the
+    // curated actions above these need no cron deps — only the allowlist and
+    // the same mutation deps the partner API uses — so they are wired whenever
+    // an allowlist is configured.
+    const tokenListsAdminDeps = deps.tokenListsAdminDeps;
+    if (tokenListsAdminDeps) {
+        mutations.adminCreateTokenList = (args, identity) => adminCreateTokenList(tokenListsAdminDeps, args, identity);
+        mutations.adminImportTokenListMembers = (args, identity) =>
+            adminImportTokenListMembers(tokenListsAdminDeps, args, identity);
     }
 
     app.get('/health', c => c.json({ ok: true }));

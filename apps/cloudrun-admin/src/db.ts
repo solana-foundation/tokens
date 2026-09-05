@@ -1,6 +1,8 @@
 import postgres, { type Sql } from 'postgres';
 
-import type { AdminRepo, CategorySummary, CuratedCategorySlug } from './handlers/curatedTokens';
+import type { CuratedListSlug } from '@tokens/asset-registry/curated-lists';
+
+import type { AdminRepo, CategorySummary } from './handlers/curatedTokens';
 
 let cached: Sql | null = null;
 
@@ -28,8 +30,9 @@ export function toNullableNumber(value: string | number | null | undefined): num
 }
 
 interface CategorySummaryRow {
-    collection_slug: CuratedCategorySlug;
+    collection_slug: CuratedListSlug;
     title: string | null;
+    description: string | null;
     count: string | number;
     last_added_asset_id: string | null;
 }
@@ -41,6 +44,7 @@ export function makePostgresAdminRepo(sql: Sql): AdminRepo {
             const rows = await sql<CategorySummaryRow[]>`
                 SELECT s.slug AS collection_slug,
                        c.title AS title,
+                       c.description AS description,
                        COALESCE(m.count, 0) AS count,
                        m.last_added_asset_id AS last_added_asset_id
                 FROM UNNEST(${sql.array(slugs as unknown as string[])}::text[]) AS s(slug)
@@ -57,6 +61,7 @@ export function makePostgresAdminRepo(sql: Sql): AdminRepo {
             const result: CategorySummary[] = rows.map(row => ({
                 id: row.collection_slug,
                 name: row.title ?? '',
+                description: row.description,
                 count: Number(row.count) || 0,
                 lastAddedAssetId: row.last_added_asset_id,
             }));

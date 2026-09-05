@@ -10,6 +10,7 @@ import {
     moveVariantToCanonical,
     removeFromCategory,
     updateCanonicalAsset,
+    updateCollectionMeta,
     updateVariant,
     type AdminMutationsDeps,
     type AdminMutationsRepo,
@@ -77,6 +78,9 @@ function makeDeps(state: RepoState = {}): { deps: AdminMutationsDeps; calls: Rec
             track('removeFromCategory', args);
             return state.removeFromCategory ?? true;
         },
+        updateCollectionMeta: async args => {
+            track('updateCollectionMeta', args);
+        },
     };
     return { deps: { repo, adminAllowlist: { clerkUserIds: ADMIN_IDS, emails: new Set<string>() }, now: () => NOW }, calls };
 }
@@ -92,6 +96,7 @@ describe('authz (mutations)', () => {
         ['deactivateVariant', deactivateVariant, { mint: MINT }],
         ['moveVariantToCanonical', moveVariantToCanonical, { mint: MINT, assetId: 'a' }],
         ['removeFromCategory', removeFromCategory, { slug: 'majors', assetId: 'a' }],
+        ['updateCollectionMeta', updateCollectionMeta, { slug: 'majors', title: 'Crypto' }],
     ];
 
     for (const [name, handler, args] of handlers) {
@@ -369,5 +374,61 @@ describe('removeFromCategory', () => {
         expect(await removeFromCategory(missing.deps, { slug: 'stocks', assetId: 'tsla' }, ADMIN)).toEqual({
             removed: false,
         });
+    });
+});
+
+describe('updateCollectionMeta', () => {
+    it('updates the title only, leaving description untouched', async () => {
+        const { deps, calls } = makeDeps();
+        expect(await updateCollectionMeta(deps, { slug: 'majors', title: '  Blue Chips  ' }, ADMIN)).toEqual({
+            slug: 'majors',
+            updated: true,
+        });
+        expect(calls.updateCollectionMeta?.[0]).toEqual({ slug: 'majors', title: 'Blue Chips', nowMs: NOW });
+    });
+
+    it('updates the description only, leaving title untouched', async () => {
+        const { deps, calls } = makeDeps();
+        await updateCollectionMeta(deps, { slug: 'stocks', description: ' Tokenized equities. ' }, ADMIN);
+        expect(calls.updateCollectionMeta?.[0]).toEqual({
+            slug: 'stocks',
+            description: 'Tokenized equities.',
+            nowMs: NOW,
+        });
+    });
+
+    it('clears the description when passed an empty string', async () => {
+        const { deps, calls } = makeDeps();
+        await updateCollectionMeta(deps, { slug: 'metals', description: '   ' }, ADMIN);
+        expect(calls.updateCollectionMeta?.[0]).toEqual({ slug: 'metals', description: null, nowMs: NOW });
+    });
+
+    it('accepts lsts: membership is Sanctum-driven but the title is editable text', async () => {
+        const { deps, calls } = makeDeps();
+        await updateCollectionMeta(deps, { slug: 'lsts', title: 'Staking' }, ADMIN);
+        expect(calls.updateCollectionMeta?.[0]).toEqual({ slug: 'lsts', title: 'Staking', nowMs: NOW });
+    });
+
+    it('rejects unknown slugs, empty titles, and over-long values without hitting the repo', async () => {
+        const { deps, calls } = makeDeps();
+        await expect(updateCollectionMeta(deps, { slug: 'nope', title: 'x' }, ADMIN)).rejects.toBeInstanceOf(
+            InvalidArgsError,
+        );
+        await expect(updateCollectionMeta(deps, { slug: 'majors', title: '   ' }, ADMIN)).rejects.toBeInstanceOf(
+            InvalidArgsError,
+        );
+        await expect(
+            updateCollectionMeta(deps, { slug: 'majors', title: 'x'.repeat(81) }, ADMIN),
+        ).rejects.toBeInstanceOf(InvalidArgsError);
+        await expect(
+            updateCollectionMeta(deps, { slug: 'majors', description: 'x'.repeat(301) }, ADMIN),
+        ).rejects.toBeInstanceOf(InvalidArgsError);
+        expect(calls.updateCollectionMeta).toBeUndefined();
+    });
+
+    it('requires at least one editable field', async () => {
+        const { deps, calls } = makeDeps();
+        await expect(updateCollectionMeta(deps, { slug: 'majors' }, ADMIN)).rejects.toBeInstanceOf(InvalidArgsError);
+        expect(calls.updateCollectionMeta).toBeUndefined();
     });
 });

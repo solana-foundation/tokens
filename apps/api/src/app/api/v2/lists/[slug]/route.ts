@@ -4,11 +4,11 @@ import { route, type PlatformAuthContext } from '@/effect/next-route';
 import { withStaleFallback } from '@/effect/stale-response-cache';
 import { NotFoundError, decodeLimit, decodeOffset, decodeUnknownOrBadRequest } from '@tokens/effect';
 import { tokenListsDelete, tokenListsGetBySlug, tokenListsGetMembers, tokenListsUpdate } from '@/lib/cloudrun';
-import { getCuratedTokenList } from '@tokens/asset-registry/compat';
 
 import { getEffectiveCuratedAddresses } from '../../../_curated-addresses';
 import {
     CURATED_OWNER,
+    curatedListMeta,
     hydrateCommunityMembers,
     hydrateCuratedMints,
     normalizeCuratedSlug,
@@ -39,14 +39,14 @@ export const GET = route(
             const main = Effect.gen(function* () {
                 const curatedId = normalizeCuratedSlug(slug);
                 if (curatedId) {
-                    const list = getCuratedTokenList(curatedId);
+                    const meta = yield* curatedListMeta(curatedId);
                     const { addresses } = yield* Effect.tryPromise(() => getEffectiveCuratedAddresses(curatedId));
                     const page = addresses.slice(offset, offset + limit);
                     const tokens = yield* hydrateCuratedMints(page, offset);
                     return {
                         slug: curatedId,
-                        name: list.name.trim() || curatedId,
-                        description: list.description.trim() || null,
+                        name: meta.name,
+                        description: meta.description,
                         curated: true,
                         owner: CURATED_OWNER,
                         tokenCount: addresses.length,
@@ -56,7 +56,8 @@ export const GET = route(
                 }
 
                 const detail = yield* tokenListsGetBySlug({ slug });
-                if (!detail || detail.status !== 'published') {
+                // Unlisted lists are link-readable: hidden from the catalog only.
+                if (!detail || (detail.status !== 'published' && detail.status !== 'unlisted')) {
                     return yield* Effect.fail(new NotFoundError({ message: 'List not found', resource: 'token_list' }));
                 }
                 const members = yield* tokenListsGetMembers({ slug, limit, offset });
@@ -87,10 +88,10 @@ export const GET = route(
 );
 
 const patchBodySchema = Schema.Struct({
-    /** Rename. The old path stops resolving immediately and frees the slug. */
+    /** Rename. The old path stops resolving immediately and is held for this owner. */
     slug: Schema.optional(Schema.String),
-    name: Schema.optional(Schema.String),
-    status: Schema.optional(Schema.Literals(['draft', 'published', 'archived'])),
+    name: Schema.optional(Schema.String.check(Schema.isMaxLength(80))),
+    status: Schema.optional(Schema.Literals(['draft', 'unlisted', 'published', 'archived'])),
 });
 
 /**
@@ -115,7 +116,7 @@ export const PATCH = route(
             const list = yield* unwrapOutcome(outcome);
             return { list };
         }),
-    { platform: { requiredScopes: ['lists:write'] } },
+    { platform: { requiredScopes: ['assets:read'] } },
 );
 
 /**
@@ -134,5 +135,5 @@ export const DELETE = route(
             const list = yield* unwrapOutcome(outcome);
             return { list };
         }),
-    { platform: { requiredScopes: ['lists:write'] } },
+    { platform: { requiredScopes: ['assets:read'] } },
 );

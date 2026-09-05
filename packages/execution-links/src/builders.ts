@@ -42,6 +42,12 @@ export function getByrealSwapUrl(args: { inputMint: string; outputMint: string }
     return url.toString();
 }
 
+export function getJtxSwapUrl(args: { mint: string }): string {
+    const url = new URL('https://app.jtx.com/');
+    url.searchParams.set('mint', args.mint);
+    return url.toString();
+}
+
 export function normalizeSwapSymbol(value: string | undefined | null): string | null {
     const trimmed = (value ?? '').trim();
     if (!trimmed) return null;

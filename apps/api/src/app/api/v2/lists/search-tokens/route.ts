@@ -1,6 +1,7 @@
 import { Effect } from 'effect';
 
-import { route } from '@/effect/next-route';
+import { route, type PlatformAuthContext } from '@/effect/next-route';
+import { enforceProviderBudget } from '@/effect/provider-budget';
 import { BadRequestError, decodeLimit, tapErrorAndDefault } from '@tokens/effect';
 import { tokenListsGetSlugsByMints } from '@/lib/cloudrun';
 
@@ -13,15 +14,18 @@ import { SCORING_VERSION } from '@/lib/judgment/types';
 
 /**
  * GET /api/v2/lists/search-tokens — curator-assist search for list owners
- * deciding which mint to add. Not a public ranking: it is gated behind
- * `lists:write`, defaults to the strict policy, and ALWAYS returns the
- * suppressed set with reasons — a curator must see what was filtered and why.
+ * deciding which mint to add. Not a public ranking: it defaults to the strict
+ * policy and ALWAYS returns the suppressed set with reasons — a curator must
+ * see what was filtered and why.
  * Each result carries `verified` (registry variant exists) and `inLists`
  * (curated + community lists already containing the mint — prior art).
  */
 export const GET = route(
-    (request: Request) =>
+    (request: Request, ctx: { platformAuth: PlatformAuthContext }) =>
         Effect.gen(function* () {
+            // Unique-q searches bypass the 30s response cache; the per-key
+            // window budget bounds sustained provider spend.
+            yield* enforceProviderBudget(ctx.platformAuth, 'search');
             const url = new URL(request.url);
             const q = (url.searchParams.get('q') ?? '').trim();
             if (!q) {
@@ -50,7 +54,8 @@ export const GET = route(
             const policy = POLICIES[policyId];
 
             const { candidates, sources } = yield* gatherCandidates(q, interpretation);
-            const { results, suppressed } = judgeCandidates(candidates, interpretation, policy, getProtectedSymbolIndex(), {
+            const protectedIndex = yield* Effect.promise(() => getProtectedSymbolIndex());
+            const { results, suppressed } = judgeCandidates(candidates, interpretation, policy, protectedIndex, {
                 nowMs: Date.now(),
                 limit,
             });
@@ -58,7 +63,7 @@ export const GET = route(
             // Prior art for the curator: which lists (curated ∪ published
             // community) already contain each candidate. Fail-open — membership
             // annotations must never break the search.
-            const registryByMint = new Map(candidates.map(c => [c.mint, c.registry] as const));
+            const candidateByMint = new Map(candidates.map(c => [c.mint, c] as const));
             const resultMints = results.map(r => r.mint);
             const communityLists =
                 resultMints.length > 0
@@ -69,12 +74,12 @@ export const GET = route(
             const communityByMint = new Map(communityLists.map(entry => [entry.mint, entry.slugs] as const));
 
             const annotated = results.map(result => {
-                const registry = registryByMint.get(result.mint) ?? null;
+                const candidate = candidateByMint.get(result.mint) ?? null;
                 const inLists = [
-                    ...(registry?.curatedListIds ?? []),
+                    ...(candidate?.curatedListIds ?? []),
                     ...(communityByMint.get(result.mint) ?? []),
                 ];
-                return { ...result, verified: registry !== null, inLists };
+                return { ...result, verified: candidate?.registry != null, inLists };
             });
 
             return {
@@ -89,5 +94,5 @@ export const GET = route(
                 suppressed,
             };
         }),
-    { platform: { requiredScopes: ['lists:write'] }, cache: { maxAge: 30 } },
+    { platform: { requiredScopes: ['assets:read'] }, cache: { maxAge: 30 } },
 );

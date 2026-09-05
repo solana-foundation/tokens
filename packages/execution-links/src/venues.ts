@@ -2,6 +2,7 @@ import {
     getByrealSwapUrl,
     getDflowSwapUrl,
     getJupiterSwapUrl,
+    getJtxSwapUrl,
     getKaminoSwapUrl,
     getOmfgSwapUrl,
     getOrcaSwapUrl,
@@ -53,6 +54,14 @@ export const VENUES: readonly VenueMeta[] = [
             ctx.buySymbol === null || ctx.buyMint === USDC_MINT
                 ? null
                 : getSunriseSwapUrl({ fromToken: ctx.sellSymbol ?? 'USDC', toToken: ctx.buyMint }),
+    },
+    {
+        id: 'jtx',
+        name: 'JTX',
+        venueType: 'dex',
+        iconPath: '/logos/popular/jtx.svg',
+        // JTX takes the buy mint alone and picks its own sell side.
+        build: ctx => getJtxSwapUrl({ mint: ctx.buyMint }),
     },
     {
         id: 'omfg',

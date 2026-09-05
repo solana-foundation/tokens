@@ -614,7 +614,7 @@ function SwapProvidersDropdownBase({
         .filter(venue => venue.venueType === 'aggregator')
         .map(venue => ({ href: venue.url, name: venue.name, iconSrc: venue.iconPath ?? '' }));
 
-    const spotVenueIds = ['sunrise', 'omfg', 'kamino', 'orca'];
+    const spotVenueIds = ['sunrise', 'jtx', 'omfg', 'kamino', 'orca'];
     const spotVenueProviders: SpotProviderLink[] = swapLinks.venues
         .filter(venue => spotVenueIds.includes(venue.id))
         .map(venue => ({ href: venue.url, name: venue.name, iconSrc: venue.iconPath ?? '' }));

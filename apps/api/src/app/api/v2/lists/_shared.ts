@@ -12,15 +12,14 @@ import {
 } from '@/lib/cloudrun';
 import { getVariantByMint } from '@tokens/asset-registry';
 import {
+    CURATED_LIST_FALLBACK_NAMES,
     CURATED_LIST_ORDER,
-    getCuratedTokenAddresses,
-    getCuratedTokenList,
-    normalizeCuratedTokenListId,
-    type CuratedTokenListId,
-} from '@tokens/asset-registry/compat';
+    normalizeCuratedListSlug,
+    type CuratedListSlug,
+} from '@tokens/asset-registry/curated-lists';
 import { registryClaimedSymbol } from '@/lib/judgment/protected-symbols';
 import { getProviderTokenMetadataByMints, type ProviderTokenMetadata } from '@/lib/birdeye-search';
-import { getEffectiveCuratedAddresses } from '../../_curated-addresses';
+import { getCuratedMembershipSnapshot } from '@/lib/curated-membership';
 
 /**
  * Shared shapes + helpers for the /api/v2/lists surface. Curated lists and
@@ -39,6 +38,10 @@ export interface V2ListSummary {
     owner: { name: string } | { projectId: string };
     tokenCount: number;
     updatedAt: number | null;
+    /** Only on owner-scoped responses (`GET /v2/lists?mine=true`): draft | unlisted | published | archived. */
+    status?: string;
+    /** Compose only: membership exceeded the per-list fetch ceiling; the union is partial. */
+    truncated?: boolean;
 }
 
 export interface V2ListToken {
@@ -53,51 +56,59 @@ export interface V2ListToken {
     addedAt?: number;
 }
 
-export function normalizeCuratedSlug(slug: string): CuratedTokenListId | null {
-    return normalizeCuratedTokenListId(slug);
+export function normalizeCuratedSlug(slug: string): CuratedListSlug | null {
+    return normalizeCuratedListSlug(slug);
 }
 
 /**
- * Summaries for every curated list. Counts use the exact effective mint set
- * shown by the detail table (compiled registry + admin additions, with the
- * dynamic LST view where applicable), not canonical collection row counts.
+ * Summaries for every curated list, DB-backed end to end: membership counts
+ * from the effective-membership snapshot (exactly the mints the detail table
+ * serves), names/descriptions from `asset_collections` with static fallback
+ * names only for display.
+ *
+ * Membership failures propagate (no hollow catalogs) — callers wrap in
+ * `withStaleFallback`; metadata failures degrade to fallback names only.
  */
-export function curatedListSummaries(): Effect.Effect<V2ListSummary[], never> {
+export function curatedListSummaries(): Effect.Effect<V2ListSummary[], Error> {
     return Effect.gen(function* () {
         const dbSummaries = yield* assetCollectionsGetSummaries({ slugs: [...CURATED_LIST_ORDER] }).pipe(
             tapErrorAndDefault('v2.lists.curatedSummaries', null as AssetCollectionSummary[] | null),
         );
         const dbBySlug = new Map((dbSummaries ?? []).map(summary => [summary.slug, summary] as const));
-        const effectiveCounts = yield* Effect.all(
-            CURATED_LIST_ORDER.map(id => {
-                const staticAddresses = getCuratedTokenAddresses(getCuratedTokenList(id));
-                return Effect.tryPromise(() => getEffectiveCuratedAddresses(id)).pipe(
-                    tapErrorAndDefault(
-                        'v2.lists.curatedSummaryMints',
-                        { addresses: staticAddresses, sanctumLstMints: new Set<string>() },
-                        { listId: id },
-                    ),
-                    Effect.map(({ addresses }) => [id, addresses.length] as const),
-                );
-            }),
-            { concurrency: 3 },
-        );
-        const countBySlug = new Map(effectiveCounts);
+        const snapshot = yield* Effect.tryPromise({
+            try: () => getCuratedMembershipSnapshot(),
+            catch: error => (error instanceof Error ? error : new Error(String(error))),
+        });
 
-        return CURATED_LIST_ORDER.map(id => {
-            const list = getCuratedTokenList(id);
-            const db = dbBySlug.get(id);
+        return CURATED_LIST_ORDER.map(slug => {
+            const db = dbBySlug.get(slug);
             return {
-                slug: id,
-                name: list.name.trim() || id,
-                description: list.description.trim() || null,
+                slug,
+                name: db?.title?.trim() || CURATED_LIST_FALLBACK_NAMES[slug],
+                description: db?.description?.trim() || null,
                 curated: true,
                 owner: CURATED_OWNER,
-                tokenCount: countBySlug.get(id) ?? getCuratedTokenAddresses(list).length,
+                tokenCount: (snapshot.mintsByList[slug] ?? []).length,
                 updatedAt: db?.lastAddedAt ?? null,
             };
         });
     });
+}
+
+/** DB-backed name/description for one curated list (fallback names on outage). */
+export function curatedListMeta(
+    slug: CuratedListSlug,
+): Effect.Effect<{ name: string; description: string | null }, never> {
+    return assetCollectionsGetSummaries({ slugs: [slug] }).pipe(
+        tapErrorAndDefault('v2.lists.curatedMeta', null as AssetCollectionSummary[] | null, { slug }),
+        Effect.map(rows => {
+            const db = rows?.[0];
+            return {
+                name: db?.title?.trim() || CURATED_LIST_FALLBACK_NAMES[slug],
+                description: db?.description?.trim() || null,
+            };
+        }),
+    );
 }
 
 /** Compiled-registry metadata fallback — zero-RPC, covers registry-known mints
@@ -262,8 +273,31 @@ export function failMutationError(
                     details: { code },
                 }),
             );
+        case 'project_lists_limit':
+            return Effect.fail(
+                new BadRequestError({
+                    message: 'This project is at its list limit — delete a list before creating another',
+                    details: { code },
+                }),
+            );
+        case 'list_full':
+            return Effect.fail(
+                new BadRequestError({ message: 'This list is at its member capacity', details: { code } }),
+            );
+        case 'slug_held':
+            return Effect.fail(
+                new BadRequestError({
+                    message:
+                        'This slug was recently released and is reclaimable only by its previous owner for a hold-down period',
+                    details: { code },
+                }),
+            );
+        case 'admin_locked':
+            return Effect.fail(new ForbiddenError({ message: 'This list has been locked by moderators' }));
         case 'batch_too_large':
-            return Effect.fail(new BadRequestError({ message: 'Batch exceeds the 100-mint cap', details: { code } }));
+            return Effect.fail(
+                new BadRequestError({ message: 'Batch exceeds the per-call mint cap', details: { code } }),
+            );
     }
 }
 

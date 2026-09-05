@@ -1,11 +1,17 @@
 import postgres, { type Sql } from 'postgres';
 
+import { CURATED_LIST_SLUGS, type CuratedListSlug } from '@tokens/asset-registry/curated-lists';
+import type {
+    CuratedMembershipEntry,
+    CuratedMembershipSnapshot,
+    CuratedMembershipSource,
+} from './handlers/curatedMembershipReads';
+
 import type { AssetAliasRow, AssetRow, AssetVariantRow, AssetsRepo } from './handlers/assets';
 import type {
     ApiRequestEvent,
     AssetVariantSummary,
     AssetVariantsForRollup,
-    CuratedMintsSource,
     JobsRepo,
     OhlcvCandle,
     OhlcvUpsertResult,
@@ -66,6 +72,7 @@ import type {
 } from './handlers/tokenListsReads';
 import {
     SlugConflictError,
+    UnknownProjectError,
     type TokenListMutationRow,
     type TokenListsMutationsRepo,
 } from './handlers/tokenListsMutations';
@@ -313,65 +320,258 @@ function randomId(prefix: string): string {
     return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
 }
 
-const CURATED_COLLECTION_SLUGS: readonly string[] = [
-    'majors',
-    'currencies',
-    'lsts',
-    'rwas',
-    'etfs',
-    'stocks',
-    'metals',
-];
+const CURATED_MEMBERSHIP_TTL_MS = Number(process.env.CURATED_MEMBERSHIP_TTL_MS) || 60_000;
+/** Coingecko curated-id cache keeps its historical 1h refresh cadence. */
+const CURATED_COINGECKO_IDS_TTL_MS = Number(process.env.CURATED_MINTS_TTL_MS) || 60 * 60_000;
+
+const CURATED_COLLECTION_SLUGS: readonly string[] = CURATED_LIST_SLUGS;
 const CURATED_COLLECTION_SLUGS_SQL_LITERAL = `ARRAY[${CURATED_COLLECTION_SLUGS.map(s => `'${s}'`).join(',')}]::text[]`;
+const NORMAL_CURATED_SLUGS: readonly CuratedListSlug[] = CURATED_LIST_SLUGS.filter(slug => slug !== 'lsts');
+const NORMAL_CURATED_SLUGS_SQL_LITERAL = `ARRAY[${NORMAL_CURATED_SLUGS.map(s => `'${s}'`).join(',')}]::text[]`;
 
-const CURATED_MINTS_TTL_MS = Number(process.env.CURATED_MINTS_TTL_MS) || 60 * 60_000;
+interface CuratedMemberVariantRow {
+    slug: string;
+    rank: number;
+    mint: string;
+    asset_id: string;
+    kind: string;
+    asset_symbol: string | null;
+    token_symbol: string | null;
+}
 
-export function makePostgresCuratedMintsSource(sql: Sql): CuratedMintsSource & { warmup(): Promise<void> } {
-    let cachedMints: string[] | null = null;
-    let cachedRank: Map<string, number> | null = null;
+interface CuratedYieldVariantRow {
+    mint: string;
+    asset_id: string;
+    token_symbol: string | null;
+    sanctum_symbol: string | null;
+}
+
+/**
+ * DB-backed effective curated membership (see `handlers/curatedMembershipReads.ts`
+ * for the semantics). Single authority for curated list membership: the
+ * compiled registry arrays are canonical-asset generation inputs only.
+ *
+ * Caching: ~60s TTL, single-flight refresh, stale-forever-on-error. The sync
+ * accessors (`CuratedMintsSource`) serve the last good snapshot and trigger a
+ * background refresh; `getSnapshot()` throws on a cold load with no snapshot
+ * so callers can distinguish "empty" from "unavailable".
+ */
+export function makePostgresCuratedMembershipSource(sql: Sql): CuratedMembershipSource {
+    let snapshot: CuratedMembershipSnapshot | null = null;
+    /** Cron-facing mint order: non-yield union first, ALL yield mints last. */
+    let cronMintsInOrder: string[] = [];
+    let cronMintRank: Map<string, number> = new Map();
+    let listSlugsByMint: Map<string, CuratedListSlug[]> = new Map();
     let loadedAtMs = 0;
     let inflight: Promise<void> | null = null;
+    /** Member-row count of the last committed snapshot, for the shrink guard. */
+    let lastMemberRowCount = 0;
 
     async function load(): Promise<void> {
-        const rows = await sql<{ mint: string; slug: string; rank: number }[]>`
-            SELECT av.mint AS mint, acm.collection_slug AS slug, acm.rank AS rank
+        // Every active sibling variant inherits its asset's membership, but
+        // yield/LST variants are excluded here — they route only to `lsts`
+        // (solana alone has >1400 of them; they must not flood `majors`).
+        const memberRows = await sql<CuratedMemberVariantRow[]>`
+            SELECT acm.collection_slug AS slug,
+                   acm.rank AS rank,
+                   av.mint AS mint,
+                   av.asset_id AS asset_id,
+                   av.kind AS kind,
+                   a.symbol AS asset_symbol,
+                   t.symbol AS token_symbol
             FROM asset_collection_members acm
-            JOIN asset_variants av
-                ON av.asset_id = acm.asset_id
-               AND av.is_active = true
-            WHERE acm.collection_slug IN ${sql(CURATED_COLLECTION_SLUGS)}
+            JOIN assets a ON a.asset_id = acm.asset_id AND a.is_active = true
+            JOIN asset_variants av ON av.asset_id = acm.asset_id AND av.is_active = true
+            LEFT JOIN tokens t ON t.address = av.mint
+            WHERE acm.collection_slug IN ${sql([...NORMAL_CURATED_SLUGS])}
+              AND av.kind NOT IN ('yield', 'lst')
+              AND NOT EXISTS (
+                  SELECT 1 FROM asset_deletion_tombstones dt WHERE dt.asset_id = acm.asset_id
+              )
             ORDER BY
-                -- Yield variants (LSTs) last: the solana asset alone has >1400 of
-                -- them, which would otherwise exhaust downstream maxMints caps
-                -- before any other curated asset is reached.
-                (av.kind = 'yield') ASC,
-                array_position(
-                    ${sql.unsafe(CURATED_COLLECTION_SLUGS_SQL_LITERAL)},
-                    acm.collection_slug
-                ),
+                array_position(${sql.unsafe(NORMAL_CURATED_SLUGS_SQL_LITERAL)}, acm.collection_slug),
                 acm.rank ASC, av.mint ASC
         `;
-        const seen = new Set<string>();
-        const out: string[] = [];
-        const rank = new Map<string, number>();
-        for (const row of rows) {
-            const mint = row.mint.trim();
-            if (!mint || seen.has(mint)) continue;
-            seen.add(mint);
-            rank.set(mint, out.length);
-            out.push(mint);
+
+        // All active yield/LST variants — the `lsts` fallback and the cron
+        // universe tail (kept complete so market/ohlcv refresh coverage does
+        // not shrink to the capped display view).
+        const yieldRows = await sql<CuratedYieldVariantRow[]>`
+            SELECT av.mint AS mint,
+                   av.asset_id AS asset_id,
+                   t.symbol AS token_symbol,
+                   s.symbol AS sanctum_symbol
+            FROM asset_variants av
+            LEFT JOIN tokens t ON t.address = av.mint
+            LEFT JOIN sanctum_lsts_latest s ON s.mint = av.mint AND s.is_active = true
+            WHERE av.is_active = true
+              AND av.kind IN ('yield', 'lst')
+              AND NOT EXISTS (
+                  SELECT 1 FROM asset_deletion_tombstones dt WHERE dt.asset_id = av.asset_id
+              )
+            ORDER BY av.mint ASC
+        `;
+
+        // Capped Sanctum-backed display view for `lsts` (same source the API
+        // serves today); full yield set as fallback when the view is missing.
+        const viewRows = await sql<{ variants_json: string }[]>`
+            SELECT variants_json::text AS variants_json
+            FROM asset_variant_views
+            WHERE key = 'solana:variants:default'
+            LIMIT 1
+        `;
+        let cappedLstMints: string[] = [];
+        const viewJson = viewRows[0]?.variants_json;
+        if (viewJson) {
+            try {
+                const parsed = JSON.parse(viewJson) as
+                    { variants?: Array<{ kind?: string; mint?: string }> } | Array<{ kind?: string; mint?: string }>;
+                const variants = Array.isArray(parsed) ? parsed : (parsed.variants ?? []);
+                const seen = new Set<string>();
+                for (const v of variants) {
+                    if (v?.kind !== 'yield') continue;
+                    const mint = typeof v.mint === 'string' ? v.mint.trim() : '';
+                    if (!mint || seen.has(mint)) continue;
+                    seen.add(mint);
+                    cappedLstMints.push(mint);
+                }
+            } catch {
+                cappedLstMints = [];
+            }
         }
-        cachedMints = out;
-        cachedRank = rank;
+        if (cappedLstMints.length === 0) {
+            cappedLstMints = yieldRows.map(r => r.mint);
+        }
+
+        const entriesByMint: Record<string, CuratedMembershipEntry> = {};
+        const mintsByList = Object.fromEntries(CURATED_LIST_SLUGS.map(slug => [slug, [] as string[]])) as Record<
+            CuratedListSlug,
+            string[]
+        >;
+
+        const seenByList = new Map<CuratedListSlug, Set<string>>(CURATED_LIST_SLUGS.map(s => [s, new Set<string>()]));
+        for (const row of memberRows) {
+            const slug = row.slug as CuratedListSlug;
+            const seen = seenByList.get(slug);
+            if (!seen || seen.has(row.mint)) continue;
+            seen.add(row.mint);
+            mintsByList[slug].push(row.mint);
+            const entry = entriesByMint[row.mint];
+            if (entry) {
+                if (!entry.listSlugs.includes(slug)) entry.listSlugs.push(slug);
+            } else {
+                entriesByMint[row.mint] = {
+                    assetId: row.asset_id,
+                    listSlugs: [slug],
+                    // Mint-specific metadata first; canonical symbol only for
+                    // non-derivative kinds (yield/lst are excluded above).
+                    symbol: row.token_symbol ?? row.asset_symbol ?? null,
+                };
+            }
+        }
+
+        // Yield/LST mints: `lsts` only. Display list = capped view; the full
+        // set still gets entries (badges/protection cover every active LST).
+        mintsByList.lsts = [...cappedLstMints];
+        for (const row of yieldRows) {
+            const entry = entriesByMint[row.mint];
+            if (entry) {
+                if (!entry.listSlugs.includes('lsts')) entry.listSlugs.push('lsts');
+            } else {
+                entriesByMint[row.mint] = {
+                    assetId: row.asset_id,
+                    listSlugs: ['lsts'],
+                    symbol: row.token_symbol ?? row.sanctum_symbol ?? null,
+                };
+            }
+        }
+        for (const mint of mintsByList.lsts) {
+            if (!entriesByMint[mint]) {
+                entriesByMint[mint] = { assetId: null, listSlugs: ['lsts'], symbol: null };
+            }
+        }
+
+        // `all` = live union in canonical slug order (never persisted).
+        const allSeen = new Set<string>();
+        const allMints: string[] = [];
+        for (const slug of CURATED_LIST_SLUGS) {
+            for (const mint of mintsByList[slug]) {
+                if (allSeen.has(mint)) continue;
+                allSeen.add(mint);
+                allMints.push(mint);
+            }
+        }
+
+        // Cron universe: non-yield union first, then EVERY yield mint last
+        // (legacy ordering — yield tails keep downstream maxMints caps sane).
+        const cronSeen = new Set<string>();
+        const cronOrder: string[] = [];
+        for (const slug of NORMAL_CURATED_SLUGS) {
+            for (const mint of mintsByList[slug]) {
+                if (cronSeen.has(mint)) continue;
+                cronSeen.add(mint);
+                cronOrder.push(mint);
+            }
+        }
+        for (const row of yieldRows) {
+            if (cronSeen.has(row.mint)) continue;
+            cronSeen.add(row.mint);
+            cronOrder.push(row.mint);
+        }
+        const rank = new Map<string, number>();
+        for (let i = 0; i < cronOrder.length; i += 1) rank.set(cronOrder[i]!, i);
+
+        const slugsByMint = new Map<string, CuratedListSlug[]>();
+        for (const [mint, entry] of Object.entries(entriesByMint)) {
+            slugsByMint.set(mint, entry.listSlugs);
+        }
+
+        // Guards against committing a bogus snapshot (same class as the
+        // trending empty-row wipeout): a reachable DB with wiped membership
+        // yields a *successful* empty result, and a mass deactivation shrinks
+        // it silently. Refusing keeps the last good snapshot serving.
+        if (memberRows.length === 0) {
+            throw new Error('curated membership snapshot has 0 member rows — refusing to commit');
+        }
+        const shrinkEnv = Number(process.env.CURATED_SNAPSHOT_MAX_SHRINK_PCT);
+        // 0 is meaningful ("refuse any shrink"), so no || coercion here.
+        const maxShrinkPct = Number.isFinite(shrinkEnv) && shrinkEnv >= 0 ? shrinkEnv : 50;
+        if (lastMemberRowCount > 0 && memberRows.length < lastMemberRowCount * (1 - maxShrinkPct / 100)) {
+            throw new Error(
+                `curated membership snapshot shrank ${lastMemberRowCount} -> ${memberRows.length} rows ` +
+                    `(> ${maxShrinkPct}% drop) — refusing to commit`,
+            );
+        }
+
+        snapshot = {
+            loadedAt: Date.now(),
+            mintsByList,
+            allMints,
+            entriesByMint,
+        };
+        cronMintsInOrder = cronOrder;
+        cronMintRank = rank;
+        listSlugsByMint = slugsByMint;
         loadedAtMs = Date.now();
+        lastMemberRowCount = memberRows.length;
     }
 
     function refreshIfStale(): void {
         if (inflight) return;
-        if (cachedMints && Date.now() - loadedAtMs < CURATED_MINTS_TTL_MS) return;
+        if (snapshot && Date.now() - loadedAtMs < CURATED_MEMBERSHIP_TTL_MS) return;
         inflight = load()
             .catch(err => {
-                console.error('[cloudrun-assets] curated mints refresh failed', err);
+                // Keep serving the last good snapshot, but loudly: this line is
+                // the alert hook for a silently-frozen membership snapshot.
+                const stalenessMs = loadedAtMs > 0 ? Date.now() - loadedAtMs : null;
+                console.error(
+                    JSON.stringify({
+                        event: 'curated_snapshot_refresh_failed',
+                        staleness_ms: stalenessMs,
+                        stale_over_30m: stalenessMs !== null && stalenessMs > 30 * 60 * 1000,
+                        error: err instanceof Error ? err.message : String(err),
+                    }),
+                );
             })
             .finally(() => {
                 inflight = null;
@@ -380,15 +580,31 @@ export function makePostgresCuratedMintsSource(sql: Sql): CuratedMintsSource & {
 
     return {
         async warmup() {
-            if (!cachedMints) await load();
+            if (!snapshot) await load();
+        },
+        async getSnapshot(): Promise<CuratedMembershipSnapshot> {
+            if (!snapshot) {
+                // Cold path: propagate failures instead of fabricating an
+                // empty-but-successful snapshot.
+                if (!inflight) inflight = load().finally(() => (inflight = null));
+                await inflight;
+            } else {
+                refreshIfStale();
+            }
+            if (!snapshot) throw new Error('curated membership snapshot unavailable');
+            return snapshot;
         },
         getAllCuratedMintsInOrder(): string[] {
             refreshIfStale();
-            return cachedMints ?? [];
+            return cronMintsInOrder;
         },
         getCuratedMintRank(): Map<string, number> {
             refreshIfStale();
-            return cachedRank ?? new Map();
+            return cronMintRank;
+        },
+        getListSlugsByMint(): Map<string, CuratedListSlug[]> {
+            refreshIfStale();
+            return listSlugsByMint;
         },
     };
 }
@@ -1625,7 +1841,7 @@ export function makePostgresCoingeckoCuratedSource(sql: Sql): CoingeckoCuratedSo
 
     function refreshIfStale(): void {
         if (inflight) return;
-        if (cachedIds && Date.now() - loadedAtMs < CURATED_MINTS_TTL_MS) return;
+        if (cachedIds && Date.now() - loadedAtMs < CURATED_COINGECKO_IDS_TTL_MS) return;
         inflight = load()
             .catch(err => {
                 console.error('[cloudrun-assets] curated coingecko ids refresh failed', err);
@@ -3240,9 +3456,14 @@ export function makePostgresAssetCollectionsReadsRepo(sql: Sql): AssetCollection
             // flow) never writes asset_collection_members, so membership added_at
             // alone can never see it. Auto-synced yield/LST variants are excluded so
             // Sanctum churn cannot hold the highlight hostage.
+            // Starts from asset_collections so an existing-but-empty collection
+            // still returns its title/description (the DB is the metadata
+            // authority — the seed no longer refreshes it).
             const rows = await sql<
                 {
                     collection_slug: string;
+                    title: string | null;
+                    description: string | null;
                     member_count: number;
                     last_added_asset_id: string | null;
                     last_added_at: number | null;
@@ -3268,19 +3489,33 @@ export function makePostgresAssetCollectionsReadsRepo(sql: Sql): AssetCollection
                       AND NOT EXISTS (
                           SELECT 1 FROM asset_deletion_tombstones t WHERE t.asset_id = acm.asset_id
                       )
+                ),
+                rollup AS (
+                    SELECT collection_slug,
+                           COUNT(*)::int AS member_count,
+                           (ARRAY_AGG(asset_id ORDER BY added_at DESC, rank ASC))[1] AS last_added_asset_id,
+                           MAX(added_at) AS last_added_at
+                    FROM members
+                    GROUP BY collection_slug
                 )
-                SELECT collection_slug,
-                       COUNT(*)::int AS member_count,
-                       (ARRAY_AGG(asset_id ORDER BY added_at DESC, rank ASC))[1] AS last_added_asset_id,
-                       MAX(added_at) AS last_added_at
-                FROM members
-                GROUP BY collection_slug
+                SELECT c.slug AS collection_slug,
+                       c.title AS title,
+                       c.description AS description,
+                       COALESCE(r.member_count, 0) AS member_count,
+                       r.last_added_asset_id AS last_added_asset_id,
+                       r.last_added_at AS last_added_at
+                FROM asset_collections c
+                LEFT JOIN rollup r ON r.collection_slug = c.slug
+                WHERE c.slug IN ${sql([...slugs])}
             `;
             return rows.map(r => ({
                 collection_slug: r.collection_slug,
+                title: r.title,
+                description: r.description,
                 member_count: r.member_count,
                 last_added_asset_id: r.last_added_asset_id,
-                last_added_at: r.last_added_at === null ? null : Number(r.last_added_at),
+                last_added_at:
+                    r.last_added_at === null || r.last_added_at === undefined ? null : Number(r.last_added_at),
             }));
         },
     };
@@ -3293,6 +3528,7 @@ const TOKEN_LIST_ROW_COLUMNS = `
     tl.owner_project_id,
     tl.name,
     tl.status,
+    tl.admin_locked_at,
     (SELECT COUNT(*)::int FROM token_list_members m WHERE m.list_id = tl.id) AS member_count,
     (EXTRACT(EPOCH FROM tl.created_at) * 1000)::bigint AS created_at,
     (EXTRACT(EPOCH FROM tl.updated_at) * 1000)::bigint AS updated_at
@@ -3305,6 +3541,7 @@ export function makePostgresTokenListsReadsRepo(sql: Sql): TokenListsReadsRepo {
                 SELECT tl.slug,
                        tl.name,
                        tl.owner_project_id,
+                       tl.status,
                        (SELECT COUNT(*)::int FROM token_list_members m WHERE m.list_id = tl.id) AS member_count,
                        (EXTRACT(EPOCH FROM tl.updated_at) * 1000)::bigint AS updated_at
                 FROM token_lists tl
@@ -3313,6 +3550,36 @@ export function makePostgresTokenListsReadsRepo(sql: Sql): TokenListsReadsRepo {
                 LIMIT ${limit} OFFSET ${offset}
             `;
             return rows;
+        },
+        async listByOwner(ownerProjectId, limit, offset) {
+            // Archived rows included: the owner must keep seeing (and be able
+            // to restore) archived lists from the dashboard.
+            const rows = await sql<TokenListSummaryRow[]>`
+                SELECT tl.slug,
+                       tl.name,
+                       tl.owner_project_id,
+                       tl.status,
+                       (SELECT COUNT(*)::int FROM token_list_members m WHERE m.list_id = tl.id) AS member_count,
+                       (EXTRACT(EPOCH FROM tl.updated_at) * 1000)::bigint AS updated_at
+                FROM token_lists tl
+                WHERE tl.owner_project_id = ${ownerProjectId}
+                ORDER BY tl.updated_at DESC, tl.slug ASC
+                LIMIT ${limit} OFFSET ${offset}
+            `;
+            return rows;
+        },
+        async countPublished() {
+            const rows = await sql<{ count: string | number }[]>`
+                SELECT COUNT(*)::int AS count FROM token_lists tl WHERE tl.status = 'published'
+            `;
+            return Number(rows[0]?.count ?? 0);
+        },
+        async getSlugHold(slug) {
+            const rows = await sql<{ owner_project_id: string; released_at: string | number }[]>`
+                SELECT owner_project_id, released_at FROM token_list_slug_holds WHERE slug = ${slug}
+            `;
+            const row = rows[0];
+            return row ? { ownerProjectId: row.owner_project_id, releasedAt: Number(row.released_at) } : null;
         },
         async getBySlug(slug) {
             const rows = await sql<TokenListRow[]>`
@@ -3365,6 +3632,8 @@ export function makePostgresTokenListsReadsRepo(sql: Sql): TokenListsReadsRepo {
 
 /** Postgres unique-violation SQLSTATE. */
 const UNIQUE_VIOLATION = '23505';
+/** Postgres foreign-key-violation SQLSTATE (token_lists.owner_project_id → projects). */
+const FOREIGN_KEY_VIOLATION = '23503';
 
 export function makePostgresTokenListsMutationsRepo(sql: Sql): TokenListsMutationsRepo {
     async function getRowById(listId: string): Promise<TokenListMutationRow> {
@@ -3392,9 +3661,9 @@ export function makePostgresTokenListsMutationsRepo(sql: Sql): TokenListsMutatio
                     VALUES (${id}, ${args.slug}, ${args.ownerProjectId}, ${args.name}, ${args.status}, ${now}, ${now})
                 `;
             } catch (err) {
-                if ((err as { code?: string }).code === UNIQUE_VIOLATION) {
-                    throw new SlugConflictError(args.slug);
-                }
+                const code = (err as { code?: string }).code;
+                if (code === UNIQUE_VIOLATION) throw new SlugConflictError(args.slug);
+                if (code === FOREIGN_KEY_VIOLATION) throw new UnknownProjectError(args.ownerProjectId);
                 throw err;
             }
             return getRowById(id);
@@ -3421,33 +3690,83 @@ export function makePostgresTokenListsMutationsRepo(sql: Sql): TokenListsMutatio
             }
             return getRowById(listId);
         },
-        async deleteList(listId) {
-            // token_list_members.list_id is ON DELETE CASCADE, so members go with it.
-            await sql`DELETE FROM token_lists WHERE id = ${listId}`;
+        async deleteList(listId, hold) {
+            // One transaction: the row disappearing and the hold appearing are
+            // atomic, so a crash cannot leave the slug momentarily free.
+            // token_list_members.list_id is ON DELETE CASCADE.
+            await sql.begin(async tx => {
+                await tx`DELETE FROM token_lists WHERE id = ${listId}`;
+                await tx`
+                    INSERT INTO token_list_slug_holds (slug, owner_project_id, released_at)
+                    VALUES (${hold.slug}, ${hold.ownerProjectId}, ${hold.releasedAt})
+                    ON CONFLICT (slug) DO UPDATE SET
+                        owner_project_id = EXCLUDED.owner_project_id,
+                        released_at = EXCLUDED.released_at
+                `;
+            });
+        },
+        async getSlugHold(slug) {
+            const rows = await sql<{ owner_project_id: string; released_at: string | number }[]>`
+                SELECT owner_project_id, released_at FROM token_list_slug_holds WHERE slug = ${slug}
+            `;
+            const row = rows[0];
+            return row ? { ownerProjectId: row.owner_project_id, releasedAt: Number(row.released_at) } : null;
+        },
+        async recordSlugHold(slug, ownerProjectId, releasedAt) {
+            await sql`
+                INSERT INTO token_list_slug_holds (slug, owner_project_id, released_at)
+                VALUES (${slug}, ${ownerProjectId}, ${releasedAt})
+                ON CONFLICT (slug) DO UPDATE SET
+                    owner_project_id = EXCLUDED.owner_project_id,
+                    released_at = EXCLUDED.released_at
+            `;
+        },
+        async clearSlugHold(slug) {
+            await sql`DELETE FROM token_list_slug_holds WHERE slug = ${slug}`;
         },
         async upsertMember(args) {
             const rank = args.rank;
-            await sql`
-                INSERT INTO token_list_members (id, list_id, mint, rank, note, added_at, symbol, name, logo_uri, decimals)
-                VALUES (
-                    ${randomId('tlm')}, ${args.listId}, ${args.mint},
-                    COALESCE(${rank}, (
-                        SELECT COALESCE(MAX(rank), -1) + 1 FROM token_list_members WHERE list_id = ${args.listId}
-                    )),
-                    ${args.note}, ${args.addedAt},
-                    ${args.snapshot?.symbol ?? null}, ${args.snapshot?.name ?? null},
-                    ${args.snapshot?.logoUri ?? null}, ${args.snapshot?.decimals ?? null}
-                )
-                ON CONFLICT (list_id, mint) DO UPDATE SET
-                    rank = COALESCE(${rank}, token_list_members.rank),
-                    note = EXCLUDED.note,
-                    symbol = EXCLUDED.symbol,
-                    name = EXCLUDED.name,
-                    logo_uri = EXCLUDED.logo_uri,
-                    decimals = EXCLUDED.decimals
-            `;
-            // Discovery updatedAt must reflect member changes, not just metadata edits.
-            await sql`UPDATE token_lists SET updated_at = ${new Date(args.addedAt)} WHERE id = ${args.listId}`;
+            let inserted = true;
+            // Same locking discipline as upsertMembersBulk: cap and default
+            // rank are read with the list row locked, so a single PUT cannot
+            // race a batch into cap overshoot or duplicate ranks.
+            await sql.begin(async tx => {
+                await tx`SELECT id FROM token_lists WHERE id = ${args.listId} FOR UPDATE`;
+                const existingRows = await tx<{ id: string }[]>`
+                    SELECT id FROM token_list_members WHERE list_id = ${args.listId} AND mint = ${args.mint}
+                `;
+                if (existingRows.length === 0) {
+                    const countRows = await tx<{ count: number }[]>`
+                        SELECT COUNT(*)::int AS count FROM token_list_members WHERE list_id = ${args.listId}
+                    `;
+                    if ((countRows[0]?.count ?? 0) >= args.membersPerListCap) {
+                        inserted = false;
+                        return;
+                    }
+                }
+                await tx`
+                    INSERT INTO token_list_members (id, list_id, mint, rank, note, added_at, symbol, name, logo_uri, decimals)
+                    VALUES (
+                        ${randomId('tlm')}, ${args.listId}, ${args.mint},
+                        COALESCE(${rank}, (
+                            SELECT COALESCE(MAX(rank), -1) + 1 FROM token_list_members WHERE list_id = ${args.listId}
+                        )),
+                        ${args.note}, ${args.addedAt},
+                        ${args.snapshot?.symbol ?? null}, ${args.snapshot?.name ?? null},
+                        ${args.snapshot?.logoUri ?? null}, ${args.snapshot?.decimals ?? null}
+                    )
+                    ON CONFLICT (list_id, mint) DO UPDATE SET
+                        rank = COALESCE(${rank}, token_list_members.rank),
+                        note = EXCLUDED.note,
+                        symbol = EXCLUDED.symbol,
+                        name = EXCLUDED.name,
+                        logo_uri = EXCLUDED.logo_uri,
+                        decimals = EXCLUDED.decimals
+                `;
+                // Discovery updatedAt must reflect member changes, not just metadata edits.
+                await tx`UPDATE token_lists SET updated_at = ${new Date(args.addedAt)} WHERE id = ${args.listId}`;
+            });
+            return inserted;
         },
         async removeMember(listId, mint, nowMs) {
             const rows = await sql<{ id: string }[]>`
@@ -3477,7 +3796,151 @@ export function makePostgresTokenListsMutationsRepo(sql: Sql): TokenListsMutatio
             `;
             return rows[0]?.exists === true;
         },
+        async filterMintsWithActiveVariants(mints) {
+            const found: string[] = [];
+            for (const part of chunkStrings(mints, 500)) {
+                const rows = await sql<{ mint: string }[]>`
+                    SELECT DISTINCT av.mint
+                    FROM asset_variants av
+                    WHERE av.mint IN ${sql([...part])}
+                      AND av.is_active = true
+                      AND NOT EXISTS (
+                          SELECT 1 FROM asset_deletion_tombstones t WHERE t.asset_id = av.asset_id
+                      )
+                `;
+                for (const row of rows) found.push(row.mint);
+            }
+            return found;
+        },
+        async filterMintsKnownTokens(mints) {
+            const found: string[] = [];
+            for (const part of chunkStrings(mints, 500)) {
+                const rows = await sql<{ address: string }[]>`
+                    SELECT address FROM tokens WHERE address IN ${sql([...part])}
+                `;
+                for (const row of rows) found.push(row.address);
+            }
+            return found;
+        },
+        async filterMintsExistingMembers(listId, mints) {
+            const found: string[] = [];
+            for (const part of chunkStrings(mints, 500)) {
+                const rows = await sql<{ mint: string }[]>`
+                    SELECT mint FROM token_list_members
+                    WHERE list_id = ${listId} AND mint IN ${sql([...part])}
+                `;
+                for (const row of rows) found.push(row.mint);
+            }
+            return found;
+        },
+        async countMembers(listId) {
+            const rows = await sql<{ count: number }[]>`
+                SELECT COUNT(*)::int AS count FROM token_list_members WHERE list_id = ${listId}
+            `;
+            return rows[0]?.count ?? 0;
+        },
+        async upsertMembersBulk(listId, rows, membersPerListCap) {
+            if (rows.length === 0) return { overflowMints: [] };
+            const overflowMints: string[] = [];
+            // One transaction, list row locked: the cap and MAX(rank) are read
+            // under the lock so concurrent batches serialize per-list — no cap
+            // overshoot, no duplicate ranks.
+            await sql.begin(async tx => {
+                await tx`SELECT id FROM token_lists WHERE id = ${listId} FOR UPDATE`;
+
+                const existing = new Set<string>();
+                for (const part of chunkStrings(
+                    rows.map(row => row.mint),
+                    500,
+                )) {
+                    const found = await tx<{ mint: string }[]>`
+                        SELECT mint FROM token_list_members
+                        WHERE list_id = ${listId} AND mint IN ${tx([...part])}
+                    `;
+                    for (const row of found) existing.add(row.mint);
+                }
+                const countRows = await tx<{ count: number }[]>`
+                    SELECT COUNT(*)::int AS count FROM token_list_members WHERE list_id = ${listId}
+                `;
+                let slots = Math.max(0, membersPerListCap - (countRows[0]?.count ?? 0));
+
+                const insertable: typeof rows = [];
+                for (const row of rows) {
+                    if (!existing.has(row.mint)) {
+                        if (slots === 0) {
+                            overflowMints.push(row.mint);
+                            continue;
+                        }
+                        slots -= 1;
+                    }
+                    insertable.push(row);
+                }
+                if (insertable.length === 0) return;
+
+                const baseRows = await tx<{ next: number }[]>`
+                    SELECT COALESCE(MAX(rank), -1) + 1 AS next FROM token_list_members WHERE list_id = ${listId}
+                `;
+                let nextRank = baseRows[0]?.next ?? 0;
+                for (const part of chunkArray(insertable, 500)) {
+                    const values = part.map(row => ({
+                        id: randomId('tlm'),
+                        list_id: listId,
+                        mint: row.mint,
+                        rank: nextRank++,
+                        note: row.note,
+                        added_at: row.addedAt,
+                        symbol: row.snapshot?.symbol ?? null,
+                        name: row.snapshot?.name ?? null,
+                        logo_uri: row.snapshot?.logoUri ?? null,
+                        decimals: row.snapshot?.decimals ?? null,
+                    }));
+                    await tx`
+                        INSERT INTO token_list_members ${tx(
+                            values,
+                            'id',
+                            'list_id',
+                            'mint',
+                            'rank',
+                            'note',
+                            'added_at',
+                            'symbol',
+                            'name',
+                            'logo_uri',
+                            'decimals',
+                        )}
+                        ON CONFLICT (list_id, mint) DO UPDATE SET
+                            note = EXCLUDED.note,
+                            symbol = EXCLUDED.symbol,
+                            name = EXCLUDED.name,
+                            logo_uri = EXCLUDED.logo_uri,
+                            decimals = EXCLUDED.decimals
+                    `;
+                }
+                await tx`UPDATE token_lists SET updated_at = now() WHERE id = ${listId}`;
+            });
+            return { overflowMints };
+        },
+        async countListsByOwner(ownerProjectId) {
+            const rows = await sql<{ count: number }[]>`
+                SELECT COUNT(*)::int AS count
+                FROM token_lists
+                WHERE owner_project_id = ${ownerProjectId} AND status <> 'archived'
+            `;
+            return rows[0]?.count ?? 0;
+        },
     };
+}
+
+function chunkStrings(items: readonly string[], size: number): string[][] {
+    const chunks: string[][] = [];
+    for (let i = 0; i < items.length; i += size) chunks.push(items.slice(i, i + size) as string[]);
+    return chunks;
+}
+
+function chunkArray<T>(items: readonly T[], size: number): T[][] {
+    const chunks: T[][] = [];
+    for (let i = 0; i < items.length; i += size) chunks.push(items.slice(i, i + size) as T[]);
+    return chunks;
 }
 
 export function makePostgresSeedRepo(sql: Sql): SeedRepo {
@@ -3581,51 +4044,59 @@ export function makePostgresSeedRepo(sql: Sql): SeedRepo {
                 ON CONFLICT (mint) DO NOTHING
             `;
         },
-        async upsertAssetCollection(args) {
+        async insertCollectionIfMissing(args) {
             const now = new Date();
+            // Metadata is DB-authoritative once seeded: never overwrite an
+            // existing row (admin edits win).
             await sql`
                 INSERT INTO asset_collections (id, slug, title, description, created_at, updated_at)
-                VALUES (
-                    coalesce(
-                        (SELECT id FROM asset_collections WHERE slug = ${args.slug}),
-                        ${randomId('acl')}
-                    ),
-                    ${args.slug}, ${args.title}, ${args.description}, ${now}, ${now}
-                )
-                ON CONFLICT (slug) DO UPDATE SET
-                    title = EXCLUDED.title,
-                    description = EXCLUDED.description,
-                    updated_at = EXCLUDED.updated_at
+                VALUES (${randomId('acl')}, ${args.slug}, ${args.title}, ${args.description}, ${now}, ${now})
+                ON CONFLICT (slug) DO NOTHING
             `;
         },
-        async mergeAssetCollectionMembers(collectionSlug, members) {
+        async insertCollectionMembersIfMissing(members) {
+            let inserted = 0;
+            for (const m of members) {
+                const rows = await sql<{ id: string }[]>`
+                    INSERT INTO asset_collection_members (id, collection_slug, asset_id, rank, added_at, source)
+                    VALUES (${randomId('acm')}, ${m.collectionSlug}, ${m.assetId}, ${m.rank}, ${m.addedAt}, 'registry')
+                    ON CONFLICT (collection_slug, asset_id) DO NOTHING
+                    RETURNING id
+                `;
+                inserted += rows.length;
+            }
+            return inserted;
+        },
+        async countCollectionMembers(slugs) {
+            if (slugs.length === 0) return 0;
+            const rows = await sql<{ count: number }[]>`
+                SELECT COUNT(*)::int AS count
+                FROM asset_collection_members
+                WHERE collection_slug IN ${sql([...slugs])}
+            `;
+            return rows[0]?.count ?? 0;
+        },
+        async listTombstonedAssetIds(assetIds) {
+            if (assetIds.length === 0) return [];
+            const rows = await sql<{ asset_id: string }[]>`
+                SELECT DISTINCT asset_id
+                FROM asset_deletion_tombstones
+                WHERE asset_id IN ${sql([...assetIds])}
+            `;
+            return rows.map(r => r.asset_id);
+        },
+        async deleteCollectionCascade(slug) {
+            let removed = 0;
             await sql.begin(async tx => {
-                for (const m of members) {
-                    // Existing rows keep their added_at and source (an asset
-                    // the admin added that later lands in the registry stays
-                    // source='admin'); only rank follows the registry.
-                    await tx`
-                        INSERT INTO asset_collection_members (id, collection_slug, asset_id, rank, added_at, source)
-                        VALUES (${randomId('acm')}, ${m.collectionSlug}, ${m.assetId}, ${m.rank}, ${m.addedAt}, 'registry')
-                        ON CONFLICT (collection_slug, asset_id) DO UPDATE SET rank = EXCLUDED.rank
-                    `;
-                }
-                // Registry removals still propagate; admin rows are never pruned.
-                const keepAssetIds = members.map(m => m.assetId);
-                if (keepAssetIds.length === 0) {
-                    await tx`
-                        DELETE FROM asset_collection_members
-                        WHERE collection_slug = ${collectionSlug} AND source = 'registry'
-                    `;
-                } else {
-                    await tx`
-                        DELETE FROM asset_collection_members
-                        WHERE collection_slug = ${collectionSlug}
-                          AND source = 'registry'
-                          AND asset_id NOT IN ${tx(keepAssetIds)}
-                    `;
-                }
+                const members = await tx<{ id: string }[]>`
+                    DELETE FROM asset_collection_members WHERE collection_slug = ${slug} RETURNING id
+                `;
+                const collections = await tx<{ id: string }[]>`
+                    DELETE FROM asset_collections WHERE slug = ${slug} RETURNING id
+                `;
+                removed = members.length + collections.length;
             });
+            return removed;
         },
         async listTombstonedRefs(normalizedRefs) {
             if (normalizedRefs.length === 0) return [];
@@ -3635,26 +4106,6 @@ export function makePostgresSeedRepo(sql: Sql): SeedRepo {
                 WHERE normalized_ref IN ${sql([...normalizedRefs])}
             `;
             return rows.map(r => r.normalized_ref);
-        },
-        async listCollectionMemberUnion(excludeSlug) {
-            const rows = await sql<
-                {
-                    collection_slug: string;
-                    asset_id: string;
-                    rank: number;
-                    added_at: number;
-                }[]
-            >`
-                SELECT collection_slug, asset_id, rank, added_at
-                FROM asset_collection_members
-                WHERE collection_slug <> ${excludeSlug}
-            `;
-            return rows.map(r => ({
-                collectionSlug: r.collection_slug,
-                assetId: r.asset_id,
-                rank: r.rank,
-                addedAt: Number(r.added_at),
-            }));
         },
         async lowerCollectionMemberAddedAtByMint(mint, addedAtMs) {
             const rows = await sql<{ id: string }[]>`
@@ -3922,14 +4373,15 @@ export function makePostgresAdminActionsRepo(sql: Sql): AdminActionsRepo {
             `;
         },
 
-        async upsertAssetCollectionTitle(slug, title) {
+        async ensureAssetCollection(slug, title) {
             const now = new Date();
+            // Insert-if-missing only: `asset_collections.title/description` is
+            // admin-owned display metadata (served by v1/v2), so seeding a
+            // token into a list must never rewrite that list's name.
             await sql`
                 INSERT INTO asset_collections (id, slug, title, created_at, updated_at)
                 VALUES (${randomId('acl')}, ${slug}, ${title}, ${now}, ${now})
-                ON CONFLICT (slug) DO UPDATE SET
-                    title = EXCLUDED.title,
-                    updated_at = EXCLUDED.updated_at
+                ON CONFLICT (slug) DO NOTHING
             `;
         },
 

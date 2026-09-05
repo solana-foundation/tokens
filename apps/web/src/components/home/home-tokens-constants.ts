@@ -1,5 +1,5 @@
 import type { TrendingMode } from '@/hooks/queries/use-token-search';
-import { CURATED_LIST_ORDER_WITHOUT_LSTS } from '@/lib/curated-token-lists';
+import { CURATED_LIST_ORDER_WITHOUT_LSTS } from '@/lib/curated-lists';
 import type { HomeTabId } from '@/lib/home-highlights';
 import type { TrendingWindow } from '@/lib/types';
 

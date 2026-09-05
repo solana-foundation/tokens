@@ -8,7 +8,25 @@
 
 export type AssetCategory = 'crypto' | 'stablecoin' | 'lst' | 'rwa' | 'commodity' | 'equity' | 'etf' | 'index';
 
+// Hand-copied from ADMIN_ASSIGNABLE_CURATED_SLUGS in
+// packages/asset-registry/src/curated-lists.ts (the source of truth —
+// deliberately excludes `lsts`, whose membership is Sanctum-dynamic).
 export type CuratedCategorySlug = 'majors' | 'currencies' | 'rwas' | 'etfs' | 'metals' | 'stocks';
+
+// Hand-copied from CURATED_LIST_SLUGS: every curated list, including `lsts`.
+// Membership for `lsts` is Sanctum-driven, but its display metadata is editable.
+export type CuratedListSlug = CuratedCategorySlug | 'lsts';
+
+/** Display order for the metadata editor; mirrors CURATED_LIST_SLUGS. */
+export const CURATED_LIST_SLUGS: readonly CuratedListSlug[] = [
+    'majors',
+    'lsts',
+    'currencies',
+    'rwas',
+    'etfs',
+    'metals',
+    'stocks',
+];
 
 export type VariantKind =
     | 'native'
@@ -33,10 +51,28 @@ export type LogoSource = 'url' | 'override' | 'variant' | 'none';
 /* ── listCategories ─────────────────────────────────────────────────────── */
 
 export type CategoryRow = {
-    id: CuratedCategorySlug;
+    /** All seven curated slugs are addressable; `listCategories` defaults to the six assignable ones. */
+    id: CuratedListSlug;
     name: string;
+    /** Public list description (`asset_collections.description`); null when unset. */
+    description: string | null;
     count: number;
     lastAddedAssetId: string | null;
+};
+
+/* ── updateCollectionMeta ───────────────────────────────────────────────── */
+
+/** Edit a curated list's public display metadata. Omitted fields are left untouched. */
+export type UpdateCollectionMetaArgs = {
+    slug: CuratedListSlug;
+    title?: string;
+    /** Empty string clears the description. */
+    description?: string;
+};
+
+export type UpdateCollectionMetaResult = {
+    slug: CuratedListSlug;
+    updated: boolean;
 };
 
 /* ── listCanonicalAssets ────────────────────────────────────────────────── */
@@ -269,7 +305,43 @@ export type TokenListAdminRow = {
     ownerProjectId: string;
     name: string;
     status: string;
+    /** Unix ms; set while the admin takedown lock is active. */
+    adminLockedAt: number | null;
     memberCount: number;
     createdAt: number;
     updatedAt: number;
 };
+
+/** Mirrors `TokenListMutationErrorCode` in cloudrun-assets handlers/tokenListsMutations.ts. */
+export type TokenListMutationErrorCode =
+    | 'invalid_slug'
+    | 'reserved_slug'
+    | 'slug_conflict'
+    | 'unknown_project'
+    | 'not_found'
+    | 'forbidden'
+    | 'invalid_mint'
+    | 'unknown_mint'
+    | 'batch_too_large'
+    | 'list_full';
+
+export type TokenListMutationOutcome<T> = { ok: true; value: T } | { ok: false; error: TokenListMutationErrorCode };
+
+/** `adminCreateTokenList` result (cloudrun-assets handlers/tokenListsAdmin.ts). */
+export type AdminCreateTokenListResult = TokenListMutationOutcome<{
+    id: string;
+    slug: string;
+    ownerProjectId: string;
+    name: string;
+    status: string;
+    createdAt: number;
+    updatedAt: number;
+}>;
+
+/** `adminImportTokenListMembers` result (cloudrun-assets handlers/tokenListsAdmin.ts). */
+export type AdminImportTokenListMembersResult = TokenListMutationOutcome<{
+    slug: string;
+    received: number;
+    added: Array<{ mint: string; verified: boolean }>;
+    failed: Array<{ mint: string; error: TokenListMutationErrorCode }>;
+}>;

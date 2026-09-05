@@ -1,5 +1,6 @@
 import { Effect } from 'effect';
 
+import { getCuratedListSlugsForMint } from '@/lib/curated-membership';
 import { variantMarketsGetLatestByMints } from '@/lib/cloudrun';
 import { scheduleCacheWarm } from '@/lib/cloudrun/cacheWarm';
 import { computeMarketScore, type MarketScoreInput } from '@/lib/token-risk-helpers';
@@ -94,7 +95,8 @@ export function loadAssetRisk(
             };
         }
 
-        const marketScoreInput = marketScoreInputFromVariantMarket(mint, market);
+        const curatedListSlugs = yield* Effect.promise(() => getCuratedListSlugsForMint(mint));
+        const marketScoreInput = { ...marketScoreInputFromVariantMarket(mint, market), curatedListSlugs };
         const marketScore = computeMarketScore(marketScoreInput);
 
         return {

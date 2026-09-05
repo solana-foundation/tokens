@@ -1,0 +1,2501 @@
+[
+    {
+        "slug": "majors",
+        "title": "Crypto",
+        "description": "Major crypto assets on Solana.",
+        "members": [
+            {
+                "assetId": "solana",
+                "rank": 0,
+                "addedAtMs": 1768088910000
+            },
+            {
+                "assetId": "ethereum",
+                "rank": 1,
+                "addedAtMs": 1768088910000
+            },
+            {
+                "assetId": "bitcoin",
+                "rank": 2,
+                "addedAtMs": 1768088910000
+            },
+            {
+                "assetId": "zcash",
+                "rank": 3,
+                "addedAtMs": 1768088910000
+            },
+            {
+                "assetId": "hyperliquid",
+                "rank": 4,
+                "addedAtMs": 1768088910000
+            },
+            {
+                "assetId": "monad",
+                "rank": 5,
+                "addedAtMs": 1768088910000
+            },
+            {
+                "assetId": "tron",
+                "rank": 6,
+                "addedAtMs": 1768088910000
+            },
+            {
+                "assetId": "bnb",
+                "rank": 7,
+                "addedAtMs": 1768088910000
+            },
+            {
+                "assetId": "near",
+                "rank": 8,
+                "addedAtMs": 1768088910000
+            },
+            {
+                "assetId": "zora",
+                "rank": 9,
+                "addedAtMs": 1768808907000
+            },
+            {
+                "assetId": "starknet",
+                "rank": 10,
+                "addedAtMs": 1768808907000
+            },
+            {
+                "assetId": "avalanche-2",
+                "rank": 11,
+                "addedAtMs": 1773329577000
+            },
+            {
+                "assetId": "sui",
+                "rank": 12,
+                "addedAtMs": 1774968961000
+            },
+            {
+                "assetId": "ripple",
+                "rank": 13,
+                "addedAtMs": 1776347380000
+            },
+            {
+                "assetId": "usd-ai",
+                "rank": 14,
+                "addedAtMs": 1777252518000
+            },
+            {
+                "assetId": "chiliz",
+                "rank": 15,
+                "addedAtMs": 1777398052000
+            },
+            {
+                "assetId": "aave",
+                "rank": 16,
+                "addedAtMs": 1777252518000
+            },
+            {
+                "assetId": "infinex",
+                "rank": 17,
+                "addedAtMs": 1777581028000
+            },
+            {
+                "assetId": "lighter",
+                "rank": 18,
+                "addedAtMs": 1777581028000
+            },
+            {
+                "assetId": "delorean",
+                "rank": 19,
+                "addedAtMs": 1777909276000
+            },
+            {
+                "assetId": "crypto-bpxxfrcx",
+                "rank": 20,
+                "addedAtMs": 1778536785000
+            },
+            {
+                "assetId": "crypto-3ywtr9qq",
+                "rank": 21,
+                "addedAtMs": 1778536785000
+            },
+            {
+                "assetId": "blend",
+                "rank": 22,
+                "addedAtMs": 1778536785000
+            },
+            {
+                "assetId": "megaeth",
+                "rank": 23,
+                "addedAtMs": 1777559614000
+            },
+            {
+                "assetId": "bittensor",
+                "rank": 24,
+                "addedAtMs": 1777966225000
+            },
+            {
+                "assetId": "ethena",
+                "rank": 25,
+                "addedAtMs": 1778800768000
+            },
+            {
+                "assetId": "uniswap",
+                "rank": 26,
+                "addedAtMs": 1779288994000
+            },
+            {
+                "assetId": "billions-network",
+                "rank": 27,
+                "addedAtMs": 1779459721000
+            },
+            {
+                "assetId": "arsenal-fan-token",
+                "rank": 28,
+                "addedAtMs": 1779811885000
+            },
+            {
+                "assetId": "paris-saint-germain-fan-token",
+                "rank": 29,
+                "addedAtMs": 1779811885000
+            },
+            {
+                "assetId": "xmaquina",
+                "rank": 30,
+                "addedAtMs": 1779874826000
+            },
+            {
+                "assetId": "arcium",
+                "rank": 31,
+                "addedAtMs": 1782101807000
+            }
+        ]
+    },
+    {
+        "slug": "lsts",
+        "title": "Staking",
+        "description": "Liquid staking tokens on Solana.",
+        "members": [
+            {
+                "assetId": "solana",
+                "rank": 0,
+                "addedAtMs": 1768194632000
+            }
+        ]
+    },
+    {
+        "slug": "currencies",
+        "title": "Currencies",
+        "description": "Curated currencies (stablecoins) on Solana.",
+        "members": [
+            {
+                "assetId": "usd",
+                "rank": 0,
+                "addedAtMs": 1768087240000
+            },
+            {
+                "assetId": "tryb",
+                "rank": 1,
+                "addedAtMs": 1768087240000
+            },
+            {
+                "assetId": "buidl",
+                "rank": 2,
+                "addedAtMs": 1768087240000
+            },
+            {
+                "assetId": "brz",
+                "rank": 3,
+                "addedAtMs": 1768087240000
+            },
+            {
+                "assetId": "eur",
+                "rank": 5,
+                "addedAtMs": 1768087240000
+            },
+            {
+                "assetId": "gyen",
+                "rank": 11,
+                "addedAtMs": 1768087240000
+            },
+            {
+                "assetId": "idrx",
+                "rank": 12,
+                "addedAtMs": 1768087240000
+            },
+            {
+                "assetId": "ngnc",
+                "rank": 13,
+                "addedAtMs": 1768087240000
+            },
+            {
+                "assetId": "mxne",
+                "rank": 25,
+                "addedAtMs": 1768087240000
+            },
+            {
+                "assetId": "tgbp",
+                "rank": 34,
+                "addedAtMs": 1781505278000
+            },
+            {
+                "assetId": "xsgd",
+                "rank": 35,
+                "addedAtMs": 1774971482000
+            },
+            {
+                "assetId": "vgbp",
+                "rank": 37,
+                "addedAtMs": 1768087240000
+            },
+            {
+                "assetId": "vchf",
+                "rank": 39,
+                "addedAtMs": 1768087240000
+            },
+            {
+                "assetId": "myrc",
+                "rank": 40,
+                "addedAtMs": 1779333569000
+            },
+            {
+                "assetId": "zarp",
+                "rank": 42,
+                "addedAtMs": 1768087240000
+            },
+            {
+                "assetId": "audd",
+                "rank": 44,
+                "addedAtMs": 1768087240000
+            }
+        ]
+    },
+    {
+        "slug": "rwas",
+        "title": "Treasuries",
+        "description": "Treasuries, funds, and other real world assets on Solana.",
+        "members": [
+            {
+                "assetId": "tbill",
+                "rank": 0,
+                "addedAtMs": 1768419691000
+            },
+            {
+                "assetId": "vbill",
+                "rank": 1,
+                "addedAtMs": 1768419691000
+            },
+            {
+                "assetId": "ousg",
+                "rank": 2,
+                "addedAtMs": 1768419691000
+            },
+            {
+                "assetId": "ustb",
+                "rank": 3,
+                "addedAtMs": 1768419691000
+            },
+            {
+                "assetId": "ustry",
+                "rank": 4,
+                "addedAtMs": 1768419691000
+            },
+            {
+                "assetId": "benji",
+                "rank": 5,
+                "addedAtMs": 1768419691000
+            },
+            {
+                "assetId": "tbll",
+                "rank": 6,
+                "addedAtMs": 1768087240000
+            },
+            {
+                "assetId": "ishares-core-us-aggregate-bond-etf",
+                "rank": 7,
+                "addedAtMs": 1768983407000
+            },
+            {
+                "assetId": "ishares-20-year-treasury-bond-etf",
+                "rank": 8,
+                "addedAtMs": 1768983407000
+            },
+            {
+                "assetId": "wisdomtree-floating-rate-treasury-fund",
+                "rank": 9,
+                "addedAtMs": 1768983407000
+            },
+            {
+                "assetId": "ishares-aaa-clo-active-etf",
+                "rank": 10,
+                "addedAtMs": 1768983407000
+            },
+            {
+                "assetId": "vaneck-clo-etf",
+                "rank": 11,
+                "addedAtMs": 1768983407000
+            },
+            {
+                "assetId": "rwa-9drppwyu",
+                "rank": 12,
+                "addedAtMs": 1768419691000
+            },
+            {
+                "assetId": "rwa-7lwanzte",
+                "rank": 13,
+                "addedAtMs": 1768419691000
+            },
+            {
+                "assetId": "rwa-5d3zuszj",
+                "rank": 14,
+                "addedAtMs": 1768419691000
+            }
+        ]
+    },
+    {
+        "slug": "etfs",
+        "title": "ETFs",
+        "description": "Tokenized ETFs and indexes on Solana.",
+        "members": [
+            {
+                "assetId": "nasdaq",
+                "rank": 0,
+                "addedAtMs": 1768087240000
+            },
+            {
+                "assetId": "sp500",
+                "rank": 1,
+                "addedAtMs": 1768087240000
+            },
+            {
+                "assetId": "tqqq",
+                "rank": 2,
+                "addedAtMs": 1768087240000
+            },
+            {
+                "assetId": "russell-2000",
+                "rank": 3,
+                "addedAtMs": 1768087240000
+            },
+            {
+                "assetId": "core-msci-em",
+                "rank": 4,
+                "addedAtMs": 1768087240000
+            },
+            {
+                "assetId": "schwab-intl",
+                "rank": 5,
+                "addedAtMs": 1768087240000
+            },
+            {
+                "assetId": "vanguard",
+                "rank": 6,
+                "addedAtMs": 1768087240000
+            },
+            {
+                "assetId": "vanguard-total-world",
+                "rank": 7,
+                "addedAtMs": 1768087240000
+            },
+            {
+                "assetId": "strategy-pp-fixed",
+                "rank": 8,
+                "addedAtMs": 1768087240000
+            },
+            {
+                "assetId": "strategy-pp-variable",
+                "rank": 9,
+                "addedAtMs": 1768087240000
+            },
+            {
+                "assetId": "ishares-msci-emerging-markets-etf",
+                "rank": 10,
+                "addedAtMs": 1768983407000
+            },
+            {
+                "assetId": "ishares-msci-eafe-etf",
+                "rank": 11,
+                "addedAtMs": 1768983407000
+            },
+            {
+                "assetId": "ishares-core-msci-eafe-etf",
+                "rank": 12,
+                "addedAtMs": 1768983407000
+            },
+            {
+                "assetId": "ishares-core-sandp-midcap-etf",
+                "rank": 14,
+                "addedAtMs": 1768983407000
+            },
+            {
+                "assetId": "ishares-core-sandp-total-us-stock-market-etf",
+                "rank": 15,
+                "addedAtMs": 1768983407000
+            },
+            {
+                "assetId": "ishares-core-sandp-500-etf",
+                "rank": 16,
+                "addedAtMs": 1768983407000
+            },
+            {
+                "assetId": "ishares-russell-1000-growth-etf",
+                "rank": 17,
+                "addedAtMs": 1768983407000
+            },
+            {
+                "assetId": "ishares-russell-2000-etf",
+                "rank": 18,
+                "addedAtMs": 1768983407000
+            },
+            {
+                "assetId": "ishares-russell-2000-value-etf",
+                "rank": 19,
+                "addedAtMs": 1768983407000
+            },
+            {
+                "assetId": "invesco-qqq",
+                "rank": 20,
+                "addedAtMs": 1768983407000
+            },
+            {
+                "assetId": "spdr-sandp-500-etf",
+                "rank": 21,
+                "addedAtMs": 1768983407000
+            },
+            {
+                "assetId": "vanguard-total-stock-market-etf",
+                "rank": 22,
+                "addedAtMs": 1768983407000
+            },
+            {
+                "assetId": "proshares-ultrapro-short-qqq",
+                "rank": 23,
+                "addedAtMs": 1768983407000
+            },
+            {
+                "assetId": "proshares-ultrapro-qqq",
+                "rank": 24,
+                "addedAtMs": 1768983407000
+            }
+        ]
+    },
+    {
+        "slug": "metals",
+        "title": "Metals",
+        "description": "Precious metals on Solana.",
+        "members": [
+            {
+                "assetId": "gold",
+                "rank": 0,
+                "addedAtMs": 1768087240000
+            },
+            {
+                "assetId": "precious-metals",
+                "rank": 1,
+                "addedAtMs": 1768111397000
+            },
+            {
+                "assetId": "silver",
+                "rank": 7,
+                "addedAtMs": 1768983407000
+            },
+            {
+                "assetId": "copper",
+                "rank": 9,
+                "addedAtMs": 1768983407000
+            }
+        ]
+    },
+    {
+        "slug": "stocks",
+        "title": "Stocks",
+        "description": "Tokenized stocks on Solana.",
+        "members": [
+            {
+                "assetId": "abbott",
+                "rank": 0,
+                "addedAtMs": 1768087240000
+            },
+            {
+                "assetId": "abbvie",
+                "rank": 1,
+                "addedAtMs": 1768087240000
+            },
+            {
+                "assetId": "accenture",
+                "rank": 2,
+                "addedAtMs": 1768087240000
+            },
+            {
+                "assetId": "adobe",
+                "rank": 3,
+                "addedAtMs": 1768087240000
+            },
+            {
+                "assetId": "alphabet",
+                "rank": 4,
+                "addedAtMs": 1768087240000
+            },
+            {
+                "assetId": "amazon",
+                "rank": 5,
+                "addedAtMs": 1768087240000
+            },
+            {
+                "assetId": "amber",
+                "rank": 6,
+                "addedAtMs": 1768087240000
+            },
+            {
+                "assetId": "amd",
+                "rank": 7,
+                "addedAtMs": 1768087240000
+            },
+            {
+                "assetId": "american-express",
+                "rank": 8,
+                "addedAtMs": 1768087240000
+            },
+            {
+                "assetId": "apple",
+                "rank": 9,
+                "addedAtMs": 1768087240000
+            },
+            {
+                "assetId": "applovin",
+                "rank": 10,
+                "addedAtMs": 1768087240000
+            },
+            {
+                "assetId": "asml",
+                "rank": 11,
+                "addedAtMs": 1768087240000
+            },
+            {
+                "assetId": "astrazeneca",
+                "rank": 12,
+                "addedAtMs": 1768087240000
+            },
+            {
+                "assetId": "ast-spacemobile",
+                "rank": 13,
+                "addedAtMs": 1768087240000
+            },
+            {
+                "assetId": "atandt",
+                "rank": 14,
+                "addedAtMs": 1768087240000
+            },
+            {
+                "assetId": "bank-of-america",
+                "rank": 15,
+                "addedAtMs": 1768087240000
+            },
+            {
+                "assetId": "berkshire-hathaway",
+                "rank": 16,
+                "addedAtMs": 1768087240000
+            },
+            {
+                "assetId": "bending-spoons",
+                "rank": 17,
+                "addedAtMs": 1783497853000
+            },
+            {
+                "assetId": "bit-digital",
+                "rank": 18,
+                "addedAtMs": 1768087240000
+            },
+            {
+                "assetId": "bitfufu",
+                "rank": 19,
+                "addedAtMs": 1768087240000
+            },
+            {
+                "assetId": "bitmine",
+                "rank": 20,
+                "addedAtMs": 1768087240000
+            },
+            {
+                "assetId": "blackrock",
+                "rank": 21,
+                "addedAtMs": 1768087240000
+            },
+            {
+                "assetId": "booking",
+                "rank": 22,
+                "addedAtMs": 1768087240000
+            },
+            {
+                "assetId": "broadcom",
+                "rank": 23,
+                "addedAtMs": 1768087240000
+            },
+            {
+                "assetId": "bullish",
+                "rank": 24,
+                "addedAtMs": 1768087240000
+            },
+            {
+                "assetId": "chevron",
+                "rank": 25,
+                "addedAtMs": 1768087240000
+            },
+            {
+                "assetId": "circle",
+                "rank": 26,
+                "addedAtMs": 1768087240000
+            },
+            {
+                "assetId": "cisco",
+                "rank": 27,
+                "addedAtMs": 1768087240000
+            },
+            {
+                "assetId": "cleanspark",
+                "rank": 28,
+                "addedAtMs": 1768087240000
+            },
+            {
+                "assetId": "coca-cola",
+                "rank": 29,
+                "addedAtMs": 1768087240000
+            },
+            {
+                "assetId": "coinbase",
+                "rank": 30,
+                "addedAtMs": 1768087240000
+            },
+            {
+                "assetId": "comcast",
+                "rank": 31,
+                "addedAtMs": 1768087240000
+            },
+            {
+                "assetId": "core-scientific",
+                "rank": 32,
+                "addedAtMs": 1768087240000
+            },
+            {
+                "assetId": "costco",
+                "rank": 33,
+                "addedAtMs": 1768087240000
+            },
+            {
+                "assetId": "crowdstrike",
+                "rank": 34,
+                "addedAtMs": 1768087240000
+            },
+            {
+                "assetId": "danaher",
+                "rank": 35,
+                "addedAtMs": 1768087240000
+            },
+            {
+                "assetId": "defi-development",
+                "rank": 36,
+                "addedAtMs": 1768087240000
+            },
+            {
+                "assetId": "duolingo",
+                "rank": 37,
+                "addedAtMs": 1768087240000
+            },
+            {
+                "assetId": "ebay",
+                "rank": 38,
+                "addedAtMs": 1768087240000
+            },
+            {
+                "assetId": "eli-lilly",
+                "rank": 39,
+                "addedAtMs": 1768087240000
+            },
+            {
+                "assetId": "expedia",
+                "rank": 40,
+                "addedAtMs": 1768087240000
+            },
+            {
+                "assetId": "exxon-mobil",
+                "rank": 41,
+                "addedAtMs": 1768087240000
+            },
+            {
+                "assetId": "figma",
+                "rank": 42,
+                "addedAtMs": 1768087240000
+            },
+            {
+                "assetId": "galaxy-digital",
+                "rank": 43,
+                "addedAtMs": 1768087240000
+            },
+            {
+                "assetId": "gamestop",
+                "rank": 44,
+                "addedAtMs": 1768087240000
+            },
+            {
+                "assetId": "goldman-sachs",
+                "rank": 45,
+                "addedAtMs": 1768087240000
+            },
+            {
+                "assetId": "helius-medical",
+                "rank": 46,
+                "addedAtMs": 1768087240000
+            },
+            {
+                "assetId": "home-depot",
+                "rank": 47,
+                "addedAtMs": 1768087240000
+            },
+            {
+                "assetId": "honeywell",
+                "rank": 48,
+                "addedAtMs": 1768087240000
+            },
+            {
+                "assetId": "hut-8",
+                "rank": 49,
+                "addedAtMs": 1768087240000
+            },
+            {
+                "assetId": "intel",
+                "rank": 50,
+                "addedAtMs": 1768087240000
+            },
+            {
+                "assetId": "ibm",
+                "rank": 52,
+                "addedAtMs": 1768087240000
+            },
+            {
+                "assetId": "johnson-and-johnson",
+                "rank": 53,
+                "addedAtMs": 1768087240000
+            },
+            {
+                "assetId": "jpmorgan-chase",
+                "rank": 54,
+                "addedAtMs": 1768087240000
+            },
+            {
+                "assetId": "linde",
+                "rank": 55,
+                "addedAtMs": 1768087240000
+            },
+            {
+                "assetId": "lululemon",
+                "rank": 56,
+                "addedAtMs": 1768087240000
+            },
+            {
+                "assetId": "mara",
+                "rank": 57,
+                "addedAtMs": 1768087240000
+            },
+            {
+                "assetId": "marvell",
+                "rank": 58,
+                "addedAtMs": 1768087240000
+            },
+            {
+                "assetId": "mastercard",
+                "rank": 59,
+                "addedAtMs": 1768087240000
+            },
+            {
+                "assetId": "mcdonald-s",
+                "rank": 60,
+                "addedAtMs": 1768087240000
+            },
+            {
+                "assetId": "medtronic",
+                "rank": 61,
+                "addedAtMs": 1768087240000
+            },
+            {
+                "assetId": "merck",
+                "rank": 62,
+                "addedAtMs": 1768087240000
+            },
+            {
+                "assetId": "meta",
+                "rank": 63,
+                "addedAtMs": 1768087240000
+            },
+            {
+                "assetId": "micron",
+                "rank": 64,
+                "addedAtMs": 1768087240000
+            },
+            {
+                "assetId": "microsoft",
+                "rank": 66,
+                "addedAtMs": 1768087240000
+            },
+            {
+                "assetId": "microstrategy",
+                "rank": 67,
+                "addedAtMs": 1768087240000
+            },
+            {
+                "assetId": "moderna",
+                "rank": 69,
+                "addedAtMs": 1768983407000
+            },
+            {
+                "assetId": "monster",
+                "rank": 70,
+                "addedAtMs": 1768087240000
+            },
+            {
+                "assetId": "nebius",
+                "rank": 71,
+                "addedAtMs": 1786436068802
+            },
+            {
+                "assetId": "netflix",
+                "rank": 72,
+                "addedAtMs": 1768087240000
+            },
+            {
+                "assetId": "novo-nordisk",
+                "rank": 73,
+                "addedAtMs": 1768087240000
+            },
+            {
+                "assetId": "nvidia",
+                "rank": 74,
+                "addedAtMs": 1768087240000
+            },
+            {
+                "assetId": "oklo",
+                "rank": 75,
+                "addedAtMs": 1768087240000
+            },
+            {
+                "assetId": "open",
+                "rank": 76,
+                "addedAtMs": 1768087240000
+            },
+            {
+                "assetId": "oracle",
+                "rank": 77,
+                "addedAtMs": 1768087240000
+            },
+            {
+                "assetId": "palantir",
+                "rank": 78,
+                "addedAtMs": 1768087240000
+            },
+            {
+                "assetId": "palo-alto-networks",
+                "rank": 79,
+                "addedAtMs": 1768087240000
+            },
+            {
+                "assetId": "paypal",
+                "rank": 80,
+                "addedAtMs": 1768087240000
+            },
+            {
+                "assetId": "pepsico",
+                "rank": 81,
+                "addedAtMs": 1768087240000
+            },
+            {
+                "assetId": "pfizer",
+                "rank": 82,
+                "addedAtMs": 1768087240000
+            },
+            {
+                "assetId": "philip-morris",
+                "rank": 83,
+                "addedAtMs": 1768087240000
+            },
+            {
+                "assetId": "planet-labs",
+                "rank": 84,
+                "addedAtMs": 1768087240000
+            },
+            {
+                "assetId": "procter-and-gamble",
+                "rank": 85,
+                "addedAtMs": 1768087240000
+            },
+            {
+                "assetId": "riot-platforms",
+                "rank": 86,
+                "addedAtMs": 1768087240000
+            },
+            {
+                "assetId": "robinhood",
+                "rank": 87,
+                "addedAtMs": 1768087240000
+            },
+            {
+                "assetId": "roblox",
+                "rank": 89,
+                "addedAtMs": 1768087240000
+            },
+            {
+                "assetId": "rocket-lab",
+                "rank": 90,
+                "addedAtMs": 1768087240000
+            },
+            {
+                "assetId": "roundhill-memory-etf",
+                "rank": 91,
+                "addedAtMs": 1781798730000
+            },
+            {
+                "assetId": "salesforce",
+                "rank": 92,
+                "addedAtMs": 1768087240000
+            },
+            {
+                "assetId": "sandisk",
+                "rank": 93,
+                "addedAtMs": 1782306016000
+            },
+            {
+                "assetId": "sharplink-gaming",
+                "rank": 94,
+                "addedAtMs": 1768087240000
+            },
+            {
+                "assetId": "sk-hynix",
+                "rank": 95,
+                "addedAtMs": 1783622727000
+            },
+            {
+                "assetId": "sandp-global",
+                "rank": 98,
+                "addedAtMs": 1768087240000
+            },
+            {
+                "assetId": "take-two-interactive",
+                "rank": 99,
+                "addedAtMs": 1786001022385
+            },
+            {
+                "assetId": "target",
+                "rank": 100,
+                "addedAtMs": 1768087240000
+            },
+            {
+                "assetId": "tempus-ai",
+                "rank": 101,
+                "addedAtMs": 1768087240000
+            },
+            {
+                "assetId": "terawulf",
+                "rank": 102,
+                "addedAtMs": 1768087240000
+            },
+            {
+                "assetId": "tesla",
+                "rank": 103,
+                "addedAtMs": 1768087240000
+            },
+            {
+                "assetId": "thermo-fisher",
+                "rank": 104,
+                "addedAtMs": 1768087240000
+            },
+            {
+                "assetId": "t-mobile",
+                "rank": 105,
+                "addedAtMs": 1768087240000
+            },
+            {
+                "assetId": "ton",
+                "rank": 106,
+                "addedAtMs": 1768087240000
+            },
+            {
+                "assetId": "tsmc",
+                "rank": 107,
+                "addedAtMs": 1768087240000
+            },
+            {
+                "assetId": "uber",
+                "rank": 108,
+                "addedAtMs": 1768087240000
+            },
+            {
+                "assetId": "unitedhealth",
+                "rank": 109,
+                "addedAtMs": 1768087240000
+            },
+            {
+                "assetId": "virgin-galactic",
+                "rank": 110,
+                "addedAtMs": 1768087240000
+            },
+            {
+                "assetId": "visa",
+                "rank": 111,
+                "addedAtMs": 1768087240000
+            },
+            {
+                "assetId": "vistra",
+                "rank": 112,
+                "addedAtMs": 1768087240000
+            },
+            {
+                "assetId": "walmart",
+                "rank": 113,
+                "addedAtMs": 1768087240000
+            },
+            {
+                "assetId": "warner-bros",
+                "rank": 114,
+                "addedAtMs": 1768087240000
+            },
+            {
+                "assetId": "wendy-s",
+                "rank": 115,
+                "addedAtMs": 1768087240000
+            },
+            {
+                "assetId": "airbnb",
+                "rank": 117,
+                "addedAtMs": 1768983407000
+            },
+            {
+                "assetId": "apollo-global-management",
+                "rank": 123,
+                "addedAtMs": 1768983407000
+            },
+            {
+                "assetId": "arm-holdings-plc",
+                "rank": 125,
+                "addedAtMs": 1768983407000
+            },
+            {
+                "assetId": "alibaba",
+                "rank": 129,
+                "addedAtMs": 1768983407000
+            },
+            {
+                "assetId": "boeing",
+                "rank": 130,
+                "addedAtMs": 1768983407000
+            },
+            {
+                "assetId": "baidu",
+                "rank": 131,
+                "addedAtMs": 1768983407000
+            },
+            {
+                "assetId": "chipotle",
+                "rank": 133,
+                "addedAtMs": 1768983407000
+            },
+            {
+                "assetId": "doordash",
+                "rank": 140,
+                "addedAtMs": 1768983407000
+            },
+            {
+                "assetId": "disney",
+                "rank": 141,
+                "addedAtMs": 1768983407000
+            },
+            {
+                "assetId": "equinix",
+                "rank": 142,
+                "addedAtMs": 1768983407000
+            },
+            {
+                "assetId": "futu-holdings",
+                "rank": 144,
+                "addedAtMs": 1768983407000
+            },
+            {
+                "assetId": "general-electric",
+                "rank": 145,
+                "addedAtMs": 1768983407000
+            },
+            {
+                "assetId": "hims-and-hers-health",
+                "rank": 149,
+                "addedAtMs": 1768983407000
+            },
+            {
+                "assetId": "intuit",
+                "rank": 153,
+                "addedAtMs": 1768983407000
+            },
+            {
+                "assetId": "jd-com",
+                "rank": 154,
+                "addedAtMs": 1768983407000
+            },
+            {
+                "assetId": "lockheed",
+                "rank": 159,
+                "addedAtMs": 1768983407000
+            },
+            {
+                "assetId": "mercadolibre",
+                "rank": 163,
+                "addedAtMs": 1768983407000
+            },
+            {
+                "assetId": "nike",
+                "rank": 170,
+                "addedAtMs": 1768983407000
+            },
+            {
+                "assetId": "servicenow",
+                "rank": 171,
+                "addedAtMs": 1768983407000
+            },
+            {
+                "assetId": "d-wave-quantum",
+                "rank": 174,
+                "addedAtMs": 1768983407000
+            },
+            {
+                "assetId": "qualcomm",
+                "rank": 175,
+                "addedAtMs": 1768983407000
+            },
+            {
+                "assetId": "invesco-qqq",
+                "rank": 176,
+                "addedAtMs": 1768983407000
+            },
+            {
+                "assetId": "reddit",
+                "rank": 177,
+                "addedAtMs": 1768983407000
+            },
+            {
+                "assetId": "starbucks",
+                "rank": 180,
+                "addedAtMs": 1768983407000
+            },
+            {
+                "assetId": "shopify",
+                "rank": 181,
+                "addedAtMs": 1768983407000
+            },
+            {
+                "assetId": "super-micro-computer",
+                "rank": 182,
+                "addedAtMs": 1768983407000
+            },
+            {
+                "assetId": "caterpillar",
+                "rank": 185,
+                "addedAtMs": 1768983407000
+            },
+            {
+                "assetId": "constellation-energy",
+                "rank": 186,
+                "addedAtMs": 1768983407000
+            },
+            {
+                "assetId": "cipher-mining",
+                "rank": 187,
+                "addedAtMs": 1768983407000
+            },
+            {
+                "assetId": "vaneck-clo-etf",
+                "rank": 188,
+                "addedAtMs": 1768983407000
+            },
+            {
+                "assetId": "capital-one",
+                "rank": 189,
+                "addedAtMs": 1768983407000
+            },
+            {
+                "assetId": "citigroup",
+                "rank": 190,
+                "addedAtMs": 1768983407000
+            },
+            {
+                "assetId": "figure-technology-solutions",
+                "rank": 192,
+                "addedAtMs": 1768983407000
+            },
+            {
+                "assetId": "ford-motor",
+                "rank": 193,
+                "addedAtMs": 1768983407000
+            },
+            {
+                "assetId": "on-semiconductor",
+                "rank": 195,
+                "addedAtMs": 1768983407000
+            },
+            {
+                "assetId": "sofi-technologies",
+                "rank": 196,
+                "addedAtMs": 1768983407000
+            },
+            {
+                "assetId": "southern",
+                "rank": 197,
+                "addedAtMs": 1768983407000
+            },
+            {
+                "assetId": "trip-com-group",
+                "rank": 198,
+                "addedAtMs": 1768983407000
+            },
+            {
+                "assetId": "talen-energy",
+                "rank": 199,
+                "addedAtMs": 1768983407000
+            },
+            {
+                "assetId": "wisdomtree-floating-rate-treasury-fund",
+                "rank": 203,
+                "addedAtMs": 1768983407000
+            },
+            {
+                "assetId": "iboxx-high-yield-corporate-bond-etf",
+                "rank": 204,
+                "addedAtMs": 1768983407000
+            },
+            {
+                "assetId": "petrobras",
+                "rank": 208,
+                "addedAtMs": 1768983407000
+            },
+            {
+                "assetId": "snowflake",
+                "rank": 213,
+                "addedAtMs": 1768983407000
+            },
+            {
+                "assetId": "spotify",
+                "rank": 215,
+                "addedAtMs": 1768983407000
+            },
+            {
+                "assetId": "ishares-tips-bond-etf",
+                "rank": 216,
+                "addedAtMs": 1768983407000
+            },
+            {
+                "assetId": "toyota",
+                "rank": 217,
+                "addedAtMs": 1768983407000
+            },
+            {
+                "assetId": "wells-fargo",
+                "rank": 221,
+                "addedAtMs": 1768983407000
+            },
+            {
+                "assetId": "american-airlines-group",
+                "rank": 223,
+                "addedAtMs": 1768983407000
+            },
+            {
+                "assetId": "archer-aviation",
+                "rank": 225,
+                "addedAtMs": 1768983407000
+            },
+            {
+                "assetId": "analog-devices",
+                "rank": 226,
+                "addedAtMs": 1768983407000
+            },
+            {
+                "assetId": "applied-materials",
+                "rank": 227,
+                "addedAtMs": 1768983407000
+            },
+            {
+                "assetId": "amc-entertainment",
+                "rank": 228,
+                "addedAtMs": 1768983407000
+            },
+            {
+                "assetId": "amgen",
+                "rank": 229,
+                "addedAtMs": 1768983407000
+            },
+            {
+                "assetId": "arista-networks",
+                "rank": 230,
+                "addedAtMs": 1768983407000
+            },
+            {
+                "assetId": "bigbear-ai-holdings",
+                "rank": 232,
+                "addedAtMs": 1768983407000
+            },
+            {
+                "assetId": "bilibili",
+                "rank": 233,
+                "addedAtMs": 1768983407000
+            },
+            {
+                "assetId": "ishares-flexible-income-active-etf",
+                "rank": 234,
+                "addedAtMs": 1768983407000
+            },
+            {
+                "assetId": "b2gold",
+                "rank": 237,
+                "addedAtMs": 1768983407000
+            },
+            {
+                "assetId": "kanzhun",
+                "rank": 238,
+                "addedAtMs": 1768983407000
+            },
+            {
+                "assetId": "conocophillips",
+                "rank": 239,
+                "addedAtMs": 1768983407000
+            },
+            {
+                "assetId": "coupang",
+                "rank": 240,
+                "addedAtMs": 1768983407000
+            },
+            {
+                "assetId": "carvana",
+                "rank": 241,
+                "addedAtMs": 1768983407000
+            },
+            {
+                "assetId": "invesco-db-commodity-index-tracking-fund",
+                "rank": 242,
+                "addedAtMs": 1768983407000
+            },
+            {
+                "assetId": "deere",
+                "rank": 243,
+                "addedAtMs": 1768983407000
+            },
+            {
+                "assetId": "wisdomtree-us-quality-dividend-growth-fund",
+                "rank": 244,
+                "addedAtMs": 1768983407000
+            },
+            {
+                "assetId": "denison-mines",
+                "rank": 245,
+                "addedAtMs": 1768983407000
+            },
+            {
+                "assetId": "first-trust-global-tactical-commodity-strategy-fund",
+                "rank": 246,
+                "addedAtMs": 1768983407000
+            },
+            {
+                "assetId": "gemini-space-station",
+                "rank": 247,
+                "addedAtMs": 1768983407000
+            },
+            {
+                "assetId": "grab-holdings",
+                "rank": 248,
+                "addedAtMs": 1768983407000
+            },
+            {
+                "assetId": "grindr",
+                "rank": 249,
+                "addedAtMs": 1768983407000
+            },
+            {
+                "assetId": "iren",
+                "rank": 251,
+                "addedAtMs": 1768983407000
+            },
+            {
+                "assetId": "intuitive-surgical",
+                "rank": 252,
+                "addedAtMs": 1768983407000
+            },
+            {
+                "assetId": "janus-henderson-aaa-clo-etf",
+                "rank": 253,
+                "addedAtMs": 1768983407000
+            },
+            {
+                "assetId": "kla",
+                "rank": 254,
+                "addedAtMs": 1768983407000
+            },
+            {
+                "assetId": "li-auto",
+                "rank": 255,
+                "addedAtMs": 1768983407000
+            },
+            {
+                "assetId": "lowe-s",
+                "rank": 256,
+                "addedAtMs": 1768983407000
+            },
+            {
+                "assetId": "lam-research",
+                "rank": 257,
+                "addedAtMs": 1768983407000
+            },
+            {
+                "assetId": "mp-materials",
+                "rank": 258,
+                "addedAtMs": 1768983407000
+            },
+            {
+                "assetId": "mastec",
+                "rank": 261,
+                "addedAtMs": 1768983407000
+            },
+            {
+                "assetId": "nextera-energy",
+                "rank": 262,
+                "addedAtMs": 1768983407000
+            },
+            {
+                "assetId": "sprott-nickel-miners-etf",
+                "rank": 263,
+                "addedAtMs": 1768983407000
+            },
+            {
+                "assetId": "nio",
+                "rank": 264,
+                "addedAtMs": 1768983407000
+            },
+            {
+                "assetId": "netease",
+                "rank": 265,
+                "addedAtMs": 1768983407000
+            },
+            {
+                "assetId": "ondas-holdings",
+                "rank": 267,
+                "addedAtMs": 1768983407000
+            },
+            {
+                "assetId": "opera",
+                "rank": 269,
+                "addedAtMs": 1768983407000
+            },
+            {
+                "assetId": "oscar-health",
+                "rank": 270,
+                "addedAtMs": 1768983407000
+            },
+            {
+                "assetId": "occidental-petroleum",
+                "rank": 271,
+                "addedAtMs": 1768983407000
+            },
+            {
+                "assetId": "abrdn-physical-palladium-shares-etf",
+                "rank": 272,
+                "addedAtMs": 1768983407000
+            },
+            {
+                "assetId": "pgande",
+                "rank": 273,
+                "addedAtMs": 1768983407000
+            },
+            {
+                "assetId": "invesco-optimum-yld-dvsfd-cmd-str-no-k-1-etf",
+                "rank": 274,
+                "addedAtMs": 1768983407000
+            },
+            {
+                "assetId": "pdd-holdings",
+                "rank": 275,
+                "addedAtMs": 1768983407000
+            },
+            {
+                "assetId": "pinterest",
+                "rank": 276,
+                "addedAtMs": 1768983407000
+            },
+            {
+                "assetId": "plug-power",
+                "rank": 277,
+                "addedAtMs": 1768983407000
+            },
+            {
+                "assetId": "proshares-short-qqq",
+                "rank": 278,
+                "addedAtMs": 1768983407000
+            },
+            {
+                "assetId": "vaneck-rare-earth-and-strategic-metals-etf",
+                "rank": 279,
+                "addedAtMs": 1768983407000
+            },
+            {
+                "assetId": "rigetti-computing",
+                "rank": 280,
+                "addedAtMs": 1768983407000
+            },
+            {
+                "assetId": "rivian-automotive",
+                "rank": 281,
+                "addedAtMs": 1768983407000
+            },
+            {
+                "assetId": "rtx",
+                "rank": 282,
+                "addedAtMs": 1768983407000
+            },
+            {
+                "assetId": "charles-schwab",
+                "rank": 283,
+                "addedAtMs": 1768983407000
+            },
+            {
+                "assetId": "ishares-0-3-month-treasury-bond-etf",
+                "rank": 284,
+                "addedAtMs": 1768983407000
+            },
+            {
+                "assetId": "snap",
+                "rank": 285,
+                "addedAtMs": 1768983407000
+            },
+            {
+                "assetId": "soundhound-ai",
+                "rank": 286,
+                "addedAtMs": 1768983407000
+            },
+            {
+                "assetId": "texas-instruments",
+                "rank": 287,
+                "addedAtMs": 1768983407000
+            },
+            {
+                "assetId": "oil",
+                "rank": 288,
+                "addedAtMs": 1768983407000
+            },
+            {
+                "assetId": "vertiv",
+                "rank": 289,
+                "addedAtMs": 1768983407000
+            },
+            {
+                "assetId": "vanguard-value-etf",
+                "rank": 291,
+                "addedAtMs": 1768983407000
+            },
+            {
+                "assetId": "verizon",
+                "rank": 292,
+                "addedAtMs": 1768983407000
+            },
+            {
+                "assetId": "block",
+                "rank": 295,
+                "addedAtMs": 1768983407000
+            },
+            {
+                "assetId": "spacex",
+                "rank": 296,
+                "addedAtMs": 1781262778000
+            },
+            {
+                "assetId": "openai",
+                "rank": 299,
+                "addedAtMs": 1773762150000
+            },
+            {
+                "assetId": "pre-pren1fvf",
+                "rank": 301,
+                "addedAtMs": 1773762150000
+            },
+            {
+                "assetId": "pre-prestj4y",
+                "rank": 302,
+                "addedAtMs": 1773762150000
+            },
+            {
+                "assetId": "pre-pre8arem",
+                "rank": 303,
+                "addedAtMs": 1773762150000
+            },
+            {
+                "assetId": "pre-prelwgkk",
+                "rank": 304,
+                "addedAtMs": 1773762150000
+            },
+            {
+                "assetId": "pre-prec1ktj",
+                "rank": 305,
+                "addedAtMs": 1786406400000
+            },
+            {
+                "assetId": "strcon",
+                "rank": 306,
+                "addedAtMs": 1777909276000
+            },
+            {
+                "assetId": "stock-yqznqh2y",
+                "rank": 307,
+                "addedAtMs": 1781798730000
+            },
+            {
+                "assetId": "stock-yrquzhx3",
+                "rank": 308,
+                "addedAtMs": 1781798730000
+            },
+            {
+                "assetId": "stock-yufzvc8j",
+                "rank": 309,
+                "addedAtMs": 1781798730000
+            },
+            {
+                "assetId": "stock-z1k14ngy",
+                "rank": 310,
+                "addedAtMs": 1781798730000
+            },
+            {
+                "assetId": "stock-z7g1brfy",
+                "rank": 311,
+                "addedAtMs": 1781798730000
+            },
+            {
+                "assetId": "stock-z8afb6uq",
+                "rank": 312,
+                "addedAtMs": 1781798730000
+            },
+            {
+                "assetId": "stock-zdnkxen5",
+                "rank": 313,
+                "addedAtMs": 1781798730000
+            },
+            {
+                "assetId": "stock-znkqtvtc",
+                "rank": 314,
+                "addedAtMs": 1781798730000
+            },
+            {
+                "assetId": "stock-ztabsukb",
+                "rank": 315,
+                "addedAtMs": 1781798730000
+            },
+            {
+                "assetId": "stock-zwusgdgq",
+                "rank": 316,
+                "addedAtMs": 1781798730000
+            },
+            {
+                "assetId": "stock-zcs6fuj1",
+                "rank": 317,
+                "addedAtMs": 1781798730000
+            },
+            {
+                "assetId": "stock-zfb5ptvf",
+                "rank": 318,
+                "addedAtMs": 1781798730000
+            },
+            {
+                "assetId": "stock-zifkbvbh",
+                "rank": 319,
+                "addedAtMs": 1781798730000
+            },
+            {
+                "assetId": "stock-zjycwyeg",
+                "rank": 320,
+                "addedAtMs": 1781798730000
+            },
+            {
+                "assetId": "stock-zmidoowv",
+                "rank": 321,
+                "addedAtMs": 1781798730000
+            },
+            {
+                "assetId": "stock-zpjpmhwk",
+                "rank": 322,
+                "addedAtMs": 1781798730000
+            },
+            {
+                "assetId": "stock-zscdhjwf",
+                "rank": 323,
+                "addedAtMs": 1781798730000
+            },
+            {
+                "assetId": "stock-ztay65fc",
+                "rank": 324,
+                "addedAtMs": 1781798730000
+            },
+            {
+                "assetId": "stock-aa1drcke",
+                "rank": 325,
+                "addedAtMs": 1781798730000
+            },
+            {
+                "assetId": "stock-acx5g8ew",
+                "rank": 326,
+                "addedAtMs": 1781798730000
+            },
+            {
+                "assetId": "stock-agn43ed4",
+                "rank": 327,
+                "addedAtMs": 1781798730000
+            },
+            {
+                "assetId": "stock-ahfrgfbh",
+                "rank": 328,
+                "addedAtMs": 1781798730000
+            },
+            {
+                "assetId": "stock-av3r9npu",
+                "rank": 329,
+                "addedAtMs": 1781798730000
+            },
+            {
+                "assetId": "stock-ahvtjqt6",
+                "rank": 330,
+                "addedAtMs": 1781798730000
+            },
+            {
+                "assetId": "stock-ame2anm5",
+                "rank": 331,
+                "addedAtMs": 1781798730000
+            },
+            {
+                "assetId": "stock-aq2zxuhq",
+                "rank": 332,
+                "addedAtMs": 1781798730000
+            },
+            {
+                "assetId": "stock-aqenhxrn",
+                "rank": 333,
+                "addedAtMs": 1781798730000
+            },
+            {
+                "assetId": "stock-aulvqahu",
+                "rank": 334,
+                "addedAtMs": 1781798730000
+            },
+            {
+                "assetId": "stock-awcwgavn",
+                "rank": 335,
+                "addedAtMs": 1781798730000
+            },
+            {
+                "assetId": "stock-axbgkgum",
+                "rank": 336,
+                "addedAtMs": 1781798730000
+            },
+            {
+                "assetId": "stock-b8udyp3y",
+                "rank": 337,
+                "addedAtMs": 1781798730000
+            },
+            {
+                "assetId": "stock-b98fynyb",
+                "rank": 338,
+                "addedAtMs": 1781798730000
+            },
+            {
+                "assetId": "stock-bbmtgf7a",
+                "rank": 339,
+                "addedAtMs": 1781798730000
+            },
+            {
+                "assetId": "stock-bgy2covw",
+                "rank": 340,
+                "addedAtMs": 1781798730000
+            },
+            {
+                "assetId": "stock-bm2vsrfb",
+                "rank": 341,
+                "addedAtMs": 1781798730000
+            },
+            {
+                "assetId": "stock-bwryatfy",
+                "rank": 342,
+                "addedAtMs": 1781798730000
+            },
+            {
+                "assetId": "stock-bjbrni96",
+                "rank": 343,
+                "addedAtMs": 1781798730000
+            },
+            {
+                "assetId": "stock-bvjmewqb",
+                "rank": 344,
+                "addedAtMs": 1781798730000
+            },
+            {
+                "assetId": "stock-bz2iutxw",
+                "rank": 345,
+                "addedAtMs": 1781798730000
+            },
+            {
+                "assetId": "stock-bzoe1eps",
+                "rank": 346,
+                "addedAtMs": 1781798730000
+            },
+            {
+                "assetId": "stock-c7kekjza",
+                "rank": 347,
+                "addedAtMs": 1781798730000
+            },
+            {
+                "assetId": "stock-cfdp5ssu",
+                "rank": 348,
+                "addedAtMs": 1781798730000
+            },
+            {
+                "assetId": "stock-crx9vtww",
+                "rank": 349,
+                "addedAtMs": 1781798730000
+            },
+            {
+                "assetId": "stock-cy3kdrnw",
+                "rank": 350,
+                "addedAtMs": 1781798730000
+            },
+            {
+                "assetId": "stock-cfxyrhxj",
+                "rank": 351,
+                "addedAtMs": 1781798730000
+            },
+            {
+                "assetId": "stock-crakmagk",
+                "rank": 352,
+                "addedAtMs": 1781798730000
+            },
+            {
+                "assetId": "stock-cskxd6aq",
+                "rank": 353,
+                "addedAtMs": 1781798730000
+            },
+            {
+                "assetId": "stock-d4rc6kvp",
+                "rank": 354,
+                "addedAtMs": 1781798730000
+            },
+            {
+                "assetId": "stock-dac8ywur",
+                "rank": 355,
+                "addedAtMs": 1781798730000
+            },
+            {
+                "assetId": "stock-dkgnhxgs",
+                "rank": 356,
+                "addedAtMs": 1781798730000
+            },
+            {
+                "assetId": "stock-dwfwjcuk",
+                "rank": 357,
+                "addedAtMs": 1781798730000
+            },
+            {
+                "assetId": "stock-dyds22ut",
+                "rank": 358,
+                "addedAtMs": 1781798730000
+            },
+            {
+                "assetId": "stock-dyf78b65",
+                "rank": 359,
+                "addedAtMs": 1781798730000
+            },
+            {
+                "assetId": "stock-dhexytmq",
+                "rank": 360,
+                "addedAtMs": 1781798730000
+            },
+            {
+                "assetId": "stock-e83twwrv",
+                "rank": 361,
+                "addedAtMs": 1781798730000
+            },
+            {
+                "assetId": "stock-ecspcjdp",
+                "rank": 362,
+                "addedAtMs": 1781798730000
+            },
+            {
+                "assetId": "stock-egbh3v9r",
+                "rank": 363,
+                "addedAtMs": 1781798730000
+            },
+            {
+                "assetId": "stock-el1bul9z",
+                "rank": 364,
+                "addedAtMs": 1781798730000
+            },
+            {
+                "assetId": "stock-esu547we",
+                "rank": 365,
+                "addedAtMs": 1781798730000
+            },
+            {
+                "assetId": "stock-eqzwohr9",
+                "rank": 366,
+                "addedAtMs": 1781798730000
+            },
+            {
+                "assetId": "stock-erp2t2my",
+                "rank": 367,
+                "addedAtMs": 1781798730000
+            },
+            {
+                "assetId": "stock-esgtav7y",
+                "rank": 368,
+                "addedAtMs": 1781798730000
+            },
+            {
+                "assetId": "stock-etnbzce6",
+                "rank": 369,
+                "addedAtMs": 1781798730000
+            },
+            {
+                "assetId": "stock-ey16y4bk",
+                "rank": 370,
+                "addedAtMs": 1781798730000
+            },
+            {
+                "assetId": "stock-f1yqz2fo",
+                "rank": 371,
+                "addedAtMs": 1781798730000
+            },
+            {
+                "assetId": "stock-f4ucqqnk",
+                "rank": 372,
+                "addedAtMs": 1781798730000
+            },
+            {
+                "assetId": "stock-f7iz4bqs",
+                "rank": 373,
+                "addedAtMs": 1781798730000
+            },
+            {
+                "assetId": "stock-f9nfuo4s",
+                "rank": 374,
+                "addedAtMs": 1781798730000
+            },
+            {
+                "assetId": "stock-fftz9jck",
+                "rank": 375,
+                "addedAtMs": 1781798730000
+            },
+            {
+                "assetId": "stock-frfzazfg",
+                "rank": 376,
+                "addedAtMs": 1781798730000
+            },
+            {
+                "assetId": "stock-ftuoe9pw",
+                "rank": 377,
+                "addedAtMs": 1781798730000
+            },
+            {
+                "assetId": "stock-fvpj4hhh",
+                "rank": 378,
+                "addedAtMs": 1781798730000
+            },
+            {
+                "assetId": "stock-fxxymrds",
+                "rank": 379,
+                "addedAtMs": 1781798730000
+            },
+            {
+                "assetId": "stock-fcfpt8y5",
+                "rank": 380,
+                "addedAtMs": 1781798730000
+            },
+            {
+                "assetId": "stock-fezxf2if",
+                "rank": 381,
+                "addedAtMs": 1781798730000
+            },
+            {
+                "assetId": "stock-fkznxn9g",
+                "rank": 382,
+                "addedAtMs": 1781798730000
+            },
+            {
+                "assetId": "stock-fznj92an",
+                "rank": 383,
+                "addedAtMs": 1781798730000
+            },
+            {
+                "assetId": "stock-g3jqmp79",
+                "rank": 384,
+                "addedAtMs": 1781798730000
+            },
+            {
+                "assetId": "stock-g4kt9heg",
+                "rank": 385,
+                "addedAtMs": 1781798730000
+            },
+            {
+                "assetId": "stock-g7vmfs5f",
+                "rank": 386,
+                "addedAtMs": 1781798730000
+            },
+            {
+                "assetId": "stock-gkkrsgvj",
+                "rank": 387,
+                "addedAtMs": 1781798730000
+            },
+            {
+                "assetId": "stock-gnhrgh21",
+                "rank": 388,
+                "addedAtMs": 1781798730000
+            },
+            {
+                "assetId": "stock-gpwmyo4b",
+                "rank": 389,
+                "addedAtMs": 1781798730000
+            },
+            {
+                "assetId": "stock-gfkubliv",
+                "rank": 390,
+                "addedAtMs": 1781798730000
+            },
+            {
+                "assetId": "stock-gftdvjlp",
+                "rank": 391,
+                "addedAtMs": 1781798730000
+            },
+            {
+                "assetId": "stock-go6dxmdm",
+                "rank": 392,
+                "addedAtMs": 1781798730000
+            },
+            {
+                "assetId": "stock-gtkc3ptk",
+                "rank": 393,
+                "addedAtMs": 1781798730000
+            },
+            {
+                "assetId": "stock-h73fnvbd",
+                "rank": 394,
+                "addedAtMs": 1781798730000
+            },
+            {
+                "assetId": "stock-heswwvks",
+                "rank": 395,
+                "addedAtMs": 1781798730000
+            },
+            {
+                "assetId": "stock-hkvpwfyw",
+                "rank": 396,
+                "addedAtMs": 1781798730000
+            },
+            {
+                "assetId": "stock-hieztezn",
+                "rank": 397,
+                "addedAtMs": 1781798730000
+            },
+            {
+                "assetId": "stock-hpkpc1xe",
+                "rank": 398,
+                "addedAtMs": 1781798730000
+            },
+            {
+                "assetId": "stock-hrz5vs6c",
+                "rank": 399,
+                "addedAtMs": 1781798730000
+            },
+            {
+                "assetId": "stock-i7zs13sf",
+                "rank": 400,
+                "addedAtMs": 1781798730000
+            },
+            {
+                "assetId": "stock-ifcweb2l",
+                "rank": 401,
+                "addedAtMs": 1781798730000
+            },
+            {
+                "assetId": "stock-ijaawdnz",
+                "rank": 402,
+                "addedAtMs": 1781798730000
+            },
+            {
+                "assetId": "stock-ijtkb1cw",
+                "rank": 403,
+                "addedAtMs": 1781798730000
+            },
+            {
+                "assetId": "stock-ieoca48c",
+                "rank": 404,
+                "addedAtMs": 1781798730000
+            },
+            {
+                "assetId": "stock-igwfqo1w",
+                "rank": 405,
+                "addedAtMs": 1781798730000
+            },
+            {
+                "assetId": "stock-iicfp8ef",
+                "rank": 406,
+                "addedAtMs": 1781798730000
+            },
+            {
+                "assetId": "stock-io3elhnj",
+                "rank": 407,
+                "addedAtMs": 1781798730000
+            },
+            {
+                "assetId": "stock-isrsjecp",
+                "rank": 408,
+                "addedAtMs": 1781798730000
+            },
+            {
+                "assetId": "stock-ivnsacjc",
+                "rank": 409,
+                "addedAtMs": 1781798730000
+            },
+            {
+                "assetId": "stock-jcps1jpv",
+                "rank": 410,
+                "addedAtMs": 1781798730000
+            },
+            {
+                "assetId": "stock-jdotgdrk",
+                "rank": 411,
+                "addedAtMs": 1781798730000
+            },
+            {
+                "assetId": "stock-jymxpcga",
+                "rank": 412,
+                "addedAtMs": 1781798730000
+            },
+            {
+                "assetId": "stock-jycn4hhg",
+                "rank": 413,
+                "addedAtMs": 1781798730000
+            },
+            {
+                "assetId": "stock-jyxkrfux",
+                "rank": 414,
+                "addedAtMs": 1781798730000
+            },
+            {
+                "assetId": "stock-ja4bmvhl",
+                "rank": 415,
+                "addedAtMs": 1781798730000
+            },
+            {
+                "assetId": "stock-jbzbdfnd",
+                "rank": 416,
+                "addedAtMs": 1781798730000
+            },
+            {
+                "assetId": "stock-jiwglgwj",
+                "rank": 417,
+                "addedAtMs": 1781798730000
+            },
+            {
+                "assetId": "stock-jjnseasi",
+                "rank": 418,
+                "addedAtMs": 1781798730000
+            },
+            {
+                "assetId": "stock-jmnrdszu",
+                "rank": 419,
+                "addedAtMs": 1781798730000
+            },
+            {
+                "assetId": "stock-js1cczrn",
+                "rank": 420,
+                "addedAtMs": 1781798730000
+            },
+            {
+                "assetId": "stock-jtnrmv1u",
+                "rank": 421,
+                "addedAtMs": 1781798730000
+            },
+            {
+                "assetId": "stock-jwckwgoj",
+                "rank": 422,
+                "addedAtMs": 1781798730000
+            },
+            {
+                "assetId": "stock-kbuahggh",
+                "rank": 423,
+                "addedAtMs": 1781798730000
+            },
+            {
+                "assetId": "stock-ksbewee6",
+                "rank": 424,
+                "addedAtMs": 1781798730000
+            },
+            {
+                "assetId": "stock-ktmqkhhn",
+                "rank": 425,
+                "addedAtMs": 1781798730000
+            },
+            {
+                "assetId": "stock-kwmjv2xd",
+                "rank": 426,
+                "addedAtMs": 1781798730000
+            },
+            {
+                "assetId": "stock-kcc5qzxd",
+                "rank": 427,
+                "addedAtMs": 1781798730000
+            },
+            {
+                "assetId": "stock-kmpprwwb",
+                "rank": 428,
+                "addedAtMs": 1781798730000
+            },
+            {
+                "assetId": "stock-ko48myqh",
+                "rank": 429,
+                "addedAtMs": 1781798730000
+            },
+            {
+                "assetId": "stock-m3xghfwm",
+                "rank": 430,
+                "addedAtMs": 1781798730000
+            },
+            {
+                "assetId": "stock-m3m2haan",
+                "rank": 431,
+                "addedAtMs": 1781798730000
+            },
+            {
+                "assetId": "stock-m7mwfvhy",
+                "rank": 432,
+                "addedAtMs": 1781798730000
+            },
+            {
+                "assetId": "stock-mfyszxnj",
+                "rank": 433,
+                "addedAtMs": 1781798730000
+            },
+            {
+                "assetId": "stock-mpaqb3y5",
+                "rank": 434,
+                "addedAtMs": 1781798730000
+            },
+            {
+                "assetId": "stock-mv5mof9x",
+                "rank": 435,
+                "addedAtMs": 1781798730000
+            },
+            {
+                "assetId": "stock-micfqeff",
+                "rank": 436,
+                "addedAtMs": 1781798730000
+            },
+            {
+                "assetId": "stock-mmy8wbfr",
+                "rank": 437,
+                "addedAtMs": 1781798730000
+            },
+            {
+                "assetId": "stock-mnyetf4b",
+                "rank": 438,
+                "addedAtMs": 1781798730000
+            },
+            {
+                "assetId": "stock-mrnsd1y7",
+                "rank": 439,
+                "addedAtMs": 1781798730000
+            },
+            {
+                "assetId": "stock-mvaupvwk",
+                "rank": 440,
+                "addedAtMs": 1781798730000
+            },
+            {
+                "assetId": "stock-n7dwzskv",
+                "rank": 441,
+                "addedAtMs": 1781798730000
+            },
+            {
+                "assetId": "stock-ndetekbe",
+                "rank": 442,
+                "addedAtMs": 1781798730000
+            },
+            {
+                "assetId": "stock-nltgfdt7",
+                "rank": 443,
+                "addedAtMs": 1781798730000
+            },
+            {
+                "assetId": "stock-nnyvbs9q",
+                "rank": 444,
+                "addedAtMs": 1781798730000
+            },
+            {
+                "assetId": "stock-np42lxps",
+                "rank": 445,
+                "addedAtMs": 1781798730000
+            },
+            {
+                "assetId": "stock-nqysx1zs",
+                "rank": 446,
+                "addedAtMs": 1781798730000
+            },
+            {
+                "assetId": "stock-ntujrdtz",
+                "rank": 447,
+                "addedAtMs": 1781798730000
+            },
+            {
+                "assetId": "stock-nagl8iwm",
+                "rank": 448,
+                "addedAtMs": 1781798730000
+            },
+            {
+                "assetId": "stock-nbwnopaf",
+                "rank": 449,
+                "addedAtMs": 1781798730000
+            },
+            {
+                "assetId": "stock-ndhvuegr",
+                "rank": 450,
+                "addedAtMs": 1781798730000
+            },
+            {
+                "assetId": "stock-nkbh2dod",
+                "rank": 451,
+                "addedAtMs": 1781798730000
+            },
+            {
+                "assetId": "stock-nupq2buc",
+                "rank": 452,
+                "addedAtMs": 1781798730000
+            },
+            {
+                "assetId": "stock-nvvop8gf",
+                "rank": 453,
+                "addedAtMs": 1781798730000
+            },
+            {
+                "assetId": "stock-nwpwrvfc",
+                "rank": 454,
+                "addedAtMs": 1781798730000
+            },
+            {
+                "assetId": "stock-o3pnlke4",
+                "rank": 455,
+                "addedAtMs": 1781798730000
+            },
+            {
+                "assetId": "stock-rki25tzm",
+                "rank": 457,
+                "addedAtMs": 1781798730000
+            },
+            {
+                "assetId": "stock-rsikbhcd",
+                "rank": 458,
+                "addedAtMs": 1781798730000
+            },
+            {
+                "assetId": "stock-sivse6kj",
+                "rank": 459,
+                "addedAtMs": 1781798730000
+            },
+            {
+                "assetId": "stock-solm6jrv",
+                "rank": 460,
+                "addedAtMs": 1781798730000
+            },
+            {
+                "assetId": "stock-syb82jxk",
+                "rank": 461,
+                "addedAtMs": 1781798730000
+            },
+            {
+                "assetId": "stock-t29ybab7",
+                "rank": 462,
+                "addedAtMs": 1781798730000
+            },
+            {
+                "assetId": "stock-t5xwftmc",
+                "rank": 463,
+                "addedAtMs": 1781798730000
+            },
+            {
+                "assetId": "stock-teuyhoqu",
+                "rank": 464,
+                "addedAtMs": 1781798730000
+            },
+            {
+                "assetId": "stock-tezfca6z",
+                "rank": 465,
+                "addedAtMs": 1781798730000
+            },
+            {
+                "assetId": "stock-th3tot4s",
+                "rank": 466,
+                "addedAtMs": 1781798730000
+            },
+            {
+                "assetId": "stock-tzuc3szn",
+                "rank": 467,
+                "addedAtMs": 1781798730000
+            },
+            {
+                "assetId": "stock-ueeyw3dj",
+                "rank": 468,
+                "addedAtMs": 1781798730000
+            },
+            {
+                "assetId": "stock-uislmtld",
+                "rank": 469,
+                "addedAtMs": 1781798730000
+            },
+            {
+                "assetId": "stock-uwh6z6c2",
+                "rank": 470,
+                "addedAtMs": 1781798730000
+            },
+            {
+                "assetId": "stock-uywdgdzq",
+                "rank": 471,
+                "addedAtMs": 1781798730000
+            },
+            {
+                "assetId": "stock-uzqx2mnw",
+                "rank": 472,
+                "addedAtMs": 1781798730000
+            },
+            {
+                "assetId": "stock-v34vtrbc",
+                "rank": 473,
+                "addedAtMs": 1781798730000
+            },
+            {
+                "assetId": "stock-vr8rqpdm",
+                "rank": 474,
+                "addedAtMs": 1781798730000
+            },
+            {
+                "assetId": "stock-wcr7yfey",
+                "rank": 475,
+                "addedAtMs": 1781798730000
+            },
+            {
+                "assetId": "stock-wtwpt5yj",
+                "rank": 476,
+                "addedAtMs": 1781798730000
+            },
+            {
+                "assetId": "stock-wuzf2fdz",
+                "rank": 477,
+                "addedAtMs": 1781798730000
+            },
+            {
+                "assetId": "stock-wxpfbh4d",
+                "rank": 478,
+                "addedAtMs": 1781798730000
+            },
+            {
+                "assetId": "stock-vzvgejfs",
+                "rank": 479,
+                "addedAtMs": 1781798730000
+            }
+        ]
+    }
+]

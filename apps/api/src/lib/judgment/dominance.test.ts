@@ -27,6 +27,7 @@ function candidate(overrides: Partial<EnrichedCandidate> & { mint: string }): En
         top10HoldersPercent: null,
         tokenMintTime: null,
         sources: ['provider'],
+        curatedListIds: [],
         registry: null,
         risk: null,
         fillQuality: null,

@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'bun:test';
 
-import type { AdminRepo, CategorySummary, CuratedCategorySlug } from './handlers/curatedTokens';
+import type { CuratedListSlug } from '@tokens/asset-registry/curated-lists';
+
+import type { AdminRepo, CategorySummary } from './handlers/curatedTokens';
 import type { AdminMutationsRepo } from './handlers/curatedTokensMutations';
 import type { AdminReadsRepo } from './handlers/curatedTokensReads';
 import type { HardDeleteRepo } from './handlers/hardDelete';
@@ -14,7 +16,7 @@ function identityHeader(clerkUserId: string): string {
 
 function makeCategoriesRepo(summaries: CategorySummary[]): AdminRepo {
     return {
-        listCategorySummaries: async (slugs: readonly CuratedCategorySlug[]) =>
+        listCategorySummaries: async (slugs: readonly CuratedListSlug[]) =>
             summaries.filter(s => slugs.includes(s.id)),
     };
 }
@@ -45,6 +47,7 @@ function makeMutationsRepo(): AdminMutationsRepo {
         deactivateVariant: async () => 'updated',
         moveVariantToCanonical: async () => ({ status: 'moved', fromAssetId: 'old' }),
         removeFromCategory: async () => true,
+        updateCollectionMeta: async () => {},
     };
 }
 
@@ -58,7 +61,7 @@ function makeDeps(overrides: Partial<ServerDeps> = {}): ServerDeps {
         reads: makeReadsRepo(),
         mutations: makeMutationsRepo(),
         hardDelete: makeHardDeleteRepo(),
-        tokenListsAdmin: { listAll: async () => [], archiveBySlug: async () => false },
+        tokenListsAdmin: { listAll: async () => [], archiveBySlug: async () => false, unlockBySlug: async () => false },
         adminAllowlist: { clerkUserIds: new Set([ADMIN_ID]), emails: new Set<string>() },
         authToken: 'tok',
         ...overrides,
@@ -179,8 +182,8 @@ describe('createApp', () => {
         const app = createApp(
             makeDeps({
                 repo: makeCategoriesRepo([
-                    { id: 'majors', name: 'Top Majors', count: 7, lastAddedAssetId: 'jup' },
-                    { id: 'stocks', name: '', count: 0, lastAddedAssetId: null },
+                    { id: 'majors', name: 'Top Majors', description: 'Blue chips', count: 7, lastAddedAssetId: 'jup' },
+                    { id: 'stocks', name: '', description: null, count: 0, lastAddedAssetId: null },
                 ]),
             }),
         );
@@ -190,13 +193,16 @@ describe('createApp', () => {
             body: '{}',
         });
         expect(res.status).toBe(200);
+        // Fallback names come from the shared public vocabulary
+        // (CURATED_LIST_FALLBACK_NAMES) so admin labels match the live site:
+        // `rwas` reads "Treasuries", not the old admin-only "RWAs".
         expect(await res.json()).toEqual([
-            { id: 'majors', name: 'Top Majors', count: 7, lastAddedAssetId: 'jup' },
-            { id: 'currencies', name: 'Currencies', count: 0, lastAddedAssetId: null },
-            { id: 'rwas', name: 'RWAs', count: 0, lastAddedAssetId: null },
-            { id: 'etfs', name: 'ETFs', count: 0, lastAddedAssetId: null },
-            { id: 'metals', name: 'Metals', count: 0, lastAddedAssetId: null },
-            { id: 'stocks', name: 'Stocks', count: 0, lastAddedAssetId: null },
+            { id: 'majors', name: 'Top Majors', description: 'Blue chips', count: 7, lastAddedAssetId: 'jup' },
+            { id: 'currencies', name: 'Currencies', description: null, count: 0, lastAddedAssetId: null },
+            { id: 'rwas', name: 'Treasuries', description: null, count: 0, lastAddedAssetId: null },
+            { id: 'etfs', name: 'ETFs', description: null, count: 0, lastAddedAssetId: null },
+            { id: 'metals', name: 'Metals', description: null, count: 0, lastAddedAssetId: null },
+            { id: 'stocks', name: 'Stocks', description: null, count: 0, lastAddedAssetId: null },
         ]);
     });
 

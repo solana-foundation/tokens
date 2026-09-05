@@ -1,7 +1,6 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { motion } from 'motion/react';
 import { toast } from 'sonner';
 import {
     IconCheckmark,
@@ -26,8 +25,10 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '@tokens/ui/tooltip';
 import { CopyButton } from '@/components/app-ui/copy-button';
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/app-ui/dialog';
 import { EmptyState } from '@/components/global/empty-state';
+import { Logo } from '@/components/logo';
 import { TabNavigation } from '@/components/global/tab-navigation';
 import { ComposeEndpointSheet, type ComposableList } from './compose-endpoint-dialog';
+import { ImportMembersDialog } from './import-members-dialog';
 import { ListSettingsDialog } from './list-settings-dialog';
 import { PencilIcon, PlusIcon, StackIcon, TrashCanFillIcon } from './icons';
 import { MEMBER_GRID_TEMPLATE_COLUMNS, MemberTable } from './member-table';
@@ -44,6 +45,7 @@ import {
 } from './token-bits';
 import { TokenSearchCommand } from './token-search-command';
 import { slugAvailabilityMessage, useSlugAvailability } from './use-slug-availability';
+import { VisibilityPicker } from './visibility-picker';
 import { useProjectApiKeys } from '@/contexts/project-api-keys';
 import { useDashboardTab } from '@/hooks/use-dashboard-tab';
 
@@ -51,8 +53,7 @@ import { useDashboardTab } from '@/hooks/use-dashboard-tab';
  * Community lists management: a first-party client of the public /api/v2/lists
  * API, authenticated through the playground key-reveal proxy — the same write
  * path partners use programmatically, so there is nothing dashboard-only to
- * drift. Projects without the invite-only `lists:write` scope see a
- * request-access state.
+ * drift. Any API key can manage its own project's lists.
  */
 
 interface V2ListSummary {
@@ -62,6 +63,8 @@ interface V2ListSummary {
     owner: { name?: string; projectId?: string };
     tokenCount: number;
     updatedAt: number | null;
+    /** Owner-scoped rows only (`?mine=true`): draft | unlisted | published. */
+    status?: string;
 }
 
 function MetadataStat({ label, value }: { label: string; value: string }) {
@@ -97,8 +100,6 @@ function MetadataScoreBar({ label, value }: { label: string; value: number }) {
         </div>
     );
 }
-
-type WriteAccess = 'checking' | 'granted' | 'denied';
 
 const LIST_TOKEN_CACHE_TTL_MS = 5 * 60_000;
 const TOKEN_METADATA_CACHE_TTL_MS = 5 * 60_000;
@@ -194,6 +195,21 @@ function ListRailRow({
             <Badge variant="secondary" className="shrink-0 px-1.5 font-berkeley-mono text-[10px]">
                 {list.tokenCount}
             </Badge>
+            {list.status === 'unlisted' && (
+                <Badge variant="warning" className="shrink-0 px-1.5 text-[10px]">
+                    Unlisted
+                </Badge>
+            )}
+            {list.status === 'draft' && (
+                <Badge variant="outline" className="shrink-0 px-1.5 text-[10px]">
+                    Draft
+                </Badge>
+            )}
+            {list.status === 'archived' && (
+                <Badge variant="secondary" className="shrink-0 px-1.5 text-[10px] opacity-70">
+                    Archived
+                </Badge>
+            )}
 
             {confirmingDelete ? (
                 <div className="ml-auto flex shrink-0 items-center gap-1">
@@ -277,24 +293,16 @@ function CommunityRailRow({
             <Badge variant="secondary" className="shrink-0 px-1.5 font-berkeley-mono text-[10px]">
                 {list.tokenCount}
             </Badge>
-            <span className="ml-auto shrink-0">
-                {list.curated ? (
-                    <Badge variant="outline" className="px-1.5 text-[10px]">
-                        Curated
+            {list.curated && (
+                <span className="ml-auto shrink-0">
+                    <Badge variant="outline" className="flex items-center gap-1 px-1.5 text-[10px]">
+                        <Logo className="size-2.5" />
+                        Tokens
                     </Badge>
-                ) : (
-                    <span className="font-berkeley-mono text-[10px] text-muted-foreground">
-                        {shortOwnerId(list.owner.projectId)}
-                    </span>
-                )}
-            </span>
+                </span>
+            )}
         </div>
     );
-}
-
-function shortOwnerId(projectId: string | undefined): string {
-    if (!projectId) return '—';
-    return projectId.length > 12 ? `${projectId.slice(0, 8)}…` : projectId;
 }
 
 /** Rail header action: icon-only button with a hover tooltip naming what it does. */
@@ -599,8 +607,8 @@ export function ListsTab(): React.JSX.Element {
         [projectId, currentApiKeyId],
     );
 
-    const [writeAccess, setWriteAccess] = useState<WriteAccess>('checking');
     const [allLists, setAllLists] = useState<V2ListSummary[] | null>(null);
+    const [ownedLists, setOwnedLists] = useState<V2ListSummary[] | null>(null);
     const [railTab, setRailTab] = useState<'mine' | 'community'>('mine');
     const [selectedSlug, setSelectedSlug] = useState<string | null>(null);
     const [tokens, setTokens] = useState<V2ListToken[] | null>(null);
@@ -608,44 +616,32 @@ export function ListsTab(): React.JSX.Element {
 
     const ready = Boolean(projectId && currentApiKeyId && hasActiveApiKey);
 
-    // Scope probe: POST with an empty body mutates nothing — a key without
-    // lists:write gets 403 at the scope gate; a granted key reaches body
-    // validation and gets 400.
-    useEffect(() => {
-        if (!ready) return;
-        let cancelled = false;
-        setWriteAccess('checking');
-        void playgroundFetch('/api/v2/lists', { method: 'POST', body: {} }).then(
-            res => {
-                if (!cancelled) setWriteAccess(res.status === 403 ? 'denied' : 'granted');
-            },
-            () => {
-                if (!cancelled) setWriteAccess('denied');
-            },
-        );
-        return () => {
-            cancelled = true;
-        };
-    }, [ready, playgroundFetch]);
-
     const refreshLists = useCallback(async () => {
         if (!ready) return;
-        const res = await playgroundFetch('/api/v2/lists?limit=500');
-        if (!res.ok) return;
-        const body = (await res.json()) as { lists: V2ListSummary[] };
-        setAllLists(body.lists);
+        // Two catalogs: the public one for browsing, and the owner-scoped one
+        // for "My lists" — private (unlisted) lists only appear in the latter.
+        const [publicRes, mineRes] = await Promise.all([
+            playgroundFetch('/api/v2/lists?limit=500'),
+            playgroundFetch('/api/v2/lists?mine=true&limit=500'),
+        ]);
+        if (publicRes.ok) {
+            const body = (await publicRes.json()) as { lists: V2ListSummary[] };
+            setAllLists(body.lists);
+        }
+        if (mineRes.ok) {
+            const body = (await mineRes.json()) as { lists: V2ListSummary[] };
+            setOwnedLists(body.lists);
+        }
     }, [ready, playgroundFetch]);
 
     useEffect(() => {
         setAllLists(null);
+        setOwnedLists(null);
         setSelectedSlug(null);
         void refreshLists();
     }, [refreshLists]);
 
-    const myLists = useMemo(
-        () => (allLists ? allLists.filter(list => !list.curated && list.owner.projectId === projectId) : null),
-        [allLists, projectId],
-    );
+    const myLists = ownedLists;
     // Everything browsable that isn't mine: curated lists lead (API order), then
     // other projects' published lists.
     const communityLists = useMemo(
@@ -653,9 +649,14 @@ export function ListsTab(): React.JSX.Element {
         [allLists, projectId],
     );
 
+    // Owned lists first: private (unlisted) lists exist only in the owner-scoped
+    // catalog, so resolving from the public one alone would blank the detail pane.
     const selectedList = useMemo(
-        () => allLists?.find(list => list.slug === selectedSlug) ?? null,
-        [allLists, selectedSlug],
+        () =>
+            ownedLists?.find(list => list.slug === selectedSlug) ??
+            allLists?.find(list => list.slug === selectedSlug) ??
+            null,
+        [ownedLists, allLists, selectedSlug],
     );
     const selectedIsOwned = useMemo(
         () => Boolean(selectedList && !selectedList.curated && selectedList.owner.projectId === projectId),
@@ -734,6 +735,7 @@ export function ListsTab(): React.JSX.Element {
     const [createSlug, setCreateSlug] = useState('');
     const [slugTouched, setSlugTouched] = useState(false);
     const [createName, setCreateName] = useState('');
+    const [createPrivate, setCreatePrivate] = useState(false);
     const [createError, setCreateError] = useState<string | null>(null);
     const [creating, setCreating] = useState(false);
 
@@ -750,13 +752,18 @@ export function ListsTab(): React.JSX.Element {
         try {
             const res = await playgroundFetch('/api/v2/lists', {
                 method: 'POST',
-                body: { slug: createSlug.trim(), name: createName.trim() },
+                body: {
+                    slug: createSlug.trim(),
+                    name: createName.trim(),
+                    ...(createPrivate ? { status: 'unlisted' } : {}),
+                },
             });
             const body = (await res.json()) as { list?: { slug: string }; error?: { message?: string } };
             if (!res.ok) throw new Error(body.error?.message ?? `Create failed (HTTP ${res.status})`);
             setCreateOpen(false);
             setCreateSlug('');
             setCreateName('');
+            setCreatePrivate(false);
             setSlugTouched(false);
             toast.success(`List "${createName.trim()}" created`);
             await refreshLists();
@@ -766,12 +773,13 @@ export function ListsTab(): React.JSX.Element {
         } finally {
             setCreating(false);
         }
-    }, [playgroundFetch, createSlug, createName, refreshLists]);
+    }, [playgroundFetch, createSlug, createName, createPrivate, refreshLists]);
 
     // ---- row actions: quick delete (two-step confirm) + settings dialog ----
     const [deleteSlug, setDeleteSlug] = useState<string | null>(null);
     const [deleting, setDeleting] = useState(false);
     const [settingsSlug, setSettingsSlug] = useState<string | null>(null);
+    const [importOpen, setImportOpen] = useState(false);
 
     /** DELETE is a hard delete: the list is gone and its slug is claimable again. */
     const handleDelete = useCallback(
@@ -799,7 +807,7 @@ export function ListsTab(): React.JSX.Element {
 
     /** A slug change here renames the list; the previous path stops resolving. */
     const handleUpdateList = useCallback(
-        async (slug: string, patch: { slug: string; name: string }) => {
+        async (slug: string, patch: { slug: string; name: string; status: string }) => {
             const res = await playgroundFetch(`/api/v2/lists/${slug}`, { method: 'PATCH', body: patch });
             if (!res.ok) {
                 const body = (await res.json().catch(() => null)) as { error?: { message?: string } } | null;
@@ -990,7 +998,7 @@ export function ListsTab(): React.JSX.Element {
         );
     }
 
-    if (!ready || writeAccess === 'checking') {
+    if (!ready) {
         return (
             <div className="space-y-6 container max-w-7xl mx-auto py-16 px-6">
                 <div className="mb-6 space-y-2">
@@ -1000,39 +1008,6 @@ export function ListsTab(): React.JSX.Element {
                 <div className="grid grid-cols-1 lg:grid-cols-[300px_1fr] gap-8">
                     <Skeleton className="h-[280px] w-full rounded-[12px]" />
                     <Skeleton className="h-[420px] w-full rounded-[12px]" />
-                </div>
-            </div>
-        );
-    }
-
-    if (writeAccess === 'denied') {
-        return (
-            <div className="space-y-6 container max-w-7xl mx-auto py-16 px-6">
-                <div className="mb-6">
-                    <h1 className="text-3xl font-bold text-foreground">Token Lists</h1>
-                    <p className="text-muted-foreground">
-                        Publish curated token lists any app can consume via the v2 API.
-                    </p>
-                </div>
-                <div className="relative z-10 bg-background/80 backdrop-blur-sm rounded-2xl border border-dashed border-black/20 py-12">
-                    <EmptyState
-                        icon={<IconCircleGridCrossFill className="size-[60px] mb-2 fill-muted-foreground" />}
-                        title="List publishing is invite-only"
-                        subtitle="Your project's API key doesn't have the lists:write scope yet. Reach out to the Tokens team to request access for your community."
-                        className="p-12 w-full sm:w-[480px] mx-auto"
-                    />
-                    <motion.div
-                        initial={{ opacity: 0, y: 6 }}
-                        animate={{ opacity: 1, y: 0 }}
-                        transition={{ duration: 0.22, ease: 'easeOut' }}
-                        className="flex justify-center"
-                    >
-                        <Button asChild variant="ghost" size="sm" className="rounded-lg">
-                            <a href="https://docs.tokens.xyz" target="_blank" rel="noreferrer">
-                                Read the lists documentation
-                            </a>
-                        </Button>
-                    </motion.div>
                 </div>
             </div>
         );
@@ -1144,18 +1119,15 @@ export function ListsTab(): React.JSX.Element {
                                     <div className="space-y-1">
                                         <div className="flex items-center gap-1.5">
                                             <h2 className="text-xl font-inter-semibold">{selectedList.name}</h2>
-                                            {selectedList.curated ? (
-                                                <Badge variant="outline" className="px-1.5 text-[10px]">
-                                                    Curated
-                                                </Badge>
-                                            ) : !selectedIsOwned ? (
+                                            {selectedList.curated && (
                                                 <Badge
-                                                    variant="secondary"
-                                                    className="px-1.5 font-berkeley-mono text-[10px]"
+                                                    variant="outline"
+                                                    className="flex items-center gap-1 px-1.5 text-[10px]"
                                                 >
-                                                    {shortOwnerId(selectedList.owner.projectId)}
+                                                    <Logo className="size-2.5" />
+                                                    Tokens
                                                 </Badge>
-                                            ) : null}
+                                            )}
                                             <Tooltip delayDuration={300}>
                                                 <TooltipTrigger asChild>
                                                     <button
@@ -1190,22 +1162,31 @@ export function ListsTab(): React.JSX.Element {
                                         />
                                     </div>
                                     {selectedIsOwned && (
-                                        <button
-                                            type="button"
-                                            onClick={() => setSearchOpen(true)}
-                                            className="group flex shrink-0 cursor-pointer items-center gap-2 rounded-lg border border-border-medium bg-white px-2.5 py-1.5 text-xs text-muted-foreground shadow-sm transition-colors hover:border-black/25 hover:text-foreground active:scale-[0.99] dark:bg-zinc-950/30"
-                                        >
-                                            <IconMagnifyingglass className="size-3 fill-muted-foreground transition-colors group-hover:fill-foreground" />
-                                            <span>Add tokens</span>
-                                            <span className="flex items-center gap-0.5">
-                                                <kbd className="rounded-sm bg-gray-100 p-1 dark:bg-zinc-800">
-                                                    <IconCommand className="size-2 fill-muted-foreground" />
-                                                </kbd>
-                                                <kbd className="rounded-sm bg-gray-100 p-1 dark:bg-zinc-800">
-                                                    <IconK className="size-2 fill-muted-foreground" />
-                                                </kbd>
-                                            </span>
-                                        </button>
+                                        <div className="flex shrink-0 items-center gap-2">
+                                            <button
+                                                type="button"
+                                                onClick={() => setImportOpen(true)}
+                                                className="cursor-pointer rounded-lg border border-border-medium bg-white px-2.5 py-1.5 text-xs text-muted-foreground shadow-sm transition-colors hover:border-black/25 hover:text-foreground active:scale-[0.99] dark:bg-zinc-950/30"
+                                            >
+                                                Import CSV
+                                            </button>
+                                            <button
+                                                type="button"
+                                                onClick={() => setSearchOpen(true)}
+                                                className="group flex cursor-pointer items-center gap-2 rounded-lg border border-border-medium bg-white px-2.5 py-1.5 text-xs text-muted-foreground shadow-sm transition-colors hover:border-black/25 hover:text-foreground active:scale-[0.99] dark:bg-zinc-950/30"
+                                            >
+                                                <IconMagnifyingglass className="size-3 fill-muted-foreground transition-colors group-hover:fill-foreground" />
+                                                <span>Add tokens</span>
+                                                <span className="flex items-center gap-0.5">
+                                                    <kbd className="rounded-sm bg-gray-100 p-1 dark:bg-zinc-800">
+                                                        <IconCommand className="size-2 fill-muted-foreground" />
+                                                    </kbd>
+                                                    <kbd className="rounded-sm bg-gray-100 p-1 dark:bg-zinc-800">
+                                                        <IconK className="size-2 fill-muted-foreground" />
+                                                    </kbd>
+                                                </span>
+                                            </button>
+                                        </div>
                                     )}
                                 </div>
                                 {tokens === null ? (
@@ -1286,6 +1267,17 @@ export function ListsTab(): React.JSX.Element {
                 loading={metadataLoading}
             />
 
+            <ImportMembersDialog
+                slug={selectedList?.slug ?? null}
+                listName={selectedList?.name ?? null}
+                open={importOpen && selectedList !== null}
+                onOpenChange={setImportOpen}
+                fetcher={playgroundFetch}
+                onImported={() => {
+                    void refreshDetail();
+                    void refreshLists();
+                }}
+            />
             <ListSettingsDialog
                 list={settingsList}
                 isOpen={settingsList !== null}
@@ -1357,6 +1349,7 @@ export function ListsTab(): React.JSX.Element {
                                 </div>
                             )}
                         </div>
+                        <VisibilityPicker isPrivate={createPrivate} onChange={setCreatePrivate} />
                         {createError && (
                             <div className="rounded-lg border border-destructive/30 bg-destructive/5 p-2.5 text-sm text-destructive">
                                 {createError}

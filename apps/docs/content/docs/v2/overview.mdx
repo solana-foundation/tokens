@@ -15,8 +15,8 @@ one corpus — there is deliberately no global "all lists" union, because trust 
 model.
 
 - **Anyone can read** any published list with an `assets:read` API key.
-- **Creating and editing lists is invite-only**: the team provisions `lists:write` on a partner
-  project's API key. Contact us to publish lists.
+- **Anyone can publish**: every API key can create lists; each list is owned by the
+  creating key's project and only that project can modify it.
 - Lists may include mints outside our canonical registry; those tokens are flagged `verified: false`
   so your UI can render appropriate caution.
 

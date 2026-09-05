@@ -2,7 +2,7 @@ import { describe, expect, it } from 'bun:test';
 
 import { InvalidArgsError } from './assets';
 import {
-    MEMBER_BATCH_CAP,
+    DEFAULT_TOKEN_LIST_CAPS,
     SlugConflictError,
     addMembersBatch,
     archiveList,
@@ -12,6 +12,7 @@ import {
     removeMember,
     updateList,
     upsertMember,
+    withOverviewMissCache,
     type TokenListMutationRow,
     type TokenListsMutationsDeps,
     type TokenListsMutationsRepo,
@@ -27,6 +28,7 @@ const LIST_ROW: TokenListMutationRow = {
     owner_project_id: 'proj_1',
     name: 'Ownership Core',
     status: 'published',
+    admin_locked_at: null,
     created_at: FIXED_NOW,
     updated_at: FIXED_NOW,
 };
@@ -47,14 +49,27 @@ function makeDeps(
             }),
             updateList: async (_listId, patch) => ({ ...LIST_ROW, ...patch }),
             deleteList: async () => {},
-            upsertMember: async () => {},
+            upsertMember: async () => true,
             removeMember: async () => true,
             hasActiveVariantForMint: async () => true,
             hasTokenForAddress: async () => false,
+            // Batch resolution defaults mirror the single-mint fakes above:
+            // every well-formed mint counts as registry-known.
+            filterMintsWithActiveVariants: async mints => [...mints],
+            filterMintsKnownTokens: async () => [],
+            filterMintsExistingMembers: async () => [],
+            countMembers: async () => 0,
+            upsertMembersBulk: async () => ({ overflowMints: [] }),
+            countListsByOwner: async () => 0,
+            getSlugHold: async () => null,
+            recordSlugHold: async () => {},
+            clearSlugHold: async () => {},
             ...repoOverrides,
         },
         fetchTokenOverview: async () => null,
         now: () => FIXED_NOW,
+        caps: { ...DEFAULT_TOKEN_LIST_CAPS },
+        slugHoldMs: 30 * 24 * 60 * 60 * 1000,
         ...depsOverrides,
     };
 }
@@ -99,6 +114,23 @@ describe('createList', () => {
             ok: false,
             error: 'slug_conflict',
         });
+    });
+
+    it('round-trips the unlisted status', async () => {
+        const result = await createList(makeDeps(), {
+            ownerProjectId: 'proj_1',
+            slug: 'quiet-list',
+            name: 'Quiet List',
+            status: 'unlisted',
+        });
+        expect(result).toMatchObject({ ok: true, value: { slug: 'quiet-list', status: 'unlisted' } });
+
+        const updated = await updateList(makeDeps(), {
+            ownerProjectId: 'proj_1',
+            slug: 'ownership-core',
+            status: 'unlisted',
+        });
+        expect(updated).toMatchObject({ ok: true, value: { status: 'unlisted' } });
     });
 
     it('rejects invalid status via InvalidArgsError', async () => {
@@ -199,6 +231,166 @@ describe('deleteList', () => {
     });
 });
 
+describe('admin takedown lock', () => {
+    it('blocks every owner mutation while admin_locked_at is set', async () => {
+        const deps = makeDeps({ getListBySlug: async () => ({ ...LIST_ROW, admin_locked_at: FIXED_NOW }) });
+        const args = { ownerProjectId: 'proj_1', slug: 'ownership-core', mint: USDC_MINT, name: 'x' };
+        expect(await updateList(deps, args)).toEqual({ ok: false, error: 'admin_locked' });
+        expect(await deleteList(deps, args)).toEqual({ ok: false, error: 'admin_locked' });
+        expect(await upsertMember(deps, args)).toEqual({ ok: false, error: 'admin_locked' });
+        expect(await removeMember(deps, args)).toEqual({ ok: false, error: 'admin_locked' });
+    });
+});
+
+describe('slug hold-down', () => {
+    const HOLD = { ownerProjectId: 'proj_other', releasedAt: FIXED_NOW - 1000 };
+
+    it('refuses creation of a slug recently freed by another project', async () => {
+        const deps = makeDeps({ getSlugHold: async () => HOLD });
+        expect(await createList(deps, { ownerProjectId: 'proj_1', slug: 'freed-slug', name: 'X' })).toEqual({
+            ok: false,
+            error: 'slug_held',
+        });
+    });
+
+    it('lets the previous owner reclaim, and anyone claim after the window', async () => {
+        const mine = makeDeps({ getSlugHold: async () => ({ ...HOLD, ownerProjectId: 'proj_1' }) });
+        expect(await createList(mine, { ownerProjectId: 'proj_1', slug: 'freed-slug', name: 'X' })).toMatchObject({
+            ok: true,
+        });
+
+        const expired = makeDeps({
+            getSlugHold: async () => ({ ...HOLD, releasedAt: FIXED_NOW - 31 * 24 * 60 * 60 * 1000 }),
+        });
+        expect(await createList(expired, { ownerProjectId: 'proj_1', slug: 'freed-slug', name: 'X' })).toMatchObject({
+            ok: true,
+        });
+    });
+
+    it('records a hold on delete (atomically, via the repo) and on rename-away', async () => {
+        const holds: unknown[] = [];
+        const deps = makeDeps({
+            deleteList: async (_listId, hold) =>
+                void holds.push(['delete', hold.slug, hold.ownerProjectId, hold.releasedAt]),
+            recordSlugHold: async (slug, owner, at) => void holds.push(['rename', slug, owner, at]),
+        });
+        await deleteList(deps, { ownerProjectId: 'proj_1', slug: 'ownership-core' });
+        await updateList(deps, { ownerProjectId: 'proj_1', slug: 'ownership-core', newSlug: 'renamed-core' });
+        expect(holds).toEqual([
+            ['delete', 'ownership-core', 'proj_1', FIXED_NOW],
+            ['rename', 'ownership-core', 'proj_1', FIXED_NOW],
+        ]);
+    });
+
+    it('blocks renaming onto a slug held for another project', async () => {
+        const deps = makeDeps({ getSlugHold: async () => HOLD });
+        expect(
+            await updateList(deps, { ownerProjectId: 'proj_1', slug: 'ownership-core', newSlug: 'freed-slug' }),
+        ).toEqual({ ok: false, error: 'slug_held' });
+    });
+});
+
+describe('text caps and rank validation', () => {
+    it('rejects oversized name/note', async () => {
+        await expect(
+            createList(makeDeps(), { ownerProjectId: 'p', slug: 'ok-slug', name: 'x'.repeat(81) }),
+        ).rejects.toBeInstanceOf(InvalidArgsError);
+        await expect(
+            upsertMember(makeDeps(), {
+                ownerProjectId: 'proj_1',
+                slug: 'ownership-core',
+                mint: USDC_MINT,
+                note: 'n'.repeat(501),
+            }),
+        ).rejects.toBeInstanceOf(InvalidArgsError);
+    });
+
+    it('rejects non-finite and overflowing ranks', async () => {
+        for (const rank of [Number.POSITIVE_INFINITY, Number.NaN, 2_147_483_648]) {
+            await expect(
+                upsertMember(makeDeps(), {
+                    ownerProjectId: 'proj_1',
+                    slug: 'ownership-core',
+                    mint: USDC_MINT,
+                    rank,
+                }),
+            ).rejects.toBeInstanceOf(InvalidArgsError);
+        }
+    });
+});
+
+describe('lists-per-project cap', () => {
+    it('refuses creation once the project owns caps.listsPerProject lists', async () => {
+        const deps = makeDeps({ countListsByOwner: async () => 100 });
+        expect(await createList(deps, { ownerProjectId: 'proj_1', slug: 'one-more', name: 'X' })).toEqual({
+            ok: false,
+            error: 'project_lists_limit',
+        });
+        const under = makeDeps({ countListsByOwner: async () => 99 });
+        expect(await createList(under, { ownerProjectId: 'proj_1', slug: 'one-more', name: 'X' })).toMatchObject({
+            ok: true,
+        });
+    });
+});
+
+describe('withOverviewMissCache', () => {
+    it('serves misses from the cache within the TTL and retries after it', async () => {
+        let calls = 0;
+        let clock = 0;
+        const fetch = withOverviewMissCache(
+            async () => {
+                calls += 1;
+                return null;
+            },
+            { ttlMs: 1000, now: () => clock },
+        );
+        expect(await fetch('MintA')).toBeNull();
+        expect(await fetch('MintA')).toBeNull();
+        expect(calls).toBe(1);
+        clock = 1001;
+        expect(await fetch('MintA')).toBeNull();
+        expect(calls).toBe(2);
+    });
+
+    it('does not cache hits and evicts FIFO past maxEntries', async () => {
+        let calls = 0;
+        const fetch = withOverviewMissCache(
+            async mint => {
+                calls += 1;
+                return mint === 'Known' ? ({ symbol: 'K' } as never) : null;
+            },
+            { maxEntries: 1 },
+        );
+        await fetch('Known');
+        await fetch('Known');
+        expect(calls).toBe(2);
+        await fetch('MissA');
+        await fetch('MissB'); // evicts MissA
+        await fetch('MissA'); // refetches
+        expect(calls).toBe(5);
+    });
+});
+
+describe('bulk cap reconciliation', () => {
+    it('moves txn-detected overflow mints from added to failed', async () => {
+        const deps = makeDeps({
+            upsertMembersBulk: async () => ({ overflowMints: [MEME_MINT] }),
+        });
+        const result = await addMembersBatch(deps, {
+            ownerProjectId: 'proj_1',
+            slug: 'ownership-core',
+            mints: [USDC_MINT, MEME_MINT],
+        });
+        expect(result).toMatchObject({
+            ok: true,
+            value: {
+                added: [{ mint: USDC_MINT }],
+                failed: [{ mint: MEME_MINT, error: 'list_full' }],
+            },
+        });
+    });
+});
+
 describe('upsertMember mint resolution', () => {
     it('registry-known mint → verified, no snapshot', async () => {
         const result = await upsertMember(makeDeps(), {
@@ -263,21 +455,30 @@ describe('upsertMember mint resolution', () => {
     });
 });
 
+function uniqueMints(count: number, prefix = 'M'): string[] {
+    // Base58 excludes 0, O, I, l — encode the index with safe letters only.
+    return Array.from({ length: count }, (_, i) => {
+        const tag = String(i)
+            .split('')
+            .map(digit => 'ABCDEFGHJK'[Number(digit)])
+            .join('');
+        return `${prefix}${tag}`.padEnd(40, 'z');
+    });
+}
+
 describe('addMembersBatch', () => {
-    it('caps the batch size', async () => {
-        const mints = Array.from({ length: MEMBER_BATCH_CAP + 1 }, (_, i) =>
-            `M${String(i).padStart(3, 'x')}`.padEnd(40, 'z'),
-        );
+    it('caps the batch size at caps.batch', async () => {
+        const mints = uniqueMints(DEFAULT_TOKEN_LIST_CAPS.batch + 1);
         expect(await addMembersBatch(makeDeps(), { ownerProjectId: 'proj_1', slug: 'ownership-core', mints })).toEqual({
             ok: false,
             error: 'batch_too_large',
         });
     });
 
-    it('partitions per-mint successes and failures', async () => {
+    it('partitions per-mint successes and failures via batched resolution', async () => {
         const deps = makeDeps({
-            hasActiveVariantForMint: async mint => mint === USDC_MINT,
-            hasTokenForAddress: async () => false,
+            filterMintsWithActiveVariants: async mints => mints.filter(mint => mint === USDC_MINT),
+            filterMintsKnownTokens: async () => [],
         });
         const result = await addMembersBatch(deps, {
             ownerProjectId: 'proj_1',
@@ -289,11 +490,133 @@ describe('addMembersBatch', () => {
             value: {
                 added: [{ mint: USDC_MINT, verified: true, snapshot: null }],
                 failed: [
-                    { mint: MEME_MINT, error: 'unknown_mint' },
                     { mint: 'garbage', error: 'invalid_mint' },
+                    { mint: MEME_MINT, error: 'unknown_mint' },
                 ],
             },
         });
+    });
+
+    it('writes through the bulk upsert, not the per-mint path', async () => {
+        const bulkCalls: number[] = [];
+        let singleCalls = 0;
+        const deps = makeDeps({
+            upsertMembersBulk: async (_listId, rows) => {
+                bulkCalls.push(rows.length);
+                return { overflowMints: [] };
+            },
+            upsertMember: async () => {
+                singleCalls += 1;
+                return true;
+            },
+        });
+        await addMembersBatch(deps, {
+            ownerProjectId: 'proj_1',
+            slug: 'ownership-core',
+            mints: uniqueMints(3),
+        });
+        expect(bulkCalls).toEqual([3]);
+        expect(singleCalls).toBe(0);
+    });
+
+    it('spends at most caps.providerLookups on Birdeye and fails the rest as unknown_mint', async () => {
+        let lookups = 0;
+        const deps = makeDeps(
+            {
+                // Nothing resolves locally — every mint is a provider candidate.
+                filterMintsWithActiveVariants: async () => [],
+                filterMintsKnownTokens: async () => [],
+            },
+            {
+                fetchTokenOverview: async () => {
+                    lookups += 1;
+                    return { symbol: 'X', name: 'X Token', decimals: 6 };
+                },
+                caps: { ...DEFAULT_TOKEN_LIST_CAPS, providerLookups: 5 },
+            },
+        );
+        const result = await addMembersBatch(deps, {
+            ownerProjectId: 'proj_1',
+            slug: 'ownership-core',
+            mints: uniqueMints(8),
+        });
+        expect(lookups).toBe(5);
+        if (!result.ok) throw new Error('expected ok');
+        expect(result.value.added.length).toBe(5);
+        expect(result.value.failed.filter(f => f.error === 'unknown_mint').length).toBe(3);
+    });
+
+    it('fails net-new mints beyond the members-per-list cap with list_full, updates stay free', async () => {
+        const mints = uniqueMints(4);
+        const existing = mints[0] as string;
+        const deps = makeDeps(
+            {
+                countMembers: async () => 4999,
+                filterMintsExistingMembers: async () => [existing],
+            },
+            { caps: { ...DEFAULT_TOKEN_LIST_CAPS, membersPerList: 5000 } },
+        );
+        const result = await addMembersBatch(deps, { ownerProjectId: 'proj_1', slug: 'ownership-core', mints });
+        if (!result.ok) throw new Error('expected ok');
+        // 1 update (existing) + 1 new fills the last slot; 2 overflow.
+        expect(result.value.added.map(m => m.mint)).toEqual([mints[0], mints[1]]);
+        expect(result.value.failed).toEqual([
+            { mint: mints[2], error: 'list_full' },
+            { mint: mints[3], error: 'list_full' },
+        ]);
+    });
+});
+
+describe('upsertMember list_full', () => {
+    it('surfaces the repo cap verdict (enforced under the list lock) and passes the cap through', async () => {
+        const caps: number[] = [];
+        const fullDeps = makeDeps({
+            upsertMember: async args => {
+                caps.push(args.membersPerListCap);
+                return false;
+            },
+        });
+        expect(
+            await upsertMember(fullDeps, { ownerProjectId: 'proj_1', slug: 'ownership-core', mint: USDC_MINT }),
+        ).toEqual({ ok: false, error: 'list_full' });
+        expect(caps).toEqual([5000]);
+
+        const updateDeps = makeDeps({ upsertMember: async () => true });
+        expect(
+            await upsertMember(updateDeps, { ownerProjectId: 'proj_1', slug: 'ownership-core', mint: USDC_MINT }),
+        ).toMatchObject({ ok: true });
+    });
+});
+
+describe('addMembersBatch members shape', () => {
+    it('accepts members with notes and keeps request order', async () => {
+        let bulk: unknown = null;
+        const deps = makeDeps({
+            upsertMembersBulk: async (_listId, rows) => {
+                bulk = rows;
+                return { overflowMints: [] };
+            },
+        });
+        const result = await addMembersBatch(deps, {
+            ownerProjectId: 'proj_1',
+            slug: 'ownership-core',
+            members: [{ mint: MEME_MINT, note: 'wrapped SOL' }, { mint: USDC_MINT }],
+        });
+        expect(result).toMatchObject({ ok: true, value: { failed: [] } });
+        expect((bulk as Array<{ mint: string; note: string | null }>).map(r => [r.mint, r.note])).toEqual([
+            [MEME_MINT, 'wrapped SOL'],
+            [USDC_MINT, null],
+        ]);
+    });
+
+    it('requires one of mints or members and validates member rows', async () => {
+        const deps = makeDeps();
+        await expect(
+            addMembersBatch(deps, { ownerProjectId: 'proj_1', slug: 'ownership-core' }),
+        ).rejects.toBeInstanceOf(InvalidArgsError);
+        await expect(
+            addMembersBatch(deps, { ownerProjectId: 'proj_1', slug: 'ownership-core', members: [{ mint: 1 }] }),
+        ).rejects.toBeInstanceOf(InvalidArgsError);
     });
 });
 

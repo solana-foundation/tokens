@@ -1,5 +1,7 @@
 import { Effect } from 'effect';
 
+import { getCuratedListSlugsForMint } from '@/lib/curated-membership';
+
 import { computeMarketScore, type MarketScoreInput } from '@/lib/token-risk-helpers';
 import { route } from '@/effect/next-route';
 import { decodeUnknownOrBadRequest, SolanaAddress } from '@tokens/effect';
@@ -53,6 +55,7 @@ const GET_INTERNAL = route(
                 volume7dUsd,
                 tokenMintTime: null,
                 tokenAddress: address,
+                curatedListSlugs: yield* Effect.promise(() => getCuratedListSlugsForMint(address)),
             };
 
             const marketScore = computeMarketScore(marketScoreInput);

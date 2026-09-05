@@ -38,12 +38,19 @@ export const ADMIN_FNS: Record<string, AdminFnSpec> = {
     deactivateVariant: { service: 'admin', kind: 'mutation' },
     moveVariantToCanonical: { service: 'admin', kind: 'mutation' },
     removeFromCategory: { service: 'admin', kind: 'mutation' },
+    updateCollectionMeta: { service: 'admin', kind: 'mutation' },
     generateCanonicalLogoUploadUrl: { service: 'admin', kind: 'mutation' },
     adminArchiveTokenList: { service: 'admin', kind: 'mutation' },
+    adminUnlockTokenList: { service: 'admin', kind: 'mutation' },
 
     // cloudrun-assets admin actions (awaited warms → long timeouts)
     adminCheckVariantMintForCanonical: { service: 'assets', kind: 'mutation', timeoutMs: 30_000 },
     adminAddCheckedVariant: { service: 'assets', kind: 'mutation', timeoutMs: 60_000 },
     adminSeedAsset: { service: 'assets', kind: 'mutation', timeoutMs: 60_000 },
     adminRefreshChartData: { service: 'assets', kind: 'mutation', timeoutMs: 60_000 },
+
+    // cloudrun-assets token-list build tools (CSV import resolves unknown
+    // mints through Birdeye, so allow a long tail per chunk).
+    adminCreateTokenList: { service: 'assets', kind: 'mutation' },
+    adminImportTokenListMembers: { service: 'assets', kind: 'mutation', timeoutMs: 60_000 },
 };
