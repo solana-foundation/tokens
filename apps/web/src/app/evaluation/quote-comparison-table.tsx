@@ -11,17 +11,15 @@ import type {
     ExecutionQuoteEdge,
     ExecutionQuoteSide,
 } from '@/hooks/queries/use-execution-evaluation';
+import { CandidateComparison, ImpactValue, ProviderBadge } from './candidate-comparison';
 import {
-    CandidateComparison,
+    formatExecutionRouterLabel,
     formatQuoteTime,
     formatTokenAmount,
-    ImpactValue,
-    ProviderBadge,
     providerLabel,
     routeDetails,
     routeLabel,
-} from './candidate-comparison';
-import { formatExecutionRouterLabel } from '@/lib/execution-quote-format';
+} from '@/lib/execution-quote-format';
 
 function formatRequestedAmount(amount: string, side: ExecutionQuoteSide): string {
     const numeric = Number(amount);
@@ -128,8 +126,15 @@ export function QuoteComparisonTable({
     customAmount: string | null;
     side: ExecutionQuoteSide;
 }) {
-    const [expandedRawAmount, setExpandedRawAmount] = React.useState<string | null>(null);
-    React.useEffect(() => setExpandedRawAmount(null), [data, isPending, side]);
+    // The open row belongs to the response that produced it, so the expansion
+    // is stored with that response and validated during render. Clearing it
+    // from an effect instead would show the previous row's comparison against
+    // fresh quotes for one paint.
+    const [expanded, setExpanded] = React.useState<{
+        source: ExecutionEvaluationResponse;
+        rawAmount: string;
+    } | null>(null);
+    const expandedRawAmount = expanded?.source === data ? (expanded?.rawAmount ?? null) : null;
 
     const unavailable = data?.quotes.filter(quote => quote.status === 'unavailable') ?? [];
     const titanUnavailable =
@@ -235,8 +240,13 @@ export function QuoteComparisonTable({
                                                               aria-expanded={isExpanded}
                                                               aria-controls={detailsId}
                                                               onClick={() =>
-                                                                  setExpandedRawAmount(
-                                                                      isExpanded ? null : row.request.rawAmount,
+                                                                  setExpanded(
+                                                                      isExpanded || !data
+                                                                          ? null
+                                                                          : {
+                                                                                source: data,
+                                                                                rawAmount: row.request.rawAmount,
+                                                                            },
                                                                   )
                                                               }
                                                           >

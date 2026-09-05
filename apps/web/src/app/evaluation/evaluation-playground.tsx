@@ -122,6 +122,7 @@ function buildMintOptionGroups(): MintOptionGroup[] {
         options: [] as MintOption[],
     }));
     const seenMints = new Set<string>();
+    const groupById = new Map(groups.map(group => [group.id, group]));
 
     for (const asset of listAssets()) {
         if (asset.variants.length === 0) continue;
@@ -132,7 +133,7 @@ function buildMintOptionGroups(): MintOptionGroup[] {
         const groupId = matchedGroup?.id ?? FALLBACK_LIST_BY_CATEGORY[asset.category];
         if (!groupId) continue;
 
-        const group = groups.find(entry => entry.id === groupId);
+        const group = matchedGroup ?? groupById.get(groupId);
         for (const variant of asset.variants) {
             if (seenMints.has(variant.mint)) continue;
             seenMints.add(variant.mint);
@@ -242,12 +243,14 @@ function buildAssetOptionGroups(): AssetOptionGroup[] {
         options: [] as AssetOption[],
     }));
 
+    const groupById = new Map(groups.map(group => [group.id, group]));
+
     for (const asset of listAssets()) {
         if (asset.variants.length === 0) continue;
         const matchedGroup = groups.find(group => asset.variants.some(variant => group.mints.has(variant.mint)));
         const groupId = matchedGroup?.id ?? FALLBACK_LIST_BY_CATEGORY[asset.category];
         if (!groupId) continue;
-        const group = groups.find(entry => entry.id === groupId);
+        const group = matchedGroup ?? groupById.get(groupId);
         if (!group) continue;
         // Prefer a curated-listed mint for the logo: it is already hydrated.
         const logoMint = asset.variants.find(variant => group.mints.has(variant.mint))?.mint ?? asset.variants[0]!.mint;
@@ -462,7 +465,7 @@ export function EvaluationPlayground() {
     };
 
     return (
-        <main className="flex min-h-screen justify-center bg-[#FAFAFA] px-4 py-20">
+        <main className="flex min-h-dvh justify-center bg-[#FAFAFA] px-4 py-20">
             <div className="w-full max-w-[1440px] space-y-6">
                 {/* One column of results, one of the request that produced them.
                     Splits at xl only: the table needs ~980px, so below that the

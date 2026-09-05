@@ -2,7 +2,7 @@
 
 import * as React from 'react';
 import { Ellipsis } from 'lucide-react';
-import { motion } from 'motion/react';
+import { domAnimation, LazyMotion, m } from 'motion/react';
 
 import { Tooltip } from '@solana/design-system/tooltip';
 
@@ -291,14 +291,20 @@ export function RouteSplitVisual({
                     backgroundSize: '18px 18px',
                 }}
             />
-            <motion.div
-                className="relative mx-auto w-full max-w-[520px]"
-                initial={false}
-                animate={{ height: stackHeight }}
-                transition={STACK_TRANSITION}
-            >
-                <SplitStack model={model} expanded={expanded} onToggleExpanded={() => setExpanded(value => !value)} />
-            </motion.div>
+            <LazyMotion features={domAnimation}>
+                <m.div
+                    className="relative mx-auto w-full max-w-[520px]"
+                    initial={false}
+                    animate={{ height: stackHeight }}
+                    transition={STACK_TRANSITION}
+                >
+                    <SplitStack
+                        model={model}
+                        expanded={expanded}
+                        onToggleExpanded={() => setExpanded(value => !value)}
+                    />
+                </m.div>
+            </LazyMotion>
         </section>
     );
 }
@@ -356,7 +362,7 @@ function SplitStack({
                     row.kind === 'leg' && hoveredLegIndex !== null && hoveredLegIndex !== row.legIndex ? 0.28 : 1;
                 return (
                     <RowTransformShell key={row.key} row={row} isPressed={pressedRowKey === row.key}>
-                        <motion.div
+                        <m.div
                             className="relative flex items-center overflow-hidden rounded-[22px] px-4 shadow-[0_24px_80px_rgba(0,0,0,0.42)] ring-[2px] ring-inset ring-black/40 backdrop-blur-xl"
                             initial={false}
                             animate={{
@@ -388,7 +394,7 @@ function SplitStack({
                                     <LegRow leg={row.leg!} contentOpacity={row.contentOpacity} />
                                 )}
                             </div>
-                        </motion.div>
+                        </m.div>
                     </RowTransformShell>
                 );
             })}
@@ -398,7 +404,7 @@ function SplitStack({
 
 function SplitFrame({ expanded, itemCount }: { expanded: boolean; itemCount: number }) {
     return (
-        <motion.div
+        <m.div
             className="absolute inset-x-0 rounded-[26px] px-3 pt-2 shadow-[0_20px_70px_rgba(0,0,0,0.28)] backdrop-blur-xl"
             initial={false}
             animate={{
@@ -428,7 +434,7 @@ function SplitFrame({ expanded, itemCount }: { expanded: boolean; itemCount: num
             <div className="absolute left-1/2 top-0 -translate-x-1/2 -translate-y-1/2 rounded-md border border-white/15 bg-[#121213] px-3 py-1 font-berkeley-mono text-[11px] uppercase leading-none tracking-[0.16em] text-white/44">
                 Route Split
             </div>
-        </motion.div>
+        </m.div>
     );
 }
 
@@ -458,7 +464,7 @@ function CanonicalCardOverlay() {
                     backgroundRepeat: 'repeat',
                 }}
             />
-            <div className="pointer-events-none absolute inset-x-0 bottom-0 z-0 h-full w-full bg-gradient-to-t from-zinc-950/0 via-zinc-900/55 to-zinc-900/68" />
+            <div className="pointer-events-none absolute inset-x-0 bottom-0 z-0 h-full w-full bg-linear-to-t from-zinc-950/0 via-zinc-900/55 to-zinc-900/68" />
         </>
     );
 }
@@ -473,14 +479,14 @@ function RowTransformShell({
     children: React.ReactNode;
 }) {
     return (
-        <motion.div
+        <m.div
             className={`absolute will-change-transform ${row.insetClassName ?? 'inset-x-0'}`}
             initial={false}
             animate={{ transform: row.transform }}
             transition={STACK_TRANSITION}
             style={{ transformOrigin: 'top center' }}
         >
-            <motion.div
+            <m.div
                 className="h-full"
                 initial={false}
                 animate={{ transform: isPressed ? 'scale(0.98) translateZ(0)' : 'scale(1) translateZ(0)' }}
@@ -488,8 +494,8 @@ function RowTransformShell({
                 style={{ transformOrigin: 'center' }}
             >
                 {children}
-            </motion.div>
-        </motion.div>
+            </m.div>
+        </m.div>
     );
 }
 
@@ -588,7 +594,7 @@ function CanonicalRow({
 function LegRow({ leg, contentOpacity }: { leg: SplitLeg; contentOpacity: number }) {
     return (
         <Tooltip content={<LegRouteDetail leg={leg} />} side="left" align="center">
-            <motion.div
+            <m.div
                 className="flex h-full cursor-help items-center justify-between gap-4"
                 initial={false}
                 animate={{ opacity: contentOpacity }}
@@ -622,7 +628,7 @@ function LegRow({ leg, contentOpacity }: { leg: SplitLeg; contentOpacity: number
                         → {leg.receivedLabel}
                     </div>
                 </div>
-            </motion.div>
+            </m.div>
         </Tooltip>
     );
 }

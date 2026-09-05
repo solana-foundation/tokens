@@ -8,8 +8,8 @@ import { Alert, AlertDescription, AlertTitle } from '@tokens/ui/alert';
 
 import type { ExecutionQuoteRow } from '@/hooks/queries/use-execution-evaluation';
 import type { ExecutionRouteResponse, RoutedVariant } from '@/hooks/queries/use-execution-route';
-import { formatExecutionRouterLabel } from '@/lib/execution-quote-format';
-import { CandidateComparison, providerLabel } from './candidate-comparison';
+import { formatExecutionRouterLabel, providerLabel } from '@/lib/execution-quote-format';
+import { CandidateComparison } from './candidate-comparison';
 
 /** Mirrors the API's impact grading thresholds for at-a-glance reading. */
 function impactTone(impactBps: number | null): string {

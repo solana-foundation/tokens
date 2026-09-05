@@ -13,32 +13,19 @@ import { Tooltip } from '@solana/design-system/tooltip';
 import type {
     ExecutionProviderQuote,
     ExecutionQuoteProvider,
-    ExecutionQuoteRouteStep,
     PriceImpactSource,
 } from '@/hooks/queries/use-execution-evaluation';
-import { formatExecutionRouterLabel, formatPriceImpactRatio, fullPriceImpactRatio } from '@/lib/execution-quote-format';
-
-export function formatTokenAmount(amount: string): string {
-    const numeric = Number(amount);
-    if (!Number.isFinite(numeric)) return amount;
-    return new Intl.NumberFormat('en-US', {
-        maximumFractionDigits: numeric < 1 ? 8 : numeric < 1_000 ? 6 : 2,
-    }).format(numeric);
-}
-
-export function providerLabel(provider: ExecutionQuoteProvider): string {
-    return provider === 'titan' ? 'Titan' : 'Jupiter';
-}
-
-export function feeMintLabel(
-    candidate: Extract<ExecutionProviderQuote, { status: 'available' }>,
-    mint: string | null,
-): string {
-    if (!mint) return 'Unknown mint';
-    if (mint === candidate.input.mint) return candidate.input.symbol;
-    if (mint === candidate.output.mint) return candidate.output.symbol;
-    return `${mint.slice(0, 4)}…${mint.slice(-4)}`;
-}
+import {
+    feeMintLabel,
+    formatExecutionRouterLabel,
+    formatPriceImpactRatio,
+    formatQuoteTime,
+    formatTokenAmount,
+    fullPriceImpactRatio,
+    providerLabel,
+    routeDetails,
+    routeLabel,
+} from '@/lib/execution-quote-format';
 
 export function FeeValue({ candidate }: { candidate: Extract<ExecutionProviderQuote, { status: 'available' }> }) {
     const fees = candidate.fees;
@@ -76,26 +63,6 @@ export function ProviderBadge({ provider }: { provider: ExecutionQuoteProvider }
             {providerLabel(provider)}
         </span>
     );
-}
-
-export function routeLabel(route: readonly ExecutionQuoteRouteStep[], provider: ExecutionQuoteProvider): string {
-    const labels = route.map(step => step.label).filter((label): label is string => Boolean(label));
-    return labels.length > 0 ? labels.join(' → ') : `${providerLabel(provider)} route`;
-}
-
-export function routeDetails(route: readonly ExecutionQuoteRouteStep[], contextSlot: number | null): string {
-    const steps = route.map((step, index) => {
-        const percent = step.percent === null ? '' : ` (${step.percent}%)`;
-        return `${index + 1}. ${step.label ?? 'Unknown venue'}${percent}\n${step.inputMint ?? '—'} → ${step.outputMint ?? '—'}`;
-    });
-    if (contextSlot !== null) steps.push(`Context slot: ${contextSlot}`);
-    return steps.join('\n\n');
-}
-
-export function formatQuoteTime(value: string): string {
-    const date = new Date(value);
-    if (Number.isNaN(date.getTime())) return value;
-    return new Intl.DateTimeFormat('en-US', { hour: 'numeric', minute: '2-digit', second: '2-digit' }).format(date);
 }
 
 export function ImpactValue({ value, source }: { value: number | null; source: PriceImpactSource }) {
