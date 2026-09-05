@@ -18,6 +18,7 @@
     "@clerk/nextjs": "^6.39.5",
     "@tokens/asset-registry": "workspace:*",
     "@tokens/effect": "workspace:*",
+    "@tokens/execution-links": "workspace:*",
     "@tokens/token-risk-helpers": "workspace:*",
     "@upstash/redis": "^1.36.2",
     "effect": "4.0.0-rc.108",

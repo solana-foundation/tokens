@@ -163,7 +163,10 @@ export function fetchJsonWithRetry<T = unknown>(
     const maxRetries = Math.max(0, args.maxRetries ?? 3);
     const baseDelay = args.baseDelay ?? '200 millis';
 
-    const started = Date.now();
+    // performance.now(): this is a duration measurement, and Next 16 treats
+    // Date.now() during prerendering as an unstable value (blocking-route error
+    // when a cacheable route hits this before any dynamic data access).
+    const started = performance.now();
     const endpoint = extractEndpoint(args.url);
 
     const request = Effect.retry(fetchJson<T>(args), {
@@ -193,7 +196,7 @@ export function fetchJsonWithRetry<T = unknown>(
                         provider: args.service,
                         endpoint,
                         status: result.recovered ? result.status : null,
-                        duration_ms: Date.now() - started,
+                        duration_ms: Math.round(performance.now() - started),
                         ok: true,
                         ...(result.recovered ? { recovered: true, outcome: result.outcome } : {}),
                         ...(requestId ? { request_id: requestId } : {}),
@@ -208,7 +211,7 @@ export function fetchJsonWithRetry<T = unknown>(
                         provider: args.service,
                         endpoint,
                         status: extractStatus(err),
-                        duration_ms: Date.now() - started,
+                        duration_ms: Math.round(performance.now() - started),
                         ok: false,
                         error_tag: extractErrorTag(err),
                         ...(requestId ? { request_id: requestId } : {}),

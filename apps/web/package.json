@@ -24,6 +24,7 @@
     "@tanstack/react-table": "^8.21.3",
     "@tanstack/react-virtual": "^3.13.23",
     "@tokens/asset-registry": "workspace:*",
+    "@tokens/execution-links": "workspace:*",
     "@tokens/effect": "workspace:*",
     "@tokens/token-risk-helpers": "workspace:*",
     "@tokens/ui": "workspace:*",
