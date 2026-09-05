@@ -185,7 +185,11 @@ jobs:
             gcloud run deploy tokens-assets-jobs-stg-us --image="$IMAGE" --region=us-east4 --project=${{ vars.GCP_PROJECT }} --update-env-vars=SERVICE_ROLE=worker,PG_POOL_MAX=8,PG_CONNECT_TIMEOUT=3 --quiet
           fi
 
-  deploy:
+  # Stage tier: Vercel previews + gates. Prod Vercel deploys moved to
+  # deploy_prod, which runs AFTER cloudrun_prd — the API must never go live
+  # against Cloud Run services that don't know its new RPCs (2026-09-04
+  # curated-lists incident).
+  deploy_stage:
     needs: [changes, notify_start, cloudrun_stg]
     if: >-
       always() &&
@@ -362,6 +366,259 @@ jobs:
           TOKENS_API_KEY: ${{ steps.secrets.outputs.TOKENS_API_KEY_STAGING }}
         run: bun scripts/smoke-canary.ts
 
+
+  # Runs BEFORE the prod Vercel deploys: services must speak the new RPC
+  # surface before the API that calls it goes live. The post-deploy canary
+  # here probes the OLD API against the new services (additive-safe check).
+  cloudrun_prd:
+    needs: [changes, deploy_stage]
+    if: needs.changes.outputs.services != '[]' && needs.deploy_stage.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: production
+    strategy:
+      fail-fast: true
+      max-parallel: 1
+      matrix:
+        service: ${{ fromJson(needs.changes.outputs.services) }}
+    env:
+      DOPPLER_TOKEN: ${{ secrets.DOPPLER_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+
+      - id: sha
+        run: echo "value=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - id: auth
+        uses: google-github-actions/auth@71f986410dfbc7added4569d411d040a91dc6935 # v2
+        with:
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_CLOUDRUN_DEPLOYER_SA }}
+
+      - uses: google-github-actions/setup-gcloud@77e7a554d41e2ee56fc945c52dfd3f33d12def9a # v2
+
+      - name: Configure docker for Artifact Registry
+        run: gcloud auth configure-docker us-east4-docker.pkg.dev --quiet
+
+      - name: Build and push image
+        id: build
+        env:
+          IMAGE: us-east4-docker.pkg.dev/${{ vars.GCP_PROJECT }}/tokens-prd/${{ matrix.service }}:${{ steps.sha.outputs.value }}
+        run: |
+          set -euo pipefail
+          docker build -t "$IMAGE" -f apps/cloudrun-${{ matrix.service }}/Dockerfile .
+          docker push "$IMAGE"
+          echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
+
+      - name: Deploy Cloud Run revision (prd)
+        env:
+          IMAGE: ${{ steps.build.outputs.image }}
+        run: |
+          set -euo pipefail
+          extra=()
+          if [ "${{ matrix.service }}" = "assets" ]; then
+            extra+=(--update-env-vars=SERVICE_ROLE=api,PG_POOL_MAX=16,PG_CONNECT_TIMEOUT=3)
+            candidate_tag="resilience-${GITHUB_SHA:0:12}"
+            gcloud run deploy tokens-assets-prd-us \
+              --image="$IMAGE" \
+              --region=us-east4 \
+              --project=${{ vars.GCP_PROJECT }} \
+              --no-traffic \
+              --tag="$candidate_tag" \
+              "${extra[@]}" \
+              --quiet
+            candidate_revision=$(gcloud run services describe tokens-assets-prd-us --region=us-east4 --project=${{ vars.GCP_PROJECT }} --format='value(status.latestCreatedRevisionName)')
+            {
+              echo "### Assets production candidate"
+              echo "Revision \`$candidate_revision\` was deployed with **0% traffic**."
+              echo "Promote it manually through 10% → 50% → 100% using the assets DB resilience runbook."
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            gcloud run deploy tokens-${{ matrix.service }}-prd-us \
+              --image="$IMAGE" \
+              --region=us-east4 \
+              --project=${{ vars.GCP_PROJECT }} \
+              --quiet
+          fi
+          if [ "${{ matrix.service }}" = "assets" ] && gcloud run services describe tokens-assets-jobs-prd-us --region=us-east4 --project=${{ vars.GCP_PROJECT }} >/dev/null 2>&1; then
+            # Tag + service name are capped at 46 chars; the jobs service name is
+            # 25, so the API's resilience-<sha12> tag (23) does not fit here.
+            gcloud run deploy tokens-assets-jobs-prd-us --image="$IMAGE" --region=us-east4 --project=${{ vars.GCP_PROJECT }} --update-env-vars=SERVICE_ROLE=worker,PG_POOL_MAX=8,PG_CONNECT_TIMEOUT=3 --no-traffic --tag="res-${GITHUB_SHA:0:12}" --quiet
+          fi
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.6
+
+      - name: Install Doppler CLI
+        uses: dopplerhq/cli-action@014df23b1329b615816a38eb5f473bb9000700b1 # v3
+
+      - run: bun install --frozen-lockfile
+
+      - name: Post-deploy prod canary
+        run: |
+          set -euo pipefail
+          export TOKENS_API_BASE_URL=$(doppler secrets get TOKENS_API_PROD_URL --plain --project tokens --config prd)
+          export TOKENS_APP_BASE_URL=$(doppler secrets get TOKENS_APP_PROD_URL --plain --project tokens --config prd)
+          export TOKENS_WEB_BASE_URL=https://tokens.xyz
+          export TOKENS_API_KEY=$(doppler secrets get TOKENS_API_KEY --plain --project tokens --config prd)
+          export SMOKE_REQUIRE_PROD_CLERK=true
+          bun scripts/smoke-canary.ts
+
+
+  deploy_prod:
+    needs: [changes, notify_start, deploy_stage, cloudrun_prd]
+    if: >-
+      always() &&
+      needs.deploy_stage.result == 'success' &&
+      (needs.cloudrun_prd.result == 'success' || needs.cloudrun_prd.result == 'skipped')
+    runs-on: ubuntu-latest
+    # Budget with deliberate slack: ~5 min setup + a hard-capped 75-min
+    # promotion gate + ~15 min deploys/canaries + rollback, leaving ~50 min of
+    # headroom so the job-level deadline can never land mid-rollback (a job
+    # timeout is a cancellation, and cancelled steps get no extra time).
+    timeout-minutes: 150
+    env:
+      DOPPLER_TOKEN: ${{ secrets.DOPPLER_TOKEN }}
+      DOPPLER_PROJECT: tokens
+      DOPPLER_CONFIG: prd
+      VERCEL_ORG_ID: ${{ vars.VERCEL_ORG_ID }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+          fetch-depth: 0
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.6
+
+      - name: Install Doppler CLI
+        uses: dopplerhq/cli-action@014df23b1329b615816a38eb5f473bb9000700b1 # v3
+
+      - run: bun install --frozen-lockfile
+
+      - name: Fetch secrets from Doppler
+        id: secrets
+        run: |
+          set -euo pipefail
+          for key in \
+            SLACK_DEPLOY_WEBHOOK_URL \
+            VERCEL_TOKEN \
+            VERCEL_PROJECT_ID \
+            VERCEL_PROJECT_ID_APP \
+            VERCEL_PROJECT_ID_ADMIN \
+            TOKENS_API_KEY \
+            TOKENS_API_KEY_STAGING \
+            CLERK_JWT_ISSUER_DOMAIN \
+            TOKENS_API_STAGE_URL \
+            TOKENS_API_PROD_URL \
+            TOKENS_APP_STAGE_URL \
+            TOKENS_APP_PROD_URL \
+            TOKENS_ADMIN_STAGE_URL \
+            TOKENS_ADMIN_PROD_URL; do
+            value=$(doppler secrets get "$key" --plain --project "$DOPPLER_PROJECT" --config "$DOPPLER_CONFIG")
+            echo "::add-mask::$value"
+            echo "$key=$value" >> "$GITHUB_OUTPUT"
+          done
+
+      - name: Build Slack fields
+        id: summary
+        env:
+          TIERS: ${{ needs.changes.outputs.tiers }}
+          ACTOR: ${{ github.actor }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          SHA=$(git rev-parse HEAD)
+          COMMIT_MSG=$(git log -1 --format=%s HEAD 2>/dev/null | cut -c1-140 || echo "")
+          FIELDS=$(jq -n \
+            --arg tiers      "$TIERS" \
+            --arg short_sha  "${SHA:0:7}" \
+            --arg commit_msg "$COMMIT_MSG" \
+            --arg actor      "$ACTOR" \
+            --arg run_url    "$RUN_URL" \
+            --arg run_id     "$RUN_ID" \
+            '[
+              {type:"mrkdwn",text:("*Tiers:*\n`"+$tiers+"`")},
+              {type:"mrkdwn",text:("*Commit:*\n`"+$short_sha+"` — "+$commit_msg)},
+              {type:"mrkdwn",text:("*Triggered by:*\n"+$actor)},
+              {type:"mrkdwn",text:("*Run:*\n<"+$run_url+"|workflow #"+$run_id+">")}
+            ]')
+          {
+            echo 'fields<<JQ_EOF'
+            echo "$FIELDS"
+            echo 'JQ_EOF'
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Install Vercel CLI
+        run: bun add -g vercel@54.9.0
+
+      # The assets prod deploy is a deliberate 0%-traffic candidate (manual
+      # 10→50→100 promotion per the DB-resilience runbook). Shipping the new
+      # API while assets traffic is still on the old revision recreates the
+      # 2026-09-04 incident, so when this release touches assets we hold the
+      # Vercel prod deploys until the candidate serves 100% of traffic.
+      - id: gcp_auth
+        if: contains(fromJson(needs.changes.outputs.services), 'assets')
+        uses: google-github-actions/auth@71f986410dfbc7added4569d411d040a91dc6935 # v2
+        with:
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_CLOUDRUN_DEPLOYER_SA }}
+
+      - if: contains(fromJson(needs.changes.outputs.services), 'assets')
+        uses: google-github-actions/setup-gcloud@77e7a554d41e2ee56fc945c52dfd3f33d12def9a # v2
+
+      - name: Wait for assets candidate promotion (manual)
+        if: contains(fromJson(needs.changes.outputs.services), 'assets')
+        env:
+          SLACK_WEBHOOK: ${{ steps.secrets.outputs.SLACK_DEPLOY_WEBHOOK_URL }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          TAG="resilience-${GITHUB_SHA:0:12}"
+          describe() {
+            gcloud run services describe tokens-assets-prd-us \
+              --region=us-east4 --project=${{ vars.GCP_PROJECT }} --format=json
+          }
+          candidate=$(describe | jq -r --arg tag "$TAG" \
+            '.status.traffic[] | select(.tag == $tag) | .revisionName' | head -1)
+          if [ -z "$candidate" ]; then
+            echo "::error::No assets candidate revision tagged $TAG — did cloudrun_prd deploy?"
+            exit 1
+          fi
+          served=$(describe | jq -r --arg rev "$candidate" \
+            '[.status.traffic[] | select(.revisionName == $rev) | (.percent // 0)] | add')
+          if [ "$served" = "100" ]; then
+            echo "Candidate $candidate already serving 100% — continuing."
+            exit 0
+          fi
+          MSG="Tokens Deploy is holding the prod Vercel deploys until assets candidate \\`$candidate\\` is promoted to 100% (currently ${served}%). Promote via: gcloud run services update-traffic tokens-assets-prd-us --region=us-east4 --project=${{ vars.GCP_PROJECT }} --to-revisions=$candidate=100 (10→50→100 per the resilience runbook). Run: $RUN_URL"
+          echo "$MSG"
+          echo "### Waiting for assets promotion" >> "$GITHUB_STEP_SUMMARY"
+          echo "$MSG" >> "$GITHUB_STEP_SUMMARY"
+          curl -sS -X POST -H 'Content-Type: application/json' \
+            --data "$(jq -n --arg t "$MSG" '{text: ("⏳ " + $t)}')" "$SLACK_WEBHOOK" || true
+          # 75 min: runbook-compliant promotion is ≥15 min observation at 10%
+          # + ≥15 min at 50% + operator response/command time.
+          deadline=$(( $(date +%s) + 4500 ))
+          while [ "$(date +%s)" -lt "$deadline" ]; do
+            served=$(describe | jq -r --arg rev "$candidate" \
+              '[.status.traffic[] | select(.revisionName == $rev) | (.percent // 0)] | add')
+            echo "candidate $candidate serving ${served}%"
+            if [ "$served" = "100" ]; then
+              echo "Promotion complete — continuing with prod Vercel deploys."
+              exit 0
+            fi
+            sleep 30
+          done
+          echo "::error::Assets candidate $candidate was not promoted to 100% within 75 minutes. Promote it, then re-run this workflow — the prod Vercel deploys did NOT happen (the gate exits immediately on re-run once the candidate serves 100%)."
+          exit 1
+
       # teamId is required for team-owned projects; without it the API returns
       # no deployments and rollback silently breaks.
       - name: Capture previous prod deployment ID (API)
@@ -533,8 +790,14 @@ jobs:
           SMOKE_REQUIRE_PROD_CLERK: true
         run: bun scripts/smoke-canary.ts
 
+      # cancelled() included deliberately: a job-timeout is a cancellation, and
+      # without it a timeout after an app went live would strand a partial
+      # release with no rollback (steps with failure()-only conditions are
+      # skipped on cancel).
       - name: Rollback (post-prod-deploy failure)
-        if: failure() && (steps.deploy_api_prod.outcome == 'success' || steps.deploy_app_prod.outcome == 'success' || steps.deploy_admin_prod.outcome == 'success')
+        if: >-
+          (failure() || cancelled()) &&
+          (steps.deploy_api_prod.outcome == 'success' || steps.deploy_app_prod.outcome == 'success' || steps.deploy_admin_prod.outcome == 'success')
         env:
           VERCEL_TOKEN: ${{ steps.secrets.outputs.VERCEL_TOKEN }}
           PREV_API: ${{ steps.prev_api.outputs.deployment_id }}
@@ -543,6 +806,9 @@ jobs:
           DEPLOYED_API: ${{ steps.deploy_api_prod.outcome }}
           DEPLOYED_APP: ${{ steps.deploy_app_prod.outcome }}
           DEPLOYED_ADMIN: ${{ steps.deploy_admin_prod.outcome }}
+          TOKENS_API_PROD_URL: ${{ steps.secrets.outputs.TOKENS_API_PROD_URL }}
+          TOKENS_APP_PROD_URL: ${{ steps.secrets.outputs.TOKENS_APP_PROD_URL }}
+          TOKENS_ADMIN_PROD_URL: ${{ steps.secrets.outputs.TOKENS_ADMIN_PROD_URL }}
           SLACK_WEBHOOK: ${{ steps.secrets.outputs.SLACK_DEPLOY_WEBHOOK_URL }}
           FIELDS: ${{ steps.summary.outputs.fields }}
           TIERS: ${{ needs.changes.outputs.tiers }}
@@ -553,9 +819,25 @@ jobs:
           app_status="skipped"
           admin_status="skipped"
 
+          # `vercel rollback` does NOT restore custom-domain aliases — without
+          # this, the prod domain keeps serving the broken deployment even
+          # though the rollback "succeeds" (2026-09-04 incident).
+          realias() {
+            target_id="$1"
+            domain="${2#https://}"; domain="${domain#http://}"; domain="${domain%/}"
+            for attempt in 1 2 3; do
+              if vercel alias set "$target_id" "$domain" --token="$VERCEL_TOKEN" --scope solana-foundation; then
+                return 0
+              fi
+              [ "$attempt" -lt 3 ] && sleep 5
+            done
+            return 1
+          }
+
           if [ "$DEPLOYED_API" = "success" ]; then
             if [ -n "$PREV_API" ]; then
-              if vercel rollback "$PREV_API" --token="$VERCEL_TOKEN" --scope solana-foundation; then
+              if vercel rollback "$PREV_API" --token="$VERCEL_TOKEN" --scope solana-foundation \
+                 && realias "$PREV_API" "$TOKENS_API_PROD_URL"; then
                 api_status="rolled_back"
               else
                 api_status="rollback_failed"
@@ -567,7 +849,8 @@ jobs:
 
           if [ "$DEPLOYED_APP" = "success" ]; then
             if [ -n "$PREV_APP" ]; then
-              if vercel rollback "$PREV_APP" --token="$VERCEL_TOKEN" --scope solana-foundation; then
+              if vercel rollback "$PREV_APP" --token="$VERCEL_TOKEN" --scope solana-foundation \
+                 && realias "$PREV_APP" "$TOKENS_APP_PROD_URL"; then
                 app_status="rolled_back"
               else
                 app_status="rollback_failed"
@@ -579,7 +862,8 @@ jobs:
 
           if [ "$DEPLOYED_ADMIN" = "success" ]; then
             if [ -n "$PREV_ADMIN" ]; then
-              if vercel rollback "$PREV_ADMIN" --token="$VERCEL_TOKEN" --scope solana-foundation; then
+              if vercel rollback "$PREV_ADMIN" --token="$VERCEL_TOKEN" --scope solana-foundation \
+                 && realias "$PREV_ADMIN" "$TOKENS_ADMIN_PROD_URL"; then
                 admin_status="rolled_back"
               else
                 admin_status="rollback_failed"
@@ -644,106 +928,9 @@ jobs:
             -H 'Content-Type: application/json' \
             --data "$PAYLOAD" || echo "::warning::Grafana annotation post failed (non-blocking)"
 
-  cloudrun_prd:
-    needs: [changes, deploy]
-    if: needs.changes.outputs.services != '[]' && needs.deploy.result == 'success'
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    environment: production
-    strategy:
-      fail-fast: true
-      max-parallel: 1
-      matrix:
-        service: ${{ fromJson(needs.changes.outputs.services) }}
-    env:
-      DOPPLER_TOKEN: ${{ secrets.DOPPLER_TOKEN }}
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ inputs.ref || github.sha }}
-
-      - id: sha
-        run: echo "value=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
-
-      - id: auth
-        uses: google-github-actions/auth@71f986410dfbc7added4569d411d040a91dc6935 # v2
-        with:
-          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
-          service_account: ${{ vars.GCP_CLOUDRUN_DEPLOYER_SA }}
-
-      - uses: google-github-actions/setup-gcloud@77e7a554d41e2ee56fc945c52dfd3f33d12def9a # v2
-
-      - name: Configure docker for Artifact Registry
-        run: gcloud auth configure-docker us-east4-docker.pkg.dev --quiet
-
-      - name: Build and push image
-        id: build
-        env:
-          IMAGE: us-east4-docker.pkg.dev/${{ vars.GCP_PROJECT }}/tokens-prd/${{ matrix.service }}:${{ steps.sha.outputs.value }}
-        run: |
-          set -euo pipefail
-          docker build -t "$IMAGE" -f apps/cloudrun-${{ matrix.service }}/Dockerfile .
-          docker push "$IMAGE"
-          echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
-
-      - name: Deploy Cloud Run revision (prd)
-        env:
-          IMAGE: ${{ steps.build.outputs.image }}
-        run: |
-          set -euo pipefail
-          extra=()
-          if [ "${{ matrix.service }}" = "assets" ]; then
-            extra+=(--update-env-vars=SERVICE_ROLE=api,PG_POOL_MAX=16,PG_CONNECT_TIMEOUT=3)
-            candidate_tag="resilience-${GITHUB_SHA:0:12}"
-            gcloud run deploy tokens-assets-prd-us \
-              --image="$IMAGE" \
-              --region=us-east4 \
-              --project=${{ vars.GCP_PROJECT }} \
-              --no-traffic \
-              --tag="$candidate_tag" \
-              "${extra[@]}" \
-              --quiet
-            candidate_revision=$(gcloud run services describe tokens-assets-prd-us --region=us-east4 --project=${{ vars.GCP_PROJECT }} --format='value(status.latestCreatedRevisionName)')
-            {
-              echo "### Assets production candidate"
-              echo "Revision \`$candidate_revision\` was deployed with **0% traffic**."
-              echo "Promote it manually through 10% → 50% → 100% using the assets DB resilience runbook."
-            } >> "$GITHUB_STEP_SUMMARY"
-          else
-            gcloud run deploy tokens-${{ matrix.service }}-prd-us \
-              --image="$IMAGE" \
-              --region=us-east4 \
-              --project=${{ vars.GCP_PROJECT }} \
-              --quiet
-          fi
-          if [ "${{ matrix.service }}" = "assets" ] && gcloud run services describe tokens-assets-jobs-prd-us --region=us-east4 --project=${{ vars.GCP_PROJECT }} >/dev/null 2>&1; then
-            # Tag + service name are capped at 46 chars; the jobs service name is
-            # 25, so the API's resilience-<sha12> tag (23) does not fit here.
-            gcloud run deploy tokens-assets-jobs-prd-us --image="$IMAGE" --region=us-east4 --project=${{ vars.GCP_PROJECT }} --update-env-vars=SERVICE_ROLE=worker,PG_POOL_MAX=8,PG_CONNECT_TIMEOUT=3 --no-traffic --tag="res-${GITHUB_SHA:0:12}" --quiet
-          fi
-
-      - uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: 1.3.6
-
-      - name: Install Doppler CLI
-        uses: dopplerhq/cli-action@014df23b1329b615816a38eb5f473bb9000700b1 # v3
-
-      - run: bun install --frozen-lockfile
-
-      - name: Post-deploy prod canary
-        run: |
-          set -euo pipefail
-          export TOKENS_API_BASE_URL=$(doppler secrets get TOKENS_API_PROD_URL --plain --project tokens --config prd)
-          export TOKENS_APP_BASE_URL=$(doppler secrets get TOKENS_APP_PROD_URL --plain --project tokens --config prd)
-          export TOKENS_WEB_BASE_URL=https://tokens.xyz
-          export TOKENS_API_KEY=$(doppler secrets get TOKENS_API_KEY --plain --project tokens --config prd)
-          export SMOKE_REQUIRE_PROD_CLERK=true
-          bun scripts/smoke-canary.ts
-
   notify_end:
-    needs: [changes, deploy, cloudrun_prd]
-    if: always() && needs.deploy.result != 'skipped'
+    needs: [changes, deploy_stage, deploy_prod, cloudrun_prd]
+    if: always() && needs.deploy_stage.result != 'skipped'
     runs-on: ubuntu-latest
     timeout-minutes: 3
     env:
@@ -760,7 +947,7 @@ jobs:
       - name: Notify Slack — deploy finished
         env:
           TIERS: ${{ needs.changes.outputs.tiers }}
-          DEPLOY_RESULT: ${{ needs.deploy.result }}
+          DEPLOY_RESULT: ${{ needs.deploy_prod.result }}
           ASSETS_RESULT: ${{ needs.cloudrun_prd.result }}
           ACTOR: ${{ github.actor }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
