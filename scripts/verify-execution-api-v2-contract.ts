@@ -100,22 +100,24 @@ async function main(): Promise<void> {
     const baseUrl = coerceBaseUrl(process.env.API_BASE_URL ?? '');
     const apiKey = (process.env.API_KEY ?? '').trim();
     assert(apiKey.length > 0, 'API_KEY must be set');
+    const raw = (path: string) => getRaw(baseUrl, apiKey, path);
+    const json = (path: string) => getJson(baseUrl, apiKey, path);
 
     // 1. Full venue set for a mint.
-    const byMint = await getJson(baseUrl, apiKey, `api/v2/execution/links?mint=${CBBTC_MINT}`);
+    const byMint = await json(`api/v2/execution/links?mint=${CBBTC_MINT}`);
     const { linkIds, primary } = assertLinksResponse(byMint, 'links(mint)');
     assert(linkIds.length >= 5, `expected at least 5 venues, got ${linkIds.length}`);
     assert(primary === 'titan', `expected primary=titan, got ${String(primary)}`);
     console.log(`links(mint): ${linkIds.length} venues, primary=${primary}`);
 
     // 2. Sell-side defaulting when buying SOL.
-    const solBody = await getJson(baseUrl, apiKey, `api/v2/execution/links?mint=${SOL_MINT}`);
+    const solBody = await json(`api/v2/execution/links?mint=${SOL_MINT}`);
     assertObject(solBody, 'links(sol)');
     assert(solBody.sellMint === USDC_MINT, 'buying SOL must default the sell side to USDC');
     console.log('links(sol): sell side defaults to USDC');
 
     // 3. Venue filter honored; filtered-out primary is null.
-    const filtered = await getJson(baseUrl, apiKey, `api/v2/execution/links?mint=${CBBTC_MINT}&venues=orca,jupiter`);
+    const filtered = await json(`api/v2/execution/links?mint=${CBBTC_MINT}&venues=orca,jupiter`);
     const filteredResult = assertLinksResponse(filtered, 'links(filtered)');
     assert(
         filteredResult.linkIds.join(',') === 'jupiter,orca',
@@ -125,26 +127,26 @@ async function main(): Promise<void> {
     console.log('links(filtered): filter honored, primary nulled');
 
     // 4. assetId resolution.
-    const byAsset = await getJson(baseUrl, apiKey, 'api/v2/execution/links?assetId=bitcoin');
+    const byAsset = await json('api/v2/execution/links?assetId=bitcoin');
     const assetResult = assertLinksResponse(byAsset, 'links(assetId)');
     assert(assetResult.linkIds.length > 0, 'assetId=bitcoin must resolve to venues');
     console.log('links(assetId): bitcoin resolved');
 
     // 5. Error envelopes.
-    const badVenue = await getRaw(baseUrl, apiKey, `api/v2/execution/links?mint=${CBBTC_MINT}&venues=uniswap`);
+    const badVenue = await raw(`api/v2/execution/links?mint=${CBBTC_MINT}&venues=uniswap`);
     assert(badVenue.status === 400, `unknown venue must 400, got ${badVenue.status}`);
     const badVenueBody = (await badVenue.json()) as { error?: { _tag?: string } };
     assert(badVenueBody.error?._tag === 'BadRequestError', 'unknown venue must return the BadRequestError envelope');
 
-    const unknownAsset = await getRaw(baseUrl, apiKey, 'api/v2/execution/links?assetId=not-a-real-asset');
+    const unknownAsset = await raw('api/v2/execution/links?assetId=not-a-real-asset');
     assert(unknownAsset.status === 404, `unknown asset must 404, got ${unknownAsset.status}`);
 
-    const missing = await getRaw(baseUrl, apiKey, 'api/v2/execution/links');
+    const missing = await raw('api/v2/execution/links');
     assert(missing.status === 400, `missing mint/assetId must 400, got ${missing.status}`);
     console.log('links(errors): 400/404 envelopes verified');
 
     // 6. Evaluate: the default ladder answers with no amounts named.
-    const defaulted = await getJson(baseUrl, apiKey, `api/v2/execution/evaluate?mint=${CBBTC_MINT}`);
+    const defaulted = await json(`api/v2/execution/evaluate?mint=${CBBTC_MINT}`);
     const defaultedResult = assertQuotesResponse(defaulted, 'evaluate(default)');
     assertObject(defaulted, 'evaluate(default)');
     assertObject(defaulted.meta, 'evaluate(default).meta');
@@ -157,9 +159,7 @@ async function main(): Promise<void> {
     console.log(`evaluate(default): ${defaultedResult.entryCount} rungs, ${defaultedResult.available} available`);
 
     // 7. Evaluate: explicit sizes, ascending.
-    const sized = await getJson(
-        baseUrl,
-        apiKey,
+    const sized = await json(
         // The repeated $10k rung must be deduped, not quoted twice.
         `api/v2/execution/evaluate?mint=${CBBTC_MINT}&amountUsd=10000&amountUsd=1000000&amountUsd=10000`,
     );
@@ -172,11 +172,7 @@ async function main(): Promise<void> {
     console.log('evaluate(sized): explicit ladder honored');
 
     // 8. Evaluate: a single provider has nothing to compare against.
-    const single = await getJson(
-        baseUrl,
-        apiKey,
-        `api/v2/execution/evaluate?mint=${CBBTC_MINT}&amountUsd=10000&providers=jupiter`,
-    );
+    const single = await json(`api/v2/execution/evaluate?mint=${CBBTC_MINT}&amountUsd=10000&providers=jupiter`);
     assertQuotesResponse(single, 'evaluate(single provider)');
     assertObject(single, 'evaluate(single provider)');
     assert(Array.isArray(single.providers) && single.providers.length === 1, 'providers filter must narrow the set');
@@ -188,26 +184,22 @@ async function main(): Promise<void> {
     console.log('evaluate(single provider): no edge, as expected');
 
     // 9. Evaluate errors.
-    const missingMint = await getRaw(baseUrl, apiKey, 'api/v2/execution/evaluate');
+    const missingMint = await raw('api/v2/execution/evaluate');
     assert(missingMint.status === 400, `missing mint must 400, got ${missingMint.status}`);
-    const badMint = await getRaw(baseUrl, apiKey, 'api/v2/execution/evaluate?mint=not-a-mint');
+    const badMint = await raw('api/v2/execution/evaluate?mint=not-a-mint');
     assert(badMint.status === 400, `invalid mint must 400, got ${badMint.status}`);
-    const wrongSide = await getRaw(baseUrl, apiKey, `api/v2/execution/evaluate?mint=${CBBTC_MINT}&tokenAmount=1`);
+    const wrongSide = await raw(`api/v2/execution/evaluate?mint=${CBBTC_MINT}&tokenAmount=1`);
     assert(wrongSide.status === 400, `tokenAmount on a buy must 400, got ${wrongSide.status}`);
-    const tooSmall = await getRaw(baseUrl, apiKey, `api/v2/execution/evaluate?mint=${CBBTC_MINT}&amountUsd=0.5`);
+    const tooSmall = await raw(`api/v2/execution/evaluate?mint=${CBBTC_MINT}&amountUsd=0.5`);
     assert(tooSmall.status === 400, `a sub-dollar buy must 400, got ${tooSmall.status}`);
-    const tooBig = await getRaw(baseUrl, apiKey, `api/v2/execution/evaluate?mint=${CBBTC_MINT}&amountUsd=50000001`);
+    const tooBig = await raw(`api/v2/execution/evaluate?mint=${CBBTC_MINT}&amountUsd=50000001`);
     assert(tooBig.status === 400, `an over-cap buy must 400, got ${tooBig.status}`);
     // Ten *distinct* amounts: the cap applies to unique amounts, so repeating
     // one value would collapse to a single rung and legitimately succeed.
     const distinctAmounts = Array.from({ length: 10 }, (_, index) => `&amountUsd=${10_000 + index}`).join('');
-    const tooMany = await getRaw(baseUrl, apiKey, `api/v2/execution/evaluate?mint=${CBBTC_MINT}${distinctAmounts}`);
+    const tooMany = await raw(`api/v2/execution/evaluate?mint=${CBBTC_MINT}${distinctAmounts}`);
     assert(tooMany.status === 400, `more than nine amounts must 400 (never truncate), got ${tooMany.status}`);
-    const badProvider = await getRaw(
-        baseUrl,
-        apiKey,
-        `api/v2/execution/evaluate?mint=${CBBTC_MINT}&amountUsd=10000&providers=uniswap`,
-    );
+    const badProvider = await raw(`api/v2/execution/evaluate?mint=${CBBTC_MINT}&amountUsd=10000&providers=uniswap`);
     assert(badProvider.status === 400, `an unknown provider must 400, got ${badProvider.status}`);
     const badProviderBody = (await badProvider.json()) as { error?: { _tag?: string } };
     assert(
@@ -217,7 +209,7 @@ async function main(): Promise<void> {
     console.log('evaluate(errors): 400 envelopes verified');
 
     // 10. Route: cross-variant comparison over a canonical asset.
-    const routed = await getJson(baseUrl, apiKey, 'api/v2/execution/route?assetId=bitcoin&amountUsd=1000000');
+    const routed = await json('api/v2/execution/route?assetId=bitcoin&amountUsd=1000000');
     assertObject(routed, 'route(bitcoin)');
     assert(routed.assetId === 'bitcoin', 'route must echo the canonical assetId');
     assert(Array.isArray(routed.variants) && routed.variants.length >= 1, 'route must select at least one variant');
@@ -265,11 +257,7 @@ async function main(): Promise<void> {
     for (const entry of excluded) {
         assert(typeof entry.reason === 'string' && entry.reason.length > 0, 'excluded variants must carry reasons');
     }
-    const noAlloc = await getJson(
-        baseUrl,
-        apiKey,
-        'api/v2/execution/route?assetId=bitcoin&amountUsd=1000000&allocate=false',
-    );
+    const noAlloc = await json('api/v2/execution/route?assetId=bitcoin&amountUsd=1000000&allocate=false');
     assertObject(noAlloc, 'route(bitcoin, allocate=false)');
     assert(noAlloc.allocationStatus === 'not_requested', 'allocate=false must report not_requested');
     assert(noAlloc.allocation === null, 'allocate=false must carry no plan');
@@ -365,11 +353,11 @@ async function main(): Promise<void> {
     );
 
     // 11. Route errors.
-    const unknownRouteAsset = await getRaw(baseUrl, apiKey, 'api/v2/execution/route?assetId=not-an-asset');
+    const unknownRouteAsset = await raw('api/v2/execution/route?assetId=not-an-asset');
     assert(unknownRouteAsset.status === 404, `unknown assetId must 404, got ${unknownRouteAsset.status}`);
-    const sellSide = await getRaw(baseUrl, apiKey, 'api/v2/execution/route?assetId=bitcoin&side=sell');
+    const sellSide = await raw('api/v2/execution/route?assetId=bitcoin&side=sell');
     assert(sellSide.status === 400, `side=sell must 400, got ${sellSide.status}`);
-    const badMax = await getRaw(baseUrl, apiKey, 'api/v2/execution/route?assetId=bitcoin&maxVariants=7');
+    const badMax = await raw('api/v2/execution/route?assetId=bitcoin&maxVariants=7');
     assert(badMax.status === 400, `maxVariants above the cap must 400, got ${badMax.status}`);
     console.log('route(errors): 400/404 envelopes verified');
 
