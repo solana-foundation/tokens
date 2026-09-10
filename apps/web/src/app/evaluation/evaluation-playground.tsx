@@ -9,18 +9,9 @@ import { listAssets, type AssetCategory } from '@tokens/asset-registry';
 import { CURATED_TOKEN_LISTS } from '@tokens/asset-registry/compat';
 import { Button } from '@tokens/ui/button';
 import { Input } from '@tokens/ui/input';
-import {
-    Select,
-    SelectContent,
-    SelectGroup,
-    SelectItem,
-    SelectLabel,
-    SelectSeparator,
-    SelectTrigger,
-    SelectValue,
-} from '@tokens/ui/select';
 
 import { QuoteComparisonTable } from './quote-comparison-table';
+import { SearchableSelect } from './searchable-select';
 import {
     buildEvaluateRequestPath,
     useExecutionEvaluation,
@@ -506,45 +497,28 @@ export function EvaluationPlayground() {
                                 >
                                     Canonical asset
                                 </label>
-                                <Select value={selectedAssetId} onValueChange={setSelectedAssetId}>
-                                    <SelectTrigger
-                                        id="execution-route-asset"
-                                        className="h-[52px] border-border-medium bg-white text-left text-text-extra-high shadow-none focus:ring-border-medium [&>span]:!flex [&>span]:min-w-0 [&>span]:flex-1 [&>span]:text-left"
-                                    >
-                                        <SelectValue placeholder="Select an asset">
-                                            {selectedAssetOption ? (
-                                                <AssetOptionRow
-                                                    option={selectedAssetOption}
-                                                    logo={metadataByMint.get(selectedAssetOption.logoMint)}
-                                                />
-                                            ) : null}
-                                        </SelectValue>
-                                    </SelectTrigger>
-                                    <SelectContent className="rounded-xl border-border-light [&>[aria-hidden=true]]:py-0 [&>div[data-radix-select-viewport]]:!pt-0">
-                                        {assetGroups.map((group, index) => (
-                                            <React.Fragment key={group.id}>
-                                                {index > 0 ? (
-                                                    <SelectSeparator className="my-0.5 bg-border-extra-light" />
-                                                ) : null}
-                                                <SelectGroup>
-                                                    <SelectLabel className="sticky top-0 z-10 block border-b border-border-extra-light bg-white px-2 py-1 text-[11px] font-semibold text-text-medium">
-                                                        {group.label}
-                                                    </SelectLabel>
-                                                    {group.options.map(({ option, logo }) => (
-                                                        <SelectItem
-                                                            key={option.assetId}
-                                                            value={option.assetId}
-                                                            textValue={`${option.name} ${option.symbol} ${option.assetId}`}
-                                                            className="py-2"
-                                                        >
-                                                            <AssetOptionRow option={option} logo={logo} />
-                                                        </SelectItem>
-                                                    ))}
-                                                </SelectGroup>
-                                            </React.Fragment>
-                                        ))}
-                                    </SelectContent>
-                                </Select>
+                                <SearchableSelect
+                                    id="execution-route-asset"
+                                    groups={assetGroups}
+                                    value={selectedAssetId}
+                                    onValueChange={setSelectedAssetId}
+                                    getOptionValue={({ option }) => option.assetId}
+                                    getOptionSearchText={({ option }) =>
+                                        `${option.name} ${option.symbol} ${option.assetId}`
+                                    }
+                                    renderOption={({ option, logo }) => <AssetOptionRow option={option} logo={logo} />}
+                                    selectedContent={
+                                        selectedAssetOption ? (
+                                            <AssetOptionRow
+                                                option={selectedAssetOption}
+                                                logo={metadataByMint.get(selectedAssetOption.logoMint)}
+                                            />
+                                        ) : null
+                                    }
+                                    placeholder="Select an asset"
+                                    searchPlaceholder="Search assets…"
+                                    emptyMessage="No matching assets."
+                                />
 
                                 <label
                                     htmlFor="execution-route-target"
@@ -630,40 +604,19 @@ export function EvaluationPlayground() {
                             >
                                 Token mint
                             </label>
-                            <Select value={selectedMint} onValueChange={setSelectedMint}>
-                                <SelectTrigger
-                                    aria-labelledby="evaluation-asset-label"
-                                    className="h-[52px] border-border-medium bg-white text-left text-text-extra-high shadow-none focus:ring-border-medium [&>span]:!flex [&>span]:min-w-0 [&>span]:flex-1 [&>span]:text-left"
-                                >
-                                    <SelectValue placeholder="Select a mint">
-                                        {selectedOption ? <MintOptionRow option={selectedOption} /> : null}
-                                    </SelectValue>
-                                </SelectTrigger>
-                                <SelectContent className="rounded-xl border-border-light [&>[aria-hidden=true]]:py-0 [&>div[data-radix-select-viewport]]:!pt-0">
-                                    {optionGroups.map((group, index) => (
-                                        <React.Fragment key={group.id}>
-                                            {index > 0 ? (
-                                                <SelectSeparator className="my-0.5 bg-border-extra-light" />
-                                            ) : null}
-                                            <SelectGroup>
-                                                <SelectLabel className="sticky top-0 z-10 block border-b border-border-extra-light bg-white px-2 py-1 text-[11px] font-semibold text-text-medium">
-                                                    {group.label}
-                                                </SelectLabel>
-                                                {group.options.map(option => (
-                                                    <SelectItem
-                                                        key={option.mint}
-                                                        value={option.mint}
-                                                        textValue={`${option.name} ${option.symbol} ${option.mint}`}
-                                                        className="py-2"
-                                                    >
-                                                        <MintOptionRow option={option} />
-                                                    </SelectItem>
-                                                ))}
-                                            </SelectGroup>
-                                        </React.Fragment>
-                                    ))}
-                                </SelectContent>
-                            </Select>
+                            <SearchableSelect
+                                aria-labelledby="evaluation-asset-label"
+                                groups={optionGroups}
+                                value={selectedMint}
+                                onValueChange={setSelectedMint}
+                                getOptionValue={option => option.mint}
+                                getOptionSearchText={option => `${option.name} ${option.symbol} ${option.mint}`}
+                                renderOption={option => <MintOptionRow option={option} />}
+                                selectedContent={selectedOption ? <MintOptionRow option={selectedOption} /> : null}
+                                placeholder="Select a mint"
+                                searchPlaceholder="Search mints…"
+                                emptyMessage="No matching mints."
+                            />
 
                             <label
                                 htmlFor="execution-eval-amount"
