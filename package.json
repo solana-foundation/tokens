@@ -22,12 +22,15 @@
         "audit:deps": "bun audit",
         "verify:assets-api-v1": "bun scripts/verify-assets-api-v1-contract.ts",
         "verify:lists-api-v2": "bun scripts/verify-lists-api-v2-contract.ts",
+        "verify:execution-api-v2": "bun scripts/verify-execution-api-v2-contract.ts",
+        "test:depth-local": "bun scripts/test-depth-local.ts",
         "verify:asset-registry-hubs": "bun scripts/audit-asset-registry-hubs.ts",
         "format": "prettier --write \"**/*.{ts,tsx,md}\"",
         "postinstall": "node scripts/patch-liveline.mjs && node scripts/setup-git-hooks.mjs",
         "clean": "turbo run clean && rm -rf node_modules",
         "seed:tokens": "node scripts/seed-tokens.mjs",
-        "seed:ohlcv": "node scripts/seed-ohlcv.mjs"
+        "seed:ohlcv": "node scripts/seed-ohlcv.mjs",
+        "sweep:execution-route": "bun scripts/route-methodology-sweep.ts"
     },
     "dependencies": {
         "@clickhouse/client": "^1.23.1",

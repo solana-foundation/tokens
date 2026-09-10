@@ -18,13 +18,19 @@ import { InvalidArgsError } from './errors';
 /** Mirrors `LAST_USED_DEDUP_MS` in convex/auth.ts. */
 export const LAST_USED_DEDUP_MS = 10 * 1000;
 
-/** Mirrors `DEFAULT_LEGACY_SCOPES` in convex/apiKeys.ts. */
+/**
+ * Default scopes for keys with NULL/empty `api_keys.scopes`. Historically
+ * mirrored the retired Convex backend; Cloud SQL is now the source of truth.
+ * Adding a scope here only affects NULL-scope keys — rows with materialized
+ * scope arrays need a backfill migration (see 0014_execution_read_scope.sql).
+ */
 export const DEFAULT_LEGACY_SCOPES: string[] = [
     'assets:read',
     'assets:profile:read',
     'assets:risk:read',
     'assets:ohlcv:read',
     'assets:markets:read',
+    'execution:read',
 ];
 
 export interface ApiKeyByHashRow {

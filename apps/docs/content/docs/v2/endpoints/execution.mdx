@@ -1,0 +1,587 @@
+---
+title: Execution
+description: Venue deep links and pre-trade depth evaluation for buy/sell flows.
+---
+
+All endpoints on this page are Platform API endpoints authenticated with `x-api-key` and
+require the `execution:read` scope (granted to all keys by default).
+
+## `GET /v2/execution/links`
+
+Deep links to swap venues for buying a token. Use it to power a "Buy" call-to-action:
+pick the venues you want to show, render them in any order, and treat `primary` as our
+recommendation. Links carry no quote — the venue computes the live price when your user
+lands there.
+
+The contract is kind-based: today every link has `kind: "swap"`; future kinds (perps,
+pools) will be added under the same shape. `meta.kinds` advertises what the deployment
+supports.
+
+- **Scope**: `execution:read`
+- **Query params**:
+  - `mint` — buy-side Solana mint. Exactly one of `mint` / `assetId` is required.
+  - `assetId` — canonical asset id or alias (e.g. `bitcoin`); resolves to the asset's
+    primary Solana variant. Unknown ids return `404`.
+  - `sellMint` (optional) — overrides the sell side. Defaults to SOL, or USDC when buying SOL.
+  - `venues` (optional) — comma-separated venue ids to include. Valid ids: `titan`,
+    `jupiter`, `dflow`, `sunrise`, `omfg`, `kamino`, `orca`, `raydium`, `byreal`.
+    Unknown ids return `400` listing the valid set.
+  - `kinds` (optional) — comma-separated link kinds. Currently only `swap`.
+  - `amount` (optional) — sell-side amount as a positive decimal string. Reserved:
+    currently accepted but not appended to any venue URL.
+
+```ts
+interface ExecutionLinksResponse {
+    buyMint: string;
+    sellMint: string | null;
+    asset: { assetId: string; symbol: string | null } | null; // registry match for the buy mint
+    primary: string | null; // our venue recommendation; null when filtered out
+    links: Array<{
+        id: string; // venue id, e.g. "titan"
+        name: string; // display name, e.g. "Titan"
+        kind: 'swap';
+        venueType: 'aggregator' | 'dex';
+        url: string;
+        iconUrl: string | null;
+    }>;
+    meta: { kinds: string[] }; // link kinds this deployment supports
+}
+```
+
+Some venues drop out per pair instead of erroring: Sunrise (which resolves tokens by
+mint but lists a limited asset set) is omitted when the mint has no registry symbol,
+and same-mint pairs are omitted where a venue can't express them.
+
+```bash
+curl -H "x-api-key: $API_KEY" \
+  "https://api.tokens.xyz/v2/execution/links?assetId=bitcoin&venues=titan,jupiter,orca"
+```
+
+## `GET /v2/execution/evaluate`
+
+Live quotes from every router we integrate, for one mint at one or more sizes,
+ranked, with the edge between them. It answers a single question: **which router
+should I send this order to right now, and how much does it matter?**
+
+Quotes are fetched at request time — nothing is cached or sampled.
+
+### Why this is valuable
+
+- **Router selection.** Route each order to whoever is actually best at that
+  size. The winner changes with size, so a per-asset default leaves money on the
+  table.
+- **Best-execution evidence.** Timestamped quotes, plus provider chain context
+  where available, are the artifact a desk needs to show it did not overpay.
+- **Pre-trade sizing.** Walk the ladder to find where impact turns over before
+  you send the order.
+- **Router monitoring.** Track `providerStats.wins` and `summary.medianEdgeBps`
+  over time to catch a router regressing on your flow.
+
+### Two ways to call it
+
+- **No amounts** — quotes the default ladder (`$10K`, `$100K`, `$1M`), so the
+  simplest possible call still returns a useful comparison. `meta.amountSource`
+  reports `default`.
+- **Explicit amounts** — repeat `amountUsd` (buys) or `tokenAmount` (sells) up to
+  9 times.
+
+- **Scope**: `execution:read`
+- **Query params**:
+  - `mint` (required) — Solana mint. Must be a listed token; unlisted mints
+    return `404` (see Limits).
+  - `side` (optional) — `buy` (default) quotes USDC → token; `sell` quotes
+    token → USDC.
+  - `amountUsd` (repeatable) — buy sizes in USDC, each `1` to `50000000`. Only
+    valid when `side=buy`.
+  - `tokenAmount` (repeatable) — sell sizes in the token's own units, at most
+    `token.decimals` decimal places. Only valid when `side=sell`.
+  - `providers` (optional) — comma-separated subset of `jupiter`, `titan`.
+    Unknown ids return `400` listing the valid set. With one provider there is
+    nothing to compare, so every `edge` is `null`.
+
+### How the comparison works
+
+These rules are the contract; pin behavior on them rather than on observed data.
+
+- Both sides are **exact-in**: we fix the input and compare what each router
+  returns, so outputs are directly comparable with no normalization.
+- Jupiter uses quote-only Swap V2 `/order` with no taker or optional routing
+  parameters. Metis, JupiterZ, Dflow, and OKX compete inside Jupiter; the
+  fee-inclusive `outAmount` from the winning internal router is what competes
+  against Titan.
+- The winner is the **greatest `output.rawAmount`**. Ties go to the provider
+  named by `meta.tieBreak` (`jupiter`).
+- `providerQuotes` is ranked best-first, so `providerQuotes[1]` is the
+  runner-up. Unavailable providers trail with `rank: null`.
+- `best` is the winning quote hoisted for one-line access. It is always equal to
+  `providerQuotes.find(q => q.isBest)`, and is non-null on every `available`
+  row — a size with no winner is reported as `unavailable`, never as an
+  available row you have to null-check.
+- `edge` compares the winner to the runner-up:
+  - `bps = (best.output / runnerUp.output - 1) * 10000` — the winner's gain over
+    the alternative.
+  - `usd` values that gain at the trade's own realized price, so it needs no
+    oracle. On sells the output is USDC, so `usd` is the raw surplus. On buys,
+    the winner got `X` tokens for `$N` and the runner-up got `Y`, so
+    `usd = N * (1 - Y / X)`.
+  - The two ratio bases differ by O(bps²) — `12.00` vs `11.99` bps. Both
+    formulas are stated here so you can reproduce either.
+  - `edge` is `null` when fewer than two providers quoted. It is never `0` in
+    that case, because "nothing to compare" is not the same as "they tied".
+- Aggregates in `meta.summary` and `providerStats.{meanEdgeBps,medianEdgeBps}`
+  cover **contested sizes only** (`summary.comparableEntries`). A median over
+  uncontested sizes would report a confident `0 bps` that really means "only one
+  router answered". `wins` likewise counts only contested sizes; a size where a
+  router was alone is counted in `soleQuotes`.
+- Quotes within one response are fetched milliseconds apart. They are not
+  atomic or comparable across two separate API calls. `contextSlot` is retained
+  when a provider supplies it; Jupiter Swap V2 currently does not.
+
+### Per-provider semantics
+
+The routers do not report the same fields. This is surfaced rather than papered
+over:
+
+| | Jupiter | Titan |
+| --- | --- | --- |
+| `priceImpactPct` | reported from Swap V2 `priceImpact` | **not reported** |
+| `priceImpactSource` | `provider` | `unavailable` |
+| Route steps | venue labels per hop | venue labels per hop |
+| Internal `router` | Metis, JupiterZ, Dflow, OKX, or a future id | not reported |
+| `fees` | total and platform fee details when supplied | not reported |
+| `contextSlot` | not currently reported by Swap V2 | reported when present |
+| Slippage behavior | Jupiter automatic settings | 50 bps |
+
+Jupiter's `priceImpact` is returned in signed percentage points. The endpoint
+exposes its magnitude in the existing decimal-ratio `priceImpactPct` field, so
+`-98.46` upstream becomes `0.9846` and displays as `98.46%`. The deprecated
+Swap V2 `priceImpactPct` field is not used.
+
+The live evaluator never falls back to Swap V1. The separate dark depth sampler
+still uses its existing Jupiter V1 client, but those sampled curves are not read
+or substituted by this endpoint.
+
+Branch on `priceImpactSource` (or on `priceImpactPct === null`), never on the
+provider name — a router that starts reporting impact should not need a client
+change. Because impact is not available from every router, **`output.rawAmount`
+is the comparable quality metric**, and it is what the winner is chosen by.
+
+```ts
+interface ExecutionEvaluateResponse {
+    mint: string;
+    side: 'buy' | 'sell';
+    providers: Array<'jupiter' | 'titan'>; // providers actually queried
+    token: { mint: string; symbol: string; name: string; decimals: number; verified: boolean };
+    quotes: Array<{
+        request: { unit: 'usd' | 'token'; amount: string; rawAmount: string };
+        status: 'available' | 'unavailable';
+        reason?: 'no_route' | 'timeout' | 'auth' | 'malformed' | 'error';
+        // Non-null exactly when status is 'available'.
+        best: ProviderQuote | null;   // === providerQuotes.find(q => q.isBest)
+        edge: {
+            runnerUp: 'jupiter' | 'titan';
+            comparedProviders: number;
+            outAmountDiffRaw: string;  // integer string, >= "0"
+            outAmountDiff: string;     // decimal, output mint decimals
+            bps: number;
+            usd: number;
+        } | null;
+        providerQuotes: ProviderQuote[]; // ranked best-first
+    }>;
+    meta: {
+        requested: number;
+        available: number;
+        unavailable: number;
+        deduped: number;              // duplicate amounts collapsed
+        upstreamQuotes: number;       // what this call spent upstream
+        limits: { maxAmounts: number; maxProviders: number };
+        tieBreak: 'jupiter';
+        comparisonVersion: string;    // e.g. "quote-compare-v1"
+        amountSource: 'request' | 'default';
+        defaultLadderUsd: number[] | null;
+        tokenSource: 'registry' | 'upstream';
+        providerStats: Record<'jupiter' | 'titan', {
+            quoted: number;
+            unavailable: number;
+            wins: number;             // contested sizes only
+            soleQuotes: number;       // sizes where it was the only quote
+            meanEdgeBps: number | null;
+            medianEdgeBps: number | null;
+        }>;
+        summary: {
+            bestProvider: 'jupiter' | 'titan' | null;
+            bestProviderReason: 'most_wins' | 'aggregate_edge' | 'only_provider' | 'tie' | 'no_comparison';
+            comparableEntries: number;
+            meanEdgeBps: number | null;
+            medianEdgeBps: number | null;
+            maxEdgeBps: number | null;
+            maxEdgeAt: { unit: 'usd' | 'token'; amount: string } | null;
+        };
+        warnings: string[];
+    };
+}
+
+interface ProviderQuote {
+    provider: 'jupiter' | 'titan';
+    status: 'available' | 'unavailable';
+    reason?: 'no_route' | 'timeout' | 'auth' | 'malformed' | 'error';
+    rank: number | null;          // 1-based among available quotes
+    isBest: boolean;
+    input: Amount | null;
+    output: Amount | null;
+    effectivePrice: string | null; // output per unit of input
+    priceImpactPct: number | null;
+    priceImpactSource: 'provider' | 'unavailable';
+    route: Array<{
+        ammKey: string | null;
+        label: string | null;
+        percent: number | null;
+        inputMint: string | null;
+        outputMint: string | null;
+        inAmountRaw: string | null;
+        outAmountRaw: string | null;
+        feeAmountRaw: string | null;
+        feeMint: string | null;
+    }>;
+    contextSlot: number | null;
+    router: string | null;        // Jupiter internal router; null for Titan
+    mode: string | null;          // normally "ultra" for Jupiter
+    fees: {
+        feeBps: number | null;
+        feeMint: string | null;
+        platformFee: {
+            amountRaw: string | null;
+            feeBps: number | null;
+            feeMint: string | null;
+        } | null;
+    } | null;
+    quotedAt: string;
+}
+
+interface Amount { mint: string; symbol: string; decimals: number; amount: string; rawAmount: string }
+```
+
+### Cost model and limits
+
+Each size is a real upstream quote per provider:
+
+```
+upstream quotes = amounts x providers
+```
+
+So the default ladder against both routers is 6 quotes; the 9-amount maximum
+against both is 18. `meta.upstreamQuotes` echoes what your call actually spent.
+
+- At most **9 unique amounts**. Exceeding it returns `400` — the ladder is never
+  silently truncated, because a truncated ladder is a silently wrong comparison.
+- Duplicate amounts collapse and are counted in `meta.deduped`.
+- Responses are `Cache-Control: no-store`. **Do not call this per keystroke** —
+  debounce to a deliberate action, and cache on your side if you need to render
+  the same comparison repeatedly.
+- `mint` must be a listed token. Unlisted mints return `404` today; that is a
+  cost-control boundary, not a bug.
+
+### Failure semantics
+
+A provider that cannot answer is reported, never substituted:
+
+| `reason` | Meaning |
+| --- | --- |
+| `no_route` | The router found no route. A real market answer. |
+| `timeout` | We ran out of time budget before it answered. |
+| `auth` | Our credential for that router was rejected. |
+| `malformed` | The router's response could not be parsed. |
+| `error` | Anything else, including a router we have not configured. |
+
+If one router is slow or down, the other's quotes are still returned — the
+response degrades per provider and per size rather than failing as a whole.
+
+```bash
+# Default ladder against both routers
+curl -H "x-api-key: $API_KEY" \
+  "https://api.tokens.xyz/v2/execution/evaluate?mint=cbbtcf3aa214zXHbiAZQwf4122FBYbraNdFqgw4iMij"
+
+# Specific sizes
+curl -H "x-api-key: $API_KEY" \
+  "https://api.tokens.xyz/v2/execution/evaluate?mint=cbbtcf3aa214zXHbiAZQwf4122FBYbraNdFqgw4iMij&amountUsd=100000&amountUsd=1000000"
+
+# Selling 12.5 tokens, Jupiter only
+curl -H "x-api-key: $API_KEY" \
+  "https://api.tokens.xyz/v2/execution/evaluate?mint=cbbtcf3aa214zXHbiAZQwf4122FBYbraNdFqgw4iMij&side=sell&tokenAmount=12.5&providers=jupiter"
+```
+
+Abridged response for a two-rung ladder where each router wins one size and the
+larger rung has no route at all:
+
+```json
+{
+  "mint": "cbbtcf3aa214zXHbiAZQwf4122FBYbraNdFqgw4iMij",
+  "side": "buy",
+  "providers": ["jupiter", "titan"],
+  "token": { "mint": "cbbtc...", "symbol": "cbBTC", "name": "Coinbase Wrapped BTC", "decimals": 8, "verified": true },
+  "quotes": [
+    {
+      "request": { "unit": "usd", "amount": "100000", "rawAmount": "100000000000" },
+      "status": "available",
+      "best": {
+        "provider": "titan",
+        "status": "available",
+        "rank": 1,
+        "isBest": true,
+        "output": { "mint": "cbbtc...", "symbol": "cbBTC", "decimals": 8, "amount": "0.90123456", "rawAmount": "90123456" },
+        "priceImpactPct": null,
+        "priceImpactSource": "unavailable",
+        "contextSlot": 298450112,
+        "quotedAt": "2026-08-23T18:02:11.104Z"
+      },
+      "edge": {
+        "runnerUp": "jupiter",
+        "comparedProviders": 2,
+        "outAmountDiffRaw": "10821",
+        "outAmountDiff": "0.00010821",
+        "bps": 12.01,
+        "usd": 120.09
+      },
+      "providerQuotes": ["... titan (rank 1), jupiter (rank 2) ..."]
+    },
+    {
+      "request": { "unit": "usd", "amount": "5000000", "rawAmount": "5000000000000" },
+      "status": "unavailable",
+      "reason": "no_route",
+      "best": null,
+      "edge": null,
+      "providerQuotes": ["... both unavailable ..."]
+    }
+  ],
+  "meta": {
+    "requested": 2,
+    "available": 1,
+    "unavailable": 1,
+    "upstreamQuotes": 4,
+    "tieBreak": "jupiter",
+    "comparisonVersion": "quote-compare-v1",
+    "amountSource": "request",
+    "providerStats": {
+      "jupiter": { "quoted": 1, "unavailable": 1, "wins": 0, "soleQuotes": 0, "meanEdgeBps": null, "medianEdgeBps": null },
+      "titan": { "quoted": 1, "unavailable": 1, "wins": 1, "soleQuotes": 0, "meanEdgeBps": 12.01, "medianEdgeBps": 12.01 }
+    },
+    "summary": {
+      "bestProvider": "titan",
+      "bestProviderReason": "most_wins",
+      "comparableEntries": 1,
+      "medianEdgeBps": 12.01,
+      "maxEdgeBps": 12.01,
+      "maxEdgeAt": { "unit": "usd", "amount": "100000" }
+    },
+    "warnings": []
+  }
+}
+```
+
+### Errors
+
+| Status | When |
+| --- | --- |
+| `400` | Missing or invalid `mint`; amount for the wrong side; more than 9 amounts; a buy amount outside `1`–`50000000`; more decimal places than the token has; unknown `providers` value |
+| `403` | Key lacks `execution:read` |
+| `404` | Mint is not a listed token |
+| `429` | Rate limited |
+
+## `GET /v2/execution/route`
+
+The asset-level execution product. Where `evaluate` answers *"which router for
+this exact mint"*, `route` answers the question aggregators structurally
+cannot: *"I want $5M of BTC exposure on Solana — how should I get it?"*
+Jupiter and Titan route within one mint. Only the registry knows that cbBTC,
+wBTC, and zBTC are the same exposure, so only this endpoint can split an order
+across them.
+
+```
+GET /v2/execution/route?assetId=bitcoin&amountUsd=5000000
+```
+
+Requires the `execution:read` scope. Responses are `cache-control: no-store`.
+
+### What it does
+
+1. **Selects variants.** The asset's variants are ranked (liquidity, activity,
+   curated order) and filtered: a liquidity floor of `max($50k, 1% of target)`,
+   a `maxVariants` cap (default 4, max 6). Every variant *not* quoted appears
+   in `meta.excludedVariants` with a reason.
+2. **Probes each variant** across a target-scaled ladder
+   `[T/125, T/25, T/5, T]` (floored at $1k). The top rung is the target
+   itself, so "best single variant" is an exact quote, never an extrapolation.
+   Each rung is a full `evaluate`-style row: both routers, winner, edge.
+3. **Builds a curve per variant** — impact derived against the variant's own
+   smallest successful rung, which makes Titan (no impact field) and Jupiter
+   comparable, and variants comparable to each other.
+4. **Allocates** (default on): a greedy split of the target across variants
+   with unit parity, chunk by chunk to whichever variant offers the most
+   output for the next dollar. Curves are clamped to concavity (greedy is then
+   provably optimal) and allocation **never exceeds a variant's largest
+   successfully probed size** — a plan built on extrapolated depth would be
+   speculation. Any unfillable remainder is reported as `unallocatedUsd`.
+5. **Verifies** each allocation leg with one fresh exact quote at its final
+   size. The verified quote becomes the leg's reported numbers, and
+   `verification.deltaBps` shows how far the interpolation was off. A failed
+   verification keeps the interpolated numbers with
+   `verification.status: 'interpolated'` and a warning — never silently.
+
+### Unit parity: who can be allocated
+
+| `parityBasis` | Meaning |
+| --- | --- |
+| `kind` | `native` / `wrapped` / `bridged` / `spot` / `stablecoin` variants: the same unit of the underlying |
+| `issuer_assertion` | Tokenized equity, redeemable tiers only: 1 token = 1 share is the **issuer's claim**, not our data. Always accompanied by `equity_unit_parity_assumed` and `issuer_primary_market_not_quoted` warnings |
+| `none` | Compared, never allocated: ETF wrappers with different units (gold's GLD wrapper is ~1/10 oz), leveraged, baskets, accruing LSTs, non-redeemable pre-IPO claims |
+
+**Parity is also verified at runtime.** Variants of one asset must trade near
+one unit price, so every pool variant's base price is checked against the pool
+median; anything diverging more than 500bps is ejected — `allocationEligible:
+false`, `curve.parityDivergenceBps`, and a `price_divergence_excluded:<mint>`
+warning. A "1-oz" claim priced like a tenth of an ounce, a broken stablecoin
+book, and a pre-IPO wrapper at 11x are all the same defect: not something to
+sum with the siblings. `pegSpreadBps` then describes only the surviving pool.
+
+**Verification acts on the plan, not just the report.** A leg whose re-quote
+lands more than 500bps below the curve's expectation marks its variant as
+distrusted for the request; the allocation is re-derived without it (pure
+arithmetic; only the legs that moved are re-verified), disclosed as
+`allocation.repaired` plus `plan_repaired:<mint>` warnings. Exactly one repair
+per request. If the verified split still loses to the best single variant's
+exact full-target quote, the plan **is** that quote — one leg, disclosed as
+`allocation.fellBackToSingleVariant` — because a split that loses to not
+splitting is not a recommendation. Dust control: legs below `minLegUsd` (two
+chunks) are folded into siblings with room, since a single-chunk win is inside
+quote noise and costs a whole extra transaction. Single-leg plans on the
+baseline variant report `edge: null` — two quotes of the same thing minutes
+apart are noise, not an edge.
+
+### Reading the plan
+
+- `allocation.legs[]` — the split, whole dollars, summing to the target
+  exactly. Each leg names its variant, provider, expected output, impact vs
+  the variant's own baseline, and the internal `router` that filled the
+  verification quote (Jupiter's `jupiterz` means RFQ liquidity).
+- `allocation.edge.vsBestSingleVariant` / `vsPrimaryVariant` — what the split
+  gains over sending the whole order to one mint, in bps and dollars. Both
+  baselines are exact quotes at the full target. Because a single-variant fill
+  is itself a feasible allocation, `vsBestSingleVariant` is non-negative by
+  construction.
+- `allocation.pegSpreadBps` + per-variant `curve.baseEffectivePrice` — the peg
+  honesty disclosure. The allocator maximizes tokens out, which naturally buys
+  the cheapest-priced variant; that *is* best execution, but a variant that is
+  cheap at baseline is cheap for a reason, and the caller inherits that peg
+  risk. Spreads above 50bps add a `peg_divergence` warning.
+- Outputs compare **net receipts**: Jupiter Ultra's `outAmount` is net of its
+  disclosed fee, so a router can have the better gross route and still lose.
+- `allocation.blendedImpactBps` / `blendedImpactGrade` — whole-plan impact: the
+  plan's expected total vs what the same dollars would buy at each leg
+  variant's own baseline price, graded on the standard bands (≤10 excellent,
+  ≤50 good, ≤150 fair, ≤500 poor, else avoid). The `extreme_impact` warning
+  fires from `poor` upward: even the best available split is absorbing serious
+  impact and a smaller order would fill materially better.
+- `variants[].market.priceAsOf` — when the market snapshot behind
+  `market.price` was fetched. The snapshot lags live quotes, so never value
+  quoted token amounts at `market.price` and read the difference as
+  execution cost — value them against the variant's own
+  `curve.baseEffectivePrice` (same source as the quotes) and treat
+  `market.price` as a reference.
+- **Slippage does not shape quoted amounts.** Measured on both venues:
+  quoted `outAmount` is identical (±1bps quote noise) at `slippageBps`
+  1 / 50 / 300; only the min-out bound scales (Jupiter's
+  `otherAmountThreshold` = outAmount × (1 − slippage) exactly). The 50bps
+  constant in our quote clients therefore has no effect on any number this
+  API returns; a caller-supplied slippage budget is an execution-phase
+  concern, not a quoting one.
+- `allocation.legs[].route` — the venue path that leg's quote actually took,
+  hop by hop, from its own verification quote (falling back to its probe rung
+  at the same size). Empty for RFQ fills, which have no on-chain hops.
+- `meta.generatedAt` — when the plan was produced. Quotes age from this
+  moment; anything acting on a plan should re-request when it is more than a
+  few seconds old.
+- **Totals are firm; leg sizes are guidance.** `allocation.shareStability`
+  ('firm' | 'mixed' | 'soft', with per-leg `shareConfidence`) reports whether
+  the split rests on stable parts of the variants' curves. Measured: five
+  identical bitcoin $1M requests 20 seconds apart moved **$240k** between two
+  legs (±$92k stdev) while the plan total stayed within 5.7bps and every
+  verification delta was positive — one variant's top rung swung 66→176bps and
+  re-shaped the split. RFQ-filled legs (`router: 'jupiterz'`) are always soft:
+  an RFQ offer is firm for seconds and carries no persistence guarantee, and
+  repeated off-hours equity requests measurably alternate between plans as the
+  RFQ fill appears and vanishes. When `shareStability !== 'firm'` (warning
+  `shares_may_move`), re-request immediately before executing rather than
+  acting on sizes quoted minutes earlier.
+- When a collapsed leg has no alternative variant to move to, the repair pass
+  cannot fire; the leg ships with its honest verification delta and a
+  `collapse_unrepairable:<mint>` warning instead of silence.
+- Each `curve.rungs[]` entry carries `reason` on failure: `no_route` only when
+  every provider said no route (real market absence); anything else means the
+  quotes failed and depth at that size is **unknown**, not proven absent.
+- Every quote (both endpoints, both routers) is requested with a baked-in
+  `slippageBps=50` tolerance — quoted outputs already assume up to 0.5%
+  slippage headroom.
+- `allocation.legIndependence` — are the legs actually additive? Legs are
+  priced with independent quotes, but a leg whose route hops *through* another
+  leg's variant (`passThrough`) or shares a pool with it (`sharedPools`)
+  consumes liquidity its sibling also uses. When overlap is detected, the
+  endpoint issues **one restricted re-quote per overlapping leg** — Jupiter
+  via its classic quote endpoint with `onlyDirectRoutes` (a single hop cannot
+  have an intermediate mint), Titan via `excludeDexes` on the offending venue
+  labels — and only trusts the result after verifying the returned route
+  actually avoids every sibling. On success `edge.basis` is
+  `restricted_requotes` (warning `legs_restricted_requoted`): the totals are a
+  conservative executable estimate, since restricted Jupiter quotes are
+  Metis-only and lose RFQ liquidity by construction. If restriction fails —
+  the sibling reappears via another venue, or the re-quote errors —
+  `edge.basis` stays `independent_quotes` with `legs_share_liquidity`: treat
+  the edge as an **upper bound** and execute the largest leg first.
+
+### Parameters
+
+| Param | Default | Notes |
+| --- | --- | --- |
+| `assetId` | required | Canonical asset id or alias (`bitcoin`, `btc`); 404 if unknown |
+| `amountUsd` | `1000000` | Whole dollars, `1`–`50000000`; single target, not repeatable |
+| `providers` | all | CSV filter, same semantics as `evaluate` |
+| `maxVariants` | `4` | 1–6; the cost lever |
+| `allocate` | `true` | `false` skips the allocation and its verification quotes |
+| `side` | `buy` | `sell` returns 400 — per-variant sells need `evaluate` |
+
+### Selling
+
+`/route` is buy-only. Selling a position is a single-variant question — you
+hold a specific token, and `GET /v2/execution/evaluate?mint=<yourMint>&side=sell&tokenAmount=…`
+compares both routers on the exit. Note that aggregators already route
+*through* sibling variants internally on exits, so a single-mint sell taps
+cross-variant exit liquidity without any splitting on your part.
+
+### Cost model
+
+`upstreamQuotes = variants × 4 rungs × providers (+ legs × providers for
+verification, + overlapping legs × providers for restricted re-quotes)` —
+echoed in `meta.upstreamQuotes`. The default bitcoin call is ~40 quotes and
+5–9s. This is a deliberate-analysis endpoint, not a per-keystroke one.
+
+Operational note: the Jupiter API key's rate tier must cover this fanout. A
+tier limited to ~10 requests per 10s window (observed on the current key via
+`x-ratelimit-*` headers) cannot serve a single route call's ~22 Jupiter
+quotes — rungs degrade honestly to `unavailable/error` and Titan carries the
+comparison, but coverage and the restricted-requote upgrade both suffer.
+
+### Errors
+
+| Status | When |
+| --- | --- |
+| `400` | Missing `assetId`; `side=sell`; target outside bounds; `maxVariants` outside 1–6; unknown `providers` value |
+| `403` | Key lacks `execution:read` |
+| `404` | Unknown `assetId` |
+
+`allocationStatus` distinguishes two failure modes deliberately:
+`no_eligible_variants` means nothing about this asset can be summed with its
+siblings (all derivative kinds, no unit parity) — a property of the asset;
+`insufficient_quotes` means the request was starved by coverage — parity
+variants were probed but no usable curve came back, or selection itself lost
+every candidate to a decimals-metadata failure (`missing_decimals`
+exclusions) — retry-able.
+| `429` | Rate limited |

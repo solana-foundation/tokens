@@ -61,6 +61,8 @@ import type {
 } from './handlers/tokensReads';
 import type { TrendingMarketRow, FreshTrendingMarketRow, TrendingReadsRepo } from './handlers/trendingReads';
 import type { FillQualityRow, FillQualityReadsRepo } from './handlers/fillQualityReads';
+import type { DepthCronRepo } from './handlers/crons.depth';
+import type { DepthCurveReadsRepo, DepthCurveRow } from './handlers/depthCurveReads';
 import type { AssetCollectionMemberRow, AssetCollectionsReadsRepo } from './handlers/assetCollectionsReads';
 import type {
     TokenListMemberRow,
@@ -5057,6 +5059,77 @@ export function makePostgresClickhouseExtrasRepo(sql: Sql): ClickhouseExtrasRepo
                 symbol: r.symbol,
                 normalizedSymbol: r.normalized_symbol,
             }));
+        },
+    };
+}
+
+// ---------------------------------------------------------------------------
+// Depth curves (variant_depth_curves_latest) — see handlers/crons.depth.ts
+// ---------------------------------------------------------------------------
+
+export function makePostgresDepthCurvesRepo(sql: Sql): DepthCronRepo {
+    return {
+        async selectStalestDepthMints(args) {
+            if (args.mints.length === 0 || args.limit <= 0) return [];
+            const rows = await sql<{ mint: string }[]>`
+                SELECT m.mint
+                FROM unnest(${sql.array([...args.mints])}::text[]) AS m(mint)
+                LEFT JOIN variant_depth_curves_latest d
+                  ON d.mint = m.mint
+                 AND d.quote_mint = ${args.quoteMint}
+                 AND d.side = ${args.side}
+                 AND d.source = ${args.source}
+                ORDER BY d.last_computed_at ASC NULLS FIRST, m.mint ASC
+                LIMIT ${args.limit}
+            `;
+            return rows.map(r => r.mint);
+        },
+        async upsertVariantDepthCurve(row) {
+            await sql`
+                INSERT INTO variant_depth_curves_latest (
+                    id, mint, quote_mint, side, source,
+                    ladder, points, failed_points,
+                    as_of, last_computed_at
+                )
+                VALUES (
+                    coalesce(
+                        (
+                            SELECT id FROM variant_depth_curves_latest
+                            WHERE mint = ${row.mint}
+                              AND quote_mint = ${row.quoteMint}
+                              AND side = ${row.side}
+                              AND source = ${row.source}
+                        ),
+                        ${randomId('vdc')}
+                    ),
+                    ${row.mint}, ${row.quoteMint}, ${row.side}, ${row.source},
+                    ${sql.json(row.ladder as never)}, ${row.points}, ${row.failedPoints},
+                    ${row.asOf}, ${row.lastComputedAt}
+                )
+                ON CONFLICT (mint, quote_mint, side, source) DO UPDATE SET
+                    ladder = EXCLUDED.ladder,
+                    points = EXCLUDED.points,
+                    failed_points = EXCLUDED.failed_points,
+                    as_of = EXCLUDED.as_of,
+                    last_computed_at = EXCLUDED.last_computed_at
+            `;
+        },
+    };
+}
+
+export function makePostgresDepthCurveReadsRepo(sql: Sql): DepthCurveReadsRepo {
+    return {
+        async findLatestByMints(args) {
+            if (args.mints.length === 0) return [];
+            const rows = await sql<DepthCurveRow[]>`
+                SELECT mint, quote_mint, side, source, ladder, points, failed_points, as_of, last_computed_at
+                FROM variant_depth_curves_latest
+                WHERE mint IN ${sql([...args.mints])}
+                  AND quote_mint = ${args.quoteMint}
+                  AND side = ${args.side}
+                  AND source = ${args.source}
+            `;
+            return rows;
         },
     };
 }

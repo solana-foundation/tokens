@@ -1,7 +1,17 @@
 import { Effect, Schema } from 'effect';
+import bs58 from 'bs58';
+import { V1Client as TitanV1Client } from '@titanexchange/sdk-ts';
 import { fetchJsonWithRetry } from '@tokens/effect';
 import { decodeUpstreamOrWarn } from '@tokens/effect/schema';
 import { withExternalTiming } from './externalTiming';
+import type { DepthQuote, DepthQuoteClient } from './handlers/crons.depth';
+import type {
+    ExactQuote,
+    ExactQuoteFees,
+    ExecutionRouteStep,
+    JupiterSwapV2QuoteClient,
+    JupiterTokenMetadataClient,
+} from './handlers/liveQuotes';
 import type {
     BirdeyeClient,
     BirdeyeInterval,
@@ -266,7 +276,7 @@ export function makeWebacyClient(opts: MakeWebacyOptions): WebacyClient {
     };
 }
 
-function toFiniteNumberOrNull(value: unknown): number | null {
+function jupiterFiniteNumber(value: unknown): number | null {
     if (typeof value === 'number' && Number.isFinite(value)) return value;
     if (typeof value === 'string') {
         const parsed = Number(value);
@@ -1171,6 +1181,412 @@ export function makeBirdeyeMarketsClient(opts: MakeBirdeyeMarketsOptions): Birde
                 byAddress.set(market.address, market);
             }
             return Array.from(byAddress.values());
+        },
+    };
+}
+
+// ---------------------------------------------------------------------------
+// Depth-sampling quote sources (see handlers/crons.depth.ts)
+// ---------------------------------------------------------------------------
+
+const JupiterQuoteEnvelopeSchema = Schema.Struct({
+    inAmount: Schema.optionalKey(Schema.Unknown),
+    outAmount: Schema.optionalKey(Schema.Unknown),
+    priceImpactPct: Schema.optionalKey(Schema.Unknown),
+    routePlan: Schema.optionalKey(Schema.Unknown),
+    contextSlot: Schema.optionalKey(Schema.Unknown),
+    errorCode: Schema.optionalKey(Schema.Unknown),
+});
+
+const JupiterSwapV2OrderEnvelopeSchema = Schema.Struct({
+    inAmount: Schema.optionalKey(Schema.Unknown),
+    outAmount: Schema.optionalKey(Schema.Unknown),
+    priceImpact: Schema.optionalKey(Schema.Unknown),
+    routePlan: Schema.optionalKey(Schema.Unknown),
+    router: Schema.optionalKey(Schema.Unknown),
+    mode: Schema.optionalKey(Schema.Unknown),
+    feeBps: Schema.optionalKey(Schema.Unknown),
+    feeMint: Schema.optionalKey(Schema.Unknown),
+    platformFee: Schema.optionalKey(Schema.Unknown),
+    transaction: Schema.optionalKey(Schema.Unknown),
+    errorCode: Schema.optionalKey(Schema.Unknown),
+});
+
+const JupiterTokenSearchEnvelopeSchema = Schema.Array(Schema.Unknown);
+
+function toFinitePositiveNumber(value: unknown): number | null {
+    const parsed =
+        typeof value === 'number'
+            ? value
+            : typeof value === 'bigint'
+              ? Number(value)
+              : typeof value === 'string'
+                ? Number(value)
+                : NaN;
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+}
+
+function toFiniteNumberOrNull(value: unknown): number | null {
+    const parsed = typeof value === 'number' ? value : typeof value === 'string' ? Number(value) : NaN;
+    return Number.isFinite(parsed) ? parsed : null;
+}
+
+function toNonNegativeFiniteNumber(value: unknown): number | null {
+    const parsed = toFiniteNumberOrNull(value);
+    return parsed !== null && parsed >= 0 ? parsed : null;
+}
+
+function toPositiveIntegerString(value: unknown): string | null {
+    if (typeof value !== 'string' && typeof value !== 'number' && typeof value !== 'bigint') return null;
+    const raw = String(value);
+    return /^\d+$/.test(raw) && BigInt(raw) > 0n ? raw : null;
+}
+
+function toNonNegativeIntegerString(value: unknown): string | null {
+    if (typeof value !== 'string' && typeof value !== 'number' && typeof value !== 'bigint') return null;
+    const raw = String(value);
+    return /^\d+$/.test(raw) ? raw : null;
+}
+
+function toStringOrNull(value: unknown): string | null {
+    return typeof value === 'string' && value.length > 0 ? value : null;
+}
+
+function parseJupiterRoutePlan(value: unknown): ExecutionRouteStep[] {
+    if (!Array.isArray(value)) return [];
+    return value.map(step => {
+        const record = step !== null && typeof step === 'object' ? (step as Record<string, unknown>) : {};
+        const swapInfoRaw = record.swapInfo;
+        const swapInfo =
+            swapInfoRaw !== null && typeof swapInfoRaw === 'object'
+                ? (swapInfoRaw as Record<string, unknown>)
+                : {};
+        return {
+            ammKey: toStringOrNull(swapInfo.ammKey),
+            label: toStringOrNull(swapInfo.label),
+            percent: jupiterFiniteNumber(record.percent),
+            inputMint: toStringOrNull(swapInfo.inputMint),
+            outputMint: toStringOrNull(swapInfo.outputMint),
+            inAmountRaw: toPositiveIntegerString(swapInfo.inAmount),
+            outAmountRaw: toPositiveIntegerString(swapInfo.outAmount),
+            feeAmountRaw: toNonNegativeIntegerString(swapInfo.feeAmount),
+            feeMint: toStringOrNull(swapInfo.feeMint),
+        };
+    });
+}
+
+interface MakeJupiterQuoteOptions {
+    baseUrl?: string;
+    apiKey?: string;
+}
+
+/**
+ * Jupiter quote client (lite tier by default). Cross-check / fallback source
+ * for depth sampling; untradable pairs degrade to null like the Birdeye
+ * clients, transport failures throw after retries.
+ */
+export function makeJupiterQuoteClient(opts: MakeJupiterQuoteOptions = {}): DepthQuoteClient {
+    const baseUrl = (opts.baseUrl ?? (opts.apiKey ? 'https://api.jup.ag' : 'https://lite-api.jup.ag')).replace(
+        /\/+$/,
+        '',
+    );
+    const headers: Record<string, string> = { Accept: 'application/json' };
+    if (opts.apiKey) headers['x-api-key'] = opts.apiKey;
+
+    return {
+        id: 'jupiter_lite',
+        async fetchQuote(args): Promise<DepthQuote | null> {
+            const url =
+                `${baseUrl}/swap/v1/quote?inputMint=${encodeURIComponent(args.inputMint)}` +
+                `&outputMint=${encodeURIComponent(args.outputMint)}` +
+                `&amount=${Math.round(args.amount)}` +
+                `&slippageBps=${args.slippageBps ?? 50}`;
+            const json = await Effect.runPromise(
+                fetchJsonWithRetry<Record<string, unknown> | null>({
+                    url,
+                    service: 'jupiter',
+                    init: { headers },
+                    maxRetries: 2,
+                    timeout: '15 seconds',
+                    schema: JupiterQuoteEnvelopeSchema,
+                }).pipe(
+                    // 400s (TOKEN_NOT_TRADABLE, COULD_NOT_FIND_ANY_ROUTE, ...)
+                    // keep the null-degrade contract; 429/5xx retry then throw.
+                    Effect.catchTag('UpstreamHttpError', () => Effect.succeed(null)),
+                ),
+            );
+            if (!json) return null;
+            const inAmount = toFinitePositiveNumber(json.inAmount);
+            const outAmount = toFinitePositiveNumber(json.outAmount);
+            if (inAmount === null || outAmount === null) return null;
+
+            const routeVenues: string[] = [];
+            if (Array.isArray(json.routePlan)) {
+                for (const step of json.routePlan) {
+                    const label = (step as { swapInfo?: { label?: unknown } } | null)?.swapInfo?.label;
+                    if (typeof label === 'string' && label && !routeVenues.includes(label)) routeVenues.push(label);
+                }
+            }
+            const contextSlot = toFinitePositiveNumber(json.contextSlot);
+
+            return {
+                inAmount,
+                outAmount,
+                routeVenues,
+                ...(contextSlot !== null ? { contextSlot: contextSlot } : {}),
+            };
+        },
+        async close(): Promise<void> {
+            // HTTP client: nothing to release.
+        },
+    };
+}
+
+/** Jupiter token metadata remains available on Lite when no Pro key is set. */
+export function makeJupiterTokenMetadataClient(opts: MakeJupiterQuoteOptions = {}): JupiterTokenMetadataClient {
+    const baseUrl = (opts.baseUrl ?? (opts.apiKey ? 'https://api.jup.ag' : 'https://lite-api.jup.ag')).replace(/\/+$/, '');
+    const headers: Record<string, string> = { Accept: 'application/json' };
+    if (opts.apiKey) headers['x-api-key'] = opts.apiKey;
+
+    return {
+        async fetchTokenMetadata(mint) {
+            const url = `${baseUrl}/tokens/v2/search?query=${encodeURIComponent(mint)}`;
+            const json = await Effect.runPromise(
+                fetchJsonWithRetry<unknown[]>({
+                    url,
+                    service: 'jupiter',
+                    init: { headers },
+                    maxRetries: 2,
+                    timeout: '15 seconds',
+                    schema: JupiterTokenSearchEnvelopeSchema,
+                }),
+            );
+            const match = json.find(item => {
+                if (item === null || typeof item !== 'object') return false;
+                return (item as Record<string, unknown>).id === mint;
+            });
+            if (match === null || typeof match !== 'object') return null;
+            const fields = match as Record<string, unknown>;
+            const decimals = toFiniteNumberOrNull(fields.decimals);
+            if (decimals === null || !Number.isInteger(decimals) || decimals < 0 || decimals > 255) return null;
+            return {
+                mint,
+                symbol: toStringOrNull(fields.symbol) ?? mint.slice(0, 4),
+                name: toStringOrNull(fields.name) ?? toStringOrNull(fields.symbol) ?? mint,
+                decimals,
+            };
+        },
+    };
+}
+
+interface MakeJupiterSwapV2QuoteOptions {
+    baseUrl?: string;
+    apiKey: string;
+}
+
+function parseJupiterSwapV2Fees(json: Record<string, unknown>): ExactQuoteFees | null {
+    const feeBps = toNonNegativeFiniteNumber(json.feeBps);
+    const feeMint = toStringOrNull(json.feeMint);
+    const platformRaw =
+        json.platformFee !== null && typeof json.platformFee === 'object'
+            ? (json.platformFee as Record<string, unknown>)
+            : null;
+    const platformFee = platformRaw
+        ? {
+              amountRaw: toNonNegativeIntegerString(platformRaw.amount),
+              feeBps: toNonNegativeFiniteNumber(platformRaw.feeBps),
+              feeMint: toStringOrNull(platformRaw.feeMint),
+          }
+        : null;
+    return feeBps !== null || feeMint !== null || platformFee !== null ? { feeBps, feeMint, platformFee } : null;
+}
+
+/** Quote-only Jupiter Swap V2 transport for the uncached execution evaluator. */
+export function makeJupiterSwapV2QuoteClient(opts: MakeJupiterSwapV2QuoteOptions): JupiterSwapV2QuoteClient {
+    const apiKey = opts.apiKey.trim();
+    if (!apiKey) throw new Error('JUPITER_API_KEY is required for Jupiter Swap V2 quotes');
+    const baseUrl = (opts.baseUrl ?? 'https://api.jup.ag').replace(/\/+$/, '');
+    const headers: Record<string, string> = { Accept: 'application/json', 'x-api-key': apiKey };
+
+    async function fetchClassicRestrictedQuote(args: {
+        inputMint: string;
+        outputMint: string;
+        amountRaw: string;
+        timeoutMs?: number;
+        restrictions?: { onlyDirectRoutes?: boolean; excludeDexes?: string[] };
+    }): Promise<ExactQuote | null> {
+        const params = new URLSearchParams({
+            inputMint: args.inputMint,
+            outputMint: args.outputMint,
+            amount: args.amountRaw,
+            slippageBps: '50',
+        });
+        if (args.restrictions?.onlyDirectRoutes) params.set('onlyDirectRoutes', 'true');
+        if (args.restrictions?.excludeDexes?.length) {
+            params.set('excludeDexes', args.restrictions.excludeDexes.join(','));
+        }
+        // Two retries: the restricted wave fires right after the verification
+        // burst on the same per-key rate limit. Budget split across attempts.
+        const maxRetries = 2;
+        const budgetMs = Math.max(1, Math.floor(args.timeoutMs ?? 15_000));
+        const attemptTimeoutMs = Math.max(1_000, Math.floor(budgetMs / (maxRetries + 1)));
+        const json = await Effect.runPromise(
+            fetchJsonWithRetry<Record<string, unknown> | null>({
+                url: `${baseUrl}/swap/v1/quote?${params}`,
+                service: 'jupiter',
+                init: { headers },
+                maxRetries,
+                timeout: `${attemptTimeoutMs} millis`,
+                schema: JupiterQuoteEnvelopeSchema,
+                decodeMode: 'fail',
+                recoverHttpError: error => (error.status === 400 ? { value: null, outcome: 'no_route' } : null),
+            }),
+        );
+        if (!json) return null;
+        const inAmountRaw = toPositiveIntegerString(json.inAmount);
+        const outAmountRaw = toPositiveIntegerString(json.outAmount);
+        if (!inAmountRaw || !outAmountRaw || inAmountRaw !== args.amountRaw) {
+            const error = new Error('Jupiter classic quote has invalid raw amounts') as Error & {
+                quoteReason: 'malformed';
+            };
+            error.quoteReason = 'malformed';
+            throw error;
+        }
+        return {
+            inAmountRaw,
+            outAmountRaw,
+            priceImpactPct: jupiterFiniteNumber(json.priceImpactPct),
+            route: parseJupiterRoutePlan(json.routePlan),
+            contextSlot: toFinitePositiveNumber(json.contextSlot),
+            router: 'metis',
+            mode: 'classic_restricted',
+            fees: null,
+        };
+    }
+
+    return {
+        id: 'jupiter',
+        async fetchQuote(args): Promise<ExactQuote | null> {
+            // Restricted re-quotes use the CLASSIC quote endpoint: Ultra's
+            // /order silently drops restriction params. Classic honors
+            // onlyDirectRoutes (the one guaranteed intermediate-free lever)
+            // and excludeDexes, at the cost of Metis-only (no RFQ) liquidity.
+            if (args.restrictions?.onlyDirectRoutes || args.restrictions?.excludeDexes?.length) {
+                return fetchClassicRestrictedQuote(args);
+            }
+            const url =
+                `${baseUrl}/swap/v2/order?inputMint=${encodeURIComponent(args.inputMint)}` +
+                `&outputMint=${encodeURIComponent(args.outputMint)}` +
+                `&amount=${encodeURIComponent(args.amountRaw)}`;
+            // The timeout is per-attempt: split the caller's budget across
+            // attempts so a retried quote can't overshoot the fanout deadline.
+            const maxRetries = 1;
+            const budgetMs = Math.max(1, Math.floor(args.timeoutMs ?? 15_000));
+            const attemptTimeoutMs = Math.max(1_000, Math.floor(budgetMs / (maxRetries + 1)));
+            const json = await Effect.runPromise(
+                fetchJsonWithRetry<Record<string, unknown> | null>({
+                    url,
+                    service: 'jupiter',
+                    init: { headers },
+                    maxRetries,
+                    timeout: `${attemptTimeoutMs} millis`,
+                    schema: JupiterSwapV2OrderEnvelopeSchema,
+                    decodeMode: 'fail',
+                    recoverHttpError: error =>
+                        error.status === 400 ? { value: null, outcome: 'no_route' } : null,
+                }),
+            );
+            if (!json) return null;
+            const inAmountRaw = toPositiveIntegerString(json.inAmount);
+            const outAmountRaw = toPositiveIntegerString(json.outAmount);
+            if (!inAmountRaw || !outAmountRaw || inAmountRaw !== args.amountRaw) {
+                const error = new Error('Jupiter Swap V2 response has invalid raw amounts') as Error & {
+                    quoteReason: 'malformed';
+                };
+                error.quoteReason = 'malformed';
+                throw error;
+            }
+            const priceImpactPoints = toFiniteNumberOrNull(json.priceImpact);
+            return {
+                inAmountRaw,
+                outAmountRaw,
+                priceImpactPct: priceImpactPoints === null ? null : Math.abs(priceImpactPoints) / 100,
+                route: parseJupiterRoutePlan(json.routePlan),
+                contextSlot: null,
+                router: toStringOrNull(json.router),
+                mode: toStringOrNull(json.mode),
+                fees: parseJupiterSwapV2Fees(json),
+            };
+        },
+    };
+}
+
+interface MakeTitanQuoteOptions {
+    /** WebSocket endpoint, e.g. wss://.../ws — auth token is appended as ?auth=. */
+    wsUrl: string;
+    authToken: string;
+}
+
+const TITAN_NO_ROUTE_PATTERN = /no.?route|not.?tradable|unsupported|unknown.?(mint|token)/i;
+
+/**
+ * Titan quote client — primary depth source. Titan's API is
+ * WebSocket-streaming; we use the one-shot getSwapPrice call (best simulated
+ * route, no transaction) over a lazily opened connection that the cron closes
+ * at the end of each tick.
+ */
+export function makeTitanQuoteClient(opts: MakeTitanQuoteOptions): DepthQuoteClient {
+    const url = `${opts.wsUrl}${opts.wsUrl.includes('?') ? '&' : '?'}auth=${encodeURIComponent(opts.authToken)}`;
+    let clientPromise: Promise<TitanV1Client> | null = null;
+
+    async function getClient(): Promise<TitanV1Client> {
+        if (clientPromise) {
+            const existing = await clientPromise.catch(() => null);
+            if (existing && !existing.closed) return existing;
+        }
+        clientPromise = TitanV1Client.connect(url);
+        return clientPromise;
+    }
+
+    async function priceOnce(args: { inputMint: string; outputMint: string; amount: number }) {
+        const client = await getClient();
+        return client.getSwapPrice({
+            inputMint: bs58.decode(args.inputMint),
+            outputMint: bs58.decode(args.outputMint),
+            amount: Math.round(args.amount),
+        });
+    }
+
+    return {
+        id: 'titan',
+        async fetchQuote(args): Promise<DepthQuote | null> {
+            try {
+                const price = await withExternalTiming('titan', url, async () => {
+                    try {
+                        return await priceOnce(args);
+                    } catch (error) {
+                        // One reconnect attempt: the pooled connection may have
+                        // idled out between shards.
+                        clientPromise = null;
+                        if (error instanceof Error && TITAN_NO_ROUTE_PATTERN.test(error.message)) throw error;
+                        return await priceOnce(args);
+                    }
+                });
+                const inAmount = toFinitePositiveNumber(price.amountIn);
+                const outAmount = toFinitePositiveNumber(price.amountOut);
+                if (inAmount === null || outAmount === null) return null;
+                return { inAmount, outAmount, routeVenues: [] };
+            } catch (error) {
+                if (error instanceof Error && TITAN_NO_ROUTE_PATTERN.test(error.message)) return null;
+                throw error;
+            }
+        },
+        async close(): Promise<void> {
+            const pending = clientPromise;
+            clientPromise = null;
+            if (!pending) return;
+            const client = await pending.catch(() => null);
+            if (client && !client.closed) await client.close().catch(() => undefined);
         },
     };
 }

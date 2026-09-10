@@ -251,7 +251,7 @@ module "scheduler_jobs" {
   service_url      = local.assets_jobs_service_url
   invoker_sa_email = module.iam.scheduler_sa_email
 
-  jobs = concat(local.coingecko_cron_jobs, local.clickhouse_cron_jobs, local.prestocks_cron_jobs, [
+  jobs = concat(local.coingecko_cron_jobs, local.clickhouse_cron_jobs, local.prestocks_cron_jobs, local.depth_cron_jobs, [
     {
       name      = "refresh-asset-variant-markets"
       schedule  = var.env == "stg" ? "15 2 * * *" : "*/10 * * * *"

@@ -2,6 +2,12 @@ import { liquidityTierPriority, normalizeLegacyTier } from './liquidity-tier';
 import type { AssetCategory, AssetVariant, CanonicalAsset, LiquidityTier, StockVariantTier } from './types';
 
 export const FILL_QUALITY_SCORING_VERSION = 'fill-quality-24h-5s-v1';
+export const SIZE_AWARE_SCORING_VERSION = 'size-aware-exec-v1';
+
+/** Impact at/above this many bps zeroes the impact component of the size-aware blend. */
+export const SIZE_AWARE_IMPACT_FLOOR_BPS = 500;
+/** Size-aware reordering (once activated) requires at least this score delta. */
+export const SIZE_AWARE_OVERRIDE_DELTA = 5;
 
 const EXECUTION_SCORE_OVERRIDE_DELTA = 10;
 const MAX_LIQUIDITY_OVERRIDE_RATIO = 3;
@@ -175,6 +181,208 @@ export function pickPrimaryVariantWithRanking(params: {
     }
 
     return { variant: best, reason };
+}
+
+export interface DepthLadderRung {
+    sizeUsd: number;
+    priceImpactBps: number | null;
+}
+
+export interface InterpolatedImpact {
+    impactBps: number;
+    /** True when amountUsd fell outside the sampled ladder and was clamped. */
+    extrapolated: boolean;
+}
+
+/**
+ * Interpolate price impact at `amountUsd` from a sampled ladder. Log-linear in
+ * size space (impact curves are near-power-law); clamps below the smallest and
+ * above the largest usable rung (`extrapolated: true` above). Returns null
+ * when no rung carries a usable impact.
+ */
+export function interpolateImpactBps(
+    ladder: ReadonlyArray<DepthLadderRung>,
+    amountUsd: number,
+): InterpolatedImpact | null {
+    if (!Number.isFinite(amountUsd) || amountUsd <= 0) return null;
+    const rungs = ladder
+        .filter(
+            (rung): rung is { sizeUsd: number; priceImpactBps: number } =>
+                Number.isFinite(rung.sizeUsd) &&
+                rung.sizeUsd > 0 &&
+                rung.priceImpactBps !== null &&
+                Number.isFinite(rung.priceImpactBps),
+        )
+        .sort((a, b) => a.sizeUsd - b.sizeUsd);
+    if (rungs.length === 0) return null;
+
+    const first = rungs[0]!;
+    const last = rungs[rungs.length - 1]!;
+    if (amountUsd <= first.sizeUsd) return { impactBps: first.priceImpactBps, extrapolated: false };
+    if (amountUsd >= last.sizeUsd) {
+        return { impactBps: last.priceImpactBps, extrapolated: amountUsd > last.sizeUsd };
+    }
+
+    for (let i = 1; i < rungs.length; i++) {
+        const lower = rungs[i - 1]!;
+        const upper = rungs[i]!;
+        if (amountUsd > upper.sizeUsd) continue;
+        const span = Math.log(upper.sizeUsd) - Math.log(lower.sizeUsd);
+        const t = span > 0 ? (Math.log(amountUsd) - Math.log(lower.sizeUsd)) / span : 0;
+        const impactBps = lower.priceImpactBps + t * (upper.priceImpactBps - lower.priceImpactBps);
+        return { impactBps: Math.round(impactBps * 100) / 100, extrapolated: false };
+    }
+
+    return { impactBps: last.priceImpactBps, extrapolated: false };
+}
+
+/**
+ * Blend the fill-quality execution score with interpolated price impact.
+ * Same clamp/blend idiom as `computeVariantExecutionScore`; bump
+ * `SIZE_AWARE_SCORING_VERSION` when weights change.
+ */
+export function computeSizeAwareScore(input: { executionScore: number; impactBps: number }): number {
+    const executionQuality = clamp(input.executionScore / 100, 0, 1);
+    const impactQuality = 1 - clamp(input.impactBps / SIZE_AWARE_IMPACT_FLOOR_BPS, 0, 1);
+    const score = 100 * (0.6 * executionQuality + 0.4 * impactQuality);
+    return Math.round(clamp(score, 0, 100) * 10_000) / 10_000;
+}
+
+export const EXECUTION_GRADING_VERSION = 'impact-grade-v1';
+
+/** Ordered best-to-worst; publish this order so consumers can rank. */
+export const IMPACT_GRADES = ['excellent', 'good', 'fair', 'poor', 'avoid'] as const;
+export type ImpactGrade = (typeof IMPACT_GRADES)[number];
+
+/**
+ * Inclusive upper bound (bps) per grade; anything above `poor` is `avoid`.
+ * The `poor` bound intentionally equals SIZE_AWARE_IMPACT_FLOOR_BPS: `avoid`
+ * is exactly where the size-aware blend's impact component floors to zero.
+ */
+export const IMPACT_GRADE_MAX_BPS = {
+    excellent: 10,
+    good: 50,
+    fair: 150,
+    poor: SIZE_AWARE_IMPACT_FLOOR_BPS,
+} as const;
+
+/**
+ * Grade a price-impact reading. Zero or negative impact (price improvement)
+ * is `excellent`; non-finite input fails closed to `avoid`. Bump
+ * EXECUTION_GRADING_VERSION when thresholds or the enum change.
+ */
+export function gradeImpactBps(impactBps: number): ImpactGrade {
+    if (!Number.isFinite(impactBps)) return 'avoid';
+    if (impactBps <= IMPACT_GRADE_MAX_BPS.excellent) return 'excellent';
+    if (impactBps <= IMPACT_GRADE_MAX_BPS.good) return 'good';
+    if (impactBps <= IMPACT_GRADE_MAX_BPS.fair) return 'fair';
+    if (impactBps <= IMPACT_GRADE_MAX_BPS.poor) return 'poor';
+    return 'avoid';
+}
+
+export type VariantRankingExclusionReason = 'excluded_by_activity_filter' | 'non_spot_like';
+
+export interface RankedVariantEntry {
+    variant: AssetVariant;
+    /** 1-based position in the ranked list. */
+    rank: number;
+    reason: PrimaryVariantSelectionReason | VariantRankingExclusionReason;
+    /** True for variants that survived candidate filtering (spot-like preference + activity gate). */
+    isPrimaryCandidate: boolean;
+}
+
+/**
+ * List-producing counterpart of `pickPrimaryVariantWithRanking`: the full
+ * variant set in recommendation order with a per-variant reason. Ordering is
+ * derived by repeated selection with the exact pick-loop semantics, so the
+ * first entry is always the variant `pickPrimaryVariantWithRanking` returns
+ * for identical inputs (unit-tested invariant). Variants excluded from the
+ * candidate set (activity-filtered, or non-spot-like when spot-like variants
+ * exist) trail the candidates, ordered by liquidity.
+ */
+export function rankVariantsWithReasons(params: {
+    asset: CanonicalAsset;
+    mintRank: ReadonlyMap<string, number>;
+    marketByMint?: ReadonlyMap<string, VariantMarketRankingSnapshot | null | undefined>;
+    fillQualityByMint?: ReadonlyMap<string, VariantFillQualityRankingSnapshot | null | undefined>;
+    /**
+     * Reserved for size-aware ranking: interpolated price impact (bps) per
+     * mint. Informational-only until size-aware reordering is activated —
+     * it never affects ordering today.
+     */
+    impactByMint?: ReadonlyMap<string, number | null>;
+    options?: PrimaryVariantRankingOptions;
+}): RankedVariantEntry[] {
+    if (params.asset.variants.length === 0) return [];
+
+    const spotLikeVariants = params.asset.variants.filter(v => isSpotLikeVariantKind(v.kind));
+    const baseCandidates = spotLikeVariants.length > 0 ? spotLikeVariants : params.asset.variants;
+    const candidates = filterPrimaryCandidatesByActivity({
+        candidates: baseCandidates,
+        marketByMint: params.marketByMint,
+        fillQualityByMint: params.fillQualityByMint,
+    });
+
+    const nowSeconds = params.options?.nowSeconds ?? Math.floor(Date.now() / 1000);
+    const lexicalTieBreak = params.options?.lexicalTieBreak ?? false;
+    const strategy = params.options?.strategy ?? 'liquidity';
+    const activityFiltered = candidates.length !== baseCandidates.length;
+
+    const entries: RankedVariantEntry[] = [];
+    const remaining = [...candidates];
+    while (remaining.length > 0) {
+        // Each round replicates the pick loop over the remaining candidates,
+        // including its initial-reason semantics for the first round.
+        let best = remaining[0]!;
+        let reason: PrimaryVariantSelectionReason;
+        if (entries.length === 0) {
+            reason = candidates.length === 1 ? 'only_candidate' : activityFiltered ? 'activity_filter' : 'first_candidate';
+        } else {
+            reason = 'first_candidate';
+        }
+        for (let i = 1; i < remaining.length; i++) {
+            const next = remaining[i]!;
+            const comparison = comparePrimaryVariantCandidates({
+                next,
+                best,
+                assetCategory: params.asset.category,
+                mintRank: params.mintRank,
+                marketByMint: params.marketByMint,
+                fillQualityByMint: params.fillQualityByMint,
+                nowSeconds,
+                lexicalTieBreak,
+                strategy,
+            });
+            if (comparison.isBetter) {
+                best = next;
+                reason = comparison.reason;
+            }
+        }
+        entries.push({ variant: best, rank: entries.length + 1, reason, isPrimaryCandidate: true });
+        remaining.splice(remaining.indexOf(best), 1);
+    }
+
+    const rankedMints = new Set(entries.map(entry => entry.variant.mint));
+    const byLiquidityDesc = (a: AssetVariant, b: AssetVariant) =>
+        getLiquidity(params.marketByMint, b.mint) - getLiquidity(params.marketByMint, a.mint);
+
+    const activityExcluded = baseCandidates.filter(v => !rankedMints.has(v.mint)).sort(byLiquidityDesc);
+    for (const variant of activityExcluded) {
+        entries.push({
+            variant,
+            rank: entries.length + 1,
+            reason: 'excluded_by_activity_filter',
+            isPrimaryCandidate: false,
+        });
+        rankedMints.add(variant.mint);
+    }
+
+    const nonSpotLike = params.asset.variants.filter(v => !rankedMints.has(v.mint)).sort(byLiquidityDesc);
+    for (const variant of nonSpotLike) {
+        entries.push({ variant, rank: entries.length + 1, reason: 'non_spot_like', isPrimaryCandidate: false });
+    }
+
+    return entries;
 }
 
 function comparePrimaryVariantCandidates(params: {

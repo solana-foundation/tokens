@@ -31,6 +31,8 @@ Most v1 endpoints currently require:
 
 Some endpoints may accept a *fine-grained* scope in addition to `assets:read`. For example, `GET /v1/assets/risk-summary` accepts either `assets:read` or `assets:risk:read`.
 
+v2 execution endpoints require `execution:read`, which is granted to all keys by default.
+
 If your key doesn’t have the required scope, you’ll receive a `403` error.
 
 ## Request IDs
