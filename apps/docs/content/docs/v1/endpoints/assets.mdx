@@ -29,7 +29,36 @@ type VariantExecutionQuality = {
 } | null;
 
 type StockVariantTier = 'share_redeemable' | 'cash_redeemable' | 'not_redeemable';
+
+// See "Advisories" on the Asset by ID page for semantics.
+type AdvisoryStatus = 'caution' | 'compromised' | 'blocked';
+
+type VariantAdvisory = {
+    status: AdvisoryStatus;
+    reason: string;
+    url: string | null;
+    since: number; // unix ms
+} | null;
+
+type AssetAdvisoryEntry = {
+    mint: string;
+    variantId: string;
+    status: AdvisoryStatus;
+    reason: string;
+    url: string | null;
+    since: number;
+};
 ```
+
+## Advisory-flagged assets
+
+Operators can flag a variant mint with an advisory (`caution`, `compromised`, or `blocked`). On this page it shows up in three ways:
+
+- Every `primaryVariant` and `variants[]` element carries `advisory` (`null` when not flagged), and every search/curated row carries `advisories: AssetAdvisoryEntry[]` (`[]` when none, including variants the row itself omitted).
+- `compromised` and `blocked` variants are never chosen as `primaryVariant` under any `primaryVariantStrategy` while another eligible variant exists, and are excluded from `/v1/assets/trending`.
+- `blocked` variants are omitted from `/v1/assets/search` and `/v1/assets/curated` entirely (a canonical asset whose only variant is blocked disappears from those lists; singleton tokens are dropped). They remain reachable through `GET /v1/assets/:assetId`, which never 404s a flagged mint.
+
+Treat `compromised` and `blocked` as do-not-trade. Full semantics, the TypeScript shapes, and propagation timing are on [Asset by ID → Advisories](/docs/v1/endpoints/asset-by-id#advisories).
 
 ## Execution quality and primary strategy
 
@@ -105,6 +134,7 @@ interface AssetsSearchResponse {
             priceChange24hPercent: number | null;
             priceChange1hPercent: number | null;
         };
+        advisories: AssetAdvisoryEntry[]; // always present; [] when no variant is flagged
         primaryVariant: null | {
             variantId: string;
             mint: string;
@@ -118,6 +148,7 @@ interface AssetsSearchResponse {
             stockVariantTier?: StockVariantTier;
             symbol?: string;
             name?: string;
+            advisory: VariantAdvisory; // always present; null when not flagged
             market: null | {
                 source?: 'birdeye' | 'rwa_xyz' | 'clickhouse_trades';
                 metricsSource?: 'birdeye' | 'rwa_xyz' | 'clickhouse_trades';
@@ -153,6 +184,7 @@ interface AssetsSearchResponse {
             stockVariantTier?: StockVariantTier;
             symbol?: string;
             name?: string;
+            advisory: VariantAdvisory;
             market: null | {
                 source?: 'birdeye' | 'rwa_xyz' | 'clickhouse_trades';
                 metricsSource?: 'birdeye' | 'rwa_xyz' | 'clickhouse_trades';
@@ -181,6 +213,7 @@ interface AssetsSearchResponse {
 
 ### Notes
 
+- Rows carry `advisories` and `primaryVariant.advisory` (see [Advisory-flagged assets](#advisory-flagged-assets)). Variants flagged `blocked` are omitted from search results, both from canonical assets’ variant sets and from singleton tokens; `compromised` and `blocked` variants are never selected as `primaryVariant`.
 - `stats.liquidity` is the canonical on-chain aggregate across the asset’s **spot-like** variants (`native`, `wrapped`, `bridged`, `stablecoin`, `lst`, `tokenized_equity`, `basket`). If an asset has no spot-like variants, the API falls back to aggregating across all variants.
 - `primaryVariantStrategy=liquidity` chooses `primaryVariant` from spot-like variants by highest liquidity after 24h activity filtering.
 - `primaryVariantStrategy=execution_quality` keeps liquidity in the ranking but allows strong cached fill-quality evidence to select the better practical trading variant.
@@ -223,6 +256,7 @@ Get a single canonical asset, its aggregate stats, and its selected `primaryVari
 ### Notes
 
 - `asset.primaryVariant.executionQuality` is included when cached fill-quality data exists for the selected primary variant.
+- `asset.primaryVariant.advisory` and every `asset.variantGroups.*[]` element carry `advisory` (`null` when not flagged); `asset.advisories` lists every flagged variant. This endpoint never 404s a flagged mint. See [Asset by ID → Advisories](/docs/v1/endpoints/asset-by-id#advisories).
 - `asset.primaryVariant.stockVariantTier` is included for stock-token variants when present.
 - `asset.primaryVariantStrategy` echoes the strategy used to select `primaryVariant`.
 - `asset.variantGroups.*[].executionQuality` is included on covered variants. This is the easiest way to compare execution quality across duplicate tokenized-equity or RWA variants.
@@ -461,6 +495,7 @@ Get ranked trending curated Solana assets from the Convex cache.
 - Trending rows are individual mints, not canonical asset aggregates. `imageUrl` prefers the mint-level token logo cached with that row.
 - Trending v1 is computed from successful direct USD-stable Solana trades only.
 - Native/wrapped SOL and stablecoin assets are excluded from the ranked trending set because they dominate Solana routing and stable-pair liquidity. `category=stablecoin` is accepted for schema compatibility but currently returns an empty list.
+- Mints flagged `compromised` or `blocked` are excluded from the ranked set (a crashed token is exactly what tends to trend, so this is enforced at the source rather than by clients). `caution` mints stay ranked. See [Advisory-flagged assets](#advisory-flagged-assets).
 - SOL-routed pricing and buy/sell imbalance are not included in this phase.
 - `trending.score` is a balanced momentum score based on 5m/15m/1h activity, acceleration versus longer windows, 1h price movement, and trade recency.
 - `market.asOf` is the shared ClickHouse trade timestamp used for the run, expressed as unix seconds. `market.lastTradeAt` is the most recent direct-stable trade timestamp for that mint, also unix seconds.
@@ -599,6 +634,7 @@ Get curated assets from a list.
 ### Notes
 
 - Results are sorted by `stats.volume24hUSD` descending when available.
+- Rows carry `advisories` and `primaryVariant.advisory` (and `advisory` on each `variants[]` element with `variants=all`). Variants flagged `blocked` are omitted from curated results (including `groupBy=mint` rows), and `compromised`/`blocked` variants are never chosen as `primaryVariant`. See [Advisory-flagged assets](#advisory-flagged-assets).
 - With `variants=all`, the `solana` asset's nested LST variants follow the same active-LST plus `$250k` liquidity filter as `groupBy=mint` rows; pass `variantsMode=all` to disable the liquidity floor. `primaryVariant` also appears within `variants[]` (no dedup).
 - `list=lsts` is backed by the same dynamic, capped Solana yield-variant set used by the variants API, rather than a fixed static mint list. `list=all` includes that same dynamic LST membership.
 - For Solana LST mint rows, the default response only includes active LSTs with at least `$250k` liquidity. Pass `variantsMode=all` to return all active LST rows.
@@ -639,6 +675,7 @@ interface AssetsCuratedResponse {
             priceChange24hPercent: number | null;
             priceChange1hPercent: number | null;
         };
+        advisories: AssetAdvisoryEntry[]; // always present; [] when no variant is flagged
         primaryVariant: null | {
             variantId: string;
             mint: string;
@@ -652,6 +689,7 @@ interface AssetsCuratedResponse {
             stockVariantTier?: StockVariantTier;
             symbol?: string;
             name?: string;
+            advisory: VariantAdvisory; // always present; null when not flagged
             market: null | {
                 source?: 'birdeye' | 'rwa_xyz' | 'clickhouse_trades';
                 metricsSource?: 'birdeye' | 'rwa_xyz' | 'clickhouse_trades';

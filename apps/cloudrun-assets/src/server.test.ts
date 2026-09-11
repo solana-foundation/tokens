@@ -2,6 +2,7 @@ import { describe, expect, it } from 'bun:test';
 
 import type { AssetAliasRow, AssetRow, AssetVariantRow, AssetsRepo, CallerIdentity } from './handlers/assets';
 import type { AssetDeletionTombstonesRepo } from './handlers/assetDeletionTombstones';
+import type { AssetAdvisoriesRepo } from './handlers/assetAdvisoriesReads';
 import type { SanctumLstRow, SanctumLstsRepo } from './handlers/sanctumLsts';
 import type { AssetMarketRow, AssetMarketsRepo } from './handlers/assetMarkets';
 import type { VariantMarketRow, VariantMarketsRepo } from './handlers/variantMarkets';
@@ -136,6 +137,14 @@ function makeRepo(data: MockRepoData = {}): AssetsRepo {
 function emptyDeletionTombstonesRepo(): AssetDeletionTombstonesRepo {
     return {
         async findDeletedNormalizedRefs() {
+            return [];
+        },
+    };
+}
+
+function emptyAssetAdvisoriesRepo(): AssetAdvisoriesRepo {
+    return {
+        async listAll() {
             return [];
         },
     };
@@ -323,6 +332,7 @@ function deps(overrides: Partial<ServerDeps> = {}): ServerDeps {
         repo: overrides.repo ?? makeRepo(),
         assetsApiRepo: overrides.assetsApiRepo ?? noopAssetsApiRepo,
         deletionTombstonesRepo: overrides.deletionTombstonesRepo ?? emptyDeletionTombstonesRepo(),
+        assetAdvisoriesRepo: overrides.assetAdvisoriesRepo ?? emptyAssetAdvisoriesRepo(),
         sanctumLstsRepo: overrides.sanctumLstsRepo ?? emptySanctumLstsRepo(),
         assetMarketsRepo: overrides.assetMarketsRepo ?? emptyAssetMarketsRepo(),
         variantMarketsRepo: overrides.variantMarketsRepo ?? emptyVariantMarketsRepo(),
@@ -1507,6 +1517,32 @@ describe('POST /mutation/cacheWarm*', () => {
             const res = await call(app, `/mutation/${name}`, authed({}));
             expect([200, 400]).toContain(res.status);
         }
+    });
+});
+
+describe('assetAdvisoriesList', () => {
+    it('returns the advisory snapshot with revision', async () => {
+        const repo: AssetAdvisoriesRepo = {
+            async listAll() {
+                return [
+                    { mint: 'MintA', status: 'compromised', reason: 'exploit', url: 'https://x.test/p', set_at: 10, updated_at: 20 },
+                ];
+            },
+        };
+        const app = createApp(deps({ assetAdvisoriesRepo: repo }));
+        const res = await call(app, '/query/assetAdvisoriesList', authed({}));
+        expect(res.status).toBe(200);
+        expect(await res.json()).toEqual({
+            revision: 20,
+            advisories: [{ mint: 'MintA', status: 'compromised', reason: 'exploit', url: 'https://x.test/p', since: 10 }],
+        });
+    });
+
+    it('returns an empty snapshot when no advisories exist', async () => {
+        const app = createApp(deps());
+        const res = await call(app, '/query/assetAdvisoriesList', authed({}));
+        expect(res.status).toBe(200);
+        expect(await res.json()).toEqual({ revision: 0, advisories: [] });
     });
 });
 

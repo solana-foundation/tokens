@@ -38,6 +38,7 @@ describe('risk loader helpers', () => {
                 marketScore: computeMarketScore(marketScoreInput),
                 marketScoreInput,
                 tags: [],
+                advisory: null,
                 lastUpdatedAt: null,
             },
         };
@@ -45,6 +46,7 @@ describe('risk loader helpers', () => {
         const summary = toRiskSummary(payload);
         expect(summary.risk.ok).toBe(true);
         expect('marketScoreInput' in summary.risk).toBe(false);
+        expect('advisory' in summary.risk).toBe(false);
         expect('marketScoreInput' in toRiskDetails(payload).risk).toBe(true);
     });
 });

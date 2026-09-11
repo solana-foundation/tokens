@@ -26,6 +26,14 @@ import { apiJson } from '@/effect/api-client';
 import type { TokenMarket } from '@/lib/birdeye';
 import type { PerpsMarket, PerpsMarketProviderId, PerpsMarketsResponse } from '@/lib/perps-markets';
 import { getVariantByMint } from '@tokens/asset-registry';
+import {
+    ADVISORY_BLOCKED_EVENT,
+    ADVISORY_COPY,
+    advisoryEventProps,
+    advisoryReasonText,
+    isTradeBlocked,
+    type AssetAdvisory,
+} from '@/lib/asset-advisory';
 import { getTokenLogoURLForMintWithSecondarySymbol } from '@/lib/logo-overrides';
 import { trackEvent } from '@/lib/posthog-client';
 import { formatCompactAddress, formatUsd } from '../lib/format';
@@ -350,6 +358,13 @@ interface SwapProvidersDropdownProps {
     buyName: string;
     buySymbol?: string;
     buyLogoURI?: string;
+    /**
+     * Advisory on `buyAddress`. This component is the single trade-gating
+     * choke point: `compromised`/`blocked` swap the CTA for a disabled one and
+     * make every outbound path (aggregators, venues, perps, pools, mobile
+     * bottom bar) unreachable. `caution` keeps trading enabled with a notice.
+     */
+    advisory?: AssetAdvisory | null;
 }
 
 type SwapProvidersDropdownBaseProps = SwapProvidersDropdownProps & { isVariantView: boolean };
@@ -615,9 +630,11 @@ function SwapProvidersDropdownBase({
     buySymbol,
     buyLogoURI,
     isVariantView,
+    advisory = null,
 }: SwapProvidersDropdownBaseProps) {
     const normalizedBuyAddress = buyAddress.trim();
     const isEnabled = normalizedBuyAddress.length > 0;
+    const tradeBlocked = isTradeBlocked(advisory);
     const [isMenuOpen, setIsMenuOpen] = React.useState(false);
     const [pendingNavigation, setPendingNavigation] = React.useState<PendingNavigation | null>(null);
     const [isConfirmOpen, setIsConfirmOpen] = React.useState(false);
@@ -652,7 +669,8 @@ function SwapProvidersDropdownBase({
     const { marketsForPoolsTab, poolsByVolume, isMarketsFetched, isMarketsLoading, perpsMarkets } = useSwapMarkets({
         assetId,
         safeBuyAddress,
-        isEnabled,
+        // No market/perps fetches for a mint we refuse to link out to.
+        isEnabled: isEnabled && !tradeBlocked,
         isMenuOpen,
         isDesktop,
         isVariantView,
@@ -674,14 +692,36 @@ function SwapProvidersDropdownBase({
         });
     }
 
+    if (tradeBlocked && advisory) {
+        return (
+            <TradeBlockedCta
+                advisory={advisory}
+                onBlockedClick={surface =>
+                    trackSwapEvent(ADVISORY_BLOCKED_EVENT, advisoryEventProps(advisory, { surface }))
+                }
+            />
+        );
+    }
+
     function openConfirm(args: PendingNavigation) {
+        if (tradeBlocked) {
+            // Defensive: the blocked CTA above never calls this, but no path
+            // may ever stage an outbound navigation for a restricted mint.
+            if (advisory) {
+                trackSwapEvent(
+                    ADVISORY_BLOCKED_EVENT,
+                    advisoryEventProps(advisory, getNavigationTrackingProperties(args)),
+                );
+            }
+            return;
+        }
         trackSwapEvent('swap_provider_selected', getNavigationTrackingProperties(args));
         setPendingNavigation(args);
         setIsConfirmOpen(true);
     }
 
     function handleContinue() {
-        if (!pendingNavigation) return;
+        if (tradeBlocked || !pendingNavigation) return;
         trackSwapEvent('swap_provider_clicked', getNavigationTrackingProperties(pendingNavigation));
         window.open(pendingNavigation.href, '_blank', 'noopener,noreferrer');
         setIsConfirmOpen(false);
@@ -773,10 +813,58 @@ function SwapProvidersDropdownBase({
                 isOpen={isConfirmOpen}
                 onOpenChange={handleConfirmOpenChange}
                 pendingNavigation={pendingNavigation}
+                advisory={advisory}
                 onCancel={handleConfirmCancel}
                 onContinue={handleContinue}
             />
         </LazyMotion>
+    );
+}
+
+/**
+ * Same-footprint replacement for the Buy CTA when the mint is `compromised`
+ * or `blocked`: a non-interactive button (mobile bottom bar + desktop panel)
+ * whose only side effect is the `advisory_blocked_click` event. Nothing here
+ * can stage or open an outbound navigation.
+ */
+function TradeBlockedCta({
+    advisory,
+    onBlockedClick,
+}: {
+    advisory: AssetAdvisory;
+    onBlockedClick: (surface: ProviderClickSurface) => void;
+}) {
+    const copy = ADVISORY_COPY[advisory.status];
+
+    const renderButton = (surface: ProviderClickSurface, className: string) => (
+        <button
+            type="button"
+            aria-disabled="true"
+            aria-describedby={surface === 'desktop_panel' ? 'trade-blocked-explanation' : undefined}
+            onClick={() => onBlockedClick(surface)}
+            className={`flex h-12 w-full cursor-not-allowed items-center justify-center gap-2 border border-rose-200 bg-rose-50 px-4 py-3 text-rose-700 ${className}`}
+        >
+            <IconExclamationmarkTriangleFill className="size-4 shrink-0 fill-rose-600" aria-hidden="true" />
+            <span className="text-[length:var(--text-button-md)] font-inter-semibold leading-none">{copy.tradeCta}</span>
+        </button>
+    );
+
+    return (
+        <>
+            <div className="lg:hidden">{renderButton('mobile_menu', 'rounded-full')}</div>
+
+            <div className="hidden lg:block">
+                <div className="bg-white rounded-[26px] border border-border-light shadow-[0_8px_40px_rgba(0,0,0,0.03)] p-3">
+                    {renderButton('desktop_panel', 'rounded-2xl')}
+                    <p
+                        id="trade-blocked-explanation"
+                        className="mt-3 px-2 text-[13px] leading-relaxed text-text-low text-pretty"
+                    >
+                        {copy.tradeExplanation}
+                    </p>
+                </div>
+            </div>
+        </>
     );
 }
 
@@ -1194,23 +1282,27 @@ function LeavingSiteDialog({
     isOpen,
     onOpenChange,
     pendingNavigation,
+    advisory,
     onCancel,
     onContinue,
 }: {
     isOpen: boolean;
     onOpenChange: (open: boolean) => void;
     pendingNavigation: PendingNavigation | null;
+    advisory: AssetAdvisory | null;
     onCancel: () => void;
     onContinue: () => void;
 }) {
     const destinationLabel = getDestinationLabel(pendingNavigation);
+    const tradeBlocked = isTradeBlocked(advisory);
+    const isCaution = advisory?.status === 'caution';
 
     return (
         <Dialog open={isOpen} onOpenChange={onOpenChange}>
             <DialogContent className="max-w-2xl p-6 gap-10 rounded-[32px] w-full sm:w-[520px]" hideClose>
                 <div className="flex items-start justify-between gap-6">
                     <DialogTitle className="text-[32px] leading-[1.1] text-text-extra-high font-medium tracking-tight">
-                        You&apos;re leaving Tokens
+                        {tradeBlocked && advisory ? ADVISORY_COPY[advisory.status].dialogTitle : "You're leaving Tokens"}
                     </DialogTitle>
                     <DialogClose asChild>
                         <button
@@ -1223,31 +1315,57 @@ function LeavingSiteDialog({
                     </DialogClose>
                 </div>
 
-                <Alert className="rounded-3xl border border-border-light bg-gray-50/60 px-8 py-7">
-                    <div className="flex items-start gap-5">
-                        <IconExclamationmarkTriangleFill className="h-6 w-6 fill-text-medium shrink-0 mt-0.5" />
-                        <div className="text-[18px] text-text-medium leading-relaxed text-pretty">
-                            Tokens does not endorse or guarantee any external platform. You are responsible for your own
-                            due diligence.
+                {tradeBlocked && advisory ? (
+                    <Alert className="rounded-3xl border border-rose-200 bg-rose-50 px-8 py-7 text-rose-950">
+                        <div className="flex items-start gap-5">
+                            <IconExclamationmarkTriangleFill className="h-6 w-6 fill-rose-600 shrink-0 mt-0.5" />
+                            <div className="text-[18px] leading-relaxed text-pretty">
+                                <p>{ADVISORY_COPY[advisory.status].dialogLine}</p>
+                                <p className="mt-3 text-[16px] text-rose-900">{advisoryReasonText(advisory)}</p>
+                            </div>
                         </div>
-                    </div>
-                </Alert>
+                    </Alert>
+                ) : (
+                    <Alert className="rounded-3xl border border-border-light bg-gray-50/60 px-8 py-7">
+                        <div className="flex items-start gap-5">
+                            <IconExclamationmarkTriangleFill className="h-6 w-6 fill-text-medium shrink-0 mt-0.5" />
+                            <div className="text-[18px] text-text-medium leading-relaxed text-pretty">
+                                <p>
+                                    Tokens does not endorse or guarantee any external platform. You are responsible for
+                                    your own due diligence.
+                                </p>
+                                {isCaution && advisory ? (
+                                    <p className="mt-3 text-[16px] text-amber-800">
+                                        Caution: {advisoryReasonText(advisory)}
+                                    </p>
+                                ) : null}
+                            </div>
+                        </div>
+                    </Alert>
+                )}
 
-                <div className="grid grid-cols-2 gap-6">
+                {tradeBlocked ? (
+                    // Single Close button; `onContinue` is deliberately never wired here.
                     <Button type="button" variant="outline" size="lg" className="rounded-xl" onClick={onCancel}>
-                        Cancel
+                        Close
                     </Button>
-                    <Button
-                        type="button"
-                        variant="default"
-                        size="lg"
-                        className="rounded-xl"
-                        onClick={onContinue}
-                        disabled={!pendingNavigation}
-                    >
-                        Go to {destinationLabel}
-                    </Button>
-                </div>
+                ) : (
+                    <div className="grid grid-cols-2 gap-6">
+                        <Button type="button" variant="outline" size="lg" className="rounded-xl" onClick={onCancel}>
+                            Cancel
+                        </Button>
+                        <Button
+                            type="button"
+                            variant="default"
+                            size="lg"
+                            className="rounded-xl"
+                            onClick={onContinue}
+                            disabled={!pendingNavigation}
+                        >
+                            Go to {destinationLabel}
+                        </Button>
+                    </div>
+                )}
             </DialogContent>
         </Dialog>
     );

@@ -2,6 +2,7 @@ import { Effect } from 'effect';
 
 import { route } from '@/effect/next-route';
 import { decodeUnknownOrBadRequest, SolanaAddress } from '@tokens/effect';
+import { loadAdvisoriesOrEmpty } from '@/lib/advisories';
 import { scheduleCacheWarm } from '@/lib/cloudrun/cacheWarm';
 import {
     assetVariantsListByMints,
@@ -53,11 +54,12 @@ export const GET = route(
                 mints.push(yield* decodeUnknownOrBadRequest(SolanaAddress, raw, 'Invalid mint'));
             }
 
-            const [marketRows, fillQualityRows, variantRows] = yield* Effect.all(
+            const [marketRows, fillQualityRows, variantRows, advisoriesByMint] = yield* Effect.all(
                 [
                     variantMarketsGetLatestByMints({ mints }),
                     variantFillQualityGetLatestByMints({ mints }),
                     assetVariantsListByMints({ mints }),
+                    loadAdvisoriesOrEmpty(),
                 ],
                 { concurrency: 'unbounded' },
             );
@@ -98,6 +100,7 @@ export const GET = route(
                         chain: variant?.chain ?? null,
                         market: marketOut,
                         executionQuality: fillQualityByMint.get(mint) ?? null,
+                        advisory: advisoriesByMint.get(mint) ?? null,
                     };
                 }),
             };

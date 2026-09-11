@@ -26,6 +26,7 @@ import { getVariantByMint } from '@tokens/asset-registry';
 import { cn } from '@tokens/ui/cn';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@tokens/ui/tooltip';
 import { IconTriangleFill } from 'symbols-react';
+import { AssetAdvisoryBadge } from '@/components/asset-advisory-badge';
 
 const InlinePriceChart = dynamic(() => import('@/components/inline-price-chart').then(m => m.InlinePriceChart), {
     ssr: false,
@@ -506,6 +507,7 @@ function createColumns(variant: TokenTableVariantConfig, trendingWindow: Trendin
                             <span className="shrink-0 text-[14px] text-text-extra-low font-medium">
                                 ${token.symbol || '???'}
                             </span>
+                            <AssetAdvisoryBadge advisory={token.advisory} size="sm" />
                         </div>
                     </div>
                 );

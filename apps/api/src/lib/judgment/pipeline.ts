@@ -107,6 +107,10 @@ function buildWarnings(
         warnings.push('weak_market_score');
     }
 
+    // Informational advisory: the token stays rankable, the caller sees why
+    // it is flagged. (compromised/blocked are gates, not warnings.)
+    if (candidate.advisory?.status === 'caution') warnings.push('advisory_caution');
+
     return warnings;
 }
 
@@ -117,6 +121,7 @@ function buildBadges(candidate: EnrichedCandidate): string[] {
         if (candidate.registry.trustTier) badges.push(candidate.registry.trustTier);
     }
     if (candidate.risk?.grade) badges.push(`grade:${candidate.risk.grade}`);
+    if (candidate.advisory) badges.push(`advisory:${candidate.advisory.status}`);
     return badges;
 }
 

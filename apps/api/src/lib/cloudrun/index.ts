@@ -61,6 +61,12 @@ export {
 export { listDeletedRefs, type ListDeletedRefsArgs, type ListDeletedRefsResult } from './assetDeletionTombstones';
 
 export {
+    assetAdvisoriesList,
+    type AssetAdvisoriesListResult,
+    type AssetAdvisoryRow,
+} from './assetAdvisories';
+
+export {
     listActive as sanctumListActive,
     resolveRef as sanctumResolveRef,
     type ListActiveArgs as SanctumListActiveArgs,

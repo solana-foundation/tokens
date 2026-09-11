@@ -15,6 +15,9 @@ export const FAKE_USDC_MINT = 'FakeUSDCmint11111111111111111111111111111111';
 export const HOMOGLYPH_USDC_MINT = 'SpoofUSDCmint2222222222222222222222222222222';
 export const NEW_DOG_MINT = 'NewDogMint3333333333333333333333333333333333';
 export const LOW_LIQ_DOG_MINT = 'DustDogMint44444444444444444444444444444444';
+export const COMPROMISED_MINT = 'CompromisedMint888888888888888888888888888888';
+export const BLOCKED_MINT = 'BlockedMint9999999999999999999999999999999999';
+export const CAUTION_MINT = 'CautionMint1010101010101010101010101010101010';
 
 function base(overrides: Partial<EnrichedCandidate> & { mint: string }): EnrichedCandidate {
     return {
@@ -36,6 +39,7 @@ function base(overrides: Partial<EnrichedCandidate> & { mint: string }): Enriche
         risk: null,
         fillQuality: null,
         tombstoned: false,
+        advisory: null,
         dataAsOf: NOW_MS - 60_000,
         ...overrides,
     };
@@ -169,5 +173,77 @@ export function tombstonedToken(): EnrichedCandidate {
         liquidityUsd: 50_000,
         volume24hUsd: 10_000,
         tombstoned: true,
+    });
+}
+
+/**
+ * A deep, curated, registry-attested wrapper whose issuer was exploited: on
+ * market data alone it would rank first. The `compromised` advisory must
+ * suppress it under every policy.
+ */
+export function compromisedToken(): EnrichedCandidate {
+    return base({
+        mint: COMPROMISED_MINT,
+        symbol: 'SILV',
+        name: 'Silver (wrapped)',
+        price: 13.7,
+        liquidityUsd: 1_070_000,
+        volume24hUsd: 2_500_000,
+        marketCapUsd: 20_000_000,
+        holderCount: 9_000,
+        top10HoldersPercent: 30,
+        tokenMintTime: '2025-01-15T00:00:00Z',
+        sources: ['provider', 'db', 'registry'],
+        curatedListIds: ['metals'],
+        registry: {
+            assetId: 'silver',
+            symbol: 'SILV',
+            name: 'Silver (wrapped)',
+            kind: 'wrapped',
+            trustTier: 'tier1',
+        },
+        risk: { marketScore: 85, grade: 'A', webacyTags: [] },
+        fillQuality: { executionScore: 80, botVolumeRatio: 0.2 },
+        advisory: {
+            status: 'compromised',
+            reason: 'Issuer treasury exploited; market delisted by the issuer',
+            url: 'https://example.com/silv-incident',
+            since: NOW_MS - 3_600_000,
+        },
+    });
+}
+
+/** Same standing as `compromisedToken()` but escalated to `blocked`. */
+export function blockedToken(): EnrichedCandidate {
+    return base({
+        ...compromisedToken(),
+        mint: BLOCKED_MINT,
+        symbol: 'BLKD',
+        name: 'Blocked Token',
+        registry: { assetId: 'blocked-asset', symbol: 'BLKD', name: 'Blocked Token', kind: 'wrapped', trustTier: 'tier1' },
+        advisory: {
+            status: 'blocked',
+            reason: 'Confirmed drainer contract',
+            url: null,
+            since: NOW_MS - 600_000,
+        },
+    });
+}
+
+/** A healthy token with an informational `caution` notice: shown, warned, never gated. */
+export function cautionToken(): EnrichedCandidate {
+    return base({
+        ...realBonk(),
+        mint: CAUTION_MINT,
+        symbol: 'CAUT',
+        name: 'Caution Token',
+        curatedListIds: [],
+        registry: { assetId: 'caution-asset', symbol: 'CAUT', name: 'Caution Token', kind: 'native', trustTier: 'tier2' },
+        advisory: {
+            status: 'caution',
+            reason: 'Issuer migration in progress; verify the new mint before trading',
+            url: 'https://example.com/caut-migration',
+            since: NOW_MS - 86_400_000,
+        },
     });
 }

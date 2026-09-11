@@ -28,6 +28,7 @@ import type {
     AdminVariantRow,
     CanonicalRow,
     CategoryRow,
+    ClearVariantAdvisoryResult,
     CuratedCategorySlug,
     DeactivateVariantResult,
     DeleteCanonicalAssetResult,
@@ -36,6 +37,7 @@ import type {
     RemoveFromCategoryResult,
     VariantsByAssetIdRow,
 } from '@/lib/admin-types';
+import { advisoryBadgeVariant } from '@/lib/advisory-labels';
 import { Button } from '@tokens/ui/button';
 import { Input } from '@tokens/ui/input';
 import {
@@ -68,8 +70,13 @@ import { EditCategoriesDialog } from './edit-categories-dialog';
 import { AddVariantDialog } from './add-variant-dialog';
 import { EditVariantDialog } from './edit-variant-dialog';
 import { MoveVariantDialog } from './move-variant-dialog';
+import { SetAdvisoryDialog } from './set-advisory-dialog';
 
 type VariantRow = AdminVariantRow;
+
+function variantDisplaySymbol(variant: VariantRow): string {
+    return variant.symbol ?? variant.label ?? variant.variantId;
+}
 
 const columnHelper = createColumnHelper<CanonicalRow>();
 
@@ -113,6 +120,8 @@ function VariantRows({
     onMoveVariant,
     onToggleVariant,
     onDeleteVariant,
+    onSetAdvisory,
+    onClearAdvisory,
 }: {
     variants: VariantRow[] | undefined;
     isPrefetching: boolean;
@@ -123,6 +132,8 @@ function VariantRows({
     onMoveVariant: (mint: string) => void;
     onToggleVariant: (mint: string, isActive: boolean) => Promise<void>;
     onDeleteVariant: (mint: string) => Promise<void>;
+    onSetAdvisory: (variant: VariantRow) => void;
+    onClearAdvisory: (variant: VariantRow) => Promise<void>;
 }): React.JSX.Element {
     if (variants === undefined) {
         return (
@@ -140,6 +151,8 @@ function VariantRows({
         <div className="space-y-3 py-3">
             {variants.map(variant => {
                 const variantName = variant.name ?? variant.label ?? variant.symbol ?? variant.variantId;
+                // Optional on the wire until every cloudrun-admin build serializes it.
+                const advisory = variant.advisory ?? null;
                 return (
                     <div
                         key={variant.mint}
@@ -162,6 +175,15 @@ function VariantRows({
                                     {!variant.isActive ? (
                                         <Badge variant="warning" className="align-middle">
                                             inactive
+                                        </Badge>
+                                    ) : null}
+                                    {advisory ? (
+                                        <Badge
+                                            variant={advisoryBadgeVariant(advisory.status)}
+                                            className="align-middle"
+                                            title={advisory.reason}
+                                        >
+                                            {advisory.status}
                                         </Badge>
                                     ) : null}
                                 </div>
@@ -229,6 +251,15 @@ function VariantRows({
                                         {variant.isActive ? 'Deactivate variant' : 'Activate variant'}
                                     </DropdownMenuItem>
                                     <DropdownMenuSeparator />
+                                    <DropdownMenuItem onClick={() => onSetAdvisory(variant)}>
+                                        Set advisory…
+                                    </DropdownMenuItem>
+                                    {advisory ? (
+                                        <DropdownMenuItem onClick={() => onClearAdvisory(variant)}>
+                                            Clear advisory
+                                        </DropdownMenuItem>
+                                    ) : null}
+                                    <DropdownMenuSeparator />
                                     <DropdownMenuItem
                                         onClick={() => onDeleteVariant(variant.mint)}
                                         className="text-destructive focus:text-destructive"
@@ -256,6 +287,7 @@ export function CurationUi(): React.JSX.Element {
     const refreshChartData = useAdminMutation<RefreshChartDataResult>('adminRefreshChartData');
     const removeFromCategory = useAdminMutation<RemoveFromCategoryResult>('removeFromCategory');
     const deactivateVariant = useAdminMutation<DeactivateVariantResult>('deactivateVariant');
+    const clearVariantAdvisory = useAdminMutation<ClearVariantAdvisoryResult>('clearVariantAdvisory');
     const deleteVariant = useAdminMutation<DeleteVariantResult>('deleteVariant');
     const deleteCanonicalAsset = useAdminMutation<DeleteCanonicalAssetResult>('deleteCanonicalAsset');
 
@@ -269,6 +301,7 @@ export function CurationUi(): React.JSX.Element {
     const [editingCanonicalId, setEditingCanonicalId] = useState<string | null>(null);
     const [editingVariantMint, setEditingVariantMint] = useState<string | null>(null);
     const [moveVariantMint, setMoveVariantMint] = useState<string | null>(null);
+    const [advisoryVariant, setAdvisoryVariant] = useState<VariantRow | null>(null);
     const [addVariantCanonical, setAddVariantCanonical] = useState<CanonicalRow | null>(null);
     const [hardDeletingAsset, setHardDeletingAsset] = useState<{ assetId: string; symbol: string } | null>(null);
     const [removingAsset, setRemovingAsset] = useState<{ assetId: string; symbol: string; collection: string } | null>(
@@ -558,6 +591,17 @@ export function CurationUi(): React.JSX.Element {
         try {
             const result = await deleteVariant({ mint });
             if (result.deleted) toast.success(`Deleted variant ${mint}`);
+        } catch (error) {
+            toast.error(error instanceof Error ? error.message : String(error));
+        }
+    }
+
+    async function onClearAdvisory(variant: VariantRow) {
+        const symbol = variantDisplaySymbol(variant);
+        try {
+            const result = await clearVariantAdvisory({ mint: variant.mint });
+            if (result.cleared) toast.success(`Cleared advisory on ${symbol}`);
+            else toast.message(`No advisory was set on ${symbol}`);
         } catch (error) {
             toast.error(error instanceof Error ? error.message : String(error));
         }
@@ -863,6 +907,8 @@ export function CurationUi(): React.JSX.Element {
                                                     onMoveVariant={setMoveVariantMint}
                                                     onToggleVariant={onToggleVariant}
                                                     onDeleteVariant={onDeleteVariant}
+                                                    onSetAdvisory={setAdvisoryVariant}
+                                                    onClearAdvisory={onClearAdvisory}
                                                 />
                                             </TableCell>
                                         </TableRow>
@@ -934,6 +980,13 @@ export function CurationUi(): React.JSX.Element {
                 open={moveVariantMint !== null}
                 onOpenChange={open => {
                     if (!open) setMoveVariantMint(null);
+                }}
+            />
+            <SetAdvisoryDialog
+                variant={advisoryVariant}
+                open={advisoryVariant !== null}
+                onOpenChange={open => {
+                    if (!open) setAdvisoryVariant(null);
                 }}
             />
             <HardDeleteAssetDialog

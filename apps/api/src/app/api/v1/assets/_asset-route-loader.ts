@@ -1,8 +1,9 @@
 import { Effect } from 'effect';
-import type { CanonicalAsset } from '@tokens/asset-registry';
+import type { CanonicalAsset, VariantAdvisory } from '@tokens/asset-registry';
 
 import { BadRequestError, NotFoundError } from '@tokens/effect';
 import { decodeUnknownOrBadRequest, SolanaAddress } from '@tokens/effect';
+import { annotateAssetAdvisories, loadAdvisoriesOrEmpty } from '@/lib/advisories';
 import { loadAssetBaseForApi, type GetByAssetIdResult } from '@/lib/cloudrun';
 
 // ponytail: cloud-run return type is unknown post-Convex; keep a nominal alias so
@@ -25,7 +26,10 @@ export interface LoadedAssetVariantContext {
     assetId: string;
     assetRef: string;
     assetDoc: AssetDocLike;
+    /** Variants carry `advisory` (annotated from the API-side advisory cache). */
     canonical: CanonicalAsset;
+    /** Mint → active advisory for this request (empty when the cache was unavailable). */
+    advisoriesByMint: ReadonlyMap<string, VariantAdvisory>;
     tokenByMint: Map<string, LoadedToken>;
     fillQualityByMint: Map<string, VariantExecutionQualitySnapshot>;
     primaryVariant: CanonicalAsset['variants'][number] | null;
@@ -164,7 +168,14 @@ export function loadAssetWithSelectedVariant(
         // ponytail: VariantApiResult.kind widens to `string` on the handler; the
         // canonical variant kind is a narrower union enforced downstream. Cast
         // once at the boundary rather than duplicating the union in the wrapper.
-        const canonical = toCanonicalAsset(assetDoc, toCanonicalVariants(variants as AssetVariantRow[]));
+        // Annotate before primary selection so a flagged variant is skipped by
+        // the ranking itself. Flagged mints are never a 404 here: the selected
+        // variant simply carries its advisory.
+        const advisoriesByMint = yield* loadAdvisoriesOrEmpty();
+        const canonical = annotateAssetAdvisories(
+            toCanonicalAsset(assetDoc, toCanonicalVariants(variants as AssetVariantRow[])),
+            advisoriesByMint,
+        );
         const tokenByMint = new Map<string, LoadedToken>();
         const fillQualityByMint = new Map<string, VariantExecutionQualitySnapshot>();
         if (options.loadTokens !== false) {
@@ -195,6 +206,7 @@ export function loadAssetWithSelectedVariant(
             assetRef,
             assetDoc,
             canonical,
+            advisoriesByMint,
             tokenByMint,
             fillQualityByMint,
             primaryVariant,

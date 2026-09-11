@@ -9,7 +9,8 @@
 
 import type { Sql } from 'postgres';
 
-import type { StockVariantTier, VariantKind } from '@tokens/asset-registry';
+import { isAdvisoryStatus } from '@tokens/asset-registry';
+import type { StockVariantTier, VariantAdvisory, VariantKind } from '@tokens/asset-registry';
 
 import type {
     AdminReadsRepo,
@@ -63,6 +64,20 @@ interface PgVariantWithMarketRow {
     market_logo_uri: string | null;
     market_liquidity: number | null;
     market_last_fetched_at: string | number | null;
+    advisory_status: string | null;
+    advisory_reason: string | null;
+    advisory_url: string | null;
+    advisory_set_at: string | number | null;
+}
+
+function mapAdvisory(row: PgVariantWithMarketRow): VariantAdvisory | null {
+    if (!isAdvisoryStatus(row.advisory_status)) return null;
+    return {
+        status: row.advisory_status,
+        reason: row.advisory_reason ?? '',
+        url: row.advisory_url,
+        since: toNullableNumber(row.advisory_set_at) ?? 0,
+    };
 }
 
 function mapVariantRow(row: PgVariantWithMarketRow): VariantWithMarketRow {
@@ -87,6 +102,7 @@ function mapVariantRow(row: PgVariantWithMarketRow): VariantWithMarketRow {
                   lastFetchedAt: toNullableNumber(row.market_last_fetched_at),
               }
             : null,
+        advisory: mapAdvisory(row),
     };
 }
 
@@ -98,7 +114,11 @@ const VARIANT_MARKET_SELECT = `
     m.name AS market_name,
     m.logo_uri AS market_logo_uri,
     m.liquidity AS market_liquidity,
-    m.last_fetched_at AS market_last_fetched_at
+    m.last_fetched_at AS market_last_fetched_at,
+    adv.status AS advisory_status,
+    adv.reason AS advisory_reason,
+    adv.url AS advisory_url,
+    adv.set_at AS advisory_set_at
 `;
 
 interface PgMarketRow {
@@ -143,6 +163,7 @@ export function makePostgresAdminReadsRepo(sql: Sql): AdminReadsRepo {
                 SELECT ${sql.unsafe(VARIANT_MARKET_SELECT)}
                 FROM asset_variants v
                 LEFT JOIN variant_markets_latest m ON m.mint = v.mint
+                LEFT JOIN asset_variant_advisories adv ON adv.mint = v.mint
                 ORDER BY v.asset_id COLLATE "C" ASC,
                          v.is_active DESC,
                          COALESCE(m.liquidity, 0) DESC,
@@ -157,6 +178,7 @@ export function makePostgresAdminReadsRepo(sql: Sql): AdminReadsRepo {
                 SELECT ${sql.unsafe(VARIANT_MARKET_SELECT)}
                 FROM asset_variants v
                 LEFT JOIN variant_markets_latest m ON m.mint = v.mint
+                LEFT JOIN asset_variant_advisories adv ON adv.mint = v.mint
                 WHERE v.asset_id = ANY(${sql.array(assetIds as string[])}::text[])
                 ORDER BY v.asset_id COLLATE "C" ASC,
                          v.is_active DESC,
@@ -212,6 +234,7 @@ export function makePostgresAdminReadsRepo(sql: Sql): AdminReadsRepo {
                 SELECT ${sql.unsafe(VARIANT_MARKET_SELECT)}
                 FROM asset_variants v
                 LEFT JOIN variant_markets_latest m ON m.mint = v.mint
+                LEFT JOIN asset_variant_advisories adv ON adv.mint = v.mint
                 WHERE v.mint = ${mint}
                 ORDER BY v.id ASC
                 LIMIT 1

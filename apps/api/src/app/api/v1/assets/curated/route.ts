@@ -5,6 +5,14 @@ import { route } from '@/effect/next-route';
 import { withStaleFallback } from '@/effect/stale-response-cache';
 import { decodeLimit, decodeOffset } from '@tokens/effect';
 import { tapErrorAndDefault } from '@tokens/effect';
+import {
+    annotateAssetAdvisories,
+    filterHiddenVariants,
+    getAdvisoryRevisionSync,
+    loadAdvisoriesOrEmpty,
+    summarizeAssetAdvisories,
+    type AssetAdvisorySummaryEntry,
+} from '@/lib/advisories';
 import { scheduleCoinPriceWarm as scheduleCoinPriceWarmShared } from '@/lib/cloudrun/cacheWarm';
 import {
     assetCollectionsGetMembers,
@@ -210,7 +218,10 @@ function curatedStaleCacheKey(request: Request): string | null {
         const offset = shouldPaginate ? (searchParams.get('offset') ?? '').trim() : '';
         const limit = shouldPaginate ? (searchParams.get('limit') ?? '').trim() : '';
         // `variants` is spread conditionally so pre-existing key hashes (incl.
-        // the warmer's) stay stable.
+        // the warmer's) stay stable. `advisoryRevision` bumps on every advisory
+        // set/clear so the `freshSeconds` serve-without-handler path can never
+        // keep serving a pre-flag payload (the Redis client has no `del`;
+        // revision-keying is the bust mechanism).
         const canonical = JSON.stringify({
             listId,
             groupBy,
@@ -218,6 +229,7 @@ function curatedStaleCacheKey(request: Request): string | null {
             strategy,
             pagination: shouldPaginate ? { offset, limit } : null,
             ...(includeVariants ? { variants: 'all' } : {}),
+            advisoryRevision: getAdvisoryRevisionSync(),
         });
         const shapeHash = createHash('sha256').update(canonical).digest('hex').slice(0, 32);
         return `stale-response:v2:assets-curated:${shapeHash}`;
@@ -504,13 +516,25 @@ export const GET = route(
                             : variant.name
                               ? { name: variant.name }
                               : {}),
+                        ...(variant.advisory !== undefined ? { advisory: variant.advisory } : {}),
                     };
                 });
 
                 return { ...asset, variants: mergedVariants };
             }
 
-            const canonicalAssets = Array.from(canonicalAssetById.values()).map(mergeRegistryVariantMetadata);
+            // Annotate every variant, summarize per asset (including variants
+            // hidden below, so the page can show a sibling notice), then drop
+            // `blocked` variants — and whole assets when nothing remains.
+            // `compromised` stays listed (badged, never primary).
+            const advisoriesByMint = yield* loadAdvisoriesOrEmpty();
+            const advisoriesByAssetId = new Map<string, AssetAdvisorySummaryEntry[]>();
+            const canonicalAssets = Array.from(canonicalAssetById.values()).flatMap(asset => {
+                const annotated = annotateAssetAdvisories(mergeRegistryVariantMetadata(asset), advisoriesByMint);
+                advisoriesByAssetId.set(annotated.assetId, summarizeAssetAdvisories(annotated));
+                const visible = filterHiddenVariants(annotated, advisoriesByMint);
+                return visible ? [visible] : [];
+            });
 
             // variants=all needs sanctum ranks too: shouldIncludeMintRow gates
             // nested solana LST variants on sanctum membership.
@@ -1071,6 +1095,7 @@ export const GET = route(
                                           imageUrl,
                                           stats: effectiveStats,
                                           ...(canonicalMarket ? { canonicalMarket } : {}),
+                                          advisories: advisoriesByAssetId.get(asset.assetId) ?? [],
                                           primaryVariant: buildVariantWithMarket(variant),
                                       };
 
@@ -1140,6 +1165,7 @@ export const GET = route(
                                   imageUrl,
                                   stats: effectiveStats,
                                   ...(canonicalMarket ? { canonicalMarket } : {}),
+                                  advisories: advisoriesByAssetId.get(asset.assetId) ?? [],
                                   primaryVariant: primaryVariant ? buildVariantWithMarket(primaryVariant) : null,
                                   ...(variants ? { variants } : {}),
                               };

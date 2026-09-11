@@ -1,7 +1,10 @@
+import { normalizeAdvisory, type AssetAdvisory } from '@/lib/asset-advisory';
 import { getMintLogoOverride } from '@/lib/logo-overrides';
 import { looksLikeSolanaMintAddress } from '@/lib/solana-address';
 
-export const TOKEN_SOCIAL_IMAGE_VERSION = '3';
+// Bumped whenever the rendered card changes so CDN-cached cards repaint.
+// '4': advisory strip.
+export const TOKEN_SOCIAL_IMAGE_VERSION = '4';
 
 export type ApiVariantGroupKey =
     | 'spot'
@@ -26,6 +29,8 @@ export interface TokenSocialVariant {
     symbol?: string | null;
     label?: string | null;
     market?: TokenSocialMarket | null;
+    /** `{ status, reason, url, since } | null`; decoded via `normalizeAdvisory`. */
+    advisory?: unknown;
 }
 
 export type TokenSocialVariantGroups = Partial<Record<ApiVariantGroupKey, TokenSocialVariant[]>>;
@@ -39,7 +44,25 @@ export interface TokenSocialAssetResponse {
         imageUrl?: string | null;
         primaryVariant?: TokenSocialVariant | null;
         variantGroups?: TokenSocialVariantGroups;
+        /** Asset-level summary, `[]` when none. */
+        advisories?: unknown;
     };
+}
+
+/**
+ * The advisory the share card / metadata is about. A selected variant wins
+ * outright (even when it has none: the viewed token isn't flagged); otherwise
+ * the primary variant's advisory applies.
+ */
+export function resolveSocialAdvisory({
+    selectedVariant,
+    primaryVariant,
+}: {
+    selectedVariant: TokenSocialVariant | null | undefined;
+    primaryVariant: TokenSocialVariant | null | undefined;
+}): AssetAdvisory | null {
+    if (selectedVariant) return normalizeAdvisory(selectedVariant.advisory);
+    return normalizeAdvisory(primaryVariant?.advisory);
 }
 
 export interface ResolvedVariantSocialData {

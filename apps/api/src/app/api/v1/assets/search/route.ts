@@ -4,6 +4,13 @@ import { route } from '@/effect/next-route';
 import { BadRequestError } from '@tokens/effect';
 import { decodeLimit } from '@tokens/effect';
 import { tapErrorAndDefault } from '@tokens/effect';
+import {
+    annotateAssetAdvisories,
+    filterHiddenVariants,
+    loadAdvisoriesOrEmpty,
+    summarizeAssetAdvisories,
+    type AssetAdvisorySummaryEntry,
+} from '@/lib/advisories';
 import { scheduleCoinPriceWarm as scheduleCoinPriceWarmShared } from '@/lib/cloudrun/cacheWarm';
 import {
     assetMarketsGetLatestByAssetIds,
@@ -31,6 +38,7 @@ import {
 import type { AssetCategory, CanonicalAsset } from '@tokens/asset-registry';
 import {
     getVariantByMint,
+    isHiddenAdvisory,
     listCategories,
     resolveAlias as resolveRegistryAlias,
     searchAssets as searchRegistryAssets,
@@ -489,6 +497,7 @@ export const GET = route(
                             : variant.name
                               ? { name: variant.name }
                               : {}),
+                        ...(variant.advisory !== undefined ? { advisory: variant.advisory } : {}),
                     };
                 });
 
@@ -501,6 +510,12 @@ export const GET = route(
 
             const mergedAssets = assets.map(mergeRegistryVariantMetadata);
 
+            // Advisory set for this request (fail-open: empty on outage).
+            // `blocked` mints are hidden from search; `compromised`/`caution`
+            // stay visible with the advisory attached.
+            const advisoriesByMint = yield* loadAdvisoriesOrEmpty();
+            const isHiddenMint = (mint: string) => isHiddenAdvisory(advisoriesByMint.get(mint));
+
             const singletonSlots = Math.max(0, limit - mergedAssets.length);
             const singletonAssets: CanonicalAsset[] = [];
             if (singletonSlots > 0) {
@@ -510,6 +525,7 @@ export const GET = route(
                     if (singletonAssets.length >= singletonSlots) break;
                     const mint = (legacy.assetId ?? '').trim();
                     if (!looksLikeSolanaMintAddress(mint)) continue;
+                    if (isHiddenMint(mint)) continue;
 
                     const singletonAssetId = mintToSingletonAssetId(mint);
                     if (seenSingletonAssetIds.has(singletonAssetId)) continue;
@@ -550,6 +566,7 @@ export const GET = route(
                     const mint = (token.address ?? '').trim();
                     if (!looksLikeSolanaMintAddress(mint)) continue;
                     if (canonicalMintSet.has(mint)) continue;
+                    if (isHiddenMint(mint)) continue;
 
                     const registryMatch = getVariantByMint(mint);
                     if (registryMatch) {
@@ -597,7 +614,16 @@ export const GET = route(
                 }
             }
 
-            const combinedAssets = [...mergedAssets, ...singletonAssets];
+            // Annotate every variant, summarize per asset (including variants
+            // hidden below, so the page can show a sibling notice), then drop
+            // `blocked` variants — and whole assets when nothing remains.
+            const advisoriesByAssetId = new Map<string, AssetAdvisorySummaryEntry[]>();
+            const combinedAssets = [...mergedAssets, ...singletonAssets].flatMap(asset => {
+                const annotated = annotateAssetAdvisories(asset, advisoriesByMint);
+                advisoriesByAssetId.set(asset.assetId, summarizeAssetAdvisories(annotated));
+                const visible = filterHiddenVariants(annotated, advisoriesByMint);
+                return visible ? [visible] : [];
+            });
 
             const tokenByMint = new Map<string, TokenMarketSnapshot>();
             const fillQualityByMint = new Map<string, VariantExecutionQualitySnapshot>();
@@ -1023,6 +1049,7 @@ export const GET = route(
                     imageUrl,
                     stats: effectiveStats,
                     ...(canonicalMarket ? { canonicalMarket } : {}),
+                    advisories: advisoriesByAssetId.get(asset.assetId) ?? [],
                     primaryVariant: primaryVariantWithMarket,
                     ...(variants ? { variants } : {}),
                 };
@@ -1030,5 +1057,8 @@ export const GET = route(
 
             return { query: q, category, primaryVariantStrategy, results };
         }),
-    { platform: { requiredScopes: ['assets:read'] }, cache: { maxAge: 120 } },
+    // maxAge 120 → 30: an advisory set on a mint must reach search consumers
+    // in the same window as the detail endpoint (browser-side worst case was
+    // >2 minutes).
+    { platform: { requiredScopes: ['assets:read'] }, cache: { maxAge: 30 } },
 );

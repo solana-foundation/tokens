@@ -1,8 +1,10 @@
 import { describe, expect, test } from 'bun:test';
 
 import {
+    TOKEN_SOCIAL_IMAGE_VERSION,
     buildShareUrls,
     normalizeRequestedSolanaMint,
+    resolveSocialAdvisory,
     resolveVariantSocialData,
     selectVariantForMint,
     type TokenSocialVariantGroups,
@@ -46,7 +48,7 @@ describe('token social image data helpers', () => {
 
         expect(urls.canonicalUrl.toString()).toBe('https://www.tokens.xyz/spacex');
         expect(urls.ogImageUrl.searchParams.get('solana')).toBe(null);
-        expect(urls.ogImageUrl.searchParams.get('v')).toBe('3');
+        expect(urls.ogImageUrl.searchParams.get('v')).toBe('4');
         expect(urls.ogImageUrl.searchParams.get('t')).toBe('123');
         expect(urls.twitterImageUrl.searchParams.get('solana')).toBe(null);
     });
@@ -63,9 +65,44 @@ describe('token social image data helpers', () => {
             `https://www.tokens.xyz/spacex?solana=${SPACEX_BACKPACK_MINT}`,
         );
         expect(urls.ogImageUrl.searchParams.get('solana')).toBe(SPACEX_BACKPACK_MINT);
-        expect(urls.ogImageUrl.searchParams.get('v')).toBe('3');
+        expect(urls.ogImageUrl.searchParams.get('v')).toBe('4');
         expect(urls.ogImageUrl.searchParams.get('t')).toBe('456');
         expect(urls.twitterImageUrl.searchParams.get('solana')).toBe(SPACEX_BACKPACK_MINT);
+    });
+
+    test('social image version is bumped for the advisory strip', () => {
+        expect(TOKEN_SOCIAL_IMAGE_VERSION).toBe('4');
+    });
+
+    test('resolveSocialAdvisory: selected variant wins over primary', () => {
+        const compromised = { status: 'compromised', reason: 'Exploit', url: 'https://sunrise.xyz', since: 1 };
+        const caution = { status: 'caution', reason: 'Watch', url: null, since: 2 };
+
+        expect(
+            resolveSocialAdvisory({
+                selectedVariant: { mint: SPACEX_BACKPACK_MINT, advisory: compromised },
+                primaryVariant: { mint: SOL_MINT, advisory: caution },
+            })?.status,
+        ).toBe('compromised');
+
+        // Selected present but clean: the viewed token is not flagged.
+        expect(
+            resolveSocialAdvisory({
+                selectedVariant: { mint: SPACEX_BACKPACK_MINT, advisory: null },
+                primaryVariant: { mint: SOL_MINT, advisory: caution },
+            }),
+        ).toBe(null);
+
+        expect(
+            resolveSocialAdvisory({
+                selectedVariant: null,
+                primaryVariant: { mint: SOL_MINT, advisory: caution },
+            })?.status,
+        ).toBe('caution');
+
+        // Missing field (older API payload) degrades to no advisory.
+        expect(resolveSocialAdvisory({ selectedVariant: null, primaryVariant: { mint: SOL_MINT } })).toBe(null);
+        expect(resolveSocialAdvisory({ selectedVariant: null, primaryVariant: null })).toBe(null);
     });
 
     test('selects a SpaceX Backpack variant by mint', () => {

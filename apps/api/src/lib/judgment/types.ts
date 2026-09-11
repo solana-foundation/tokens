@@ -10,6 +10,8 @@
  *   sources are reported as `provider` / `db` / `registry`.
  */
 
+import type { VariantAdvisory } from '@tokens/asset-registry';
+
 export const SCORING_VERSION = 'v2-scoring-2026-07-05.1' as const;
 
 export type CandidateSource = 'provider' | 'db' | 'registry';
@@ -61,6 +63,11 @@ export interface EnrichedCandidate {
     } | null;
     /** Mint (or its refs) has an explicit deletion tombstone. */
     tombstoned: boolean;
+    /**
+     * Active admin advisory on the mint. `blocked`/`compromised` suppress under
+     * every policy; `caution` is a warning. Absence (`null`) means "no advisory".
+     */
+    advisory: VariantAdvisory | null;
     /** Millis timestamp of the freshest market data backing this candidate. */
     dataAsOf: number | null;
 }
@@ -98,11 +105,14 @@ export const WARNING_CODES = [
     'concentrated_holders',
     'unverified',
     'weak_market_score',
+    'advisory_caution',
 ] as const;
 export type WarningCode = (typeof WARNING_CODES)[number];
 
 export const SUPPRESSION_CODES = [
     'gate_tombstoned',
+    'gate_advisory_blocked',
+    'gate_advisory_compromised',
     'gate_min_liquidity',
     'gate_no_market_data',
     'gate_impersonation',

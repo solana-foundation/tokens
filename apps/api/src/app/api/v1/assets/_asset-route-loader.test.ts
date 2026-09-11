@@ -1,6 +1,9 @@
-import { describe, expect, it } from 'bun:test';
+import { afterEach, describe, expect, it } from 'bun:test';
 import { Effect } from 'effect';
 
+import { __setAdvisoriesForTests, annotateAssetAdvisories, getAdvisoriesByMintSync } from '@/lib/advisories';
+
+import { pickPrimaryVariant } from './_asset-helpers';
 import { selectMintFromRequest, toCanonicalAsset, toCanonicalVariants } from './_asset-route-loader';
 
 const MINT_A = 'So11111111111111111111111111111111111111112';
@@ -131,5 +134,93 @@ describe('asset route loader helpers', () => {
             expect(message.includes('BadRequestError')).toBe(true);
             expect(message.includes('`mint` query parameter is required')).toBe(true);
         }
+    });
+});
+
+describe('asset route loader advisories', () => {
+    afterEach(() => {
+        __setAdvisoriesForTests(null);
+    });
+
+    function canonical() {
+        return toCanonicalAsset(
+            {
+                assetId: 'silver',
+                name: 'Silver',
+                symbol: 'XAG',
+                category: 'commodity',
+                aliases: ['xag'],
+                updatedAt: 0,
+            } as Parameters<typeof toCanonicalAsset>[0],
+            toCanonicalVariants([
+                {
+                    assetId: 'silver',
+                    chain: 'solana',
+                    mint: MINT_A,
+                    variantId: 'silver:silv',
+                    kind: 'wrapped',
+                    trustTier: 'tier2',
+                    tags: [],
+                    createdAt: 0,
+                    updatedAt: 0,
+                },
+                {
+                    assetId: 'silver',
+                    chain: 'solana',
+                    mint: MINT_B,
+                    variantId: 'silver:ondo',
+                    kind: 'wrapped',
+                    trustTier: 'tier2',
+                    tags: [],
+                    createdAt: 0,
+                    updatedAt: 0,
+                },
+            ] as unknown as Parameters<typeof toCanonicalVariants>[0]),
+        );
+    }
+
+    it('annotates every canonical variant with advisory (null when none)', () => {
+        __setAdvisoriesForTests([{ mint: MINT_A, status: 'compromised', reason: 'Issuer exploited', url: null, since: 1 }]);
+        const annotated = annotateAssetAdvisories(canonical(), getAdvisoriesByMintSync());
+        expect(annotated.variants[0]?.advisory?.status).toBe('compromised');
+        expect(annotated.variants[1]?.advisory).toBeNull();
+        expect('advisory' in annotated.variants[1]!).toBe(true);
+    });
+
+    it('skips the flagged variant for primary and still selects it explicitly without a 404', async () => {
+        __setAdvisoriesForTests([{ mint: MINT_A, status: 'compromised', reason: 'Issuer exploited', url: null, since: 1 }]);
+        const annotated = annotateAssetAdvisories(canonical(), getAdvisoriesByMintSync());
+
+        const primary = pickPrimaryVariant(annotated, new Map());
+        expect(primary?.mint).toBe(MINT_B);
+
+        // Default selection follows the (unflagged) primary.
+        const defaulted = await Effect.runPromise(
+            selectMintFromRequest(new Request('https://api.test/api/v1/assets/silver'), annotated, primary),
+        );
+        expect(defaulted.selectedMint).toBe(MINT_B);
+
+        // Explicitly requesting the flagged mint resolves (never NotFound) and carries the advisory.
+        const explicit = await Effect.runPromise(
+            selectMintFromRequest(new Request(`https://api.test/api/v1/assets/silver?mint=${MINT_A}`), annotated, primary),
+        );
+        expect(explicit.selectedMint).toBe(MINT_A);
+        expect(explicit.selectedVariant.advisory?.status).toBe('compromised');
+    });
+
+    it('when every variant is flagged, a primary is still chosen (flagged, with its advisory)', async () => {
+        __setAdvisoriesForTests([
+            { mint: MINT_A, status: 'compromised', reason: 'a', url: null, since: 1 },
+            { mint: MINT_B, status: 'blocked', reason: 'b', url: null, since: 1 },
+        ]);
+        const annotated = annotateAssetAdvisories(canonical(), getAdvisoriesByMintSync());
+        const primary = pickPrimaryVariant(annotated, new Map());
+        expect(primary).not.toBeNull();
+        expect(primary?.advisory).not.toBeNull();
+
+        const selected = await Effect.runPromise(
+            selectMintFromRequest(new Request('https://api.test/api/v1/assets/silver'), annotated, primary),
+        );
+        expect(selected.selectedVariant.advisory).not.toBeNull();
     });
 });

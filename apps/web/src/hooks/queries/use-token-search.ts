@@ -2,6 +2,7 @@ import { keepPreviousData, useQuery } from '@tanstack/react-query';
 import { Effect } from 'effect';
 import { apiJson } from '@/effect/api-client';
 import type { Token } from '@/lib/types';
+import { normalizeAdvisory } from '@/lib/asset-advisory';
 import { getTokenLogoURLWithSecondarySymbol } from '@/lib/logo-overrides';
 import type { CuratedListSlug as CuratedTokenListId } from '@tokens/asset-registry/curated-lists';
 
@@ -52,6 +53,8 @@ interface AssetPrimaryVariant {
     symbol?: string;
     name?: string;
     market?: AssetMarketSnapshot | null;
+    /** `{ status, reason, url, since } | null`; decoded via `normalizeAdvisory`. */
+    advisory?: unknown;
 }
 
 interface AssetStats {
@@ -113,6 +116,8 @@ interface AssetSearchResult {
     canonicalMarket?: CanonicalMarketSnapshot;
     stats?: AssetStats | null;
     primaryVariant: AssetPrimaryVariant | null;
+    /** Asset-level summary, `[]` when none; includes variants the route hid. */
+    advisories?: unknown;
 }
 
 interface AssetsCuratedResponse {
@@ -163,6 +168,11 @@ interface TrendingAssetResult {
         score: number;
         scoringVersion: string;
     };
+    /**
+     * Trending is volume-ranked, so a crashed token is exactly what trends;
+     * the row-level advisory is what lets the home table warn on it.
+     */
+    advisory?: unknown;
 }
 
 interface AssetsTrendingResponse {
@@ -216,9 +226,11 @@ function assetResultToToken(result: AssetSearchResult): Token | null {
     const underlyingVolume24hLabel =
         underlyingVolume24hUSD !== null ? canonicalVolumeLabel(canonicalMarket?.source) : null;
     const coingeckoId = canonicalMarket?.source === 'coingecko' ? canonicalMarket.coinId : result.coingeckoId;
+    const advisory = normalizeAdvisory(primary.advisory);
 
     return {
         assetId: result.assetId,
+        ...(advisory ? { advisory } : {}),
         ...(coingeckoId ? { coingeckoId } : {}),
         ...(result.category ? { category: result.category } : {}),
         ...(canonicalMarket?.source ? { canonicalMarketSource: canonicalMarket.source } : {}),
@@ -256,9 +268,11 @@ function assetResultToToken(result: AssetSearchResult): Token | null {
 function trendingResultToToken(result: TrendingAssetResult): Token {
     const market = result.market;
     const logoURI = (result.imageUrl ?? '').trim() || undefined;
+    const advisory = normalizeAdvisory(result.advisory);
 
     return {
         assetId: result.assetId,
+        ...(advisory ? { advisory } : {}),
         address: result.mint,
         source: market.source,
         metricsSource: market.metricsSource,

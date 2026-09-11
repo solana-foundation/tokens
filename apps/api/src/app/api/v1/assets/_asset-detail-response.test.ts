@@ -293,3 +293,96 @@ describe('buildAssetDetailResponse', () => {
         expect(result.asset.variantGroups.spot[0]?.market?.logoURI).toBe(null);
     });
 });
+
+describe('buildAssetDetailResponse advisories', () => {
+    const SILV = 'SiLVFMgD3eD2rgK628NbTBq9MnuJF5FW2CRaVyTB35L';
+    const ONDO = 'Es9vMFrzaCERmJfrF4H2FYD4KCoNkYtvdQ7BPP3Qz1n';
+    const BLOCKED = 'DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263';
+    const compromised = { status: 'compromised' as const, reason: 'Issuer exploited', url: 'https://x', since: 2 };
+    const blocked = { status: 'blocked' as const, reason: 'Drainer', url: null, since: 3 };
+
+    function baseParams(asset: Parameters<typeof buildAssetDetailResponse>[0]['asset']) {
+        return {
+            asset,
+            assetDescription: null,
+            token: undefined,
+            tokenByMint: new Map(),
+            fillQualityByMint: new Map(),
+            marketMeta: undefined,
+            marketMetaByMint: new Map(),
+            effectiveStats: null,
+            imageUrl: null,
+            symbols: ['XAG'],
+            stockSymbol: null,
+            canonicalMarket: undefined,
+            mintRank: new Map(),
+            sanctumActiveMints: null,
+            includeMint: null,
+            variantsMode: '',
+            includesOut: {},
+            hasIncludes: false,
+        };
+    }
+
+    it('emits advisory on every variant group row and on the primary; advisories defaults to []', () => {
+        const ondo = { variantId: 'silver:ondo', mint: ONDO, kind: 'wrapped' as const, trustTier: 'tier2' as const, tags: [] };
+        const silv = {
+            variantId: 'silver:silv',
+            mint: SILV,
+            kind: 'wrapped' as const,
+            trustTier: 'tier2' as const,
+            tags: [],
+            advisory: compromised,
+        };
+        const result = buildAssetDetailResponse({
+            ...baseParams({
+                assetId: 'silver',
+                name: 'Silver',
+                symbol: 'XAG',
+                category: 'commodity',
+                aliases: [],
+                variants: [ondo, silv],
+            }),
+            primaryVariant: ondo,
+        });
+
+        expect(result.asset.advisories).toEqual([]);
+        expect(result.asset.primaryVariant?.advisory).toBeNull();
+        expect('advisory' in result.asset.primaryVariant!).toBe(true);
+
+        const byMint = new Map(result.asset.variantGroups.spot.map(v => [v.mint, v] as const));
+        expect(byMint.get(ONDO)?.advisory).toBeNull();
+        expect(byMint.get(SILV)?.advisory).toEqual(compromised);
+    });
+
+    it('carries the advisories summary (including hidden siblings) and a flagged primary keeps its advisory', () => {
+        const silv = {
+            variantId: 'silver:silv',
+            mint: SILV,
+            kind: 'wrapped' as const,
+            trustTier: 'tier2' as const,
+            tags: [],
+            advisory: compromised,
+        };
+        const result = buildAssetDetailResponse({
+            ...baseParams({
+                assetId: 'silver',
+                name: 'Silver',
+                symbol: 'XAG',
+                category: 'commodity',
+                aliases: [],
+                variants: [silv],
+            }),
+            primaryVariant: silv,
+            advisories: [
+                { mint: BLOCKED, variantId: 'silver:blocked', ...blocked },
+                { mint: SILV, variantId: 'silver:silv', ...compromised },
+            ],
+        });
+
+        expect(result.asset.primaryVariant?.advisory?.status).toBe('compromised');
+        expect(result.asset.advisories.map(a => a.mint)).toEqual([BLOCKED, SILV]);
+        expect(result.asset.advisories[0]?.variantId).toBe('silver:blocked');
+        expect(result.asset.advisories[0]?.status).toBe('blocked');
+    });
+});

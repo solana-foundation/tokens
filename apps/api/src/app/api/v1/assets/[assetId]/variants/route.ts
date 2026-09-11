@@ -4,6 +4,7 @@ import { route } from '@/effect/next-route';
 import { BadRequestError, NotFoundError } from '@tokens/effect';
 import { decodeUnknownOrBadRequest, SolanaAddress } from '@tokens/effect';
 import { tapErrorAndDefault } from '@tokens/effect';
+import { loadAdvisoriesOrEmpty } from '@/lib/advisories';
 import { getByAssetId as cloudRunGetByAssetId } from '@/lib/cloudrun/assets';
 import {
     assetVariantsListByAssetIds,
@@ -17,7 +18,7 @@ import {
     type ListSolanaVariantsForApiResult,
 } from '@/lib/cloudrun';
 
-import type { AssetVariant, LiquidityTier, StockVariantTier, VariantKind } from '@tokens/asset-registry';
+import type { AssetVariant, LiquidityTier, StockVariantTier, VariantAdvisory, VariantKind } from '@tokens/asset-registry';
 import {
     STOCK_VARIANT_TIERS,
     liquidityTierPriority,
@@ -119,13 +120,20 @@ async function loadExecutionQualityByMints(mints: string[]): Promise<Map<string,
     return out;
 }
 
+/**
+ * Cloud Run pre-shaped variant rows (Solana views) skip `withDerivedVariantTier`,
+ * so attach the execution-quality snapshot and the `advisory` key here. Flagged
+ * variants stay visible on this direct-URL surface (`blocked` included).
+ */
 function attachExecutionQuality<T extends { mint: string }>(
     variants: T[],
     fillQualityByMint: ReadonlyMap<string, VariantExecutionQualitySnapshot>,
-): Array<T & { executionQuality: VariantExecutionQualitySnapshot | null }> {
+    advisoriesByMint: ReadonlyMap<string, VariantAdvisory>,
+): Array<T & { executionQuality: VariantExecutionQualitySnapshot | null; advisory: VariantAdvisory | null }> {
     return variants.map(variant => ({
         ...variant,
         executionQuality: fillQualityByMint.get(variant.mint) ?? null,
+        advisory: advisoriesByMint.get(variant.mint) ?? null,
     }));
 }
 
@@ -369,6 +377,11 @@ export const GET = route(
                     ? yield* decodeUnknownOrBadRequest(SolanaAddress, requestedMintText, 'Invalid mint')
                     : null;
 
+            // Advisory set for this request (fail-open: empty on outage). This
+            // surface backs direct asset URLs, so `blocked` variants are kept —
+            // they carry their advisory instead of disappearing.
+            const advisoriesByMint = yield* loadAdvisoriesOrEmpty();
+
             const singletonMint = singletonAssetIdToMint(assetId);
             if (singletonMint) {
                 if (kind && kind !== 'native') return { assetId, sortBy, variants: [] };
@@ -403,6 +416,7 @@ export const GET = route(
                         ...(symbol ? { label: symbol } : {}),
                         ...(derived?.symbol ? { symbol: derived.symbol } : {}),
                         ...(derived?.name ? { name: derived.name } : {}),
+                        advisory: advisoriesByMint.get(singletonMint) ?? null,
                         market: marketSnapshot ?? derived?.snapshot ?? null,
                         executionQuality: fillQualityByMint.get(singletonMint) ?? null,
                     } satisfies Omit<AssetVariant, 'trustTier'> & {
@@ -433,7 +447,7 @@ export const GET = route(
                             ),
                         ).pipe(tapErrorAndDefault('assets.variants.solanaDefaultFillQuality', new Map(), { assetId }));
                         const variants = sortVariantRows(
-                            attachExecutionQuality(view.variants, fillQualityByMint),
+                            attachExecutionQuality(view.variants, fillQualityByMint, advisoriesByMint),
                             sortBy,
                         );
                         return {
@@ -465,7 +479,7 @@ export const GET = route(
                         loadExecutionQualityByMints(result.variants.map(variant => variant.mint)),
                     ).pipe(tapErrorAndDefault('assets.variants.solanaListFillQuality', new Map(), { assetId }));
                     const variants = sortVariantRows(
-                        attachExecutionQuality(result.variants, fillQualityByMint),
+                        attachExecutionQuality(result.variants, fillQualityByMint, advisoriesByMint),
                         sortBy,
                     );
                     return {
@@ -532,7 +546,10 @@ export const GET = route(
             const outAssetId = assetDoc?.assetId ?? registryAsset?.assetId ?? assetId;
             const canonicalSymbol = optionalText(assetDoc?.symbol) ?? optionalText(registryAsset?.symbol);
             const allVariants: AssetVariant[] = Array.from(variantsByMint.values());
-            const canonicalVariants = canonicalizeAssetVariants(outAssetId, allVariants);
+            const canonicalVariants = canonicalizeAssetVariants(outAssetId, allVariants).map(variant => ({
+                ...variant,
+                advisory: advisoriesByMint.get(variant.mint) ?? null,
+            }));
 
             if (requestedMint) {
                 const isVariant = canonicalVariants.some(v => v.mint === requestedMint);
@@ -635,6 +652,7 @@ export const GET = route(
                         ...(v.stockVariantTier ? { stockVariantTier: v.stockVariantTier } : {}),
                         ...(symbol ? { symbol } : {}),
                         ...(name ? { name } : {}),
+                        advisory: v.advisory ?? advisoriesByMint.get(v.mint) ?? null,
                         market: marketWithLogo,
                         executionQuality: fillQualityByMint.get(v.mint) ?? null,
                     },

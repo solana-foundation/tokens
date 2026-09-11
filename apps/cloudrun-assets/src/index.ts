@@ -15,6 +15,7 @@ import { parseAdminClerkUserIds, parseAdminEmails } from './adminAuth';
 import {
     getSql,
     makePostgresAdminActionsRepo,
+    makePostgresAssetAdvisoriesRepo,
     makePostgresAssetCollectionsReadsRepo,
     makePostgresAssetDeletionTombstonesRepo,
     makePostgresAssetMarketsRepo,
@@ -321,6 +322,7 @@ const app = createApp({
     repo: makePostgresAssetsRepo(sql),
     assetsApiRepo: makePostgresAssetsApiRepo(sql),
     deletionTombstonesRepo: makePostgresAssetDeletionTombstonesRepo(sql),
+    assetAdvisoriesRepo: makePostgresAssetAdvisoriesRepo(sql),
     sanctumLstsRepo: makePostgresSanctumLstsRepo(sql),
     assetMarketsRepo: makePostgresAssetMarketsRepo(sql),
     variantMarketsRepo: makePostgresVariantMarketsRepo(sql),

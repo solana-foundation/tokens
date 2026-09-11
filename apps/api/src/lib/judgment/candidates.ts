@@ -19,6 +19,7 @@ import { Effect } from 'effect';
 import { tapErrorAndDefault } from '@tokens/effect';
 import { getVariantByMint, resolveAlias, searchAssets } from '@tokens/asset-registry';
 
+import { loadAdvisoriesOrEmpty } from '@/lib/advisories';
 import { getCuratedListSlugsByMint } from '@/lib/curated-membership';
 
 import { searchProviderTokens, type ProviderSearchToken } from '@/lib/birdeye-search';
@@ -229,6 +230,10 @@ export function gatherCandidates(
                 : [],
         );
 
+        // Admin advisories (fail-open: an outage means no advisory gates for
+        // this request, logged loudly by the cache).
+        const advisoriesByMint = yield* loadAdvisoriesOrEmpty();
+
         const marketByMint = new Map<string, ReturnType<typeof tokenMarketSnapshotFromConvexMarket>>();
         const marketAsOfByMint = new Map<string, number>();
         for (const row of marketRows) {
@@ -308,6 +313,7 @@ export function gatherCandidates(
                 risk: null,
                 fillQuality,
                 tombstoned: tombstonedRefs.has(raw.mint.toLowerCase()) || tombstonedRefs.has(raw.mint),
+                advisory: advisoriesByMint.get(raw.mint) ?? null,
                 dataAsOf:
                     marketAsOfByMint.get(raw.mint) ??
                     (raw.sources.has('provider') && raw.price !== null ? enrichedAtMs : null),

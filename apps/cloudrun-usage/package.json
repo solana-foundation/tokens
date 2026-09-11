@@ -16,7 +16,7 @@
   },
   "dependencies": {
     "@tokens/cloudrun-shutdown": "workspace:*",
-    "hono": "^4.13.0",
+    "hono": "^4.13.5",
     "jose": "^5.9.6",
     "postgres": "^3.4.5"
   },

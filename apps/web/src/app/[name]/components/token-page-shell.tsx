@@ -7,6 +7,7 @@ import { SwapProvidersDropdown } from '@/app/token/[address]/components/swap-pro
 import { ExpandableText } from '@/components/expandable-text';
 import { FloatingMarketFeedPageContext } from '@/components/floating-market-feed-context';
 import { SiteFooter } from '@/components/site-footer';
+import { isTradeBlocked, type AssetAdvisory } from '@/lib/asset-advisory';
 
 export interface TokenPageBackgroundBlurProps {
     children: ReactNode;
@@ -28,6 +29,8 @@ export interface TokenPageSidebarProps {
     description: string | null;
     tokenFeedCoinId?: string;
     tokenFeedTerms?: string[];
+    /** Advisory on the viewed mint; gates the Buy CTA and description anchors. */
+    advisory?: AssetAdvisory | null;
 }
 
 export function TokenPageSidebar({
@@ -38,6 +41,7 @@ export function TokenPageSidebar({
     description,
     tokenFeedCoinId,
     tokenFeedTerms,
+    advisory = null,
 }: TokenPageSidebarProps) {
     return (
         <>
@@ -49,6 +53,7 @@ export function TokenPageSidebar({
                             buyName={displayName}
                             buySymbol={buySymbol}
                             buyLogoURI={buyLogoURI}
+                            advisory={advisory}
                         />
                     </div>
                 )}
@@ -56,7 +61,7 @@ export function TokenPageSidebar({
                 {description && description.trim().length > 0 && (
                     <section>
                         <h2 className="text-balance text-title-sm text-text-extra-high mb-4">About {displayName}</h2>
-                        <ExpandableText text={description} />
+                        <ExpandableText text={description} allowLinks={!isTradeBlocked(advisory)} />
                     </section>
                 )}
             </div>
@@ -82,6 +87,10 @@ export interface TokenPageScaffoldProps {
     buyAddress: string | null;
     buySymbol?: string;
     buyLogoURI?: string;
+    /** Advisory on the viewed mint; threaded to the mobile bottom-bar CTA. */
+    advisory?: AssetAdvisory | null;
+    /** Rendered immediately above the header (advisory banner / sibling notice). */
+    advisoryBanner?: ReactNode;
     header: ReactNode;
     sidebar: ReactNode;
     children: ReactNode;
@@ -96,6 +105,8 @@ export function TokenPageScaffold({
     buyAddress,
     buySymbol,
     buyLogoURI,
+    advisory = null,
+    advisoryBanner,
     header,
     sidebar,
     children,
@@ -117,6 +128,7 @@ export function TokenPageScaffold({
                     buyAddress ? 'pb-20 lg:pb-6' : 'pb-4 md:pb-6',
                 )}
             >
+                {advisoryBanner}
                 {header}
 
                 <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 mt-8 lg:items-start">
@@ -139,6 +151,7 @@ export function TokenPageScaffold({
                             buyName={displayName}
                             buySymbol={buySymbol}
                             buyLogoURI={buyLogoURI}
+                            advisory={advisory}
                         />
                     </div>
                 </div>

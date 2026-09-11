@@ -6,7 +6,18 @@ interface ExpandableTextProps {
     text: string;
     maxLines?: number;
     className?: string;
+    /**
+     * When false, anchors are stripped from the sanitized HTML (tag and
+     * href/target/rel). Used on advisory-flagged tokens so a 300s-cached
+     * profile description can't route readers to a compromised site.
+     */
+    allowLinks?: boolean;
 }
+
+const SANITIZE_ALLOWED_TAGS = ['p', 'br', 'strong', 'b', 'em', 'i', 'a', 'ul', 'ol', 'li', 'span'];
+const SANITIZE_ALLOWED_ATTR = ['href', 'target', 'rel', 'class'];
+const SANITIZE_ALLOWED_TAGS_NO_LINKS = SANITIZE_ALLOWED_TAGS.filter(tag => tag !== 'a');
+const SANITIZE_ALLOWED_ATTR_NO_LINKS = SANITIZE_ALLOWED_ATTR.filter(attr => attr === 'class');
 
 interface DomPurifyLike {
     sanitize: (html: string, config?: unknown) => string;
@@ -37,7 +48,7 @@ function createFallbackHtml(text: string): string {
     return escapeHtml(withoutTags).replace(/\n/g, '<br />').trim();
 }
 
-export function ExpandableText({ text, maxLines = 7, className = '' }: ExpandableTextProps) {
+export function ExpandableText({ text, maxLines = 7, className = '', allowLinks = true }: ExpandableTextProps) {
     const [isExpanded, setIsExpanded] = useState(false);
     const [isTruncated, setIsTruncated] = useState(false);
     const fallbackHtml = useMemo(() => createFallbackHtml(text), [text]);
@@ -59,8 +70,8 @@ export function ExpandableText({ text, maxLines = 7, className = '' }: Expandabl
                         : (dompurify as DomPurifyLike);
 
                 const clean = purifier.sanitize(text, {
-                    ALLOWED_TAGS: ['p', 'br', 'strong', 'b', 'em', 'i', 'a', 'ul', 'ol', 'li', 'span'],
-                    ALLOWED_ATTR: ['href', 'target', 'rel', 'class'],
+                    ALLOWED_TAGS: allowLinks ? SANITIZE_ALLOWED_TAGS : SANITIZE_ALLOWED_TAGS_NO_LINKS,
+                    ALLOWED_ATTR: allowLinks ? SANITIZE_ALLOWED_ATTR : SANITIZE_ALLOWED_ATTR_NO_LINKS,
                 });
 
                 if (!isActive) return;
@@ -74,7 +85,7 @@ export function ExpandableText({ text, maxLines = 7, className = '' }: Expandabl
         return () => {
             isActive = false;
         };
-    }, [fallbackHtml, text]);
+    }, [allowLinks, fallbackHtml, text]);
 
     useLayoutEffect(() => {
         const el = textRef.current;

@@ -33,6 +33,7 @@ All Platform endpoints require `x-api-key` and typically `assets:read` unless no
 
 Notes:
 
+- **Advisory-flagged assets.** Operators can flag a variant mint as `caution`, `compromised`, or `blocked`. Every variant object carries `advisory` (`null` or `{ status, reason, url, since }`) and every asset row carries `advisories[]`. `compromised`/`blocked` mints are never the `primaryVariant` and are excluded from `/v1/assets/trending`; `blocked` mints are also omitted from `/v1/assets/search` and `/v1/assets/curated`. `/v1/assets/:assetId` never 404s a flagged mint. Treat `compromised` and `blocked` as do-not-trade. Details: [Asset by ID → Advisories](/docs/v1/endpoints/asset-by-id#advisories).
 - Many endpoints are backed by cached upstream data. Some responses include `lastUpdatedAt` or may return empty arrays/nulls when data isn’t cached yet.
 - Some endpoints trigger best-effort cache warming in the background.
 - Public API routes read from Convex/cache only. ClickHouse-backed Solana trade data is materialized by background jobs before it appears in API responses.

@@ -1,4 +1,5 @@
 import { Effect } from 'effect';
+import type { VariantAdvisory } from '@tokens/asset-registry';
 
 import { getCuratedListSlugsForMint } from '@/lib/curated-membership';
 import { variantMarketsGetLatestByMints } from '@/lib/cloudrun';
@@ -18,6 +19,8 @@ export interface AssetRiskPayload {
               marketScore: ReturnType<typeof computeMarketScore>;
               marketScoreInput: MarketScoreInput;
               tags: [];
+              /** Active admin advisory on the selected mint (always present, `null` when none). */
+              advisory: VariantAdvisory | null;
               lastUpdatedAt: number | null;
           }
         | {
@@ -107,6 +110,7 @@ export function loadAssetRisk(
                 marketScore,
                 marketScoreInput,
                 tags: [],
+                advisory: context.selectedVariant.advisory ?? context.advisoriesByMint.get(mint) ?? null,
                 lastUpdatedAt: market?.lastFetchedAt ?? null,
             },
         };

@@ -8,6 +8,16 @@ import { Badge } from '@tokens/ui/badge';
  * Lists tab, the ⌘K token search palette, and the metadata sheet.
  */
 
+export type V2AdvisoryStatus = 'caution' | 'compromised' | 'blocked';
+
+/** Active admin advisory on a mint (mirrors the v1/v2 API shape; kept local so the app has no registry dependency). */
+export interface V2Advisory {
+    status: V2AdvisoryStatus;
+    reason: string;
+    url: string | null;
+    since: number;
+}
+
 export interface V2ListToken {
     mint: string;
     symbol: string | null;
@@ -18,6 +28,8 @@ export interface V2ListToken {
     rank: number;
     note?: string;
     addedAt?: number;
+    /** Always present on the v2 lists API; optional here so older payloads still type-check. */
+    advisory?: V2Advisory | null;
 }
 
 export interface SearchResult {
@@ -94,6 +106,31 @@ export function humanize(code: string): string {
 export function formatDate(ms: number | undefined | null): string {
     if (!ms) return '—';
     return new Date(ms).toLocaleDateString();
+}
+
+const ADVISORY_CHIP_LABEL: Record<V2AdvisoryStatus, string> = {
+    caution: 'Caution',
+    compromised: 'Compromised',
+    blocked: 'Blocked',
+};
+
+/**
+ * Compact advisory chip for the symbol slot of `TokenIdentity`. Renders
+ * nothing when the token has no advisory (or the field is missing).
+ */
+export function AdvisoryChip({ advisory }: { advisory: V2Advisory | null | undefined }) {
+    if (!advisory || !(advisory.status in ADVISORY_CHIP_LABEL)) return null;
+    const isCaution = advisory.status === 'caution';
+    return (
+        <Badge
+            variant={isCaution ? 'warning' : 'destructive'}
+            title={advisory.reason || undefined}
+            aria-label={`${ADVISORY_CHIP_LABEL[advisory.status]} advisory${advisory.reason ? `: ${advisory.reason}` : ''}`}
+            className={`shrink-0 px-1.5 text-[10px] ${isCaution ? 'text-amber-700 dark:text-amber-300' : ''}`}
+        >
+            {ADVISORY_CHIP_LABEL[advisory.status]}
+        </Badge>
+    );
 }
 
 export function WarningChips({ warnings }: { warnings: string[] }) {
