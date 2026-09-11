@@ -41,14 +41,23 @@ function loadProjectLookup(path: string): Map<string, ProjectInfo> {
     return map;
 }
 
+async function lokiFetch(kind: string, url: URL, query: string): Promise<unknown> {
+    for (let attempt = 1; ; attempt++) {
+        const res = await fetch(url, {
+            headers: { Authorization: `Bearer ${grafanaToken}`, Accept: 'application/json' },
+        });
+        if (res.ok) return res.json();
+        const retryable = res.status === 429 || res.status >= 500;
+        if (!retryable || attempt >= 3) throw new Error(`Loki ${kind} ${res.status}: ${query.slice(0, 80)}`);
+        console.error(`WARN: Loki ${kind} ${res.status} (attempt ${attempt}/3), retrying: ${query.slice(0, 80)}`);
+        await new Promise(r => setTimeout(r, attempt * 5000));
+    }
+}
+
 async function logqlInstant(query: string): Promise<LokiVectorEntry[]> {
     const url = new URL(`${grafanaUrl}/api/datasources/proxy/uid/${datasourceUid}/loki/api/v1/query`);
     url.searchParams.set('query', query);
-    const res = await fetch(url, {
-        headers: { Authorization: `Bearer ${grafanaToken}`, Accept: 'application/json' },
-    });
-    if (!res.ok) throw new Error(`Loki instant ${res.status}: ${query.slice(0, 80)}`);
-    const body = (await res.json()) as { data?: { result?: LokiVectorEntry[] } };
+    const body = (await lokiFetch('instant', url, query)) as { data?: { result?: LokiVectorEntry[] } };
     return body.data?.result ?? [];
 }
 
@@ -58,11 +67,7 @@ async function logqlRange(query: string, startSec: number, endSec: number, stepS
     url.searchParams.set('start', `${startSec}000000000`);
     url.searchParams.set('end', `${endSec}000000000`);
     url.searchParams.set('step', `${stepSec}s`);
-    const res = await fetch(url, {
-        headers: { Authorization: `Bearer ${grafanaToken}`, Accept: 'application/json' },
-    });
-    if (!res.ok) throw new Error(`Loki range ${res.status}: ${query.slice(0, 80)}`);
-    const body = (await res.json()) as { data?: { result?: LokiMatrixEntry[] } };
+    const body = (await lokiFetch('range', url, query)) as { data?: { result?: LokiMatrixEntry[] } };
     return body.data?.result ?? [];
 }
 
