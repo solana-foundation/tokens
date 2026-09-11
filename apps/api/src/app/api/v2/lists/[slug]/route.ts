@@ -3,6 +3,7 @@ import { Effect, Schema } from 'effect';
 import { route, type PlatformAuthContext } from '@/effect/next-route';
 import { withStaleFallback } from '@/effect/stale-response-cache';
 import { NotFoundError, decodeLimit, decodeOffset, decodeUnknownOrBadRequest } from '@tokens/effect';
+import { loadAdvisoriesOrEmpty } from '@/lib/advisories';
 import { tokenListsDelete, tokenListsGetBySlug, tokenListsGetMembers, tokenListsUpdate } from '@/lib/cloudrun';
 
 import { getEffectiveCuratedAddresses } from '../../../_curated-addresses';
@@ -11,8 +12,10 @@ import {
     curatedListMeta,
     hydrateCommunityMembers,
     hydrateCuratedMints,
+    isHiddenListMint,
     normalizeCuratedSlug,
     unwrapOutcome,
+    visibleListMints,
 } from '../_shared';
 
 interface RouteCtx {
@@ -37,19 +40,23 @@ export const GET = route(
             const offset = yield* decodeOffset(url.searchParams.get('offset'));
 
             const main = Effect.gen(function* () {
+                // `blocked` mints are hidden from list hydration; filter the
+                // membership BEFORE paging so pages, ranks and `tokenCount` agree.
+                const advisories = yield* loadAdvisoriesOrEmpty();
                 const curatedId = normalizeCuratedSlug(slug);
                 if (curatedId) {
                     const meta = yield* curatedListMeta(curatedId);
                     const { addresses } = yield* Effect.tryPromise(() => getEffectiveCuratedAddresses(curatedId));
-                    const page = addresses.slice(offset, offset + limit);
-                    const tokens = yield* hydrateCuratedMints(page, offset);
+                    const visible = visibleListMints(addresses, advisories);
+                    const page = visible.slice(offset, offset + limit);
+                    const tokens = yield* hydrateCuratedMints(page, offset, { advisories });
                     return {
                         slug: curatedId,
                         name: meta.name,
                         description: meta.description,
                         curated: true,
                         owner: CURATED_OWNER,
-                        tokenCount: addresses.length,
+                        tokenCount: visible.length,
                         updatedAt: null,
                         tokens,
                     };
@@ -61,7 +68,12 @@ export const GET = route(
                     return yield* Effect.fail(new NotFoundError({ message: 'List not found', resource: 'token_list' }));
                 }
                 const members = yield* tokenListsGetMembers({ slug, limit, offset });
-                const tokens = yield* hydrateCommunityMembers(members);
+                const tokens = yield* hydrateCommunityMembers(members, { advisories });
+                // `detail.tokenCount` is the stored membership count; subtract the
+                // hidden members we can see. Only this page is loaded, so hidden
+                // members outside it are not subtracted (exact whenever the page
+                // covers the list, which is the common `limit=500` case).
+                const hiddenInPage = members.filter(member => isHiddenListMint(member.mint, advisories)).length;
                 return {
                     slug: detail.slug,
                     name: detail.name,
@@ -69,7 +81,7 @@ export const GET = route(
                     description: null,
                     curated: false,
                     owner: { projectId: detail.ownerProjectId },
-                    tokenCount: detail.tokenCount,
+                    tokenCount: Math.max(0, detail.tokenCount - hiddenInPage),
                     updatedAt: detail.updatedAt,
                     tokens,
                 };

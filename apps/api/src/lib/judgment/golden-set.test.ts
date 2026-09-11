@@ -15,10 +15,16 @@ import { buildIndexFromEntries } from './protected-symbols';
 import { resolveFromJudged } from './resolve';
 import type { EnrichedCandidate } from './types';
 import {
+    BLOCKED_MINT,
     BONK_MINT,
+    CAUTION_MINT,
+    COMPROMISED_MINT,
     NOW_MS,
     USDC_MINT,
     NEW_DOG_MINT,
+    blockedToken,
+    cautionToken,
+    compromisedToken,
     fakeUsdc,
     homoglyphUsdc,
     lowLiqDogToken,
@@ -125,6 +131,49 @@ describe('golden: tombstones', () => {
             expect(results).toEqual([]);
             expect(suppressed[0]?.suppressedBy).toContain('gate_tombstoned');
         }
+    });
+});
+
+describe('golden: advisories', () => {
+    it('compromised tokens are suppressed under every policy with gate_advisory_compromised, despite top-tier standing', () => {
+        for (const policyId of ['strict', 'default', 'degen'] as const) {
+            const { results, suppressed } = run('SILV', [compromisedToken()], policyId);
+            expect(results).toEqual([]);
+            expect(suppressed[0]?.mint).toBe(COMPROMISED_MINT);
+            expect(suppressed[0]?.suppressedBy).toEqual(['gate_advisory_compromised']);
+        }
+    });
+
+    it('blocked tokens are suppressed under every policy with gate_advisory_blocked (not both codes)', () => {
+        for (const policyId of ['strict', 'default', 'degen'] as const) {
+            const { results, suppressed } = run('BLKD', [blockedToken()], policyId);
+            expect(results).toEqual([]);
+            expect(suppressed[0]?.mint).toBe(BLOCKED_MINT);
+            expect(suppressed[0]?.suppressedBy).toEqual(['gate_advisory_blocked']);
+        }
+    });
+
+    it('caution tokens are shown with the advisory_caution warning and an advisory badge, never gated', () => {
+        for (const policyId of ['strict', 'default', 'degen'] as const) {
+            const { results, suppressed } = run('CAUT', [cautionToken()], policyId);
+            expect(suppressed).toEqual([]);
+            const caut = results.find(r => r.mint === CAUTION_MINT);
+            expect(caut).toBeDefined();
+            expect(caut?.warnings).toContain('advisory_caution');
+            expect(caut?.badges).toContain('advisory:caution');
+        }
+    });
+
+    it('unflagged tokens carry neither the warning nor the badge', () => {
+        const { results } = run('BONK', [realBonk()], 'default');
+        expect(results[0]?.warnings).not.toContain('advisory_caution');
+        expect(results[0]?.badges.some(b => b.startsWith('advisory:'))).toBe(false);
+    });
+
+    it('a compromised sibling never displaces the healthy token in a mixed result set', () => {
+        const { results, suppressed } = run('silver', [compromisedToken(), realBonk()], 'default');
+        expect(results.map(r => r.mint)).not.toContain(COMPROMISED_MINT);
+        expect(suppressed.map(s => s.mint)).toContain(COMPROMISED_MINT);
     });
 });
 

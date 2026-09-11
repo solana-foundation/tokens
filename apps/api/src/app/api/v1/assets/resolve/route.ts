@@ -4,6 +4,7 @@ import { route } from '@/effect/next-route';
 import { BadRequestError, NotFoundError } from '@tokens/effect';
 import { decodeUnknownOrBadRequest, SolanaAddress } from '@tokens/effect';
 import { tapErrorAndDefault } from '@tokens/effect';
+import { loadAdvisoriesOrEmpty } from '@/lib/advisories';
 import { getByAssetId as cloudRunGetByAssetId } from '@/lib/cloudrun/assets';
 import {
     assetVariantsGetByMint,
@@ -73,6 +74,11 @@ export const GET = route(
                 return yield* Effect.fail(new BadRequestError({ message: 'mint or ref is required' }));
             }
 
+            // Every emitted `variant` carries `advisory` (null when none). Flagged
+            // mints still resolve — the advisory travels with the variant.
+            const advisoriesByMint = yield* loadAdvisoriesOrEmpty();
+            const advisoryFor = (mint: string) => advisoriesByMint.get(mint) ?? null;
+
             const deletedRef = mintRaw || refRaw;
             if (deletedRef) {
                 const isDeleted = yield* isDeletedRef(deletedRef);
@@ -116,6 +122,7 @@ export const GET = route(
                                 kind: 'native' as const,
                                 tags: [],
                                 ...(symbol ? { label: symbol } : {}),
+                                advisory: advisoryFor(mint),
                             },
                             market?.liquidity ?? null,
                         ),
@@ -281,6 +288,7 @@ export const GET = route(
                                   ...(primary.stockVariantTier ? { stockVariantTier: primary.stockVariantTier } : {}),
                                   ...(primary.symbol ? { symbol: primary.symbol } : {}),
                                   ...(primary.name ? { name: primary.name } : {}),
+                                  advisory: advisoryFor(primary.mint),
                               },
                               tokenByMint.get(primary.mint)?.liquidity ?? null,
                           )
@@ -320,6 +328,7 @@ export const GET = route(
                                 ...(registryMatch.variant.stockVariantTier
                                     ? { stockVariantTier: registryMatch.variant.stockVariantTier }
                                     : {}),
+                                advisory: advisoryFor(registryMatch.variant.mint),
                             },
                         };
                     }
@@ -373,6 +382,7 @@ export const GET = route(
                         ...(variantWithIdentity.name ? { name: variantWithIdentity.name } : {}),
                         ...(!variantWithIdentity.symbol && market?.symbol ? { symbol: market.symbol } : {}),
                         ...(!variantWithIdentity.name && market?.name ? { name: market.name } : {}),
+                        advisory: advisoryFor(variant.mint),
                     },
                     market?.liquidity ?? null,
                 ),

@@ -4,12 +4,14 @@ import type { Metadata } from 'next';
 
 import { getAsset, getAssetByCoingeckoId, getVariantByMint, resolveAlias } from '@tokens/asset-registry';
 import type { CanonicalAsset, LiquidityTier } from '@tokens/asset-registry';
+import { advisoryMetadataPrefix, normalizeAdvisory } from '@/lib/asset-advisory';
 import { cleanTokenName } from '@/lib/logo-overrides';
 import { looksLikeSolanaMintAddress } from '@/lib/solana-address';
 import { fetchApiAppJsonOrNull } from '@/lib/api-app';
 import {
     buildShareUrls,
     normalizeRequestedSolanaMint,
+    resolveSocialAdvisory,
     resolveVariantSocialData,
     selectVariantForMint,
     type TokenSocialAssetResponse,
@@ -45,6 +47,8 @@ interface AssetsResolveResponse {
         label?: string;
         symbol?: string;
         name?: string;
+        /** `{ status, reason, url, since } | null`; direct mint lookups still resolve flagged mints. */
+        advisory?: unknown;
     } | null;
 }
 
@@ -52,6 +56,7 @@ function canonicalAssetFromResolveResponse(response: AssetsResolveResponse): Can
     const name = (response.asset.name ?? '').trim();
     const symbol = (response.asset.symbol ?? '').trim();
     const variant = response.variant;
+    const variantAdvisory = variant ? normalizeAdvisory(variant.advisory) : null;
 
     return {
         assetId: response.asset.assetId,
@@ -72,6 +77,7 @@ function canonicalAssetFromResolveResponse(response: AssetsResolveResponse): Can
                       ...(variant.label ? { label: variant.label } : {}),
                       ...(variant.symbol ? { symbol: variant.symbol } : {}),
                       ...(variant.name ? { name: variant.name } : {}),
+                      ...(variantAdvisory ? { advisory: variantAdvisory } : {}),
                   },
               ]
             : [],
@@ -135,7 +141,14 @@ async function buildAssetMetadata(
     const displayName = cleanTokenName(variantSocialData?.displayName ?? canonicalDisplayName);
     const symbol = pickFirstSymbol(variantSocialData?.symbol, canonicalSymbol) || undefined;
     const title = symbol ? `${displayName} (${symbol}) | Tokens` : `${displayName} | Tokens`;
-    const description = `View Solana variants for ${displayName}.`;
+    // Text-only previews (Slack, iMessage, search snippets) never see the OG
+    // strip, so the description itself carries the warning.
+    const advisory = resolveSocialAdvisory({
+        selectedVariant,
+        primaryVariant: apiAsset?.asset.primaryVariant ?? null,
+    });
+    const baseDescription = `View Solana variants for ${displayName}.`;
+    const description = advisory ? `${advisoryMetadataPrefix(advisory, symbol)} ${baseDescription}` : baseDescription;
     const metadataBase = getMetadataBase();
     // The minute bucket busts share-image caches, so it must read the request-time
     // clock; connection() keeps this metadata out of the prerendered shell.

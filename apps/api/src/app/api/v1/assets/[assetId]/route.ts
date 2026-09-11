@@ -4,6 +4,7 @@ import { route, type PlatformAuthContext } from '@/effect/next-route';
 import { BadRequestError, ForbiddenError, NotFoundError } from '@tokens/effect';
 import { decodeLimit, decodeOffset } from '@tokens/effect';
 import { tapErrorAndDefault } from '@tokens/effect';
+import { annotateAssetAdvisories, loadAdvisoriesOrEmpty, summarizeAssetAdvisories } from '@/lib/advisories';
 import { getByAssetId as cloudRunGetByAssetId } from '@/lib/cloudrun/assets';
 import {
     assetMarketsGetLatestByAssetId,
@@ -407,6 +408,13 @@ export const GET = route(
                 if (snapshot) fillQualityByMint.set(row.mint, snapshot);
             }
 
+            // Annotate here so the DB, singleton, and registry-fallback branches
+            // above are all covered before primary selection. Flagged variants
+            // stay in the payload (never a 404) — they just carry `advisory` and
+            // lose primary to an unflagged sibling.
+            asset = annotateAssetAdvisories(asset, yield* loadAdvisoriesOrEmpty());
+            const advisories = summarizeAssetAdvisories(asset);
+
             const primaryVariant = pickPrimaryVariant(asset, mintRank, tokenByMint, fillQualityByMint, {
                 strategy: primaryVariantStrategy,
             });
@@ -736,6 +744,7 @@ export const GET = route(
 
             return buildAssetDetailResponse({
                 asset,
+                advisories,
                 assetDescription: optionalText(assetDoc?.description) ?? null,
                 primaryVariant,
                 token,

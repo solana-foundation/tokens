@@ -1,6 +1,10 @@
+import type { AssetAdvisory } from '@/lib/asset-advisory';
+
 export type TrendingWindow = '5m' | '15m' | '1h' | '6h' | '24h';
 
 export interface Token {
+    /** Active admin advisory on this row's mint (already normalized), if any. */
+    advisory?: AssetAdvisory | null;
     /**
      * Canonical asset id (from the Tokens platform API), when available.
      * Useful for fetching asset-scoped data like OHLCV.

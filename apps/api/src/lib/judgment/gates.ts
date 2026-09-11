@@ -27,6 +27,13 @@ export function evaluateGates(
     // Tombstones are editorial deletions — suppressed under every policy.
     if (candidate.tombstoned) suppressions.push('gate_tombstoned');
 
+    // Trade-restricting advisories are admin decisions, not risk heuristics —
+    // suppressed under every policy (degen included). search-tokens exists to
+    // build lists; a compromised mint must never be list-addable from here.
+    // The row is still returned in `suppressed[]` with the reason.
+    if (candidate.advisory?.status === 'blocked') suppressions.push('gate_advisory_blocked');
+    else if (candidate.advisory?.status === 'compromised') suppressions.push('gate_advisory_compromised');
+
     if (policy.gates.requireMarketData && !hasMarketData(candidate)) {
         suppressions.push('gate_no_market_data');
     }

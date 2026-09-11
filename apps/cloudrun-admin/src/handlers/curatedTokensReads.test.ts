@@ -48,6 +48,7 @@ function variant(overrides: Partial<VariantWithMarketRow> = {}): VariantWithMark
         stockVariantTier: null,
         isActive: true,
         market: null,
+        advisory: null,
         ...overrides,
     };
 }
@@ -295,6 +296,7 @@ describe('listVariantsByAssetIds', () => {
             logoURI: 'https://img/big.png',
             isActive: true,
             lastFetchedAt: 42,
+            advisory: null,
         });
         expect(small!.liquidityTier).toBe('tier3');
         expect(small!.trustTier).toBe('tier3'); // trustTier mirrors liquidityTier
@@ -421,10 +423,18 @@ describe('getVariantEditor', () => {
                 tags: ['wrapped'],
                 label: 'WBTC',
                 isActive: true,
+                advisory: null,
             },
             canonical: { assetId: 'bitcoin', name: 'Bitcoin', symbol: 'BTC' },
             market: { symbol: 'WBTC' },
         });
+    });
+
+    it('carries the active advisory through to the editor row', async () => {
+        const advisory = { status: 'compromised' as const, reason: 'Treasury exploited', url: 'https://x.test/p', since: 1_700_000_000_000 };
+        const { deps } = makeDeps({ assets: [asset()], variants: [variant({ advisory })] });
+        const result = await getVariantEditor(deps, { mint: MINT_A }, ADMIN);
+        expect(result?.variant.advisory).toEqual(advisory);
     });
 
     it('returns market: null when there is no market row', async () => {

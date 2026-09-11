@@ -1,14 +1,25 @@
 export type {
+    AdvisoryStatus,
     AssetCategory,
     AssetVariant,
     CanonicalAsset,
     LiquidityTier,
     StockVariantTier,
     TrustTier,
+    VariantAdvisory,
     VariantKind,
     VariantMatch,
 } from './types';
-export { ASSET_CATEGORIES, LIQUIDITY_TIERS, STOCK_VARIANT_TIERS, VARIANT_KINDS } from './types';
+export {
+    ADVISORY_STATUSES,
+    ASSET_CATEGORIES,
+    LIQUIDITY_TIERS,
+    STOCK_VARIANT_TIERS,
+    VARIANT_KINDS,
+    isAdvisoryStatus,
+    isHiddenAdvisory,
+    isTradeRestrictedAdvisory,
+} from './types';
 export {
     LIQUIDITY_TIER_1_MIN_USD,
     LIQUIDITY_TIER_2_MIN_USD,
@@ -28,6 +39,7 @@ export {
     FILL_QUALITY_SCORING_VERSION,
     computeVariantExecutionScore,
     isFillQualityEligibleForPrimary,
+    isPrimaryEligibleVariant,
     isSpotLikeVariantKind,
     pickPrimaryVariantWithRanking,
 } from './primary-variant-ranking';

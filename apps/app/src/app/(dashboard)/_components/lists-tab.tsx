@@ -35,12 +35,14 @@ import { MEMBER_GRID_TEMPLATE_COLUMNS, MemberTable } from './member-table';
 import { SelectionDock } from './selection-dock';
 import { BulkRemoveError, useListSelection } from './use-list-selection';
 import {
+    AdvisoryChip,
     TokenIdentity,
     formatUsd,
     formatValue,
     humanize,
     shortMint,
     type SearchResult,
+    type V2Advisory,
     type V2ListToken,
 } from './token-bits';
 import { TokenSearchCommand } from './token-search-command';
@@ -369,7 +371,13 @@ function TokenMetadataSheet({
     onOpenChange: (open: boolean) => void;
     mint: string | null;
     /** Identity from the row, shown while (or if) judgment data is unavailable. */
-    fallback: { symbol: string | null; name: string | null; logoURI: string | null; verified?: boolean } | null;
+    fallback: {
+        symbol: string | null;
+        name: string | null;
+        logoURI: string | null;
+        verified?: boolean;
+        advisory?: V2Advisory | null;
+    } | null;
     judged: SearchResult | null;
     loading: boolean;
 }) {
@@ -378,6 +386,7 @@ function TokenMetadataSheet({
     const name = judged?.claims.name ?? fallback?.name ?? null;
     const logoURI = judged?.market.logoURI ?? fallback?.logoURI ?? null;
     const verified = judged?.verified ?? fallback?.verified;
+    const advisory = fallback?.advisory ?? null;
 
     return (
         <Sheet open={open} onOpenChange={onOpenChange}>
@@ -396,6 +405,7 @@ function TokenMetadataSheet({
                             logoURI={logoURI}
                             {...(verified !== undefined ? { verified } : {})}
                             size="dialog"
+                            symbolAccessory={<AdvisoryChip advisory={advisory} />}
                         >
                             {judged && judged.badges.length > 0 && (
                                 <div className="mt-1.5 flex flex-wrap gap-1">
@@ -909,6 +919,7 @@ export function ListsTab(): React.JSX.Element {
         name: string | null;
         logoURI: string | null;
         verified?: boolean;
+        advisory?: V2Advisory | null;
     } | null>(null);
     const [metadataJudged, setMetadataJudged] = useState<SearchResult | null>(null);
     const [metadataLoading, setMetadataLoading] = useState(false);
@@ -923,6 +934,7 @@ export function ListsTab(): React.JSX.Element {
                 name: token.name,
                 logoURI: token.logoURI,
                 verified: token.verified,
+                advisory: token.advisory ?? null,
             });
             setMetadataOpen(true);
 

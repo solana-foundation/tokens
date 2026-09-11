@@ -5,6 +5,9 @@ import Link from 'next/link';
 import { ArrowUpRight } from 'lucide-react';
 import * as React from 'react';
 
+import { cn } from '@tokens/ui/cn';
+import { AssetAdvisoryBadge } from '@/components/asset-advisory-badge';
+import { isTradeBlocked, type AssetAdvisory } from '@/lib/asset-advisory';
 import { formatLargeNumber } from '@/lib/format';
 import { groupAssetVariantsByDisplayCategory } from '@/lib/asset-variant-categories';
 import { trackEvent } from '@/lib/posthog-client';
@@ -45,6 +48,8 @@ export interface VariantWithMarketLite {
     executionQuality?: VariantExecutionQualityLite | null;
     displaySymbol: string;
     displayName: string;
+    /** Active admin advisory on this mint (already normalized), if any. */
+    advisory?: AssetAdvisory | null;
 }
 
 function kindLabel(kind: VariantKind): string {
@@ -165,6 +170,10 @@ export function AssetVariantsList({
                                 const executionQuality = variant.executionQuality ?? null;
                                 const hasExecutionQuality =
                                     executionQuality !== null && Number.isFinite(executionQuality.executionScore);
+                                const advisory = variant.advisory ?? null;
+                                // The card link is internal (`/{asset}?solana=`), so it stays
+                                // enabled for flagged variants; only the frame changes color.
+                                const isAdvisoryBlocked = isTradeBlocked(advisory);
 
                                 return (
                                     <Link
@@ -175,10 +184,16 @@ export function AssetVariantsList({
                                                 ...(canonicalAssetId ? { asset_id: canonicalAssetId } : {}),
                                                 variant_mint: variant.mint,
                                                 ...(symbol ? { variant_symbol: symbol } : {}),
+                                                ...(advisory ? { advisory_status: advisory.status } : {}),
                                                 surface: 'asset_variants_list',
                                             })
                                         }
-                                        className="group relative flex h-[144px] flex-col overflow-hidden rounded-2xl border border-border-light bg-white p-3 shadow-[0_8px_40px_rgba(0,0,0,0.03)] transition-[border-color,background-color] hover:border-border-medium hover:shadow-[0_12px_48px_rgba(0,0,0,0.06)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-border-medium"
+                                        className={cn(
+                                            'group relative flex h-[144px] flex-col overflow-hidden rounded-2xl border bg-white p-3 shadow-[0_8px_40px_rgba(0,0,0,0.03)] transition-[border-color,background-color] hover:shadow-[0_12px_48px_rgba(0,0,0,0.06)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset',
+                                            isAdvisoryBlocked
+                                                ? 'border-rose-200 hover:border-rose-300 focus-visible:ring-rose-300'
+                                                : 'border-border-light hover:border-border-medium focus-visible:ring-border-medium',
+                                        )}
                                     >
                                         <div className="pointer-events-none absolute right-2 top-2 flex size-7 items-center justify-center rounded-full border border-border-light bg-white/80 shadow-sm backdrop-blur-sm opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100">
                                             <ArrowUpRight
@@ -224,6 +239,7 @@ export function AssetVariantsList({
                                                         <span className="rounded-full border border-border-light bg-gray-50 px-2 py-0.5 text-[10px] text-text-medium">
                                                             {kindLabel(variant.kind)}
                                                         </span>
+                                                        <AssetAdvisoryBadge advisory={advisory} size="sm" />
                                                     </div>
                                                 </div>
                                             </div>

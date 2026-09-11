@@ -10,7 +10,7 @@ import {
     type TokenListMutationOutcome,
     type VariantMarketsGetLatestByMintsResult,
 } from '@/lib/cloudrun';
-import { getVariantByMint } from '@tokens/asset-registry';
+import { getVariantByMint, isHiddenAdvisory, type VariantAdvisory } from '@tokens/asset-registry';
 import {
     CURATED_LIST_FALLBACK_NAMES,
     CURATED_LIST_ORDER,
@@ -18,6 +18,7 @@ import {
     type CuratedListSlug,
 } from '@tokens/asset-registry/curated-lists';
 import { registryClaimedSymbol } from '@/lib/judgment/protected-symbols';
+import { loadAdvisoriesOrEmpty } from '@/lib/advisories';
 import { getProviderTokenMetadataByMints, type ProviderTokenMetadata } from '@/lib/birdeye-search';
 import { getCuratedMembershipSnapshot } from '@/lib/curated-membership';
 
@@ -52,8 +53,25 @@ export interface V2ListToken {
     logoURI: string | null;
     verified: boolean;
     rank: number;
+    /** Active admin advisory on the mint — always present, `null` when none. `blocked` mints are omitted. */
+    advisory: VariantAdvisory | null;
     note?: string;
     addedAt?: number;
+}
+
+export interface HydrateOptions {
+    /** Pre-loaded advisory set (avoids a second cache read when the route already has it). */
+    advisories?: ReadonlyMap<string, VariantAdvisory>;
+}
+
+/** Mints whose advisory hides them from list surfaces (`blocked`). */
+export function isHiddenListMint(mint: string, advisories: ReadonlyMap<string, VariantAdvisory>): boolean {
+    return isHiddenAdvisory(advisories.get(mint));
+}
+
+/** `mints` without `blocked` ones — filter BEFORE paging/ranking so ranks stay dense across pages. */
+export function visibleListMints(mints: readonly string[], advisories: ReadonlyMap<string, VariantAdvisory>): string[] {
+    return mints.filter(mint => !isHiddenListMint(mint, advisories));
 }
 
 export function normalizeCuratedSlug(slug: string): CuratedListSlug | null {
@@ -183,9 +201,18 @@ function loadMissingMintMetadata(
 /**
  * Batch-hydrate mints from Birdeye-first market snapshots, falling back to
  * per-member snapshots and then compiled registry text metadata.
+ *
+ * `blocked` members are dropped BEFORE hydration (no market/metadata fetch for
+ * them); every returned token carries `advisory`. Community ranks are the
+ * list's own stored ranks and are passed through unchanged.
  */
-export function hydrateCommunityMembers(members: TokenListMember[]): Effect.Effect<V2ListToken[], never> {
+export function hydrateCommunityMembers(
+    allMembers: TokenListMember[],
+    options: HydrateOptions = {},
+): Effect.Effect<V2ListToken[], never> {
     return Effect.gen(function* () {
+        const advisories = options.advisories ?? (yield* loadAdvisoriesOrEmpty());
+        const members = allMembers.filter(member => !isHiddenListMint(member.mint, advisories));
         const byMint = yield* loadMintMarkets(
             members.map(member => member.mint),
             'v2.lists.hydrateMembers',
@@ -208,6 +235,7 @@ export function hydrateCommunityMembers(members: TokenListMember[]): Effect.Effe
                 logoURI: normalizeLogoURI(provider?.logoURI ?? market?.logoURI ?? member.logoUri),
                 verified: member.verified,
                 rank: member.rank,
+                advisory: advisories.get(member.mint) ?? null,
                 ...(member.note !== null ? { note: member.note } : {}),
                 addedAt: member.addedAt,
             };
@@ -215,9 +243,21 @@ export function hydrateCommunityMembers(members: TokenListMember[]): Effect.Effe
     });
 }
 
-/** Hydrate curated-list mints (registry-known, so `verified: true`). */
-export function hydrateCuratedMints(mints: string[], rankOffset: number): Effect.Effect<V2ListToken[], never> {
+/**
+ * Hydrate curated-list mints (registry-known, so `verified: true`).
+ *
+ * `blocked` mints are dropped BEFORE hydration and ranks are assigned over the
+ * remaining mints, so `rank` stays dense. Callers that paginate should filter
+ * with `visibleListMints` before slicing so pages and `tokenCount` agree.
+ */
+export function hydrateCuratedMints(
+    allMints: string[],
+    rankOffset: number,
+    options: HydrateOptions = {},
+): Effect.Effect<V2ListToken[], never> {
     return Effect.gen(function* () {
+        const advisories = options.advisories ?? (yield* loadAdvisoriesOrEmpty());
+        const mints = visibleListMints(allMints, advisories);
         const byMint = yield* loadMintMarkets(mints, 'v2.lists.hydrateCurated');
         const providerByMint = yield* loadMissingMintMetadata(mints, byMint, 'v2.lists.hydrateCurated.metadata');
         return mints.map((mint, index) => {
@@ -233,6 +273,7 @@ export function hydrateCuratedMints(mints: string[], rankOffset: number): Effect
                 logoURI: normalizeLogoURI(provider?.logoURI ?? market?.logoURI),
                 verified: true,
                 rank: rankOffset + index,
+                advisory: advisories.get(mint) ?? null,
             };
         });
     });

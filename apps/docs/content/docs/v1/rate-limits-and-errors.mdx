@@ -34,16 +34,43 @@ Platform endpoints use a stable error shape:
 }
 ```
 
-`details` is optional.
+`details` is optional. Some errors use an object for `details` with a stable `code` field (for example list mutations and advisory refusals below); branch on `_tag` first, then `details.code`.
 
 ## Common status codes
 
 - `400` Bad request (invalid query/body/params)
 - `401` Unauthorized (missing/invalid API key)
-- `403` Forbidden (missing required scopes)
+- `403` Forbidden (missing required scopes, or an advisory refusal — see below)
 - `404` Not found (unknown resource or mapping)
 - `429` Rate-limited or quota exceeded
 - `500` Internal server error
+
+## Advisory refusals (execution endpoints)
+
+Where available, execution endpoints (the `/v2/execution/*` family: links, evaluate, route) refuse to build a trade for a mint that carries a `compromised` or `blocked` advisory. The response is `403` with `_tag: "AssetAdvisoryError"` and an object `details`:
+
+```json
+{
+  "error": {
+    "_tag": "AssetAdvisoryError",
+    "message": "SILV is flagged as compromised",
+    "details": {
+      "code": "advisory_compromised",
+      "mint": "SiLVFMgD3eD2rgK628NbTBq9MnuJF5FW2CRaVyTB35L",
+      "status": "compromised",
+      "reason": "Issuer treasury exploited; market pulled by the issuer.",
+      "url": "https://..."
+    }
+  }
+}
+```
+
+- `details.code` is `advisory_compromised` or `advisory_blocked`, mirroring `details.status`.
+- Do not retry: the flag is lifted by an operator, not by time. Show `reason` (and `url` when present) to the user instead.
+- Read endpoints never refuse; they annotate. The same mint is still served by `GET /v1/assets/:assetId` with `advisory` populated, so you can fetch the warning to display. `caution` advisories never produce this error.
+- Route-style endpoints that consider several variants list a refused variant under `excluded[]` with `reason: "advisory_compromised"` rather than failing the whole request, as long as another eligible variant exists.
+
+See [Asset by ID → Advisories](/docs/v1/endpoints/asset-by-id#advisories) for the status semantics.
 
 ## Retry matrix
 

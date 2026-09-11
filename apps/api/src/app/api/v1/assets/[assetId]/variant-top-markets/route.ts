@@ -12,6 +12,7 @@ import {
     variantMarketsGetLatestByMints,
 } from '@/lib/cloudrun';
 import { tapErrorAndDefault } from '@tokens/effect';
+import { loadAdvisoriesOrEmpty } from '@/lib/advisories';
 import type { TokenMarket, TokenMarketToken } from '@/lib/birdeye';
 import { cleanTokenName, getTokenLogoURL } from '@/lib/logo-overrides';
 
@@ -300,6 +301,7 @@ export const GET = route(
                 lastUpdatedAt,
             };
 
+            const advisoriesByMint = yield* loadAdvisoriesOrEmpty();
             const enriched = variants.map(variant => {
                 const row = byMint.get(variant.mint);
                 const doc = row?.doc ?? null;
@@ -339,6 +341,7 @@ export const GET = route(
                     {
                         mint: variant.mint,
                         kind: variant.kind,
+                        advisory: advisoriesByMint.get(variant.mint) ?? null,
                         ...(variant.label ? { label: variant.label } : {}),
                         ...(variant.stockVariantTier ? { stockVariantTier: variant.stockVariantTier } : {}),
                         ...(variantSymbol ? { symbol: variantSymbol } : {}),

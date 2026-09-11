@@ -12,6 +12,8 @@ import { Drawer, DrawerClose, DrawerContent, DrawerHeader, DrawerTitle, DrawerTr
 import { HoverCard, HoverCardArrow, HoverCardContent, HoverCardTrigger } from '@tokens/ui/hover-card';
 import type { VariantHub } from '@tokens/asset-registry';
 import { getVariantByMint, type VariantKind } from '@tokens/asset-registry';
+import { AssetAdvisoryBadge } from '@/components/asset-advisory-badge';
+import { normalizeAdvisory, type AssetAdvisory } from '@/lib/asset-advisory';
 import { SOL_MINT, isPreIpoVariant } from '@/lib/asset-variant-categories';
 import { getMintLogoOverride } from '@/lib/logo-overrides';
 import { normalizeLogoSrc } from '@/lib/normalize-logo-src';
@@ -82,6 +84,8 @@ interface VariantRow {
     name?: string;
     label?: string;
     market: VariantMarketSnapshot | null;
+    /** `{ status, reason, url, since } | null`; `/variants` keeps `blocked` rows visible. */
+    advisory?: unknown;
 }
 
 interface AssetVariantsResponse {
@@ -99,6 +103,7 @@ interface VariantListItem {
     liquidity: number;
     kind?: VariantKind;
     isPreIpo?: boolean;
+    advisory?: AssetAdvisory | null;
 }
 
 type VariantsPanelAppearance = 'dark' | 'light';
@@ -230,6 +235,7 @@ function VariantTokenRow({
                     >
                         ${token.symbol}
                     </span>
+                    <AssetAdvisoryBadge advisory={token.advisory} size="sm" appearance={appearance} />
                     {shouldShowLabelBadge ? (
                         <span
                             className={cn(
@@ -553,6 +559,7 @@ export function TokenVariantsBadge({
                 labels: [apiLabel, itemLabel, registryMatch?.variant.label],
             });
             const logoURI = normalizeOptionalText(market?.logoURI) || getMintLogoOverride(item.address);
+            const advisory = normalizeAdvisory(v?.advisory);
 
             const rowLabel = itemLabel || apiLabel;
             items.push({
@@ -565,6 +572,7 @@ export function TokenVariantsBadge({
                 liquidity,
                 ...(kind ? { kind } : {}),
                 ...(isPreIpo ? { isPreIpo } : {}),
+                ...(advisory ? { advisory } : {}),
             });
         }
 

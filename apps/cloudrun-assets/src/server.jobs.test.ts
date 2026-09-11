@@ -2,6 +2,7 @@ import { describe, expect, it } from 'bun:test';
 
 import type { AssetsRepo } from './handlers/assets';
 import type { AssetDeletionTombstonesRepo } from './handlers/assetDeletionTombstones';
+import type { AssetAdvisoriesRepo } from './handlers/assetAdvisoriesReads';
 import type { SanctumLstsRepo } from './handlers/sanctumLsts';
 import type { AssetMarketsRepo } from './handlers/assetMarkets';
 import type { VariantMarketsRepo } from './handlers/variantMarkets';
@@ -26,6 +27,9 @@ const noopDeletionTombstonesRepo: AssetDeletionTombstonesRepo = {
     async findDeletedNormalizedRefs() {
         return [];
     },
+};
+const noopAssetAdvisoriesRepo: AssetAdvisoriesRepo = {
+    listAll: async () => [],
 };
 const noopSanctumLstsRepo: SanctumLstsRepo = {
     async listActive() {
@@ -293,6 +297,7 @@ const baseDeps = {
     repo: undefined as unknown as AssetsRepo,
     assetsApiRepo: noopAssetsApiRepo,
     deletionTombstonesRepo: noopDeletionTombstonesRepo,
+    assetAdvisoriesRepo: noopAssetAdvisoriesRepo,
     sanctumLstsRepo: noopSanctumLstsRepo,
     assetMarketsRepo: noopAssetMarketsRepo,
     variantMarketsRepo: noopVariantMarketsRepo,

@@ -5,12 +5,14 @@ import React from 'react';
 import sharp from 'sharp';
 
 import { getAsset, getAssetByCoingeckoId, getVariantByMint, resolveAlias } from '@tokens/asset-registry';
+import { ADVISORY_COPY, advisoryTone, type AssetAdvisory } from '@/lib/asset-advisory';
 import { getOgInterFonts, OG_FONT_FAMILY_INTER } from '@/lib/og-fonts';
 import { cleanTokenName, getTokenLogoURL } from '@/lib/logo-overrides';
 import { fetchApiAppJsonOrNull } from '@/lib/api-app';
 import { fetchHermesLatestPrice } from '@/lib/realtime-prices/pyth-hermes-server';
 import {
     normalizeRequestedSolanaMint,
+    resolveSocialAdvisory,
     resolveVariantSocialData,
     selectVariantForMint,
     type TokenSocialAssetResponse,
@@ -18,6 +20,13 @@ import {
 } from '@/lib/token-social-image-data';
 
 const size = { width: 1200, height: 630 };
+
+// Advisory strip across the top of the card. Plain text only: satori cannot
+// render our icon components, and the strip must survive at thumbnail size.
+const OG_ADVISORY_STRIP_HEIGHT = 64;
+const OG_ADVISORY_STRIP_COLOR_DESTRUCTIVE = '#dc2626';
+const OG_ADVISORY_STRIP_COLOR_WARNING = '#d97706';
+const OG_CONTENT_PADDING_TOP = 56;
 
 interface CoinDoc {
     name?: string;
@@ -563,6 +572,7 @@ export async function getTokenSocialImageResponse(request: Request, name: string
         let fallbackLogoURI: string | undefined;
         let apiAsset: AssetsV1AssetResponse | null = null;
         let selectedVariant: TokenSocialVariant | null = null;
+        let socialAdvisory: AssetAdvisory | null = null;
 
         if (asset) {
             apiAsset = await fetchAssetsV1Asset(origin, asset.assetId, requestedMint);
@@ -570,6 +580,10 @@ export async function getTokenSocialImageResponse(request: Request, name: string
             if (requestedMint && !selectedVariant) {
                 apiAsset = await fetchAssetsV1Asset(origin, asset.assetId);
             }
+            socialAdvisory = resolveSocialAdvisory({
+                selectedVariant,
+                primaryVariant: apiAsset?.asset.primaryVariant ?? null,
+            });
 
             const apiDisplayName =
                 normalizeOptionalText(apiAsset?.asset.name) ||
@@ -737,7 +751,12 @@ export async function getTokenSocialImageResponse(request: Request, name: string
                             bottom: 0,
                             display: 'flex',
                             flexDirection: 'column',
-                            padding: '56px 64px',
+                            // Push the identity row below the advisory strip when present.
+                            padding: `${
+                                socialAdvisory
+                                    ? OG_CONTENT_PADDING_TOP + OG_ADVISORY_STRIP_HEIGHT
+                                    : OG_CONTENT_PADDING_TOP
+                            }px 64px ${OG_CONTENT_PADDING_TOP}px`,
                         },
                     },
 
@@ -923,6 +942,34 @@ export async function getTokenSocialImageResponse(request: Request, name: string
                           )
                         : null,
                 ),
+
+                // --- Layer 3: Advisory strip (on top of everything) ---
+                socialAdvisory
+                    ? h(
+                          'div',
+                          {
+                              style: {
+                                  position: 'absolute',
+                                  top: 0,
+                                  left: 0,
+                                  right: 0,
+                                  height: OG_ADVISORY_STRIP_HEIGHT,
+                                  display: 'flex',
+                                  alignItems: 'center',
+                                  justifyContent: 'center',
+                                  backgroundColor:
+                                      advisoryTone(socialAdvisory.status) === 'warning'
+                                          ? OG_ADVISORY_STRIP_COLOR_WARNING
+                                          : OG_ADVISORY_STRIP_COLOR_DESTRUCTIVE,
+                                  color: '#ffffff',
+                                  fontSize: 28,
+                                  fontWeight: 700,
+                                  letterSpacing: '0.06em',
+                              },
+                          },
+                          ADVISORY_COPY[socialAdvisory.status].ogStrip,
+                      )
+                    : null,
             ),
             { ...size, ...(fonts.length > 0 ? { fonts } : {}) },
         );

@@ -44,6 +44,43 @@ export type TrustTier = LiquidityTier;
 export const STOCK_VARIANT_TIERS = ['share_redeemable', 'cash_redeemable', 'not_redeemable'] as const;
 export type StockVariantTier = (typeof STOCK_VARIANT_TIERS)[number];
 
+/**
+ * Admin-set advisory on a mint.
+ *
+ * - `caution`: informational notice; nothing is gated.
+ * - `compromised`: visible with a warning; excluded from primary-variant
+ *   selection and trending; trade links and execution endpoints refuse it.
+ * - `blocked`: `compromised` plus hidden from list/search surfaces. Direct
+ *   asset/mint reads still serve it with the advisory attached.
+ *
+ * Stored in `asset_variant_advisories` (DB), never in the compiled registry.
+ * The API annotates DB/registry variants with it at serialization time.
+ */
+export const ADVISORY_STATUSES = ['caution', 'compromised', 'blocked'] as const;
+export type AdvisoryStatus = (typeof ADVISORY_STATUSES)[number];
+
+export interface VariantAdvisory {
+    status: AdvisoryStatus;
+    reason: string;
+    url: string | null;
+    /** Unix ms when the current status was set. */
+    since: number;
+}
+
+export function isAdvisoryStatus(value: unknown): value is AdvisoryStatus {
+    return typeof value === 'string' && (ADVISORY_STATUSES as readonly string[]).includes(value);
+}
+
+/** `compromised` or `blocked`: trade links and execution must refuse the mint. */
+export function isTradeRestrictedAdvisory(advisory: VariantAdvisory | null | undefined): boolean {
+    return advisory?.status === 'compromised' || advisory?.status === 'blocked';
+}
+
+/** `blocked`: hidden from curated lists, search, trending, and v2 list hydration. */
+export function isHiddenAdvisory(advisory: VariantAdvisory | null | undefined): boolean {
+    return advisory?.status === 'blocked';
+}
+
 export interface AssetVariant {
     /** Stable variant identity within an asset, e.g. `bitcoin:cbBTC` */
     variantId: string;
@@ -65,6 +102,12 @@ export interface AssetVariant {
 
     /** Equity/tokenized-equity redeemability tier for API clients comparing stock variants. */
     stockVariantTier?: StockVariantTier;
+
+    /**
+     * Active admin advisory, if any. Never set in compiled registry data; the
+     * API attaches it from `asset_variant_advisories` before ranking/serializing.
+     */
+    advisory?: VariantAdvisory | null;
 }
 
 export interface CanonicalAsset {

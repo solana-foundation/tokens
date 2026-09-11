@@ -46,7 +46,9 @@ When using includes, additional params apply:
 - Responses can include top-level `resolution` metadata when the request path was resolved from an alias or mint ref.
 - This endpoint may trigger background cache warming if data is missing/stale.
 - `asset.imageUrl` is curated canonical imagery (storage-backed where configured). `asset.primaryVariant.market.logoURI` is a best-effort per-token icon from indexed/cache sources and may be `null` (the server may fall back to `asset.imageUrl` when missing).
-- `asset.primaryVariant` is chosen deterministically from the asset’s spot-like variants (`native`, `wrapped`, `bridged`, `stablecoin`, `lst`, `tokenized_equity`, `basket`) by highest liquidity, then trust tier, then 24h volume, then curated mint rank unless an opt-in primary strategy applies.
+- `asset.primaryVariant` is chosen deterministically from the asset’s spot-like variants (`native`, `wrapped`, `bridged`, `stablecoin`, `lst`, `tokenized_equity`, `basket`) by highest liquidity, then trust tier, then 24h volume, then curated mint rank unless an opt-in primary strategy applies. Variants flagged `compromised` or `blocked` are skipped by every strategy (see [Advisories](#advisories)).
+- `asset.primaryVariant.advisory` and every variant object under `asset.variantGroups.*[]` carry `advisory: { status, reason, url, since } | null`. The key is always present; `null` means the mint is not flagged.
+- `asset.advisories` is always present: an array of `{ mint, variantId, status, reason, url, since }` for every flagged variant of the asset (`[]` when none). It includes variants that list surfaces hide, so a page can show a “sibling flagged” notice even when the primary variant is fine.
 - `primaryVariantStrategy=stock_redeemability` applies to equities and tokenized equities. It favors `share_redeemable` over `cash_redeemable` over `not_redeemable` or missing stock tiers when the higher-tier variant has zero/unknown liquidity on both sides or is within `5x` of the more liquid variant.
 - `asset.primaryVariant.stockVariantTier` and `asset.variantGroups.tokenizedEquity[].stockVariantTier` may be present with `share_redeemable`, `cash_redeemable`, or `not_redeemable`. This is informational API metadata, not legal, tax, accounting, or investment advice.
 - Variant market blocks may include `source`, `metricsSource`, `volume1hUSD`, `trade1h`, `trade24h`, `uniqueWallet1h`, `uniqueWallet24h`, `lastTradeAt`, and `asOf` when those fields are available in the Convex cache. `metricsSource="clickhouse_trades"` means market metrics were materialized from successful direct USD-stable Solana trades. Public API routes still read these fields from Convex/cache only.
@@ -77,6 +79,50 @@ curl -sS "$API_BASE_URL/v1/assets/$ASSET_ID?include=profile,risk,ohlcv,markets" 
 }
 ```
 
+## Advisories
+
+An advisory is an operator-set flag on a **variant mint** (never on the canonical asset) for situations such as an issuer exploit, a depegged wrapper, or a contract the issuer has told holders not to interact with. It is stored server-side and takes effect across the API without a deploy, so integrators should read it from the payload they already fetch rather than maintain their own denylist.
+
+```ts
+type AdvisoryStatus = 'caution' | 'compromised' | 'blocked';
+
+// On every variant object: asset.primaryVariant, asset.variantGroups.*[],
+// and rows from /variants and /variant-markets.
+type VariantAdvisory = {
+    status: AdvisoryStatus;
+    reason: string; // operator-written, safe to show verbatim
+    url: string | null; // issuer statement or other source, when available
+    since: number; // unix ms the current status was set
+} | null;
+
+// asset.advisories[] — one entry per flagged variant, [] when none.
+interface AssetAdvisoryEntry {
+    mint: string;
+    variantId: string;
+    status: AdvisoryStatus;
+    reason: string;
+    url: string | null;
+    since: number;
+}
+```
+
+### Statuses
+
+- `caution` — informational. The variant is served and ranked normally; show `reason` as a notice.
+- `compromised` — the variant stays visible everywhere it would normally appear, but it is **excluded from primary-variant selection** (another spot-like variant becomes `primaryVariant` when one exists) and from `/v1/assets/trending`. Execution endpoints refuse the mint. Clients should refuse to trade it.
+- `blocked` — everything `compromised` does, and additionally the variant is **omitted** from `/v1/assets/search`, `/v1/assets/curated`, `/v1/assets/trending`, and v2 list hydration. Direct lookups still work (below).
+
+### Guarantees
+
+- **This endpoint never 404s a flagged mint.** `GET /v1/assets/:assetId`, `GET /v1/assets/:assetId?mint=<flagged>`, `GET /v1/assets/solana-<flagged>`, and `/variants` keep returning `blocked` and `compromised` variants with `advisory` populated, so a shared link to the token still lands on the warning rather than on “not found”. Hard removals use a different mechanism (inactive variants and deletion tombstones) and are the only things that 404.
+- A `compromised` or `blocked` variant is never chosen as `primaryVariant` while another eligible variant exists. When every variant of an asset is flagged, the API falls back to the normal ranking instead of returning `null`, and `primaryVariant.advisory` tells you why you should not use it.
+- `asset.advisories` reflects the full asset, including variants a list surface hid; `advisory` on each variant object reflects only that mint.
+- Advisory changes propagate to this endpoint within roughly a minute (server-side cache plus HTTP `max-age`); `/curated` and `/trending` are similar or faster.
+
+### Guidance
+
+Treat `compromised` and `blocked` as **do-not-trade**: disable buy/sell/swap actions for that mint, surface `reason`, and link to `url` when present. `caution` is display-only. Do not branch on `reason` text; branch on `status` and add a default arm so a future status degrades to a warning rather than to silence.
+
 ## Variants: `GET /v1/assets/:assetId/variants`
 
 List variants for an asset (canonical or singleton), optionally filtered.
@@ -102,6 +148,7 @@ List variants for an asset (canonical or singleton), optionally filtered.
 - `sortBy=stock_redeemability` sorts `share_redeemable` first, then `cash_redeemable`, then `not_redeemable` or missing tiers, with liquidity fallbacks inside each tier.
 - `trustTier` is currently mirrored from `liquidityTier` for backward compatibility.
 - Legacy `trustTier=experimental` is still accepted and treated as `tier3`.
+- Every row carries `advisory` (`null` when the mint is not flagged). Flagged variants, including `blocked`, are **not** filtered out here — this is a direct lookup, so the warning must be reachable. See [Advisories](#advisories).
 - For `assetId=solana`, yield variants can be very large; the server may cap the returned yield variant set by default. Use `variantsMode=all` to request the full set.
 
 ### Example

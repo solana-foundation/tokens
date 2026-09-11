@@ -15,6 +15,8 @@ interface TokenViewedEventProps {
     hasCoingeckoId?: boolean;
     coingeckoId?: string;
     source?: string;
+    /** Active advisory status on the viewed mint, when any. */
+    advisoryStatus?: string | null;
 }
 
 // Client-side analytics event so we capture a real distinct_id/session.
@@ -29,6 +31,7 @@ export function TokenViewedEvent({
     hasCoingeckoId,
     coingeckoId,
     source,
+    advisoryStatus,
 }: TokenViewedEventProps) {
     React.useEffect(() => {
         trackEvent('token_viewed', {
@@ -42,8 +45,10 @@ export function TokenViewedEvent({
             ...(typeof hasCoingeckoId === 'boolean' ? { has_coingecko_id: hasCoingeckoId } : {}),
             ...(coingeckoId ? { coingecko_id: coingeckoId } : {}),
             ...(source ? { source } : {}),
+            ...(advisoryStatus ? { advisory_status: advisoryStatus } : {}),
         });
     }, [
+        advisoryStatus,
         coingeckoId,
         hasCoingeckoId,
         source,

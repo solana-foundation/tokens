@@ -11,7 +11,9 @@ import { Badge } from '@tokens/ui/badge';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@tokens/ui/dropdown-menu';
 import { Drawer, DrawerClose, DrawerContent, DrawerHeader, DrawerTitle, DrawerTrigger } from '@tokens/ui/drawer';
 import { SolanaLogo } from '@/components/icons';
+import { AssetAdvisoryBadge } from '@/components/asset-advisory-badge';
 import { CopyButton } from '@/components/copy-button';
+import { isTradeBlocked, type AssetAdvisory } from '@/lib/asset-advisory';
 import { trackEvent } from '@/lib/posthog-client';
 import { getTokenLogoURLForMintWithSecondarySymbol } from '@/lib/logo-overrides';
 import { normalizeLogoSrc } from '@/lib/normalize-logo-src';
@@ -51,6 +53,14 @@ interface TokenHeaderProps {
     variantLinkMode?: 'token' | 'coingecko';
     variantLinkCoinId?: string;
     showSingletonVariantBadge?: boolean;
+    /**
+     * Advisory on the viewed mint. `compromised`/`blocked` hide Birdeye (lands
+     * on a trading widget) and every profile link (website/socials are a
+     * post-exploit phishing vector and come from 300s-cached unvetted data);
+     * Explorer and Orb stay because read-only verification is the legitimate
+     * action. The risk popover is untouched.
+     */
+    advisory?: AssetAdvisory | null;
 }
 
 function TokenLogo({
@@ -458,9 +468,11 @@ export function TokenHeader({
     variantLinkMode = 'token',
     variantLinkCoinId,
     showSingletonVariantBadge = false,
+    advisory = null,
 }: TokenHeaderProps) {
     const router = useRouter();
     const pathname = usePathname();
+    const tradeBlocked = isTradeBlocked(advisory);
 
     const variantsGroup =
         variantGroup ??
@@ -562,6 +574,7 @@ export function TokenHeader({
                                 </button>
                             ) : null}
                         </Badge>
+                        <AssetAdvisoryBadge advisory={advisory} />
                         {hasVariants && variantsGroup ? (
                             <TokenVariantsBadge
                                 group={variantsGroup}
@@ -615,11 +628,11 @@ export function TokenHeader({
                 {/* Links */}
                 <TokenHeaderLinks
                     address={address}
-                    links={links}
+                    links={tradeBlocked ? undefined : links}
                     explorerHref={explorerHref}
                     explorerAriaLabel={explorerAriaLabel}
                     orbHref={orbHref}
-                    birdeyeHref={birdeyeHref}
+                    birdeyeHref={tradeBlocked ? null : birdeyeHref}
                     showSolanaBadge={showSolanaBadge}
                     linkTrackingProperties={linkTrackingProperties}
                     drawerLinkTrackingProperties={drawerLinkTrackingProperties}

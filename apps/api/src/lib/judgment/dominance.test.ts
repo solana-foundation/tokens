@@ -32,6 +32,7 @@ function candidate(overrides: Partial<EnrichedCandidate> & { mint: string }): En
         risk: null,
         fillQuality: null,
         tombstoned: false,
+        advisory: null,
         dataAsOf: NOW_MS,
         ...overrides,
     };

@@ -1,5 +1,7 @@
-import { describe, expect, it } from 'bun:test';
+import { afterEach, describe, expect, it } from 'bun:test';
 import type { CanonicalAsset } from '@tokens/asset-registry';
+
+import { __setAdvisoriesForTests } from '@/lib/advisories';
 
 import {
     aggregateTokenStats,
@@ -9,9 +11,11 @@ import {
     parsePrimaryVariantStrategy,
     parseStockVariantTier,
     parseVariantSortBy,
+    pickPrimaryVariant,
     selectCanonicalAssetStats,
     type TokenMarketSnapshot,
     variantMatchesFilters,
+    withDerivedVariantTier,
 } from './_asset-helpers';
 
 function makeToken(address: string, overrides: Partial<TokenMarketSnapshot>): TokenMarketSnapshot {
@@ -667,5 +671,71 @@ describe('prestocks derived fields', () => {
         expect(derived.basisPriceUsd).toBeNull();
         expect(derived.premiumToMarkPercent).toBeNull();
         expect(derived.impliedValuationUsd).toBeNull();
+    });
+});
+
+describe('withDerivedVariantTier advisory key', () => {
+    it('always emits advisory (null when the input has none)', () => {
+        const out = withDerivedVariantTier({ mint: 'm', kind: 'native' as const }, 1_000);
+        expect('advisory' in out).toBe(true);
+        expect(out.advisory).toBeNull();
+        expect(out.liquidityTier).toBeDefined();
+    });
+
+    it('passes an existing advisory through', () => {
+        const advisory = { status: 'caution' as const, reason: 'Migration', url: null, since: 1 };
+        const out = withDerivedVariantTier({ mint: 'm', advisory }, null);
+        expect(out.advisory).toEqual(advisory);
+    });
+});
+
+describe('pickPrimaryVariant advisory exclusion', () => {
+    const SILV = 'SiLVFMgD3eD2rgK628NbTBq9MnuJF5FW2CRaVyTB35L';
+    const ONDO = 'Es9vMFrzaCERmJfrF4H2FYD4KCoNkYtvdQ7BPP3Qz1n';
+
+    afterEach(() => {
+        __setAdvisoriesForTests(null);
+    });
+
+    function silver(): CanonicalAsset {
+        return {
+            assetId: 'silver',
+            name: 'Silver',
+            symbol: 'XAG',
+            category: 'commodity',
+            aliases: [],
+            variants: [
+                { variantId: 'silver:silv', mint: SILV, kind: 'wrapped', trustTier: 'tier2', tags: [] },
+                { variantId: 'silver:ondo', mint: ONDO, kind: 'wrapped', trustTier: 'tier2', tags: [] },
+            ],
+        };
+    }
+
+    const tokenByMint = new Map<string, TokenMarketSnapshot>([
+        [SILV, makeToken(SILV, { liquidity: 1_070_000, volume24hUSD: 500_000, price: 13.7 })],
+        [ONDO, makeToken(ONDO, { liquidity: 6_600, volume24hUSD: 1_000, price: 57.35 })],
+    ]);
+
+    it('picks the deepest market when nothing is flagged', () => {
+        __setAdvisoriesForTests([]);
+        expect(pickPrimaryVariant(silver(), new Map(), tokenByMint)?.mint).toBe(SILV);
+    });
+
+    it('honors the sync advisory cache: a compromised mint loses primary despite top liquidity', () => {
+        __setAdvisoriesForTests([{ mint: SILV, status: 'compromised', reason: 'Issuer exploited', url: null, since: 1 }]);
+        expect(pickPrimaryVariant(silver(), new Map(), tokenByMint)?.mint).toBe(ONDO);
+    });
+
+    it('caution does not affect primary selection', () => {
+        __setAdvisoriesForTests([{ mint: SILV, status: 'caution', reason: 'Notice', url: null, since: 1 }]);
+        expect(pickPrimaryVariant(silver(), new Map(), tokenByMint)?.mint).toBe(SILV);
+    });
+
+    it('falls back to the full pool when every variant is flagged (never null)', () => {
+        __setAdvisoriesForTests([
+            { mint: SILV, status: 'compromised', reason: 'a', url: null, since: 1 },
+            { mint: ONDO, status: 'blocked', reason: 'b', url: null, since: 1 },
+        ]);
+        expect(pickPrimaryVariant(silver(), new Map(), tokenByMint)?.mint).toBe(SILV);
     });
 });

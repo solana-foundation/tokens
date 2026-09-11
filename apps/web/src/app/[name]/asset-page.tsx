@@ -8,8 +8,18 @@ import { getVariantHubById, liquidityTierPriority } from '@tokens/asset-registry
 import { Skeleton } from '@tokens/ui/skeleton';
 
 import { TokenHeader } from '@/app/token/[address]/components/token-header';
+import { AssetAdvisoryBanner, AssetAdvisorySiblingNotice } from '@/components/asset-advisory-banner';
 import { Logo } from '@/components/logo';
 import { TokenViewedEvent } from '@/components/token-viewed-event';
+import {
+    collectVariantAdvisories,
+    getSiblingAdvisories,
+    getViewedAdvisory,
+    isTradeBlocked,
+    normalizeAdvisory,
+    type AssetAdvisory,
+    type AssetAdvisoryEntry,
+} from '@/lib/asset-advisory';
 import { cleanTokenName, getMintLogoOverride, getTokenLogoURLForMintWithSecondarySymbol } from '@/lib/logo-overrides';
 import { fetchApiAppJsonOrNull } from '@/lib/api-app';
 import { formatLargeNumber } from '@/lib/format';
@@ -152,6 +162,8 @@ interface VariantWithMarket extends AssetVariant {
     /** Best-effort display */
     displaySymbol: string;
     displayName: string;
+    /** Normalized advisory on this mint (set explicitly in `buildVariantsWithMarket`). */
+    advisory?: AssetAdvisory | null;
 }
 
 type ApiAssetVariant = AssetVariant & {
@@ -160,6 +172,8 @@ type ApiAssetVariant = AssetVariant & {
     executionQuality?: VariantExecutionQualitySnapshot | null;
     rank?: number;
     preStocks?: PreStocksVariantSnapshot | null;
+    /** `{ status, reason, url, since } | null`, always present on the API; decoded defensively. */
+    advisory?: AssetAdvisory | null;
 };
 
 interface AssetIncludeOk<T> {
@@ -193,11 +207,14 @@ interface AssetsV1AssetResponse {
                   executionQuality?: VariantExecutionQualitySnapshot | null;
                   rank?: number;
                   preStocks?: PreStocksVariantSnapshot | null;
+                  advisory?: AssetAdvisory | null;
               })
             | null;
         variantGroups: Partial<
             Record<'spot' | 'etf' | 'yield' | 'leveraged' | 'basket' | 'lst' | 'tokenizedEquity', ApiAssetVariant[]>
         >;
+        /** Asset-level summary (`[]` when none); includes variants the route hid. */
+        advisories?: AssetAdvisoryEntry[] | null;
     };
     includes?: {
         profile?: AssetIncludeResult<GlobalTokenStats>;
@@ -326,7 +343,7 @@ function humanizeAssetRef(value: string | undefined | null): string {
 function buildVariantsWithMarket(
     asset: CanonicalAsset,
     tokenByMint: Map<string, MarketSnapshot>,
-    options?: { assetSymbol?: string; assetName?: string },
+    options?: { assetSymbol?: string; assetName?: string; advisoryByMint?: ReadonlyMap<string, AssetAdvisory> },
 ): VariantWithMarket[] {
     const assetFallbackSymbol = pickFirstSymbol(options?.assetSymbol, asset.symbol);
     const assetFallbackName = pickFirstDisplayName(options?.assetName, asset.name) || assetFallbackSymbol;
@@ -359,6 +376,9 @@ function buildVariantsWithMarket(
                 .executionQuality,
             displaySymbol,
             displayName,
+            // Set explicitly (not via the spread) so the API annotation always
+            // wins over whatever the registry/DB variant object carried.
+            advisory: options?.advisoryByMint?.get(variant.mint) ?? normalizeAdvisory(variant.advisory),
         };
     });
 }
@@ -442,6 +462,23 @@ async function TokenHeaderWithLinksLoader({
     return <TokenHeader {...baseProps} links={globalStats?.links} />;
 }
 
+interface TokenSidebarWithDataProps {
+    descriptionOverride?: string | null;
+    assetId: string;
+    coingeckoId: string | null;
+    enableCoinGeckoFallback: boolean;
+    buyAddress: string | null;
+    buySymbol?: string;
+    buyLogoURI?: string;
+    displayName: string;
+    /**
+     * Threaded into BOTH the Suspense fallback and the loaded sidebar: the
+     * fallback renders the live Buy button while the 300s profile fetch
+     * streams, so omitting it there would flash an enabled CTA.
+     */
+    advisory: AssetAdvisory | null;
+}
+
 function TokenSidebarWithData({
     descriptionOverride,
     assetId,
@@ -451,16 +488,8 @@ function TokenSidebarWithData({
     buySymbol,
     buyLogoURI,
     displayName,
-}: {
-    descriptionOverride?: string | null;
-    assetId: string;
-    coingeckoId: string | null;
-    enableCoinGeckoFallback: boolean;
-    buyAddress: string | null;
-    buySymbol?: string;
-    buyLogoURI?: string;
-    displayName: string;
-}) {
+    advisory,
+}: TokenSidebarWithDataProps) {
     return (
         <Suspense
             fallback={
@@ -470,6 +499,7 @@ function TokenSidebarWithData({
                     buyLogoURI={buyLogoURI}
                     displayName={displayName}
                     description={descriptionOverride ?? null}
+                    advisory={advisory}
                 />
             }
         >
@@ -482,6 +512,7 @@ function TokenSidebarWithData({
                 buySymbol={buySymbol}
                 buyLogoURI={buyLogoURI}
                 displayName={displayName}
+                advisory={advisory}
             />
         </Suspense>
     );
@@ -496,16 +527,8 @@ async function TokenSidebarWithDataLoader({
     buySymbol,
     buyLogoURI,
     displayName,
-}: {
-    descriptionOverride?: string | null;
-    assetId: string;
-    coingeckoId: string | null;
-    enableCoinGeckoFallback: boolean;
-    buyAddress: string | null;
-    buySymbol?: string;
-    buyLogoURI?: string;
-    displayName: string;
-}) {
+    advisory,
+}: TokenSidebarWithDataProps) {
     const globalStats = await loadGlobalStats(assetId, coingeckoId, enableCoinGeckoFallback);
 
     return (
@@ -517,6 +540,7 @@ async function TokenSidebarWithDataLoader({
             description={resolveAssetDescription(descriptionOverride, globalStats?.description)}
             tokenFeedCoinId={coingeckoId ?? undefined}
             tokenFeedTerms={buildTokenFeedTerms({ assetId, coingeckoId, buySymbol, displayName })}
+            advisory={advisory}
         />
     );
 }
@@ -890,13 +914,21 @@ async function loadAssetPageModel({ asset, requestedName, requestedMint }: Asset
         next: { revalidate: 60 },
     });
     const preStocksByMint = new Map<string, PreStocksVariantSnapshot>();
+    // API advisory annotations keyed by mint. Built here (not read off the
+    // spread variant) so the page's badges, banner, and trade gating all
+    // agree on one normalized value per mint.
+    const advisoryByMint = new Map<string, AssetAdvisory>();
     if (apiAsset) {
         const primary = apiAsset.asset.primaryVariant;
         if (primary?.market) tokenByMint.set(primary.mint, primary.market);
         if (primary?.preStocks) preStocksByMint.set(primary.mint, primary.preStocks);
+        const primaryAdvisory = normalizeAdvisory(primary?.advisory);
+        if (primary && primaryAdvisory) advisoryByMint.set(primary.mint, primaryAdvisory);
 
         for (const variant of getApiVariantRows(apiAsset.asset.variantGroups)) {
             if (variant.preStocks) preStocksByMint.set(variant.mint, variant.preStocks);
+            const variantAdvisory = normalizeAdvisory(variant.advisory);
+            if (variantAdvisory && !advisoryByMint.has(variant.mint)) advisoryByMint.set(variant.mint, variantAdvisory);
             if (!variant.market) continue;
             tokenByMint.set(variant.mint, variant.market);
         }
@@ -959,6 +991,7 @@ async function loadAssetPageModel({ asset, requestedName, requestedMint }: Asset
     const variants = buildVariantsWithMarket(effectiveAsset, tokenByMint, {
         assetName: apiDisplayName,
         assetSymbol: apiDisplaySymbol,
+        advisoryByMint,
     });
     const apiPrimaryMint = apiAsset?.asset.primaryVariant?.mint ?? null;
     const apiPrimaryVariant = apiPrimaryMint ? (variants.find(v => v.mint === apiPrimaryMint) ?? null) : null;
@@ -1035,6 +1068,14 @@ async function loadAssetPageModel({ asset, requestedName, requestedMint }: Asset
             ? buildVariantGroup(canonicalAssetId, displayName, variants, variantHubFromRegistry)
             : null) ?? variantHubFromRegistry;
 
+    // Advisory state: the viewed variant's advisory drives the banner, the
+    // header links, and trade gating; sibling advisories (flagged variants
+    // other than the viewed one) drive the compact notice on the canonical view.
+    const viewedAdvisory = getViewedAdvisory({ requestedVariant, primary });
+    const advisoryEntries = collectVariantAdvisories(variants, apiAsset?.asset.advisories);
+    const siblingAdvisories = getSiblingAdvisories(advisoryEntries, activeMint);
+    const tradeBlocked = isTradeBlocked(viewedAdvisory);
+
     return {
         assetRef,
         canonicalAssetId,
@@ -1046,6 +1087,10 @@ async function loadAssetPageModel({ asset, requestedName, requestedMint }: Asset
         active,
         activeMint,
         buyAddress,
+        viewedAdvisory,
+        advisoryEntries,
+        siblingAdvisories,
+        tradeBlocked,
         canonicalMarket,
         shouldUseCanonicalMarket,
         shouldEnableRealtimePrice,
@@ -1085,7 +1130,11 @@ async function AssetPageContent(props: AssetPageProps) {
         variantGroup,
         showSingletonVariantBadge,
         variants,
+        viewedAdvisory,
+        siblingAdvisories,
     } = await loadAssetPageModel(props);
+
+    const activeSymbol = requestedVariant?.displaySymbol ?? displaySymbol;
 
     return (
         <TokenPageScaffold
@@ -1095,6 +1144,7 @@ async function AssetPageContent(props: AssetPageProps) {
                     tokenAddressType={!isVariantView && coingeckoId ? 'coingecko' : 'solana'}
                     tokenSymbol={displaySymbol}
                     tokenName={displayName}
+                    advisoryStatus={viewedAdvisory?.status ?? null}
                     tokenPrice={
                         shouldUseCanonicalMarket ? (canonicalMarket?.price ?? null) : (active?.market?.price ?? null)
                     }
@@ -1118,8 +1168,21 @@ async function AssetPageContent(props: AssetPageProps) {
             breadcrumbCanonicalHref={requestedVariant ? `/${encodeURIComponent(assetRef)}` : undefined}
             breadcrumbVariantSymbol={requestedVariant ? requestedVariant.displaySymbol : undefined}
             buyAddress={buyAddress}
-            buySymbol={requestedVariant?.displaySymbol ?? displaySymbol}
+            buySymbol={activeSymbol}
             buyLogoURI={displayLogoURI ?? undefined}
+            advisory={viewedAdvisory}
+            advisoryBanner={
+                viewedAdvisory || siblingAdvisories.length > 0 ? (
+                    <>
+                        <AssetAdvisoryBanner advisory={viewedAdvisory} symbol={activeSymbol} mint={activeMint} />
+                        <AssetAdvisorySiblingNotice
+                            entries={siblingAdvisories}
+                            assetId={canonicalAssetId}
+                            displayName={displayName}
+                        />
+                    </>
+                ) : null
+            }
             header={
                 <TokenHeaderWithLinks
                     assetId={canonicalAssetId}
@@ -1141,6 +1204,7 @@ async function AssetPageContent(props: AssetPageProps) {
                         variantGroup,
                         showSingletonVariantBadge,
                         variantCurrentAddress: activeMint ?? undefined,
+                        advisory: viewedAdvisory,
                     }}
                 />
             }
@@ -1151,9 +1215,10 @@ async function AssetPageContent(props: AssetPageProps) {
                     coingeckoId={coingeckoId ?? null}
                     enableCoinGeckoFallback={!isVariantView}
                     buyAddress={buyAddress}
-                    buySymbol={requestedVariant?.displaySymbol ?? displaySymbol}
+                    buySymbol={activeSymbol}
                     buyLogoURI={displayLogoURI ?? undefined}
                     displayName={displayName}
+                    advisory={viewedAdvisory}
                 />
             }
         >

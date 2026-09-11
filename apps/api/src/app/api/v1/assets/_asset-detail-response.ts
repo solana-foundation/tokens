@@ -1,6 +1,7 @@
 import type { CanonicalAsset, PrimaryVariantStrategy, VariantKind } from '@tokens/asset-registry';
 import { liquidityTierPriority } from '@tokens/asset-registry';
 
+import type { AssetAdvisorySummaryEntry } from '@/lib/advisories';
 import {
     computePreStocksDerived,
     optionalText,
@@ -67,7 +68,13 @@ export interface PreStocksMintSnapshot {
 }
 
 export interface BuildAssetDetailResponseParams {
+    /** Variants should already carry `advisory` (see `annotateAssetAdvisories`). */
     asset: CanonicalAsset;
+    /**
+     * `asset.advisories[]` — every flagged variant of the asset, including
+     * ones a caller hid. Defaults to `[]`; the key is always emitted.
+     */
+    advisories?: AssetAdvisorySummaryEntry[];
     assetDescription?: string | null;
     primaryVariant: CanonicalAsset['variants'][number] | null;
     token: TokenMarketSnapshot | undefined;
@@ -302,6 +309,7 @@ export function buildAssetDetailResponse(params: BuildAssetDetailResponseParams)
             stats: params.effectiveStats,
             primaryVariantStrategy: params.primaryVariantStrategy ?? 'liquidity',
             ...(params.canonicalMarket ? { canonicalMarket: params.canonicalMarket } : {}),
+            advisories: params.advisories ?? [],
             variantGroups,
             primaryVariant: params.primaryVariant
                 ? withDerivedVariantTier(

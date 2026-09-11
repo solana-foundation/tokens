@@ -6,6 +6,7 @@ import type { AdminRepo, CategorySummary } from './handlers/curatedTokens';
 import type { AdminMutationsRepo } from './handlers/curatedTokensMutations';
 import type { AdminReadsRepo } from './handlers/curatedTokensReads';
 import type { HardDeleteRepo } from './handlers/hardDelete';
+import type { VariantAdvisoriesRepo } from './handlers/variantAdvisories';
 import { createApp, decodeIdentityHeader, IDENTITY_HEADER, type ServerDeps } from './server';
 
 const ADMIN_ID = 'admin_1';
@@ -55,6 +56,15 @@ function makeHardDeleteRepo(): HardDeleteRepo {
     return { hardDeleteAsset: async () => null };
 }
 
+function makeVariantAdvisoriesRepo(): VariantAdvisoriesRepo {
+    return {
+        set: async () => ({ outcome: 'set', reactivated: false }),
+        clear: async () => 'not_found',
+        listActive: async () => [],
+        listEventsByMint: async () => [],
+    };
+}
+
 function makeDeps(overrides: Partial<ServerDeps> = {}): ServerDeps {
     return {
         repo: makeCategoriesRepo([]),
@@ -62,6 +72,7 @@ function makeDeps(overrides: Partial<ServerDeps> = {}): ServerDeps {
         mutations: makeMutationsRepo(),
         hardDelete: makeHardDeleteRepo(),
         tokenListsAdmin: { listAll: async () => [], archiveBySlug: async () => false, unlockBySlug: async () => false },
+        variantAdvisories: makeVariantAdvisoriesRepo(),
         adminAllowlist: { clerkUserIds: new Set([ADMIN_ID]), emails: new Set<string>() },
         authToken: 'tok',
         ...overrides,
@@ -287,5 +298,105 @@ describe('createApp', () => {
         const payload = (await res.json()) as { error: string; message?: string };
         expect(payload.error).toBe('handler_error');
         expect(payload.message).toBeUndefined();
+    });
+});
+
+describe('variant advisories routes', () => {
+    const MINT = 'SiLVFMgD3eD2rgK628NbTBq9MnuJF5FW2CRaVyTB35L';
+
+    it('POST /mutation/setVariantAdvisory writes through the repo and returns the contract shape', async () => {
+        const calls: unknown[] = [];
+        const repo: VariantAdvisoriesRepo = {
+            ...makeVariantAdvisoriesRepo(),
+            set: async args => {
+                calls.push(args);
+                return { outcome: 'set', reactivated: true };
+            },
+        };
+        const app = createApp(makeDeps({ variantAdvisories: repo }));
+        const res = await call(app, '/mutation/setVariantAdvisory', {
+            method: 'POST',
+            headers: adminHeaders(),
+            body: JSON.stringify({ mint: MINT, status: 'compromised', reason: 'exploit', activateVariant: true }),
+        });
+        expect(res.status).toBe(200);
+        expect(await res.json()).toEqual({ mint: MINT, status: 'compromised', updated: true, reactivated: true });
+        expect(calls).toHaveLength(1);
+        expect((calls[0] as { actor: { clerkUserId: string } }).actor.clerkUserId).toBe(ADMIN_ID);
+    });
+
+    it('POST /mutation/setVariantAdvisory maps variant_not_found to 400', async () => {
+        const repo: VariantAdvisoriesRepo = {
+            ...makeVariantAdvisoriesRepo(),
+            set: async () => ({ outcome: 'variant_not_found' }),
+        };
+        const app = createApp(makeDeps({ variantAdvisories: repo }));
+        const res = await call(app, '/mutation/setVariantAdvisory', {
+            method: 'POST',
+            headers: adminHeaders(),
+            body: JSON.stringify({ mint: MINT, status: 'caution', reason: 'x' }),
+        });
+        expect(res.status).toBe(400);
+    });
+
+    it('POST /mutation/clearVariantAdvisory returns cleared=false when nothing was active', async () => {
+        const app = createApp(makeDeps());
+        const res = await call(app, '/mutation/clearVariantAdvisory', {
+            method: 'POST',
+            headers: adminHeaders(),
+            body: JSON.stringify({ mint: MINT }),
+        });
+        expect(res.status).toBe(200);
+        expect(await res.json()).toEqual({ mint: MINT, cleared: false });
+    });
+
+    it('POST /query/listVariantAdvisories returns advisories and events', async () => {
+        const row = {
+            mint: MINT,
+            status: 'compromised' as const,
+            reason: 'exploit',
+            url: null,
+            setBy: ADMIN_ID,
+            setByEmail: null,
+            setAt: 1,
+            updatedAt: 2,
+        };
+        const event = {
+            id: 'ave_1',
+            mint: MINT,
+            action: 'set' as const,
+            status: 'compromised' as const,
+            reason: 'exploit',
+            url: null,
+            reactivatedVariant: false,
+            actorClerkUserId: ADMIN_ID,
+            actorEmail: null,
+            createdAt: 1,
+        };
+        const repo: VariantAdvisoriesRepo = {
+            ...makeVariantAdvisoriesRepo(),
+            listActive: async () => [row],
+            listEventsByMint: async () => [event],
+        };
+        const app = createApp(makeDeps({ variantAdvisories: repo }));
+        const res = await call(app, '/query/listVariantAdvisories', {
+            method: 'POST',
+            headers: adminHeaders(),
+            body: JSON.stringify({ mint: MINT }),
+        });
+        expect(res.status).toBe(200);
+        expect(await res.json()).toEqual({ advisories: [row], events: [event] });
+    });
+
+    it('rejects non-admin identities with 403 on all three routes', async () => {
+        const app = createApp(makeDeps());
+        for (const path of ['/mutation/setVariantAdvisory', '/mutation/clearVariantAdvisory', '/query/listVariantAdvisories']) {
+            const res = await call(app, path, {
+                method: 'POST',
+                headers: adminHeaders({ [IDENTITY_HEADER]: identityHeader('someone_else') }),
+                body: JSON.stringify({ mint: MINT, status: 'caution', reason: 'x' }),
+            });
+            expect(res.status).toBe(403);
+        }
     });
 });

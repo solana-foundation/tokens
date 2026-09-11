@@ -15,7 +15,7 @@
  */
 
 import { classifyLiquidityTier, getCanonicalFallbackLogoPath } from '@tokens/asset-registry';
-import type { AssetCategory, LiquidityTier, StockVariantTier, VariantKind } from '@tokens/asset-registry';
+import type { AssetCategory, LiquidityTier, StockVariantTier, VariantAdvisory, VariantKind } from '@tokens/asset-registry';
 
 import {
     CURATED_CATEGORY_SLUGS,
@@ -71,6 +71,8 @@ export interface VariantWithMarketRow {
     stockVariantTier: StockVariantTier | null;
     isActive: boolean;
     market: VariantMarketRow | null;
+    /** Active admin advisory on this mint (asset_variant_advisories), or null. */
+    advisory: VariantAdvisory | null;
 }
 
 export interface SearchAssetRow {
@@ -133,6 +135,8 @@ export interface AdminVariantRow {
     logoURI?: string;
     isActive: boolean;
     lastFetchedAt?: number;
+    /** Active admin advisory on this mint, or null. Always present (not omitted). */
+    advisory: VariantAdvisory | null;
 }
 
 interface RankedVariantRow {
@@ -165,6 +169,7 @@ export function buildVariantEditorRows(variants: readonly VariantWithMarketRow[]
             ...(market?.logoURI ? { logoURI: market.logoURI } : {}),
             isActive: variant.isActive,
             ...(lastFetchedAt ? { lastFetchedAt } : {}),
+            advisory: variant.advisory ?? null,
         };
         return { row, liquidity };
     });
@@ -420,6 +425,7 @@ export interface VariantEditorResult {
         issuerUrl?: string;
         stockVariantTier?: StockVariantTier;
         isActive: boolean;
+        advisory: VariantAdvisory | null;
     };
     canonical: {
         assetId: string;
@@ -462,6 +468,7 @@ export async function getVariantEditor(
             ...(variant.issuerUrl ? { issuerUrl: variant.issuerUrl } : {}),
             ...(variant.stockVariantTier ? { stockVariantTier: variant.stockVariantTier } : {}),
             isActive: variant.isActive,
+            advisory: variant.advisory ?? null,
         },
         canonical: {
             assetId: asset.assetId,

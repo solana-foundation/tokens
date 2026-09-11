@@ -71,6 +71,19 @@ function assertListToken(token: unknown, path: string): string {
     assertNullableString(token.logoURI, `${path}.logoURI`);
     assert(typeof token.verified === 'boolean', `${path}.verified must be a boolean`);
     assert(typeof token.rank === 'number', `${path}.rank must be a number`);
+    // `advisory` is always present: null, or an active non-blocked advisory
+    // (blocked mints are hidden from list hydration).
+    assert('advisory' in token, `${path}.advisory must exist (null allowed)`);
+    if (token.advisory !== null) {
+        assertObject(token.advisory, `${path}.advisory`);
+        assert(
+            token.advisory.status === 'caution' || token.advisory.status === 'compromised',
+            `${path}.advisory.status must be caution|compromised (blocked is hidden from lists)`,
+        );
+        assert(typeof token.advisory.reason === 'string', `${path}.advisory.reason must be a string`);
+        assertNullableString(token.advisory.url, `${path}.advisory.url`);
+        assert(typeof token.advisory.since === 'number', `${path}.advisory.since must be a number`);
+    }
     return token.mint;
 }
 

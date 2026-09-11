@@ -334,3 +334,92 @@ describe('pickPrimaryVariantWithRanking', () => {
         expect(selected?.mint).toBe(MINT_A);
     });
 });
+
+describe('pickPrimaryVariantWithRanking advisory gate', () => {
+    const advisory = (status: 'caution' | 'compromised' | 'blocked') => ({
+        status,
+        reason: 'test',
+        url: null,
+        since: NOW * 1000,
+    });
+
+    it('never picks a compromised spot variant while an unflagged etf sibling exists', () => {
+        // The SILV shape: a flagged wrapped variant with 100x the liquidity of
+        // the only clean sibling, which is an etf wrapper (not spot-like).
+        const silv: AssetVariant = { ...variant(MINT_A, 'silver:silv'), kind: 'wrapped', advisory: advisory('compromised') };
+        const etf: AssetVariant = { ...variant(MINT_B, 'silver:ondo-etf'), kind: 'etf' };
+
+        const result = pickPrimaryVariantWithRanking({
+            asset: asset([silv, etf]),
+            mintRank: new Map(),
+            marketByMint: new Map([
+                [MINT_A, market({ liquidity: 1_000_000 })],
+                [MINT_B, market({ liquidity: 6_000 })],
+            ]),
+        });
+
+        expect(result.variant?.mint).toBe(MINT_B);
+        expect(result.reason).toBe('advisory_filter');
+    });
+
+    it('excludes blocked variants and caller-supplied excludeMints', () => {
+        const blocked: AssetVariant = { ...variant(MINT_A, 'x:a'), advisory: advisory('blocked') };
+        const excluded: AssetVariant = variant(MINT_B, 'x:b');
+        const clean: AssetVariant = variant(MINT_C, 'x:c');
+
+        const result = pickPrimaryVariantWithRanking({
+            asset: asset([blocked, excluded, clean]),
+            mintRank: new Map(),
+            excludeMints: new Set([MINT_B]),
+            marketByMint: new Map([
+                [MINT_A, market({ liquidity: 3_000_000 })],
+                [MINT_B, market({ liquidity: 2_000_000 })],
+                [MINT_C, market({ liquidity: 1_000 })],
+            ]),
+        });
+
+        expect(result.variant?.mint).toBe(MINT_C);
+        expect(result.reason).toBe('advisory_filter');
+    });
+
+    it('does not exclude caution variants', () => {
+        const caution: AssetVariant = { ...variant(MINT_A, 'x:a'), advisory: advisory('caution') };
+        const clean: AssetVariant = variant(MINT_B, 'x:b');
+
+        const selected = pick({
+            variants: [caution, clean],
+            marketByMint: new Map([
+                [MINT_A, market({ liquidity: 3_000_000 })],
+                [MINT_B, market({ liquidity: 1_000 })],
+            ]),
+        });
+
+        expect(selected?.mint).toBe(MINT_A);
+    });
+
+    it('falls back to the full pool when every variant is flagged', () => {
+        const a: AssetVariant = { ...variant(MINT_A, 'x:a'), advisory: advisory('compromised') };
+        const b: AssetVariant = { ...variant(MINT_B, 'x:b'), advisory: advisory('blocked') };
+
+        const result = pickPrimaryVariantWithRanking({
+            asset: asset([a, b]),
+            mintRank: new Map(),
+            marketByMint: new Map([
+                [MINT_A, market({ liquidity: 3_000_000 })],
+                [MINT_B, market({ liquidity: 1_000 })],
+            ]),
+        });
+
+        expect(result.variant?.mint).toBe(MINT_A);
+        // Ranking ran over the full pool: the advisory gate did not shrink it.
+        expect(result.reason).not.toBe('advisory_filter');
+    });
+
+    it('reports only_candidate when the single variant is unflagged', () => {
+        const result = pickPrimaryVariantWithRanking({
+            asset: asset([variant(MINT_A, 'x:a')]),
+            mintRank: new Map(),
+        });
+        expect(result.reason).toBe('only_candidate');
+    });
+});

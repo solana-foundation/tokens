@@ -8,7 +8,9 @@ import {
     type PrimaryVariantStrategy,
     type StockVariantTier,
     type TrustTier,
+    type VariantAdvisory,
 } from '@tokens/asset-registry';
+import { getAdvisoriesByMintSync, tradeRestrictedMints } from '@/lib/advisories';
 import { getCuratedMintRankSync } from '@/lib/curated-membership';
 import { getTokenLogoURLWithSecondarySymbol } from '@/lib/logo-overrides';
 
@@ -446,11 +448,17 @@ export function deriveVariantTierFields(liquidity: unknown): { liquidityTier: Li
     return { liquidityTier, trustTier: liquidityTier };
 }
 
+/**
+ * Public variant serialization: derived tier fields plus the `advisory` key,
+ * which is ALWAYS present (`null` when the mint has no active advisory). Every
+ * serialized variant object in the v1 surface passes through here.
+ */
 export function withDerivedVariantTier<T extends object>(
     value: T,
     liquidity: unknown,
-): T & { liquidityTier: LiquidityTier; trustTier: TrustTier } {
-    return { ...value, ...deriveVariantTierFields(liquidity) };
+): T & { liquidityTier: LiquidityTier; trustTier: TrustTier; advisory: VariantAdvisory | null } {
+    const advisory = (value as { advisory?: VariantAdvisory | null }).advisory ?? null;
+    return { ...value, advisory, ...deriveVariantTierFields(liquidity) };
 }
 
 /**
@@ -483,11 +491,16 @@ export function pickPrimaryVariant(
     fillQualityByMint?: ReadonlyMap<string, VariantExecutionQualitySnapshot | null | undefined>,
     options?: { strategy?: PrimaryVariantStrategy },
 ): AssetVariant | null {
+    // Advisory-flagged mints (compromised/blocked) never win primary while an
+    // unflagged sibling exists. The sync read serves the last-good set, so this
+    // also covers callers whose variants were not annotated (e.g. registry
+    // fallbacks); annotated variants are excluded by the ranking itself.
     return pickPrimaryVariantWithRanking({
         asset,
         mintRank,
         marketByMint: tokenByMint,
         fillQualityByMint,
+        excludeMints: tradeRestrictedMints(getAdvisoriesByMintSync()),
         options: { strategy: options?.strategy ?? 'liquidity' },
     }).variant;
 }

@@ -26,6 +26,7 @@ import type {
 import type { ActiveStockMapping, ClickhouseRepo } from './handlers/crons.clickhouse';
 import type { MiscJobsRepo } from './handlers/crons.misc';
 import type { AssetDeletionTombstonesRepo } from './handlers/assetDeletionTombstones';
+import type { AssetAdvisoriesRepo, AssetAdvisoryRow } from './handlers/assetAdvisoriesReads';
 import type { SanctumLstRow, SanctumLstsRepo } from './handlers/sanctumLsts';
 import type { AssetMarketRow, AssetMarketsRepo } from './handlers/assetMarkets';
 import type { VariantMarketRow, VariantMarketsRepo } from './handlers/variantMarkets';
@@ -2459,6 +2460,19 @@ export function makePostgresAssetDeletionTombstonesRepo(sql: Sql): AssetDeletion
     };
 }
 
+export function makePostgresAssetAdvisoriesRepo(sql: Sql): AssetAdvisoriesRepo {
+    return {
+        async listAll() {
+            const rows = await sql<AssetAdvisoryRow[]>`
+                SELECT mint, status, reason, url, set_at, updated_at
+                FROM asset_variant_advisories
+                ORDER BY mint
+            `;
+            return rows;
+        },
+    };
+}
+
 export function makePostgresSanctumLstsRepo(sql: Sql): SanctumLstsRepo {
     return {
         async listActive(limit) {
@@ -3377,16 +3391,29 @@ export function makePostgresTokensReadsRepo(sql: Sql): TokensReadsRepo {
 
 export function makePostgresTrendingReadsRepo(sql: Sql): TrendingReadsRepo {
     return {
+        // Trade-restricted advisories (compromised/blocked) are filtered in SQL
+        // so pagination stays exact and a freshly set advisory drops the mint
+        // from trending on the next read, not the next cron run.
         async listTrending(category) {
             const rows = category
                 ? await sql<TrendingMarketRow[]>`
                     SELECT ${sql.unsafe(TRENDING_MARKET_COLUMNS)}
                     FROM trending_markets
                     WHERE category = ${category}
+                      AND NOT EXISTS (
+                          SELECT 1 FROM asset_variant_advisories adv
+                          WHERE adv.mint = trending_markets.mint
+                            AND adv.status IN ('compromised', 'blocked')
+                      )
                 `
                 : await sql<TrendingMarketRow[]>`
                     SELECT ${sql.unsafe(TRENDING_MARKET_COLUMNS)}
                     FROM trending_markets
+                    WHERE NOT EXISTS (
+                          SELECT 1 FROM asset_variant_advisories adv
+                          WHERE adv.mint = trending_markets.mint
+                            AND adv.status IN ('compromised', 'blocked')
+                      )
                 `;
             return rows;
         },
@@ -3396,10 +3423,20 @@ export function makePostgresTrendingReadsRepo(sql: Sql): TrendingReadsRepo {
                     SELECT ${sql.unsafe(FRESH_TRENDING_MARKET_COLUMNS)}
                     FROM fresh_trending_markets
                     WHERE category = ${category}
+                      AND NOT EXISTS (
+                          SELECT 1 FROM asset_variant_advisories adv
+                          WHERE adv.mint = fresh_trending_markets.mint
+                            AND adv.status IN ('compromised', 'blocked')
+                      )
                 `
                 : await sql<FreshTrendingMarketRow[]>`
                     SELECT ${sql.unsafe(FRESH_TRENDING_MARKET_COLUMNS)}
                     FROM fresh_trending_markets
+                    WHERE NOT EXISTS (
+                          SELECT 1 FROM asset_variant_advisories adv
+                          WHERE adv.mint = fresh_trending_markets.mint
+                            AND adv.status IN ('compromised', 'blocked')
+                      )
                 `;
             return rows;
         },

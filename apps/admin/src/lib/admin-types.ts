@@ -91,6 +91,66 @@ export type CanonicalRow = {
     searchHints: string[];
 };
 
+/* ── variant advisories ─────────────────────────────────────────────────── */
+
+// Hand-copied from ADVISORY_STATUSES / VariantAdvisory in
+// packages/asset-registry/src/types.ts (the source of truth).
+export type AdvisoryStatus = 'caution' | 'compromised' | 'blocked';
+
+/** The active advisory attached to a variant mint, as serialized on admin variant rows. */
+export type VariantAdvisory = {
+    status: AdvisoryStatus;
+    reason: string;
+    url: string | null;
+    /** Unix ms; reset when the status changes, kept when only reason/url are edited. */
+    since: number;
+};
+
+/** Mirrors `VariantAdvisoryRow` in cloudrun-admin handlers/variantAdvisories.ts. */
+export type VariantAdvisoryRow = {
+    mint: string;
+    status: AdvisoryStatus;
+    reason: string;
+    url: string | null;
+    setBy: string;
+    setByEmail: string | null;
+    setAt: number;
+    updatedAt: number;
+};
+
+/** Mirrors `VariantAdvisoryEventRow` in cloudrun-admin handlers/variantAdvisories.ts (append-only audit log). */
+export type VariantAdvisoryEventRow = {
+    id: string;
+    mint: string;
+    action: 'set' | 'clear';
+    status: AdvisoryStatus | null;
+    reason: string | null;
+    url: string | null;
+    reactivatedVariant: boolean;
+    actorClerkUserId: string;
+    actorEmail: string | null;
+    createdAt: number;
+};
+
+export type SetVariantAdvisoryArgs = {
+    mint: string;
+    status: AdvisoryStatus;
+    reason: string;
+    url?: string | null;
+    /** When the variant is inactive, flip `is_active` back on in the same transaction. */
+    activateVariant?: boolean;
+};
+
+export type SetVariantAdvisoryResult = { mint: string; status: AdvisoryStatus; updated: true; reactivated: boolean };
+
+export type ClearVariantAdvisoryResult = { mint: string; cleared: boolean };
+
+/** `events` is only populated when `mint` was passed to `listVariantAdvisories`. */
+export type ListVariantAdvisoriesResult = {
+    advisories: VariantAdvisoryRow[];
+    events: VariantAdvisoryEventRow[];
+};
+
 /* ── listVariantsByAssetIds ─────────────────────────────────────────────── */
 
 export type AdminVariantRow = {
@@ -111,6 +171,12 @@ export type AdminVariantRow = {
     logoURI?: string;
     isActive: boolean;
     lastFetchedAt?: number;
+    /**
+     * Active advisory for this mint, or null. Optional for rollout safety: a
+     * cloudrun-admin build that predates advisories omits the key entirely, and
+     * the UI treats `undefined` the same as `null`.
+     */
+    advisory?: VariantAdvisory | null;
 };
 
 export type VariantsByAssetIdRow = {
