@@ -41,16 +41,22 @@ function loadProjectLookup(path: string): Map<string, ProjectInfo> {
     return map;
 }
 
+const MAX_ATTEMPTS = 10;
+const RETRY_DELAY_MS = 30_000;
+
 async function lokiFetch(kind: string, url: URL, query: string): Promise<unknown> {
     for (let attempt = 1; ; attempt++) {
         const res = await fetch(url, {
             headers: { Authorization: `Bearer ${grafanaToken}`, Accept: 'application/json' },
         });
         if (res.ok) return res.json();
+        const detail = (await res.text().catch(() => '')).slice(0, 120);
         const retryable = res.status === 429 || res.status >= 500;
-        if (!retryable || attempt >= 3) throw new Error(`Loki ${kind} ${res.status}: ${query.slice(0, 80)}`);
-        console.error(`WARN: Loki ${kind} ${res.status} (attempt ${attempt}/3), retrying: ${query.slice(0, 80)}`);
-        await new Promise(r => setTimeout(r, attempt * 5000));
+        if (!retryable || attempt >= MAX_ATTEMPTS) {
+            throw new Error(`Loki ${kind} ${res.status} (${detail}): ${query.slice(0, 80)}`);
+        }
+        console.error(`WARN: Loki ${kind} ${res.status} (attempt ${attempt}/${MAX_ATTEMPTS}, ${detail}), retrying: ${query.slice(0, 80)}`);
+        await new Promise(r => setTimeout(r, RETRY_DELAY_MS));
     }
 }
 
