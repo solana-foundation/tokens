@@ -316,7 +316,8 @@ export function makePostgresCacheWarmAssetsRepo(sql: Sql): CacheWarmAssetsRepo {
     };
 }
 
-function randomId(prefix: string): string {
+/** Exported for the per-domain repos under `src/db/` (e.g. db/depeg.ts). */
+export function randomId(prefix: string): string {
     return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
 }
 
@@ -2490,12 +2491,14 @@ export function makePostgresStablecoinHealthReadsRepo(sql: Sql): StablecoinHealt
                        d.peg_usd          AS depeg_peg_usd,
                        d.tier_since_at    AS depeg_tier_since_at,
                        d.last_fetched_at  AS depeg_last_fetched_at,
+                       d.last_ok_at       AS depeg_last_ok_at,
                        d.error_message    AS depeg_error_message,
                        s.ok               AS sh_ok,
                        s.composite_grade  AS sh_composite_grade,
                        s.composite_score  AS sh_composite_score,
                        s.category_scores  AS sh_category_scores,
-                       s.last_fetched_at  AS sh_last_fetched_at
+                       s.last_fetched_at  AS sh_last_fetched_at,
+                       s.last_ok_at       AS sh_last_ok_at
                 FROM unnest(${sql.array([...mints])}::text[]) AS v(mint)
                 LEFT JOIN webacy_depeg_latest d ON d.chain = 'solana' AND d.address = v.mint
                 LEFT JOIN webacy_structural_health_latest s ON s.chain = 'solana' AND s.address = v.mint

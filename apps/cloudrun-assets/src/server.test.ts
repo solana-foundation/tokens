@@ -1535,7 +1535,9 @@ describe('assetAdvisoriesList', () => {
         expect(res.status).toBe(200);
         expect(await res.json()).toEqual({
             revision: 20,
-            advisories: [{ mint: 'MintA', status: 'compromised', reason: 'exploit', url: 'https://x.test/p', since: 10 }],
+            advisories: [
+                { mint: 'MintA', status: 'compromised', reason: 'exploit', url: 'https://x.test/p', since: 10, source: 'admin' },
+            ],
         });
     });
 

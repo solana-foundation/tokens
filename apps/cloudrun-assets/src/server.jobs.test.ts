@@ -13,6 +13,7 @@ import type { CoingeckoReadsRepo } from './handlers/coingeckoReads';
 import type { StockReadsRepo } from './handlers/stockReads';
 import type { OhlcvReadsRepo } from './handlers/ohlcvReads';
 import type { PrestocksReadsRepo } from './handlers/prestocksReads';
+import type { DepegCronDeps } from './handlers/crons.depeg';
 import type { TokensReadsRepo } from './handlers/tokensReads';
 import type { TrendingReadsRepo } from './handlers/trendingReads';
 import type { FillQualityReadsRepo } from './handlers/fillQualityReads';
@@ -491,6 +492,65 @@ describe('POST /jobs/:name', () => {
         });
         expect(res.status).toBe(404);
         expect(((await res.json()) as { error: string }).error).toBe('clickhouse_jobs_disabled');
+    });
+
+    it('returns 404 depeg_jobs_disabled for depeg jobs when those deps are missing', async () => {
+        const app = createApp({
+            ...baseDeps,
+            repo: noopRepo,
+            authToken: 'tok',
+            cronDeps: emptyCronDeps(),
+            verifyOidc: allowOidc,
+        });
+        const res = await call(app, '/jobs/reconcile-stablecoin-depeg', {
+            method: 'POST',
+            headers: { authorization: 'Bearer x' },
+            body: '{}',
+        });
+        expect(res.status).toBe(404);
+        expect(((await res.json()) as { error: string }).error).toBe('depeg_jobs_disabled');
+    });
+
+    it('dispatches depeg jobs to depegCronDeps when present', async () => {
+        const depegCronDeps: DepegCronDeps = {
+            webacyDepeg: {
+                isConfigured: () => false,
+                async fetchDepegToken() {
+                    return { ok: false, status: 0, message: 'n/a' };
+                },
+                async fetchDepegList() {
+                    return { ok: false, status: 0, message: 'n/a' };
+                },
+                async fetchStructuralHealthBatch() {
+                    return [];
+                },
+            },
+            repo: undefined as unknown as DepegCronDeps['repo'],
+            curated: noopCuratedMembershipSource,
+            now: () => 1_780_000_000_000,
+            isRefreshEnabled: () => true,
+            isDryRunDefault: () => true,
+            log: () => {},
+        };
+        const app = createApp({
+            ...baseDeps,
+            repo: noopRepo,
+            authToken: 'tok',
+            cronDeps: emptyCronDeps(),
+            depegCronDeps,
+            verifyOidc: allowOidc,
+        });
+        const res = await call(app, '/jobs/reconcile-stablecoin-depeg', {
+            method: 'POST',
+            headers: { authorization: 'Bearer jwt', 'content-type': 'application/json' },
+            body: '{}',
+        });
+        expect(res.status).toBe(200);
+        const payload = (await res.json()) as { ok: boolean; disabled?: boolean; reason?: string; mode?: string };
+        expect(payload.ok).toBe(true);
+        expect(payload.disabled).toBe(true);
+        expect(payload.reason).toBe('webacy_not_configured');
+        expect(payload.mode).toBe('sweep');
     });
 
     it('returns 404 jobs_disabled when cronDeps is missing', async () => {

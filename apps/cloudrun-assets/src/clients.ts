@@ -31,6 +31,8 @@ import type {
 } from './handlers/crons.clickhouse';
 import type { BirdeyeMarketsClient, TokenMarketEntry } from './handlers/crons.misc';
 import type { PreStocksApiSnapshot, PreStocksClient } from './handlers/crons.prestocks';
+import type { StructuralHealthBatchEntry, WebacyDepegClient } from './handlers/crons.depeg';
+import { extractDepegListItems, normalizeDepegItem, type WebacyDepegItem } from './handlers/depegNormalize';
 
 // Shadow-mode envelope schemas (warn on mismatch, pass through) — the two
 // highest-traffic blind casts. Row shapes stay unknown/T on purpose.
@@ -264,6 +266,195 @@ export function makeWebacyClient(opts: MakeWebacyOptions): WebacyClient {
             return { token, trading, holder };
         },
     };
+}
+
+interface MakeWebacyDepegOptions {
+    apiKey: string | undefined;
+    baseUrl?: string;
+    fetchImpl?: typeof fetch;
+}
+
+/**
+ * Webacy depeg monitor (`/rwa`) and structural health (`/v3/rwa`) client.
+ * Separate from `makeWebacyClient` so the token-risk fixtures stay untouched.
+ * Never throws: every method reports failures in its result so the jobs can
+ * cache them per token.
+ */
+export function makeWebacyDepegClient(opts: MakeWebacyDepegOptions): WebacyDepegClient {
+    const baseUrl = (opts.baseUrl ?? 'https://api.webacy.com').replace(/\/+$/, '');
+    const apiKey = opts.apiKey?.trim() ?? '';
+    const fetchImpl = opts.fetchImpl ?? fetch;
+
+    type Raw = { ok: true; status: number; data: unknown } | { ok: false; status: number; message: string };
+
+    async function request(url: string, init?: { method: 'POST'; body: unknown }): Promise<Raw> {
+        if (!apiKey) return { ok: false, status: 0, message: 'WEBACY_API_KEY not configured' };
+        try {
+            const res = await withExternalTiming('webacy', url, () =>
+                fetchImpl(url, {
+                    method: init?.method ?? 'GET',
+                    headers: {
+                        'x-api-key': apiKey,
+                        Accept: 'application/json',
+                        ...(init ? { 'content-type': 'application/json' } : {}),
+                    },
+                    ...(init ? { body: JSON.stringify(init.body) } : {}),
+                    signal: AbortSignal.timeout(EXTERNAL_FETCH_TIMEOUT_MS),
+                }),
+            );
+            const text = await res.text().catch(() => '');
+            let json: unknown = null;
+            try {
+                json = text ? JSON.parse(text) : null;
+            } catch {
+                json = null;
+            }
+            if (!res.ok) {
+                return {
+                    ok: false,
+                    status: res.status,
+                    message: json ? JSON.stringify(json).slice(0, 500) : res.statusText || 'Request failed',
+                };
+            }
+            if (json === null) return { ok: false, status: res.status, message: 'non-JSON response' };
+            return { ok: true, status: res.status, data: json };
+        } catch (err) {
+            return { ok: false, status: 0, message: err instanceof Error ? err.message : String(err) };
+        }
+    }
+
+    return {
+        isConfigured: () => apiKey.length > 0,
+
+        async fetchDepegToken({ chain, address }) {
+            const url = `${baseUrl}/rwa/${encodeURIComponent(address)}?chain=${encodeURIComponent(chain)}`;
+            const res = await request(url);
+            if (!res.ok) return res;
+            // Single-token responses may come bare or wrapped like the list.
+            const candidate = extractDepegListItems(res.data)[0] ?? res.data;
+            const item = normalizeDepegItem(candidate);
+            if (!item) return { ok: false, status: res.status, message: 'unrecognised depeg payload' };
+            // Webacy may echo a checksummed/renamed address; trust what we asked for.
+            return { ok: true, status: res.status, item: { ...item, address } };
+        },
+
+        async fetchDepegList({ chain, pageSize, maxPages }) {
+            const items: WebacyDepegItem[] = [];
+            const seen = new Set<string>();
+            let pages = 0;
+            let truncated = false;
+            let previousFirst: string | null = null;
+            for (let page = 1; page <= maxPages; page++) {
+                const url = `${baseUrl}/rwa?chain=${encodeURIComponent(chain)}&pageSize=${pageSize}&page=${page}`;
+                const res = await request(url);
+                if (!res.ok) {
+                    // A failed later page after a good first page is a partial list,
+                    // not a failed poll; the shrink guard decides what to do with it.
+                    if (pages === 0) return res;
+                    truncated = true;
+                    break;
+                }
+                pages += 1;
+                const rawItems = extractDepegListItems(res.data);
+                if (rawItems.length === 0) break;
+                const normalized = rawItems.map(normalizeDepegItem).filter((i): i is WebacyDepegItem => i !== null);
+                const first = normalized[0]?.address ?? null;
+                // Endpoints that ignore `page` return the same page forever.
+                if (first !== null && first === previousFirst) break;
+                previousFirst = first;
+                let added = 0;
+                for (const item of normalized) {
+                    if (seen.has(item.address)) continue;
+                    seen.add(item.address);
+                    items.push(item);
+                    added += 1;
+                }
+                if (added === 0) break;
+                if (rawItems.length < pageSize) break;
+                if (page === maxPages) truncated = true;
+            }
+            return { ok: true, items, pages, truncated };
+        },
+
+        async fetchStructuralHealthBatch(addresses) {
+            if (addresses.length === 0) return [];
+            const perAddress = async (): Promise<StructuralHealthBatchEntry[]> => {
+                const out: StructuralHealthBatchEntry[] = [];
+                for (const { address, chain } of addresses) {
+                    const url = `${baseUrl}/v3/rwa/${encodeURIComponent(address)}?chain=${encodeURIComponent(chain)}`;
+                    const res = await request(url);
+                    out.push(
+                        res.ok
+                            ? { address, ok: true, status: res.status, data: res.data }
+                            : { address, ok: false, status: res.status, message: res.message },
+                    );
+                }
+                return out;
+            };
+
+            const batch = await request(`${baseUrl}/v3/rwa/batch`, { method: 'POST', body: { addresses } });
+            if (!batch.ok) {
+                // Unconfigured key: do not fan out into N more failures.
+                if (batch.status === 0 && !apiKey) {
+                    return addresses.map(({ address }) => ({ address, ok: false, status: 0, message: batch.message }));
+                }
+                // The batch route is not confirmed in Webacy's docs; fall back to
+                // the documented per-token endpoint when it is missing or broken.
+                if (batch.status === 404 || batch.status === 405 || batch.message === 'non-JSON response') {
+                    return perAddress();
+                }
+                return addresses.map(({ address }) => ({
+                    address,
+                    ok: false,
+                    status: batch.status,
+                    message: batch.message,
+                }));
+            }
+            const entries = extractStructuralBatchEntries(batch.data, addresses);
+            if (entries === null) return perAddress();
+            return entries;
+        },
+    };
+}
+
+/**
+ * Maps a batch response onto the requested addresses. Accepts `{ results: [...] }`,
+ * `{ data: [...] }`, a bare array (items carry `address`), or an object keyed
+ * by address. Returns null when nothing matched, so the caller can fall back.
+ */
+function extractStructuralBatchEntries(
+    payload: unknown,
+    addresses: ReadonlyArray<{ address: string; chain: string }>,
+): StructuralHealthBatchEntry[] | null {
+    const byAddress = new Map<string, unknown>();
+    const list = extractDepegListItems(payload);
+    if (list.length > 0) {
+        for (const item of list) {
+            if (!item || typeof item !== 'object') continue;
+            const rec = item as Record<string, unknown>;
+            const address = rec.address ?? rec.token_address ?? rec.tokenAddress ?? rec.mint;
+            if (typeof address === 'string' && address.trim()) byAddress.set(address.trim(), item);
+        }
+    } else if (payload && typeof payload === 'object' && !Array.isArray(payload)) {
+        const rec = payload as Record<string, unknown>;
+        const container =
+            rec.results && typeof rec.results === 'object' && !Array.isArray(rec.results)
+                ? (rec.results as Record<string, unknown>)
+                : rec;
+        for (const { address } of addresses) {
+            if (container[address] !== undefined) byAddress.set(address, container[address]);
+        }
+    }
+    if (byAddress.size === 0) return null;
+    return addresses.map(({ address }) => {
+        const data = byAddress.get(address);
+        if (data === undefined) return { address, ok: false, status: 404, message: 'not in batch response' };
+        const rec = data && typeof data === 'object' ? (data as Record<string, unknown>) : null;
+        if (rec && (rec.error !== undefined || rec.ok === false)) {
+            return { address, ok: false, status: 200, message: String(rec.error ?? rec.message ?? 'error') };
+        }
+        return { address, ok: true, status: 200, data };
+    });
 }
 
 function toFiniteNumberOrNull(value: unknown): number | null {

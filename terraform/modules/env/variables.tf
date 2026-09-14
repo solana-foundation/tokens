@@ -201,3 +201,21 @@ variable "cloud_run_assets_min_instances" {
   type    = number
   default = 1
 }
+
+variable "webacy_depeg_sweep_schedule" {
+  type        = string
+  default     = "17 */4 * * *"
+  description = "Cron schedule for the Webacy stablecoin depeg reconciliation sweep (reconcile-stablecoin-depeg). Webhooks are the primary trigger; the sweep only covers missed deliveries, cooldown clears and coverage gaps. Staging is pinned to every 12h in crons_webacy_depeg.tf."
+}
+
+variable "webacy_depeg_dry_run" {
+  type        = bool
+  default     = true
+  description = "When true the depeg sweep records observations and logs would_set/would_clear decisions but never writes an advisory. Flip to false together with WEBACY_DEPEG_DRY_RUN=false on the assets worker at go-live."
+}
+
+variable "webacy_depeg_max_pages" {
+  type        = number
+  default     = 3
+  description = "Maximum GET /rwa pages (100 items each) the depeg sweep fetches per run. Bounds Webacy CU spend; 3 covers ~300 tokens."
+}

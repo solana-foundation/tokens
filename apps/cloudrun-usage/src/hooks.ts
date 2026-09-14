@@ -71,7 +71,7 @@ function svixTimestampInTolerance(timestamp: string, nowMs: number): boolean {
     return Math.abs(nowMs / 1000 - tsSeconds) <= SVIX_TIMESTAMP_TOLERANCE_SECONDS;
 }
 
-function constantTimeEqual(a: string, b: string): boolean {
+export function constantTimeEqual(a: string, b: string): boolean {
     if (a.length !== b.length) return false;
     let diff = 0;
     for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
