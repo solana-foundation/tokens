@@ -16,11 +16,7 @@ import type {
     SanctumFetchResult,
     WebacyClient,
 } from './handlers/crons';
-import type {
-    CoingeckoClient,
-    CoingeckoCoinListItem,
-    CoingeckoMarketChartRange,
-} from './handlers/crons.coingecko';
+import type { CoingeckoClient, CoingeckoCoinListItem, CoingeckoMarketChartRange } from './handlers/crons.coingecko';
 import { parseCoinListPayload } from './handlers/crons.coingecko';
 import type {
     ClickhouseClient,
@@ -323,6 +319,31 @@ export function makeWebacyDepegClient(opts: MakeWebacyDepegOptions): WebacyDepeg
         }
     }
 
+    /** All graded tokens on `chain`, keyed by lowercased address (how Webacy stores them). */
+    async function fetchGradesIndex(
+        chain: string,
+    ): Promise<{ ok: true; byLowerAddress: Map<string, unknown> } | { ok: false; status: number; message: string }> {
+        const byLowerAddress = new Map<string, unknown>();
+        for (let page = 1; page <= 10; page++) {
+            const res = await request(
+                `${baseUrl}/v3/rwa/grades?chain=${encodeURIComponent(chain)}&pageSize=200&page=${page}`,
+            );
+            if (!res.ok) {
+                if (page === 1) return { ok: false, status: res.status, message: res.message ?? 'Request failed' };
+                break;
+            }
+            const rows = extractDepegListItems(res.data);
+            for (const row of rows) {
+                const rec = row && typeof row === 'object' ? (row as Record<string, unknown>) : null;
+                const address = rec && typeof rec.address === 'string' ? rec.address.trim().toLowerCase() : null;
+                if (address) byLowerAddress.set(address, row);
+            }
+            const totalPages = readTotalPages(res.data);
+            if (rows.length === 0 || (totalPages !== null && page >= totalPages) || rows.length < 200) break;
+        }
+        return { ok: true, byLowerAddress };
+    }
+
     return {
         isConfigured: () => apiKey.length > 0,
 
@@ -384,45 +405,53 @@ export function makeWebacyDepegClient(opts: MakeWebacyDepegOptions): WebacyDepeg
         async fetchStructuralHealthBatch(requested) {
             if (requested.length === 0) return [];
             const addresses = requested.map(({ address, chain }) => ({ address, chain: toWebacyChainSlug(chain) }));
-            const perAddress = async (): Promise<StructuralHealthBatchEntry[]> => {
-                const out: StructuralHealthBatchEntry[] = [];
-                for (const { address, chain } of addresses) {
-                    const url = `${baseUrl}/v3/rwa/${encodeURIComponent(address)}?chain=${encodeURIComponent(chain)}`;
-                    const res = await request(url);
+            if (!apiKey) {
+                // Same shape as the other unconfigured paths; no network call.
+                const res = await request(`${baseUrl}/v3/rwa/grades`);
+                const message = res.ok ? 'not configured' : res.message;
+                return addresses.map(({ address }) => ({ address, ok: false, status: 0, message }));
+            }
+
+            // Verified 2026-09-14: the v3 grade store keys Solana mints in
+            // LOWERCASE (an EVM habit), so GET /v3/rwa/{mint} with the real
+            // base58 casing answers 404 "Grade data not found" while the
+            // lowercased form answers 200. POST /v3/rwa/batch/structural-health
+            // returns criteria only (no composite grade). So: discover coverage
+            // from the paginated grades list (1 call per chain), then fetch the
+            // full per-token detail (drivers + criteria) with the lowercased
+            // address, falling back to the list row if the detail call fails.
+            const out: StructuralHealthBatchEntry[] = [];
+            const byChain = new Map<string, Array<{ address: string }>>();
+            for (const entry of addresses) {
+                const list = byChain.get(entry.chain) ?? [];
+                list.push(entry);
+                byChain.set(entry.chain, list);
+            }
+            for (const [chain, entries] of byChain) {
+                const graded = await fetchGradesIndex(chain);
+                if (!graded.ok) {
+                    for (const { address } of entries) {
+                        out.push({ address, ok: false, status: graded.status, message: graded.message });
+                    }
+                    continue;
+                }
+                for (const { address } of entries) {
+                    const listRow = graded.byLowerAddress.get(address.toLowerCase());
+                    if (!listRow) {
+                        out.push({ address, ok: false, status: 404, message: 'NOT_FOUND' });
+                        continue;
+                    }
+                    const detail = await request(
+                        `${baseUrl}/v3/rwa/${encodeURIComponent(address.toLowerCase())}?chain=${encodeURIComponent(chain)}`,
+                    );
                     out.push(
-                        res.ok
-                            ? { address, ok: true, status: res.status, data: res.data }
-                            : { address, ok: false, status: res.status, message: res.message },
+                        detail.ok
+                            ? { address, ok: true, status: detail.status, data: detail.data }
+                            : { address, ok: true, status: 200, data: listRow },
                     );
                 }
-                return out;
-            };
-
-            // Verified 2026-09-14: POST /v3/rwa/batch/structural-health, body
-            // { tokens: [{ address, chain }] }, always 200 with per-token `ok`.
-            const batch = await request(`${baseUrl}/v3/rwa/batch/structural-health`, {
-                method: 'POST',
-                body: { tokens: addresses },
-            });
-            if (!batch.ok) {
-                // Unconfigured key: do not fan out into N more failures.
-                if (batch.status === 0 && !apiKey) {
-                    return addresses.map(({ address }) => ({ address, ok: false, status: 0, message: batch.message }));
-                }
-                // Fall back to the per-token endpoint when the batch route is missing or broken.
-                if (batch.status === 404 || batch.status === 405 || batch.message === 'non-JSON response') {
-                    return perAddress();
-                }
-                return addresses.map(({ address }) => ({
-                    address,
-                    ok: false,
-                    status: batch.status,
-                    message: batch.message,
-                }));
             }
-            const entries = extractStructuralBatchEntries(batch.data, addresses);
-            if (entries === null) return perAddress();
-            return entries;
+            return out;
         },
     };
 }
@@ -443,56 +472,6 @@ function readTotalPages(payload: unknown): number | null {
     if (!pagination || typeof pagination !== 'object') return null;
     const total = (pagination as Record<string, unknown>).totalPages;
     return typeof total === 'number' && Number.isFinite(total) && total > 0 ? total : null;
-}
-
-/**
- * Maps a batch response onto the requested addresses. Accepts `{ results: [...] }`,
- * `{ data: [...] }`, a bare array (items carry `address`), or an object keyed
- * by address. Returns null when nothing matched, so the caller can fall back.
- */
-function extractStructuralBatchEntries(
-    payload: unknown,
-    addresses: ReadonlyArray<{ address: string; chain: string }>,
-): StructuralHealthBatchEntry[] | null {
-    const byAddress = new Map<string, unknown>();
-    const list = extractDepegListItems(payload);
-    if (list.length > 0) {
-        for (const item of list) {
-            if (!item || typeof item !== 'object') continue;
-            const rec = item as Record<string, unknown>;
-            const address = rec.address ?? rec.token_address ?? rec.tokenAddress ?? rec.mint;
-            if (typeof address === 'string' && address.trim()) byAddress.set(address.trim(), item);
-        }
-    } else if (payload && typeof payload === 'object' && !Array.isArray(payload)) {
-        const rec = payload as Record<string, unknown>;
-        const container =
-            rec.results && typeof rec.results === 'object' && !Array.isArray(rec.results)
-                ? (rec.results as Record<string, unknown>)
-                : rec;
-        for (const { address } of addresses) {
-            if (container[address] !== undefined) byAddress.set(address, container[address]);
-        }
-    }
-    if (byAddress.size === 0) return null;
-    return addresses.map(({ address }) => {
-        const data = byAddress.get(address);
-        if (data === undefined) return { address, ok: false, status: 404, message: 'not in batch response' };
-        const rec = data && typeof data === 'object' ? (data as Record<string, unknown>) : null;
-        if (rec && (rec.error !== undefined || rec.ok === false || rec.error_code !== undefined)) {
-            const code = typeof rec.error_code === 'string' ? rec.error_code : null;
-            // NOT_FOUND / UNSUPPORTED_CHAIN mean Webacy does not grade the token
-            // (no Solana stablecoin is graded as of 2026-09-14); surface them as
-            // 404 so the job counts them as uncovered rather than failed.
-            const uncovered = code === 'NOT_FOUND' || code === 'UNSUPPORTED_CHAIN' || code === 'INVALID_ADDRESS';
-            return {
-                address,
-                ok: false,
-                status: uncovered ? 404 : 200,
-                message: String(code ?? rec.error ?? rec.message ?? 'error'),
-            };
-        }
-        return { address, ok: true, status: 200, data };
-    });
 }
 
 function toFiniteNumberOrNull(value: unknown): number | null {
@@ -626,13 +605,16 @@ export function makeCoingeckoClient(opts: MakeCoingeckoOptions): CoingeckoClient
             if (!json || typeof json !== 'object' || Array.isArray(json)) {
                 throw new Error(`CoinGecko simple/price returned unexpected payload`);
             }
-            return json as Record<string, {
-                usd?: unknown;
-                usd_market_cap?: unknown;
-                usd_24h_vol?: unknown;
-                usd_24h_change?: unknown;
-                last_updated_at?: unknown;
-            }>;
+            return json as Record<
+                string,
+                {
+                    usd?: unknown;
+                    usd_market_cap?: unknown;
+                    usd_24h_vol?: unknown;
+                    usd_24h_change?: unknown;
+                    last_updated_at?: unknown;
+                }
+            >;
         },
 
         async fetchMarketChartRange(args): Promise<CoingeckoMarketChartRange> {
@@ -721,10 +703,7 @@ function buildClickhouseUrl(baseUrl: string, params: Record<string, string | num
     return url;
 }
 
-async function runClickhouseQuery<T>(
-    opts: MakeClickhouseOptions,
-    request: ClickhouseQueryRequest,
-): Promise<T[]> {
+async function runClickhouseQuery<T>(opts: MakeClickhouseOptions, request: ClickhouseQueryRequest): Promise<T[]> {
     const f = opts.fetchImpl ?? fetch;
     const params: Record<string, string | number> = {
         database: opts.database,
@@ -799,9 +778,7 @@ export function makeClickhouseClient(opts: MakeClickhouseOptions): ClickhouseCli
             throw new ClickhouseApiError(`clickhouse-api HTTP ${res.status}: ${text.slice(0, 500)}`, res.status);
         }
         const payload: unknown = await res.json();
-        const decoded = await Effect.runPromise(
-            decodeUpstreamOrWarn(GatewayEnvelopeSchema, 'clickhouse-api')(payload),
-        );
+        const decoded = await Effect.runPromise(decodeUpstreamOrWarn(GatewayEnvelopeSchema, 'clickhouse-api')(payload));
         return ((decoded as { data?: T[] }).data ?? []) as T[];
     }
 
@@ -1199,8 +1176,7 @@ function buildRwaXyzTokenSnapshot(raw: RwaXyzTokenRaw, payloadJson: string): Rwa
 }
 
 function buildRwaXyzAssetSnapshot(raw: RwaXyzAssetRaw, payloadJson: string): RwaXyzAssetSnapshot | null {
-    const assetId =
-        rwaAsFiniteNumber(raw.asset_id) ?? rwaAsFiniteNumber(raw.id);
+    const assetId = rwaAsFiniteNumber(raw.asset_id) ?? rwaAsFiniteNumber(raw.id);
     if (assetId === null) return null;
     const snap: RwaXyzAssetSnapshot = { assetId, payloadJson };
     const name = rwaAsNonEmptyString(raw.name);
@@ -1382,9 +1358,10 @@ export function makeBirdeyeMarketsClient(opts: MakeBirdeyeMarketsOptions): Birde
             });
             const url = `${baseUrl}/defi/v2/markets?${params.toString()}`;
             const res = await withExternalTiming('birdeye', url, () => fetch(url, { headers }));
-            const json = (await res.json().catch(() => null)) as
-                | { success?: unknown; data?: { items?: unknown[]; markets?: unknown[] } }
-                | null;
+            const json = (await res.json().catch(() => null)) as {
+                success?: unknown;
+                data?: { items?: unknown[]; markets?: unknown[] };
+            } | null;
             if (!res.ok || !json || json.success !== true || !json.data) {
                 throw new Error(`Birdeye markets failed: HTTP ${res.status} ${res.statusText}`);
             }

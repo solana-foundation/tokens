@@ -189,6 +189,63 @@ describe('makeWebacyDepegClient', () => {
         expect(normalizeStructuralHealth({ composite: { grade: 'E', score: 92 } }).compositeGrade).toBe('E');
     });
 
+    test('fetchStructuralHealthBatch discovers coverage from /v3/rwa/grades and fetches detail with the LOWERCASED mint', async () => {
+        // Verified 2026-09-14: the v3 store keys Solana mints in lowercase; the
+        // correct-case mint 404s, the lowercased one resolves. USDT is not
+        // in the grades list here and must come back as uncovered (404).
+        const lower = USDC.toLowerCase();
+        const { fetchImpl, calls } = recordingFetch(url => {
+            if (url.pathname === '/v3/rwa/grades') {
+                return json({
+                    items: [{ address: lower, chain: 'sol', symbol: 'usdc', composite: { grade: 'A', score: 7 } }],
+                    pagination: { total: 1, page: 1, pageSize: 200, totalPages: 1 },
+                });
+            }
+            if (url.pathname === `/v3/rwa/${lower}`) {
+                return json({ metadata: { address: lower, chain: 'sol' }, composite: { grade: 'A', score: 7, drivers: [] } });
+            }
+            return json({ statusCode: 404, message: 'Grade data not found' }, 404);
+        });
+        const client = makeWebacyDepegClient({ apiKey: 'k', fetchImpl });
+        const out = await client.fetchStructuralHealthBatch([
+            { address: USDC, chain: 'solana' },
+            { address: USDT, chain: 'solana' },
+        ]);
+        expect(calls.map(c => c.url.pathname)).toEqual(['/v3/rwa/grades', `/v3/rwa/${lower}`]);
+        expect(calls[0]!.url.searchParams.get('chain')).toBe('sol');
+        expect(calls[1]!.url.searchParams.get('chain')).toBe('sol');
+        expect(out[0]).toMatchObject({ address: USDC, ok: true, status: 200 });
+        expect(normalizeStructuralHealth((out[0] as { data: unknown }).data).compositeGrade).toBe('A');
+        expect(out[1]).toEqual({ address: USDT, ok: false, status: 404, message: 'NOT_FOUND' });
+    });
+
+    test('fetchStructuralHealthBatch falls back to the grades-list row when the detail call fails', async () => {
+        const lower = USDC.toLowerCase();
+        const { fetchImpl } = recordingFetch(url =>
+            url.pathname === '/v3/rwa/grades'
+                ? json({ items: [{ address: lower, chain: 'sol', composite: { grade: 'A-', score: 12, contributors: {} } }] })
+                : json({ error: 'boom' }, 500),
+        );
+        const client = makeWebacyDepegClient({ apiKey: 'k', fetchImpl });
+        const out = await client.fetchStructuralHealthBatch([{ address: USDC, chain: 'solana' }]);
+        expect(out[0]).toMatchObject({ address: USDC, ok: true });
+        expect(normalizeStructuralHealth((out[0] as { data: unknown }).data).compositeGrade).toBe('A-');
+    });
+
+    test('a failing grades list is reported per address without fanning out', async () => {
+        const { fetchImpl, calls } = recordingFetch(() => json({ error: 'down' }, 503));
+        const client = makeWebacyDepegClient({ apiKey: 'k', fetchImpl });
+        const out = await client.fetchStructuralHealthBatch([
+            { address: USDC, chain: 'solana' },
+            { address: USDT, chain: 'solana' },
+        ]);
+        expect(calls).toHaveLength(1);
+        expect(out).toEqual([
+            { address: USDC, ok: false, status: 503, message: '{"error":"down"}' },
+            { address: USDT, ok: false, status: 503, message: '{"error":"down"}' },
+        ]);
+    });
+
     test('unconfigured key returns {ok:false,status:0} everywhere without touching the network', async () => {
         const { fetchImpl, calls } = recordingFetch(() => json({}));
         const client = makeWebacyDepegClient({ apiKey: undefined, fetchImpl });
@@ -279,57 +336,6 @@ describe('makeWebacyDepegClient', () => {
         expect(out).toMatchObject({ ok: true, pages: 1, truncated: true });
     });
 
-    test('fetchStructuralHealthBatch POSTs /v3/rwa/batch/structural-health with { tokens } and maps results by address', async () => {
-        const { fetchImpl, calls } = recordingFetch(() =>
-            json({ results: [{ address: USDC, composite_grade: 'A' }, { address: USDT, error: 'unsupported' }] }),
-        );
-        const client = makeWebacyDepegClient({ apiKey: 'k', baseUrl: 'https://webacy.test', fetchImpl });
-        const out = await client.fetchStructuralHealthBatch([
-            { address: USDC, chain: 'solana' },
-            { address: USDT, chain: 'solana' },
-        ]);
-        expect(calls).toHaveLength(1);
-        expect(calls[0]!.url.href).toBe('https://webacy.test/v3/rwa/batch/structural-health');
-        expect(calls[0]!.init!.method).toBe('POST');
-        expect(JSON.parse(String(calls[0]!.init!.body))).toEqual({
-            tokens: [
-                { address: USDC, chain: 'sol' },
-                { address: USDT, chain: 'sol' },
-            ],
-        });
-        expect(out[0]).toMatchObject({ address: USDC, ok: true, data: { address: USDC, composite_grade: 'A' } });
-        expect(out[1]).toMatchObject({ address: USDT, ok: false, message: 'unsupported' });
-    });
-
-    test('fetchStructuralHealthBatch falls back to per-address GET /v3/rwa/{address} on 404', async () => {
-        const { fetchImpl, calls } = recordingFetch(url => {
-            if (url.pathname === '/v3/rwa/batch/structural-health') return json({ message: 'not found' }, 404);
-            const address = url.pathname.split('/').pop()!;
-            return address === USDT ? json({ error: 'boom' }, 500) : json({ composite_grade: 'A-' });
-        });
-        const client = makeWebacyDepegClient({ apiKey: 'k', fetchImpl });
-        const out = await client.fetchStructuralHealthBatch([
-            { address: USDC, chain: 'solana' },
-            { address: USDT, chain: 'solana' },
-        ]);
-        expect(calls.map(c => c.url.pathname)).toEqual(['/v3/rwa/batch/structural-health', `/v3/rwa/${USDC}`, `/v3/rwa/${USDT}`]);
-        expect(calls[1]!.url.searchParams.get('chain')).toBe('sol');
-        expect(out).toEqual([
-            { address: USDC, ok: true, status: 200, data: { composite_grade: 'A-' } },
-            { address: USDT, ok: false, status: 500, message: '{"error":"boom"}' },
-        ]);
-    });
-
-    test('fetchStructuralHealthBatch falls back when the batch body has nothing it can map', async () => {
-        const { fetchImpl, calls } = recordingFetch(url =>
-            url.pathname === '/v3/rwa/batch/structural-health' ? json({ queued: true }) : json({ grade: 'B' }),
-        );
-        const client = makeWebacyDepegClient({ apiKey: 'k', fetchImpl });
-        const out = await client.fetchStructuralHealthBatch([{ address: USDC, chain: 'solana' }]);
-        expect(calls).toHaveLength(2);
-        expect(out[0]).toMatchObject({ ok: true, data: { grade: 'B' } });
-    });
-
     test('live /rwa shape (2026-09-14): items envelope, score/tier fields, fraction deviation, totalPages stop', async () => {
         // Captured from GET /rwa?chain=sol: deviation is an unsigned FRACTION on
         // the list (abs_dev_clean) and Webacy echoes chain 'sol'.
@@ -394,33 +400,4 @@ describe('makeWebacyDepegClient', () => {
         if (out.ok) expect(out.items[0]).toMatchObject({ address: USDT, tier: null, overallRisk: null, deviationPct: null });
     });
 
-    test('batch NOT_FOUND entries (live shape) are reported as status 404 so the job counts them as uncovered', async () => {
-        const { fetchImpl } = recordingFetch(() =>
-            json({
-                schema_version: '3',
-                results: [
-                    { address: USDC, chain: 'sol', ok: false, error_code: 'NOT_FOUND' },
-                    { address: USDT, chain: 'sol', ok: true, composite: { grade: 'A', score: 4 } },
-                ],
-            }),
-        );
-        const client = makeWebacyDepegClient({ apiKey: 'k', fetchImpl });
-        const out = await client.fetchStructuralHealthBatch([
-            { address: USDC, chain: 'solana' },
-            { address: USDT, chain: 'solana' },
-        ]);
-        expect(out[0]).toMatchObject({ address: USDC, ok: false, status: 404, message: 'NOT_FOUND' });
-        expect(out[1]).toMatchObject({ address: USDT, ok: true });
-    });
-
-    test('a 5xx on the batch route is reported per address without fanning out', async () => {
-        const { fetchImpl, calls } = recordingFetch(() => json({ error: 'down' }, 503));
-        const client = makeWebacyDepegClient({ apiKey: 'k', fetchImpl });
-        const out = await client.fetchStructuralHealthBatch([
-            { address: USDC, chain: 'solana' },
-            { address: USDT, chain: 'solana' },
-        ]);
-        expect(calls).toHaveLength(1);
-        expect(out.every(e => !e.ok && e.status === 503)).toBe(true);
-    });
 });
