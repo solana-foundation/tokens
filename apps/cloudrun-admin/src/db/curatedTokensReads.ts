@@ -9,7 +9,7 @@
 
 import type { Sql } from 'postgres';
 
-import { isAdvisoryStatus } from '@tokens/asset-registry';
+import { isAdvisorySource, isAdvisoryStatus, isPegTier, isStructuralGrade } from '@tokens/asset-registry';
 import type { StockVariantTier, VariantAdvisory, VariantKind } from '@tokens/asset-registry';
 
 import type {
@@ -17,6 +17,8 @@ import type {
     AssetRow,
     SearchAssetRow,
     VariantMarketRow,
+    VariantPegHealthRow,
+    VariantStructuralHealthRow,
     VariantWithMarketRow,
 } from '../handlers/curatedTokensReads';
 import type { CuratedCategorySlug, StoredTrustTier } from '../handlers/shared';
@@ -46,7 +48,20 @@ function mapAssetRow(row: PgAssetRow): AssetRow {
     };
 }
 
-interface PgVariantWithMarketRow {
+/** Unix-ms bigint columns arrive as string (postgres-js default) or bigint; NaN reads as null. */
+function toEpochMs(value: string | number | bigint | null | undefined): number | null {
+    if (value === null || value === undefined) return null;
+    if (typeof value === 'bigint') return Number(value);
+    return toNullableNumber(value);
+}
+
+/**
+ * One variant row LEFT JOINed to its market, active advisory, latest Webacy
+ * depeg observation (`peg_*`) and structural grade (`sh_*`). The Webacy
+ * columns are null for every non-stablecoin mint; `mapPegHealth` /
+ * `mapStructuralHealth` also treat unknown tiers/grades as "unmonitored".
+ */
+export interface PgVariantWithMarketRow {
     asset_id: string;
     mint: string;
     variant_id: string;
@@ -68,6 +83,14 @@ interface PgVariantWithMarketRow {
     advisory_reason: string | null;
     advisory_url: string | null;
     advisory_set_at: string | number | null;
+    advisory_source?: string | null;
+    peg_tier?: string | null;
+    peg_deviation_pct?: number | string | null;
+    peg_ok?: boolean | null;
+    peg_error_message?: string | null;
+    peg_last_fetched_at?: string | number | bigint | null;
+    sh_grade?: string | null;
+    sh_last_fetched_at?: string | number | bigint | null;
 }
 
 function mapAdvisory(row: PgVariantWithMarketRow): VariantAdvisory | null {
@@ -77,10 +100,46 @@ function mapAdvisory(row: PgVariantWithMarketRow): VariantAdvisory | null {
         reason: row.advisory_reason ?? '',
         url: row.advisory_url,
         since: toNullableNumber(row.advisory_set_at) ?? 0,
+        // Pre-0019 rows and unknown values read as human-authored.
+        source: isAdvisorySource(row.advisory_source) ? row.advisory_source : 'admin',
     };
 }
 
-function mapVariantRow(row: PgVariantWithMarketRow): VariantWithMarketRow {
+/**
+ * Compact depeg status for the admin row. Null unless Webacy has rated the
+ * mint with a known tier. A failed last fetch keeps the last good tier and
+ * reports `ok: false` + `errorMessage` so the UI can say the poll is failing.
+ */
+export function mapPegHealth(
+    row: Pick<
+        PgVariantWithMarketRow,
+        'peg_tier' | 'peg_deviation_pct' | 'peg_ok' | 'peg_error_message' | 'peg_last_fetched_at'
+    >,
+): VariantPegHealthRow | null {
+    if (!isPegTier(row.peg_tier)) return null;
+    const updatedAt = toEpochMs(row.peg_last_fetched_at);
+    if (updatedAt === null) return null;
+    const ok = row.peg_ok !== false;
+    return {
+        tier: row.peg_tier,
+        deviationPct: toNullableNumber(row.peg_deviation_pct),
+        ok,
+        errorMessage: ok ? null : (row.peg_error_message ?? null),
+        updatedAt,
+    };
+}
+
+/** Null unless the latest structural-health row carries one of the 13 letter grades. */
+export function mapStructuralHealth(
+    row: Pick<PgVariantWithMarketRow, 'sh_grade' | 'sh_last_fetched_at'>,
+): VariantStructuralHealthRow | null {
+    if (!isStructuralGrade(row.sh_grade)) return null;
+    const updatedAt = toEpochMs(row.sh_last_fetched_at);
+    if (updatedAt === null) return null;
+    return { grade: row.sh_grade, updatedAt };
+}
+
+export function mapVariantRow(row: PgVariantWithMarketRow): VariantWithMarketRow {
     return {
         assetId: row.asset_id,
         mint: row.mint,
@@ -103,6 +162,8 @@ function mapVariantRow(row: PgVariantWithMarketRow): VariantWithMarketRow {
               }
             : null,
         advisory: mapAdvisory(row),
+        pegHealth: mapPegHealth(row),
+        structuralHealth: mapStructuralHealth(row),
     };
 }
 
@@ -118,7 +179,27 @@ const VARIANT_MARKET_SELECT = `
     adv.status AS advisory_status,
     adv.reason AS advisory_reason,
     adv.url AS advisory_url,
-    adv.set_at AS advisory_set_at
+    adv.set_at AS advisory_set_at,
+    adv.source AS advisory_source,
+    d.tier AS peg_tier,
+    d.deviation_pct AS peg_deviation_pct,
+    d.ok AS peg_ok,
+    d.error_message AS peg_error_message,
+    d.last_fetched_at AS peg_last_fetched_at,
+    s.composite_grade AS sh_grade,
+    s.last_fetched_at AS sh_last_fetched_at
+`;
+
+/**
+ * Joins paired with VARIANT_MARKET_SELECT. The Webacy tables (migration 0019)
+ * key on chain 'solana' (the depeg API's slug; the older webacy_*_latest
+ * caches use 'sol').
+ */
+const VARIANT_MARKET_JOINS = `
+    LEFT JOIN variant_markets_latest m ON m.mint = v.mint
+    LEFT JOIN asset_variant_advisories adv ON adv.mint = v.mint
+    LEFT JOIN webacy_depeg_latest d ON d.chain = 'solana' AND d.address = v.mint
+    LEFT JOIN webacy_structural_health_latest s ON s.chain = 'solana' AND s.address = v.mint
 `;
 
 interface PgMarketRow {
@@ -162,8 +243,7 @@ export function makePostgresAdminReadsRepo(sql: Sql): AdminReadsRepo {
             const rows = await sql<PgVariantWithMarketRow[]>`
                 SELECT ${sql.unsafe(VARIANT_MARKET_SELECT)}
                 FROM asset_variants v
-                LEFT JOIN variant_markets_latest m ON m.mint = v.mint
-                LEFT JOIN asset_variant_advisories adv ON adv.mint = v.mint
+                ${sql.unsafe(VARIANT_MARKET_JOINS)}
                 ORDER BY v.asset_id COLLATE "C" ASC,
                          v.is_active DESC,
                          COALESCE(m.liquidity, 0) DESC,
@@ -177,8 +257,7 @@ export function makePostgresAdminReadsRepo(sql: Sql): AdminReadsRepo {
             const rows = await sql<PgVariantWithMarketRow[]>`
                 SELECT ${sql.unsafe(VARIANT_MARKET_SELECT)}
                 FROM asset_variants v
-                LEFT JOIN variant_markets_latest m ON m.mint = v.mint
-                LEFT JOIN asset_variant_advisories adv ON adv.mint = v.mint
+                ${sql.unsafe(VARIANT_MARKET_JOINS)}
                 WHERE v.asset_id = ANY(${sql.array(assetIds as string[])}::text[])
                 ORDER BY v.asset_id COLLATE "C" ASC,
                          v.is_active DESC,
@@ -233,8 +312,7 @@ export function makePostgresAdminReadsRepo(sql: Sql): AdminReadsRepo {
             const rows = await sql<PgVariantWithMarketRow[]>`
                 SELECT ${sql.unsafe(VARIANT_MARKET_SELECT)}
                 FROM asset_variants v
-                LEFT JOIN variant_markets_latest m ON m.mint = v.mint
-                LEFT JOIN asset_variant_advisories adv ON adv.mint = v.mint
+                ${sql.unsafe(VARIANT_MARKET_JOINS)}
                 WHERE v.mint = ${mint}
                 ORDER BY v.id ASC
                 LIMIT 1
