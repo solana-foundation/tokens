@@ -18,7 +18,12 @@
 import { Effect } from 'effect';
 import { BadRequestError } from '@tokens/effect';
 import { decodeJobArgs, type JobArgSpecs } from '@tokens/effect/job-args';
-import { STRUCTURAL_GRADES, type PegTier, type StructuralGrade } from '@tokens/asset-registry';
+import {
+    STRUCTURAL_GRADES,
+    type PegTier,
+    type StructuralGrade,
+    type SystemAdvisorySource,
+} from '@tokens/asset-registry';
 
 import type { CronResult } from './crons';
 import type { CuratedMembershipSource } from './curatedMembershipReads';
@@ -28,6 +33,7 @@ import {
     type WebacyDepegItem,
 } from './depegNormalize';
 import {
+    ADVISORY_SOURCE_BY_OBSERVER,
     reconcileDepegAdvisories,
     type ReconcilerAction,
     type ReconcilerAdvisory,
@@ -138,8 +144,9 @@ export interface StructuralHealthDailyRow {
     recordedAt: number;
 }
 
-export type SetSystemAdvisoryOutcome = 'set' | 'updated' | 'unchanged' | 'skipped_human_owned' | 'variant_not_found';
-export type ClearSystemAdvisoryOutcome = 'cleared' | 'skipped_not_system' | 'not_found';
+export type SetSystemAdvisoryOutcome =
+    'set' | 'updated' | 'unchanged' | 'skipped_human_owned' | 'skipped_other_system_owner' | 'variant_not_found';
+export type ClearSystemAdvisoryOutcome = 'cleared' | 'skipped_not_system' | 'skipped_other_system_owner' | 'not_found';
 
 export interface DepegRepo {
     listDepegLatest(chain: string): Promise<DepegLatestRow[]>;
@@ -152,8 +159,18 @@ export interface DepegRepo {
     listAdvisoriesForReconcile(mints: readonly string[]): Promise<ReconcilerAdvisory[]>;
     /** Latest `action='clear' AND source='admin'` event time per mint. */
     listLastAdminClearAtByMints(mints: readonly string[]): Promise<Map<string, number>>;
-    setSystemAdvisory(args: { mint: string; reason: string; nowMs: number }): Promise<SetSystemAdvisoryOutcome>;
-    clearSystemAdvisory(args: { mint: string; note: string; nowMs: number }): Promise<ClearSystemAdvisoryOutcome>;
+    setSystemAdvisory(args: {
+        mint: string;
+        reason: string;
+        nowMs: number;
+        source: SystemAdvisorySource;
+    }): Promise<SetSystemAdvisoryOutcome>;
+    clearSystemAdvisory(args: {
+        mint: string;
+        note: string;
+        nowMs: number;
+        source: SystemAdvisorySource;
+    }): Promise<ClearSystemAdvisoryOutcome>;
     upsertStructuralHealthLatest(rows: readonly StructuralHealthLatestRow[]): Promise<void>;
     upsertStructuralHealthDaily(rows: readonly StructuralHealthDailyRow[]): Promise<void>;
     listStructuralHealthLatest(chain: string): Promise<StructuralHealthLatestRow[]>;
@@ -238,6 +255,7 @@ function toObservation(row: DepegLatestRow): ReconcilerObservation {
     return {
         mint: row.address,
         symbol: row.symbol,
+        observer: 'webacy',
         inRegistry: row.inRegistry,
         ok: row.ok,
         tier: row.tier,
@@ -363,6 +381,7 @@ const RECONCILE_ARG_SPECS = {
     pageSize: { kind: 'int', fallback: 200, min: 10, max: 200 },
     maxPages: { kind: 'int', fallback: 4, min: 1, max: 20 },
     criticalImmediate: { kind: 'bool', fallback: true },
+    criticalConfirmMs: { kind: 'int', fallback: 0, min: 0, max: 6 * 60 * 60_000 },
     warningConfirmMs: { kind: 'int', fallback: 0, min: 0, max: 6 * HOUR_MS },
     clearCooldownMs: { kind: 'int', fallback: 6 * HOUR_MS, min: 0, max: 48 * HOUR_MS },
     clearOnWatch: { kind: 'bool', fallback: false },
@@ -415,7 +434,7 @@ export async function reconcileStablecoinDepeg(deps: DepegCronDeps, rawArgs: unk
     const dryRun = dryRunArg ?? (deps.isDryRunDefault ?? defaultIsDryRun)();
     const log = deps.log ?? defaultLog;
     const job = 'reconcile-stablecoin-depeg';
-    const base = { job, trigger, dry_run: dryRun, mode };
+    const base = { job, trigger, dry_run: dryRun, mode, observer: 'webacy' as const };
     const start = deps.now();
     const budgetMs = args.budgetMs > 0 ? args.budgetMs : mode === 'targeted' ? 30_000 : 90_000;
     const overBudget = () => deps.now() - start >= budgetMs;
@@ -670,6 +689,7 @@ export async function reconcileStablecoinDepeg(deps: DepegCronDeps, rawArgs: unk
             config: {
                 setTiers: ['warning', 'critical'],
                 criticalImmediate: args.criticalImmediate,
+                criticalConfirmMs: args.criticalConfirmMs,
                 warningConfirmMs: args.warningConfirmMs,
                 clearTiers,
                 clearCooldownMs: args.clearCooldownMs,
@@ -728,7 +748,7 @@ function summaryFields(result: DepegReconcileResult): Record<string, unknown> {
     };
 }
 
-async function applyAction(
+export async function applyAction(
     deps: DepegCronDeps,
     action: ReconcilerAction,
     dryRun: boolean,
@@ -748,7 +768,12 @@ async function applyAction(
             });
             return;
         }
-        const outcome = await deps.repo.clearSystemAdvisory({ mint: action.mint, note: action.note, nowMs });
+        const outcome = await deps.repo.clearSystemAdvisory({
+            mint: action.mint,
+            note: action.note,
+            nowMs,
+            source: ADVISORY_SOURCE_BY_OBSERVER[action.observer],
+        });
         if (outcome === 'cleared') {
             result.actionsCleared += 1;
             log({ ...base, event: 'depeg_advisory_cleared', mint: action.mint, note: action.note, why: action.why });
@@ -769,7 +794,12 @@ async function applyAction(
         });
         return;
     }
-    const outcome = await deps.repo.setSystemAdvisory({ mint: action.mint, reason: action.reason, nowMs });
+    const outcome = await deps.repo.setSystemAdvisory({
+        mint: action.mint,
+        reason: action.reason,
+        nowMs,
+        source: ADVISORY_SOURCE_BY_OBSERVER[action.observer],
+    });
     if (outcome === 'set') {
         result.actionsSet += 1;
         log({
@@ -831,7 +861,7 @@ export async function refreshStablecoinStructuralHealth(deps: DepegCronDeps, raw
     const dryRun = (deps.isDryRunDefault ?? defaultIsDryRun)();
     // Structural grades are cache writes, never advisories, so dry-run is
     // reported for log symmetry only and does not gate anything.
-    const base = { job, trigger: 'sweep' as const, dry_run: dryRun };
+    const base = { job, trigger: 'sweep' as const, dry_run: dryRun, observer: 'webacy' as const };
     const start = deps.now();
     const budgetMs = args.budgetMs > 0 ? args.budgetMs : 300_000;
 

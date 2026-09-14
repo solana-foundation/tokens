@@ -105,8 +105,8 @@ function systemAdvisory(mint: string, tier: 'warning' | 'critical'): ReconcilerA
 interface Recording {
     upserts: DepegLatestRow[][];
     tierEvents: DepegTierEventRow[][];
-    sets: Array<{ mint: string; reason: string; nowMs: number }>;
-    clears: Array<{ mint: string; note: string; nowMs: number }>;
+    sets: Array<{ mint: string; reason: string; nowMs: number; source: string }>;
+    clears: Array<{ mint: string; note: string; nowMs: number; source: string }>;
     structuralLatest: StructuralHealthLatestRow[][];
     structuralDaily: StructuralHealthDailyRow[][];
     logs: Record<string, unknown>[];
@@ -731,7 +731,7 @@ describe('reconcile-stablecoin-depeg sweep mode', () => {
         });
         expect(out2.tierChanges).toBe(0);
         expect(out2.skipped.unchanged).toBe(1);
-        expect(second.rec.clears).toEqual([{ mint: USDC, note: 'Webacy tier ok for 7h', nowMs: later }]);
+        expect(second.rec.clears).toEqual([{ mint: USDC, note: 'Webacy tier ok for 7h', nowMs: later, source: 'webacy_depeg' }]);
         expect(out2.actionsCleared).toBe(1);
         expect(events(second.rec, 'depeg_advisory_cleared')).toHaveLength(1);
     });

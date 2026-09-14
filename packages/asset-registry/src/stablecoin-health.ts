@@ -95,9 +95,21 @@ export function isStructuralCategoryStatus(value: unknown): value is StructuralC
     return typeof value === 'string' && (STRUCTURAL_CATEGORY_STATUSES as readonly string[]).includes(value);
 }
 
+/**
+ * Who produced a peg observation: Webacy's depeg monitor (score bands over a
+ * multi-signal model) or the in-house tokens.xyz peg guard (deviation bands
+ * over Birdeye prices). Tier semantics differ per provider.
+ */
+export const PEG_PROVIDERS = ['webacy', 'tokens'] as const;
+export type PegProvider = (typeof PEG_PROVIDERS)[number];
+
+export function isPegProvider(value: unknown): value is PegProvider {
+    return typeof value === 'string' && (PEG_PROVIDERS as readonly string[]).includes(value);
+}
+
 /** Live peg status for one mint, as served on risk payloads. */
 export interface PegHealth {
-    provider: 'webacy';
+    provider: PegProvider;
     tier: PegTier;
     /** Webacy 0-100 depeg risk; higher = riskier. */
     overallRisk: number | null;
@@ -105,6 +117,8 @@ export interface PegHealth {
     deviationPct: number | null;
     priceUsd: number | null;
     pegUsd: number | null;
+    /** DEX liquidity behind the price, when the provider reports it. */
+    liquidityUsd?: number | null;
     /** Unix ms when the current tier streak started. */
     tierSince: number | null;
     /** Unix ms of the last successful observation. */
@@ -115,6 +129,8 @@ export interface PegHealth {
 
 /** Trimmed per-variant peg status carried on `GET /v1/assets/{id}` for stablecoin assets. */
 export interface CompactPegHealth {
+    /** Omitted by API builds that predate the peg guard; readers default to `'webacy'`. */
+    provider?: PegProvider;
     tier: PegTier;
     deviationPct: number | null;
     updatedAt: number;

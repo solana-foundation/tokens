@@ -54,7 +54,9 @@ function responder(opts: {
 describe('setSystemAdvisoryInTx', () => {
     it('returns variant_not_found after only the active-variant lock when no active variant exists', async () => {
         const { tx, queries } = makeFakeTx(responder({ variant: false }));
-        expect(await setSystemAdvisoryInTx(tx, { mint: MINT, reason: REASON, nowMs: NOW })).toBe('variant_not_found');
+        expect(
+            await setSystemAdvisoryInTx(tx, { mint: MINT, reason: REASON, nowMs: NOW, source: 'webacy_depeg' }),
+        ).toBe('variant_not_found');
         expect(queries).toHaveLength(1);
         expect(queries[0]!.text).toContain('FROM asset_variants');
         expect(queries[0]!.text).toContain('is_active = true');
@@ -75,9 +77,37 @@ describe('setSystemAdvisoryInTx', () => {
                 },
             }),
         );
-        expect(await setSystemAdvisoryInTx(tx, { mint: MINT, reason: REASON, nowMs: NOW })).toBe('skipped_human_owned');
+        expect(
+            await setSystemAdvisoryInTx(tx, { mint: MINT, reason: REASON, nowMs: NOW, source: 'webacy_depeg' }),
+        ).toBe('skipped_human_owned');
         expect(queries).toHaveLength(2);
         expect(queries.some(q => q.text.includes('INSERT INTO'))).toBe(false);
+    });
+
+    it('never overwrites a row the other observer set (skipped_other_system_owner, no write)', async () => {
+        const { tx, queries } = makeFakeTx(q => {
+            if (q.text.includes('FROM asset_variants')) return [{ id: 'avr_1' }];
+            if (q.text.includes('SELECT status, reason, source, managed_by_system, set_at'))
+                return [
+                    { status: 'caution', reason: 'x', source: 'peg_guard', managed_by_system: true, set_at: EARLIER },
+                ];
+            return [];
+        });
+        expect(
+            await setSystemAdvisoryInTx(tx, { mint: MINT, reason: REASON, nowMs: NOW, source: 'webacy_depeg' }),
+        ).toBe('skipped_other_system_owner');
+        expect(queries.some(q => q.text.includes('INSERT INTO'))).toBe(false);
+    });
+
+    it('writes the peg guard actor and source when the peg guard sets', async () => {
+        const { tx, queries } = makeFakeTx(q => (q.text.includes('FROM asset_variants') ? [{ id: 'avr_1' }] : []));
+        expect(await setSystemAdvisoryInTx(tx, { mint: MINT, reason: REASON, nowMs: NOW, source: 'peg_guard' })).toBe(
+            'set',
+        );
+        const upsert = queries.find(q => q.text.includes('INSERT INTO asset_variant_advisories'))!;
+        expect(upsert.params).toContain('peg_guard');
+        expect(upsert.params).toContain('system:peg_guard');
+        expect(upsert.params).not.toContain('webacy_depeg');
     });
 
     it('treats a pre-0019 row (managed_by_system null) as human-owned', async () => {
@@ -88,7 +118,9 @@ describe('setSystemAdvisoryInTx', () => {
             }
             return [];
         });
-        expect(await setSystemAdvisoryInTx(tx, { mint: MINT, reason: REASON, nowMs: NOW })).toBe('skipped_human_owned');
+        expect(
+            await setSystemAdvisoryInTx(tx, { mint: MINT, reason: REASON, nowMs: NOW, source: 'webacy_depeg' }),
+        ).toBe('skipped_human_owned');
         expect(queries).toHaveLength(2);
     });
 
@@ -105,13 +137,17 @@ describe('setSystemAdvisoryInTx', () => {
                 },
             }),
         );
-        expect(await setSystemAdvisoryInTx(tx, { mint: MINT, reason: REASON, nowMs: NOW })).toBe('unchanged');
+        expect(
+            await setSystemAdvisoryInTx(tx, { mint: MINT, reason: REASON, nowMs: NOW, source: 'webacy_depeg' }),
+        ).toBe('unchanged');
         expect(queries).toHaveLength(2);
     });
 
     it('new advisory: upsert as caution with the sentinel actor, source and managed flag, then a system event', async () => {
         const { tx, queries } = makeFakeTx(responder({ variant: true, existing: null }));
-        expect(await setSystemAdvisoryInTx(tx, { mint: MINT, reason: REASON, nowMs: NOW })).toBe('set');
+        expect(
+            await setSystemAdvisoryInTx(tx, { mint: MINT, reason: REASON, nowMs: NOW, source: 'webacy_depeg' }),
+        ).toBe('set');
 
         expect(queries.map(q => q.text.trim().split(/\s+/).slice(0, 2).join(' '))).toEqual([
             'SELECT id',
@@ -124,18 +160,21 @@ describe('setSystemAdvisoryInTx', () => {
 
         expect(upsert!.text).toContain('INSERT INTO asset_variant_advisories');
         expect(upsert!.text).toContain("'caution'");
-        expect(upsert!.text).toContain("'webacy_depeg', true");
+        expect(upsert!.params).toContain('webacy_depeg');
+        expect(upsert!.params).toContain('system:webacy_depeg');
+        expect(upsert!.text).toContain('AND asset_variant_advisories.source = $');
         expect(upsert!.text).toContain('ON CONFLICT (mint) DO UPDATE');
         // The conditional upsert is the last line of defence against racing a human edit.
         expect(upsert!.text).toContain('WHERE asset_variant_advisories.managed_by_system = true');
         expect(upsert!.text).toContain('set_by_email = NULL');
         expect(upsert!.text).not.toContain('status = EXCLUDED.status');
-        // (mint, reason, set_by, set_at, updated_at)
-        expect(upsert!.params).toEqual([MINT, REASON, WEBACY_DEPEG_ACTOR, NOW, NOW]);
+        // (mint, reason, set_by, set_at, updated_at, source, [ON CONFLICT] source)
+        expect(upsert!.params).toEqual([MINT, REASON, WEBACY_DEPEG_ACTOR, NOW, NOW, 'webacy_depeg', 'webacy_depeg']);
 
         expect(event!.text).toContain('INSERT INTO asset_variant_advisory_events');
         expect(event!.text).toContain("'set', 'caution'");
-        expect(event!.text).toContain("'webacy_depeg'");
+        expect(event!.params).toContain('webacy_depeg');
+        expect(event!.params).toContain('system:webacy_depeg');
         const [id, mint, reason, actor, createdAt] = event!.params;
         expect(String(id)).toMatch(/^ave_/);
         expect(mint).toBe(MINT);
@@ -157,7 +196,9 @@ describe('setSystemAdvisoryInTx', () => {
                 },
             }),
         );
-        expect(await setSystemAdvisoryInTx(tx, { mint: MINT, reason: REASON, nowMs: NOW })).toBe('updated');
+        expect(
+            await setSystemAdvisoryInTx(tx, { mint: MINT, reason: REASON, nowMs: NOW, source: 'webacy_depeg' }),
+        ).toBe('updated');
         const upsert = queries.find(q => q.text.includes('INSERT INTO asset_variant_advisories'))!;
         expect(upsert.params[3]).toBe(EARLIER);
         expect(upsert.params[4]).toBe(NOW);
@@ -165,7 +206,7 @@ describe('setSystemAdvisoryInTx', () => {
 
     it('never mentions compromised, blocked or variant re-activation', async () => {
         const { tx, queries } = makeFakeTx(responder({ variant: true, existing: null }));
-        await setSystemAdvisoryInTx(tx, { mint: MINT, reason: REASON, nowMs: NOW });
+        await setSystemAdvisoryInTx(tx, { mint: MINT, reason: REASON, nowMs: NOW, source: 'webacy_depeg' });
         const allSql = queries.map(q => q.text).join('\n');
         expect(allSql).not.toContain('compromised');
         expect(allSql).not.toContain('blocked');
@@ -176,20 +217,26 @@ describe('setSystemAdvisoryInTx', () => {
 describe('clearSystemAdvisoryInTx', () => {
     it('deletes only system-owned webacy rows and records a system clear event with the note as reason', async () => {
         const { tx, queries } = makeFakeTx(q => (q.text.includes('DELETE FROM') ? [{ mint: MINT }] : []));
-        expect(await clearSystemAdvisoryInTx(tx, { mint: MINT, note: 'Webacy tier ok for 6h', nowMs: NOW })).toBe(
-            'cleared',
-        );
+        expect(
+            await clearSystemAdvisoryInTx(tx, {
+                mint: MINT,
+                note: 'Webacy tier ok for 6h',
+                nowMs: NOW,
+                source: 'webacy_depeg',
+            }),
+        ).toBe('cleared');
 
         expect(queries).toHaveLength(2);
         const [del, event] = queries;
         expect(del!.text).toContain('DELETE FROM asset_variant_advisories');
         expect(del!.text).toContain('managed_by_system = true');
-        expect(del!.text).toContain("source = 'webacy_depeg'");
+        expect(del!.text).toContain('source = $');
+        expect(del!.params).toEqual([MINT, 'webacy_depeg']);
         expect(del!.text).toContain('RETURNING mint');
-        expect(del!.params).toEqual([MINT]);
 
         expect(event!.text).toContain("'clear'");
-        expect(event!.text).toContain("'webacy_depeg'");
+        expect(event!.params).toContain('webacy_depeg');
+        expect(event!.params).toContain('system:webacy_depeg');
         const [id, mint, note, actor, createdAt] = event!.params;
         expect(String(id)).toMatch(/^ave_/);
         expect(mint).toBe(MINT);
@@ -200,16 +247,34 @@ describe('clearSystemAdvisoryInTx', () => {
 
     it('returns skipped_not_system without an event when a human row exists', async () => {
         const { tx, queries } = makeFakeTx(q =>
-            q.text.includes('SELECT mint FROM asset_variant_advisories') ? [{ mint: MINT }] : [],
+            q.text.includes('SELECT mint, managed_by_system, source FROM asset_variant_advisories')
+                ? [{ mint: MINT, managed_by_system: false, source: 'admin' }]
+                : [],
         );
-        expect(await clearSystemAdvisoryInTx(tx, { mint: MINT, note: 'n', nowMs: NOW })).toBe('skipped_not_system');
+        expect(await clearSystemAdvisoryInTx(tx, { mint: MINT, note: 'n', nowMs: NOW, source: 'webacy_depeg' })).toBe(
+            'skipped_not_system',
+        );
         expect(queries).toHaveLength(2);
+        expect(queries.some(q => q.text.includes('INSERT INTO'))).toBe(false);
+    });
+
+    it('returns skipped_other_system_owner without an event when the row belongs to the other observer', async () => {
+        const { tx, queries } = makeFakeTx(q =>
+            q.text.includes('SELECT mint, managed_by_system, source FROM asset_variant_advisories')
+                ? [{ mint: MINT, managed_by_system: true, source: 'peg_guard' }]
+                : [],
+        );
+        expect(await clearSystemAdvisoryInTx(tx, { mint: MINT, note: 'n', nowMs: NOW, source: 'webacy_depeg' })).toBe(
+            'skipped_other_system_owner',
+        );
         expect(queries.some(q => q.text.includes('INSERT INTO'))).toBe(false);
     });
 
     it('returns not_found without an event when no row exists at all', async () => {
         const { tx, queries } = makeFakeTx();
-        expect(await clearSystemAdvisoryInTx(tx, { mint: MINT, note: 'n', nowMs: NOW })).toBe('not_found');
+        expect(await clearSystemAdvisoryInTx(tx, { mint: MINT, note: 'n', nowMs: NOW, source: 'webacy_depeg' })).toBe(
+            'not_found',
+        );
         expect(queries).toHaveLength(2);
         expect(queries.some(q => q.text.includes('INSERT INTO'))).toBe(false);
     });

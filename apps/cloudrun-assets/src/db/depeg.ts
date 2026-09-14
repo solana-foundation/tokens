@@ -13,12 +13,13 @@
 import type { Sql, TransactionSql } from 'postgres';
 
 import {
-    WEBACY_DEPEG_ACTOR,
+    SYSTEM_ACTOR_BY_SOURCE,
     isAdvisorySource,
     isAdvisoryStatus,
     isPegTier,
     isStructuralGrade,
     type PegTier,
+    type SystemAdvisorySource,
 } from '@tokens/asset-registry';
 
 import { randomId } from '../db';
@@ -157,6 +158,8 @@ export interface SetSystemAdvisoryTxArgs {
     mint: string;
     reason: string;
     nowMs: number;
+    /** Which automated observer is writing; gates the ON CONFLICT so observers never overwrite each other. */
+    source: SystemAdvisorySource;
 }
 
 /** Exported for tests (recording fake `tx`). */
@@ -190,16 +193,19 @@ export async function setSystemAdvisoryInTx(tx: Tx, args: SetSystemAdvisoryTxArg
     const existing = current[0];
     // Hands-off rule: a human-authored (or human-edited) row is never touched.
     if (existing && existing.managed_by_system !== true) return 'skipped_human_owned';
+    // Each observer owns only the rows it set.
+    if (existing && existing.source !== args.source) return 'skipped_other_system_owner';
     if (existing && existing.reason === args.reason) return 'unchanged';
 
+    const actor = SYSTEM_ACTOR_BY_SOURCE[args.source];
     const setAt = existing ? Number(existing.set_at) : args.nowMs;
     await tx`
         INSERT INTO asset_variant_advisories (
             mint, status, reason, url, set_by, set_by_email, set_at, updated_at, source, managed_by_system
         )
         VALUES (
-            ${args.mint}, 'caution', ${args.reason}, NULL, ${WEBACY_DEPEG_ACTOR}, NULL,
-            ${setAt}, ${args.nowMs}, 'webacy_depeg', true
+            ${args.mint}, 'caution', ${args.reason}, NULL, ${actor}, NULL,
+            ${setAt}, ${args.nowMs}, ${args.source}, true
         )
         ON CONFLICT (mint) DO UPDATE SET
             reason = EXCLUDED.reason,
@@ -207,9 +213,10 @@ export async function setSystemAdvisoryInTx(tx: Tx, args: SetSystemAdvisoryTxArg
             updated_at = EXCLUDED.updated_at,
             set_by = EXCLUDED.set_by,
             set_by_email = NULL,
-            source = 'webacy_depeg',
+            source = EXCLUDED.source,
             managed_by_system = true
         WHERE asset_variant_advisories.managed_by_system = true
+          AND asset_variant_advisories.source = ${args.source}
     `;
 
     await tx`
@@ -219,7 +226,7 @@ export async function setSystemAdvisoryInTx(tx: Tx, args: SetSystemAdvisoryTxArg
         )
         VALUES (
             ${randomId('ave')}, ${args.mint}, 'set', 'caution', ${args.reason}, NULL, false,
-            ${WEBACY_DEPEG_ACTOR}, NULL, ${args.nowMs}, 'webacy_depeg'
+            ${actor}, NULL, ${args.nowMs}, ${args.source}
         )
     `;
     return existing ? 'updated' : 'set';
@@ -230,6 +237,7 @@ export interface ClearSystemAdvisoryTxArgs {
     /** Why the automation cleared (e.g. "Webacy tier ok for 6h"); stored as the event reason. */
     note: string;
     nowMs: number;
+    source: SystemAdvisorySource;
 }
 
 /** Exported for tests (recording fake `tx`). */
@@ -239,14 +247,16 @@ export async function clearSystemAdvisoryInTx(
 ): Promise<ClearSystemAdvisoryOutcome> {
     const deleted = await tx<Array<{ mint: string }>>`
         DELETE FROM asset_variant_advisories
-        WHERE mint = ${args.mint} AND managed_by_system = true AND source = 'webacy_depeg'
+        WHERE mint = ${args.mint} AND managed_by_system = true AND source = ${args.source}
         RETURNING mint
     `;
     if (deleted.length === 0) {
-        const exists = await tx<Array<{ mint: string }>>`
-            SELECT mint FROM asset_variant_advisories WHERE mint = ${args.mint}
+        const exists = await tx<Array<{ mint: string; managed_by_system: boolean | null; source: string | null }>>`
+            SELECT mint, managed_by_system, source FROM asset_variant_advisories WHERE mint = ${args.mint}
         `;
-        return exists.length > 0 ? 'skipped_not_system' : 'not_found';
+        const row = exists[0];
+        if (!row) return 'not_found';
+        return row.managed_by_system === true ? 'skipped_other_system_owner' : 'skipped_not_system';
     }
     await tx`
         INSERT INTO asset_variant_advisory_events (
@@ -255,7 +265,7 @@ export async function clearSystemAdvisoryInTx(
         )
         VALUES (
             ${randomId('ave')}, ${args.mint}, 'clear', NULL, ${args.note}, NULL, false,
-            ${WEBACY_DEPEG_ACTOR}, NULL, ${args.nowMs}, 'webacy_depeg'
+            ${SYSTEM_ACTOR_BY_SOURCE[args.source]}, NULL, ${args.nowMs}, ${args.source}
         )
     `;
     return 'cleared';
