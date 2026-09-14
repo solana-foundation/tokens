@@ -10,7 +10,7 @@
 
 import type { Sql, TransactionSql } from 'postgres';
 
-import { isAdvisoryStatus, type AdvisoryStatus } from '@tokens/asset-registry';
+import { isAdvisorySource, isAdvisoryStatus, type AdvisoryStatus } from '@tokens/asset-registry';
 
 import type {
     AdvisoryActor,
@@ -32,6 +32,8 @@ interface PgAdvisoryRow {
     set_by_email: string | null;
     set_at: string | number;
     updated_at: string | number;
+    source: string | null;
+    managed_by_system: boolean | null;
 }
 
 interface PgAdvisoryEventRow {
@@ -45,6 +47,7 @@ interface PgAdvisoryEventRow {
     actor_clerk_user_id: string;
     actor_email: string | null;
     created_at: string | number;
+    source: string | null;
 }
 
 function mapAdvisoryRow(row: PgAdvisoryRow): VariantAdvisoryRow | null {
@@ -60,6 +63,9 @@ function mapAdvisoryRow(row: PgAdvisoryRow): VariantAdvisoryRow | null {
         setByEmail: row.set_by_email,
         setAt: Number(row.set_at),
         updatedAt: Number(row.updated_at),
+        // Pre-0019 rows and unknown values read as human-authored.
+        source: isAdvisorySource(row.source) ? row.source : 'admin',
+        managedBySystem: row.managed_by_system === true,
     };
 }
 
@@ -75,6 +81,7 @@ function mapEventRow(row: PgAdvisoryEventRow): VariantAdvisoryEventRow {
         actorClerkUserId: row.actor_clerk_user_id,
         actorEmail: row.actor_email,
         createdAt: Number(row.created_at),
+        source: isAdvisorySource(row.source) ? row.source : 'admin',
     };
 }
 
@@ -115,11 +122,16 @@ export async function setAdvisoryInTx(tx: Tx, args: SetAdvisoryTxArgs): Promise<
     // only reason/url change, reset it when the status changes.
     const setAt = existing && existing.status === args.status ? Number(existing.set_at) : args.nowMs;
 
+    // Every admin write marks the row human-owned: the depeg reconciler on the
+    // jobs worker only ever touches rows with managed_by_system = true, so an
+    // edit or escalation here detaches an automated caution for good.
     await tx`
-        INSERT INTO asset_variant_advisories (mint, status, reason, url, set_by, set_by_email, set_at, updated_at)
+        INSERT INTO asset_variant_advisories (
+            mint, status, reason, url, set_by, set_by_email, set_at, updated_at, source, managed_by_system
+        )
         VALUES (
             ${args.mint}, ${args.status}, ${args.reason}, ${args.url},
-            ${args.actor.clerkUserId}, ${args.actor.email}, ${setAt}, ${args.nowMs}
+            ${args.actor.clerkUserId}, ${args.actor.email}, ${setAt}, ${args.nowMs}, 'admin', false
         )
         ON CONFLICT (mint) DO UPDATE SET
             status = EXCLUDED.status,
@@ -128,7 +140,9 @@ export async function setAdvisoryInTx(tx: Tx, args: SetAdvisoryTxArgs): Promise<
             set_by = EXCLUDED.set_by,
             set_by_email = EXCLUDED.set_by_email,
             set_at = EXCLUDED.set_at,
-            updated_at = EXCLUDED.updated_at
+            updated_at = EXCLUDED.updated_at,
+            source = 'admin',
+            managed_by_system = false
     `;
 
     let reactivated = false;
@@ -144,11 +158,11 @@ export async function setAdvisoryInTx(tx: Tx, args: SetAdvisoryTxArgs): Promise<
     await tx`
         INSERT INTO asset_variant_advisory_events (
             id, mint, action, status, reason, url, reactivated_variant,
-            actor_clerk_user_id, actor_email, created_at
+            actor_clerk_user_id, actor_email, created_at, source
         )
         VALUES (
             ${randomId('ave')}, ${args.mint}, 'set', ${args.status}, ${args.reason}, ${args.url}, ${reactivated},
-            ${args.actor.clerkUserId}, ${args.actor.email}, ${args.nowMs}
+            ${args.actor.clerkUserId}, ${args.actor.email}, ${args.nowMs}, 'admin'
         )
     `;
 
@@ -173,11 +187,11 @@ export async function clearAdvisoryInTx(tx: Tx, args: ClearAdvisoryTxArgs): Prom
     await tx`
         INSERT INTO asset_variant_advisory_events (
             id, mint, action, status, reason, url, reactivated_variant,
-            actor_clerk_user_id, actor_email, created_at
+            actor_clerk_user_id, actor_email, created_at, source
         )
         VALUES (
             ${randomId('ave')}, ${args.mint}, 'clear', NULL, NULL, NULL, false,
-            ${args.actor.clerkUserId}, ${args.actor.email}, ${args.nowMs}
+            ${args.actor.clerkUserId}, ${args.actor.email}, ${args.nowMs}, 'admin'
         )
     `;
     return 'cleared';
@@ -195,7 +209,8 @@ export function makePostgresVariantAdvisoriesRepo(sql: Sql): VariantAdvisoriesRe
 
         async listActive() {
             const rows = await sql<PgAdvisoryRow[]>`
-                SELECT mint, status, reason, url, set_by, set_by_email, set_at, updated_at
+                SELECT mint, status, reason, url, set_by, set_by_email, set_at, updated_at,
+                       source, managed_by_system
                 FROM asset_variant_advisories
                 ORDER BY updated_at DESC, mint ASC
             `;
@@ -205,7 +220,7 @@ export function makePostgresVariantAdvisoriesRepo(sql: Sql): VariantAdvisoriesRe
         async listEventsByMint(mint, limit) {
             const rows = await sql<PgAdvisoryEventRow[]>`
                 SELECT id, mint, action, status, reason, url, reactivated_variant,
-                       actor_clerk_user_id, actor_email, created_at
+                       actor_clerk_user_id, actor_email, created_at, source
                 FROM asset_variant_advisory_events
                 WHERE mint = ${mint}
                 ORDER BY created_at DESC, id DESC

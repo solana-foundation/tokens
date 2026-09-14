@@ -93,9 +93,13 @@ export type CanonicalRow = {
 
 /* ── variant advisories ─────────────────────────────────────────────────── */
 
-// Hand-copied from ADVISORY_STATUSES / VariantAdvisory in
+// Hand-copied from ADVISORY_STATUSES / ADVISORY_SOURCES / VariantAdvisory in
 // packages/asset-registry/src/types.ts (the source of truth).
 export type AdvisoryStatus = 'caution' | 'compromised' | 'blocked';
+/** `admin` = human-authored; `webacy_depeg` = set automatically by the stablecoin depeg reconciler. */
+export type AdvisorySource = 'admin' | 'webacy_depeg';
+/** `set_by` / actor id used by the depeg reconciler (mirrors WEBACY_DEPEG_ACTOR). */
+export const WEBACY_DEPEG_ACTOR = 'system:webacy_depeg';
 
 /** The active advisory attached to a variant mint, as serialized on admin variant rows. */
 export type VariantAdvisory = {
@@ -104,6 +108,8 @@ export type VariantAdvisory = {
     url: string | null;
     /** Unix ms; reset when the status changes, kept when only reason/url are edited. */
     since: number;
+    /** Omitted by cloudrun-admin builds that predate 0019; treat as `'admin'`. */
+    source?: AdvisorySource;
 };
 
 /** Mirrors `VariantAdvisoryRow` in cloudrun-admin handlers/variantAdvisories.ts. */
@@ -115,6 +121,45 @@ export type VariantAdvisoryRow = {
     setBy: string;
     setByEmail: string | null;
     setAt: number;
+    updatedAt: number;
+    source?: AdvisorySource;
+    /** True only while the depeg automation owns the row. */
+    managedBySystem?: boolean;
+};
+
+// Hand-copied from packages/asset-registry/src/stablecoin-health.ts (the source of truth).
+export type PegTier = 'ok' | 'watch' | 'warning' | 'critical' | 'premium';
+export type StructuralGrade =
+    | 'A+'
+    | 'A'
+    | 'A-'
+    | 'B+'
+    | 'B'
+    | 'B-'
+    | 'C+'
+    | 'C'
+    | 'C-'
+    | 'D+'
+    | 'D'
+    | 'D-'
+    | 'F';
+
+/** Compact Webacy depeg status for a stablecoin mint, as serialized on admin variant rows. */
+export type AdminPegHealth = {
+    tier: PegTier;
+    /** Signed percent from peg; negative = below peg. */
+    deviationPct: number | null;
+    /** False when the last Webacy fetch for this mint failed (tier is the last good value). */
+    ok: boolean;
+    errorMessage: string | null;
+    /** Unix ms of the last fetch attempt. */
+    updatedAt: number;
+};
+
+/** Compact Webacy structural health grade for a stablecoin mint. */
+export type AdminStructuralHealth = {
+    grade: StructuralGrade;
+    /** Unix ms of the last successful fetch. */
     updatedAt: number;
 };
 
@@ -130,6 +175,7 @@ export type VariantAdvisoryEventRow = {
     actorClerkUserId: string;
     actorEmail: string | null;
     createdAt: number;
+    source?: AdvisorySource;
 };
 
 export type SetVariantAdvisoryArgs = {
@@ -177,6 +223,10 @@ export type AdminVariantRow = {
      * the UI treats `undefined` the same as `null`.
      */
     advisory?: VariantAdvisory | null;
+    /** Webacy depeg tier for stablecoin mints, or null. Optional for rollout safety like `advisory`. */
+    pegHealth?: AdminPegHealth | null;
+    /** Webacy structural grade for stablecoin mints, or null. Optional for rollout safety like `advisory`. */
+    structuralHealth?: AdminStructuralHealth | null;
 };
 
 export type VariantsByAssetIdRow = {

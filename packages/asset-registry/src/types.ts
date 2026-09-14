@@ -59,12 +59,31 @@ export type StockVariantTier = (typeof STOCK_VARIANT_TIERS)[number];
 export const ADVISORY_STATUSES = ['caution', 'compromised', 'blocked'] as const;
 export type AdvisoryStatus = (typeof ADVISORY_STATUSES)[number];
 
+/**
+ * Who owns an advisory. `admin` rows are human-authored; `webacy_depeg` rows
+ * are set (and cleared) automatically by the stablecoin depeg reconciler and
+ * are always `caution`. Any admin write on a system row turns it into an
+ * `admin` row, after which the automation leaves it alone.
+ */
+export const ADVISORY_SOURCES = ['admin', 'webacy_depeg'] as const;
+export type AdvisorySource = (typeof ADVISORY_SOURCES)[number];
+
+/** Prefix of every non-human `set_by` / actor id. */
+export const ADVISORY_SYSTEM_ACTOR_PREFIX = 'system:';
+/** `set_by` / actor id written by the Webacy depeg reconciler (no Clerk user exists for it). */
+export const WEBACY_DEPEG_ACTOR = 'system:webacy_depeg';
+
 export interface VariantAdvisory {
     status: AdvisoryStatus;
     reason: string;
     url: string | null;
     /** Unix ms when the current status was set. */
     since: number;
+    /**
+     * Omitted by services that predate 0019; readers treat `undefined` as
+     * `'admin'`.
+     */
+    source?: AdvisorySource;
 }
 
 export function isAdvisoryStatus(value: unknown): value is AdvisoryStatus {
@@ -79,6 +98,19 @@ export function isTradeRestrictedAdvisory(advisory: VariantAdvisory | null | und
 /** `blocked`: hidden from curated lists, search, trending, and v2 list hydration. */
 export function isHiddenAdvisory(advisory: VariantAdvisory | null | undefined): boolean {
     return advisory?.status === 'blocked';
+}
+
+export function isAdvisorySource(value: unknown): value is AdvisorySource {
+    return typeof value === 'string' && (ADVISORY_SOURCES as readonly string[]).includes(value);
+}
+
+/** True for advisories set by an automated source (anything but `admin`). */
+export function isSystemManagedAdvisory(advisory: Pick<VariantAdvisory, 'source'> | null | undefined): boolean {
+    return advisory?.source !== undefined && advisory.source !== 'admin';
+}
+
+export function isSystemActorId(actorId: string): boolean {
+    return actorId.startsWith(ADVISORY_SYSTEM_ACTOR_PREFIX);
 }
 
 export interface AssetVariant {

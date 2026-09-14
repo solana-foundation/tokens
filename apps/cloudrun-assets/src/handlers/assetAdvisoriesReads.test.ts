@@ -34,10 +34,22 @@ describe('listAdvisories', () => {
                     reason: 'Treasury exploited',
                     url: 'https://example.com/post',
                     since: 1000,
+                    source: 'admin',
                 },
-                { mint: 'MintB', status: 'caution', reason: 'Watch', url: null, since: 500 },
+                { mint: 'MintB', status: 'caution', reason: 'Watch', url: null, since: 500, source: 'admin' },
             ],
         });
+    });
+
+    it('carries a known source through and defaults unknown or missing sources to admin', async () => {
+        const result = await listAdvisories(
+            repoWith([
+                { mint: 'A', status: 'caution', reason: 'r', url: null, set_at: 1, updated_at: 1, source: 'webacy_depeg' },
+                { mint: 'B', status: 'caution', reason: 'r', url: null, set_at: 1, updated_at: 1, source: 'bogus' },
+                { mint: 'C', status: 'caution', reason: 'r', url: null, set_at: 1, updated_at: 1 },
+            ]),
+        );
+        expect(result.advisories.map(a => a.source)).toEqual(['webacy_depeg', 'admin', 'admin']);
     });
 
     it('coerces bigint and string epoch columns to numbers', async () => {

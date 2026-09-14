@@ -1,5 +1,6 @@
 import {
     ADVISORY_STATUSES,
+    isAdvisorySource,
     isAdvisoryStatus,
     isTradeRestrictedAdvisory,
     type AdvisoryStatus,
@@ -120,6 +121,8 @@ export function normalizeAdvisory(value: unknown): AssetAdvisory | null {
         reason,
         url: normalizeAdvisoryUrl(record.url),
         since,
+        // Older API builds omit `source`; unknown values degrade to "manual".
+        ...(isAdvisorySource(record.source) ? { source: record.source } : {}),
     };
 }
 

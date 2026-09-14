@@ -333,6 +333,7 @@ function deps(overrides: Partial<ServerDeps> = {}): ServerDeps {
         assetsApiRepo: overrides.assetsApiRepo ?? noopAssetsApiRepo,
         deletionTombstonesRepo: overrides.deletionTombstonesRepo ?? emptyDeletionTombstonesRepo(),
         assetAdvisoriesRepo: overrides.assetAdvisoriesRepo ?? emptyAssetAdvisoriesRepo(),
+        stablecoinHealthReadsRepo: overrides.stablecoinHealthReadsRepo ?? { findLatestByMints: async () => [] },
         sanctumLstsRepo: overrides.sanctumLstsRepo ?? emptySanctumLstsRepo(),
         assetMarketsRepo: overrides.assetMarketsRepo ?? emptyAssetMarketsRepo(),
         variantMarketsRepo: overrides.variantMarketsRepo ?? emptyVariantMarketsRepo(),
