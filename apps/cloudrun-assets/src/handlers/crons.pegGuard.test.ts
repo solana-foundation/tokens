@@ -541,7 +541,7 @@ describe('refresh-peg-guard observations', () => {
             prevRows: [pegRow(USDC, 'ok'), pegRow(USDT, 'warning')],
             prices: {
                 [USDC]: entry(USDC, 0.9, { liquidityUsd: 99_999 }),
-                [USDT]: entry(USDT, 0.9, { updatedAt: FIXED_NOW - 31 * MINUTE }),
+                [USDT]: entry(USDT, 0.9, { updatedAt: FIXED_NOW - 7 * HOUR }),
             },
         });
         const out = await run(h, { dryRun: false });
@@ -613,7 +613,7 @@ describe('refresh-peg-guard circuits', () => {
             multiResult: { ok: false, status: 503, message: 'upstream' },
             fallbackRows: {
                 [USDC]: { price: 0.9, liquidity: 5_000_000, lastFetchedAt: FIXED_NOW - 2 * MINUTE },
-                [USDT]: { price: 1, liquidity: 5_000_000, lastFetchedAt: FIXED_NOW - 2 * HOUR },
+                [USDT]: { price: 1, liquidity: 5_000_000, lastFetchedAt: FIXED_NOW - 7 * HOUR },
             },
         });
         const out = await run(h);
