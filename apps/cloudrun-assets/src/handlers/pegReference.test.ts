@@ -151,7 +151,7 @@ describe('evaluatePegObservation', () => {
             issue: 'no_price',
             deviationPct: null,
         });
-        const stale = evaluatePegObservation(input({ priceUpdatedAt: NOW - 2 * HOUR, liquidityUsd: 0 }));
+        const stale = evaluatePegObservation(input({ priceUpdatedAt: NOW - 7 * HOUR, liquidityUsd: 0 }));
         expect(stale.ok).toBe(false);
         if (!stale.ok) {
             expect(stale.issue).toBe('stale_price');

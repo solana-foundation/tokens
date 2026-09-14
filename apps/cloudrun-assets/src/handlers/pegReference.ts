@@ -32,7 +32,14 @@ export const PEG_GUARD_PREMIUM_PCT = 2;
 /** Below this much DEX liquidity a price is not evidence of anything. */
 export const PEG_GUARD_MIN_LIQUIDITY_USD = 100_000;
 /** A Birdeye price older than this is not a current observation. */
-export const PEG_GUARD_PRICE_STALE_MS = 30 * MINUTE_MS;
+/**
+ * Birdeye's `updateUnixTime` is the last trade, not a heartbeat. A quiet
+ * stablecoin (USDS, USDY, syrupUSDC trade less than hourly on Solana) has
+ * not moved, so its last price is still evidence; only a market silent for
+ * most of a day is treated as unknown. Verified 2026-09-14: 30 minutes
+ * dropped three multi-million-dollar pools as "stale".
+ */
+export const PEG_GUARD_PRICE_STALE_MS = 6 * HOUR_MS;
 /**
  * How recent a Webacy observation must be for Webacy to own the mint. Matches
  * the Webacy reconciler's `staleObservationMs` and the API's PEG_STALE_AFTER_MS
