@@ -10,6 +10,7 @@ import {
     type AdminPegHealth,
     type AdvisorySource,
     type AdvisoryStatus,
+    type PegReferenceKind,
     type PegTier,
     type StructuralGrade,
     type VariantAdvisoryEventRow,
@@ -152,7 +153,18 @@ export function pegProviderLabel(provider: AdminPegHealth['provider'] | undefine
     return provider === 'tokens' ? 'tokens.xyz peg monitor' : 'Webacy';
 }
 
-export function pegTierLabel(tier: PegTier): string {
+/**
+ * Tier label. Yield-bearing variants (`high_water`) are judged against their
+ * own recent high, so a healthy row reads "Holding value" rather than "On peg"
+ * and a small slip reads "Slipping"; the other tiers share the peg wording.
+ * Rows without a reference kind predate peg guard phase 2 and were judged
+ * against a fixed 1.00.
+ */
+export function pegTierLabel(tier: PegTier, referenceKind?: PegReferenceKind | null): string {
+    if (referenceKind === 'high_water') {
+        if (tier === 'ok') return 'Holding value';
+        if (tier === 'watch') return 'Slipping';
+    }
     switch (tier) {
         case 'ok':
             return 'On peg';
@@ -164,6 +176,27 @@ export function pegTierLabel(tier: PegTier): string {
             return 'Critical';
         case 'premium':
             return 'Above peg';
+    }
+}
+
+/**
+ * What the observation was measured against, for tooltips: "USD peg",
+ * "EUR peg (fx)" or "recent high (yield)". A missing kind is a fixed peg;
+ * a missing currency on a fixed peg is USD (the only fixed peg the monitors
+ * judge), while an fx row without a currency says "fiat peg (fx)".
+ */
+export function pegReferenceLabel(
+    referenceKind: PegReferenceKind | null | undefined,
+    pegCurrency: string | null | undefined,
+): string {
+    const currency = typeof pegCurrency === 'string' && pegCurrency.trim() ? pegCurrency.trim().toUpperCase() : null;
+    switch (referenceKind ?? 'fixed') {
+        case 'high_water':
+            return 'recent high (yield)';
+        case 'fx':
+            return `${currency ?? 'fiat'} peg (fx)`;
+        case 'fixed':
+            return `${currency ?? 'USD'} peg`;
     }
 }
 

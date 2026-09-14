@@ -3,6 +3,7 @@ import { Effect } from 'effect';
 import {
     STRUCTURAL_CATEGORY_LABELS,
     isPegProvider,
+    isPegReferenceKind,
     type CompactPegHealth,
     type PegHealth,
     type StablecoinHealth,
@@ -58,12 +59,16 @@ function isStale(updatedAt: number, nowMs: number, staleAfterMs: number): boolea
  * Public peg block. Drops the worker-internal `ok` / `errorMessage`: a failed
  * refresh keeps serving the last good tier, and `stale` (driven by the
  * observation age) is the only freshness signal clients should branch on.
- * `provider` defaults to `webacy` for worker builds that predate the peg guard.
+ * `provider` defaults to `webacy` for worker builds that predate the peg guard;
+ * `referenceKind` defaults to `fixed` for rows that predate peg guard phase 2
+ * (every such row was judged against a fixed 1.00).
  */
 export function toPegHealth(read: PegHealthRead | null | undefined, nowMs: number): PegHealth | null {
     if (!read) return null;
     return {
         provider: isPegProvider(read.provider) ? read.provider : 'webacy',
+        pegCurrency: typeof read.pegCurrency === 'string' && read.pegCurrency.length > 0 ? read.pegCurrency : null,
+        referenceKind: isPegReferenceKind(read.referenceKind) ? read.referenceKind : 'fixed',
         tier: read.tier,
         overallRisk: read.overallRisk,
         deviationPct: read.deviationPct,
@@ -103,6 +108,7 @@ export function toCompactPegHealth(peg: PegHealth | null | undefined): CompactPe
     if (!peg) return null;
     return {
         provider: peg.provider,
+        referenceKind: isPegReferenceKind(peg.referenceKind) ? peg.referenceKind : 'fixed',
         tier: peg.tier,
         deviationPct: peg.deviationPct,
         updatedAt: peg.updatedAt,

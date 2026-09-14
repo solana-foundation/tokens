@@ -19,6 +19,7 @@ import type {
     AssetCategory,
     LiquidityTier,
     PegProvider,
+    PegReferenceKind,
     PegTier,
     StockVariantTier,
     StructuralGrade,
@@ -74,6 +75,15 @@ export interface VariantMarketRow {
 export interface VariantPegHealthRow {
     /** `webacy` or `tokens` (in-house peg guard). Optional for builds that predate 0020. */
     provider?: PegProvider;
+    /** ISO 4217 code of the peg when the observer knows it; optional for builds that predate peg guard phase 2. */
+    pegCurrency?: string | null;
+    /**
+     * What the tier was judged against: a fixed 1.00, a CoinGecko-implied fiat
+     * rate (`fx`) or the token's own high-water price (`high_water`). Webacy
+     * rows are always `fixed`; null for peg guard rows written before phase 2.
+     * Optional for builds that predate peg guard phase 2 (treat as `fixed`).
+     */
+    referenceKind?: PegReferenceKind | null;
     tier: PegTier;
     /** Signed percent from peg; negative = below peg. */
     deviationPct: number | null;

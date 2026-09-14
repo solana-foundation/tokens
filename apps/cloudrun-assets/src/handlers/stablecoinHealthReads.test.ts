@@ -60,6 +60,8 @@ describe('stablecoinHealthGetByMints', () => {
         expect(result[0]).toEqual({ mint: USDT, pegHealth: null, structuralHealth: null });
         expect(result[1]!.pegHealth).toEqual({
             provider: 'webacy',
+            pegCurrency: null,
+            referenceKind: 'fixed',
             tier: 'ok',
             overallRisk: 3.5,
             deviationPct: -0.02,
@@ -147,6 +149,8 @@ describe('toPegHealthRead provider preference', () => {
     const pegGuard: Partial<StablecoinHealthRow> = {
         pg_ok: true,
         pg_tier: 'warning',
+        pg_peg_currency: 'USD',
+        pg_reference_kind: 'fixed',
         pg_deviation_pct: '-1.8',
         pg_price_usd: 0.982,
         pg_peg_usd: 1,
@@ -174,6 +178,8 @@ describe('toPegHealthRead provider preference', () => {
         expect(webacyCoversRow(stale, NOW)).toBe(false);
         expect(toPegHealthRead(stale, NOW)).toEqual({
             provider: 'tokens',
+            pegCurrency: 'USD',
+            referenceKind: 'fixed',
             tier: 'warning',
             overallRisk: null,
             deviationPct: -1.8,
@@ -258,5 +264,71 @@ describe('toPegHealthRead provider preference', () => {
             mints: [USDC],
         });
         expect(entry!.pegHealth?.provider).toBe('webacy');
+    });
+});
+
+describe('toPegHealthRead peg reference (phase 2)', () => {
+    const pegGuardOnly: Partial<StablecoinHealthRow> = {
+        depeg_ok: null,
+        depeg_tier: null,
+        depeg_last_fetched_at: null,
+        pg_ok: true,
+        pg_tier: 'watch',
+        pg_deviation_pct: -1.4,
+        pg_price_usd: 1.124,
+        pg_peg_usd: 1.14,
+        pg_liquidity_usd: 900000,
+        pg_tier_since_at: NOW - 10 * 60_000,
+        pg_last_fetched_at: NOW - 60_000,
+        pg_last_ok_at: NOW - 60_000,
+        pg_error_message: null,
+    };
+
+    it('carries the peg guard reference kind and currency for high_water and fx rows', () => {
+        const yieldRow = toPegHealthRead(
+            row({ ...pegGuardOnly, pg_peg_currency: 'USD', pg_reference_kind: 'high_water' }),
+            NOW,
+        );
+        expect(yieldRow?.provider).toBe('tokens');
+        expect(yieldRow?.referenceKind).toBe('high_water');
+        expect(yieldRow?.pegCurrency).toBe('USD');
+        expect(yieldRow?.pegUsd).toBe(1.14);
+
+        const fxRow = toPegHealthRead(
+            row({ ...pegGuardOnly, pg_peg_currency: 'eur', pg_reference_kind: 'fx', pg_peg_usd: 1.1556 }),
+            NOW,
+        );
+        expect(fxRow?.referenceKind).toBe('fx');
+        expect(fxRow?.pegCurrency).toBe('EUR');
+        expect(fxRow?.pegUsd).toBe(1.1556);
+    });
+
+    it('nulls an unknown reference kind and a blank currency', () => {
+        const read = toPegHealthRead(
+            row({ ...pegGuardOnly, pg_peg_currency: '  ', pg_reference_kind: 'moving_average' }),
+            NOW,
+        );
+        expect(read?.referenceKind).toBeNull();
+        expect(read?.pegCurrency).toBeNull();
+    });
+
+    it('reads null for peg guard rows from before phase 2 (columns absent from the SELECT)', () => {
+        const legacy = row({ ...pegGuardOnly });
+        expect('pg_reference_kind' in legacy).toBe(false);
+        const read = toPegHealthRead(legacy, NOW);
+        expect(read?.provider).toBe('tokens');
+        expect(read?.referenceKind).toBeNull();
+        expect(read?.pegCurrency).toBeNull();
+    });
+
+    it('always reports Webacy rows as fixed, with the denomination code only when the row exposes it', () => {
+        const plain = toPegHealthRead(row(), NOW);
+        expect(plain?.provider).toBe('webacy');
+        expect(plain?.referenceKind).toBe('fixed');
+        expect(plain?.pegCurrency).toBeNull();
+
+        const withCode = toPegHealthRead(row({ depeg_peg_currency: 'usd' }), NOW);
+        expect(withCode?.referenceKind).toBe('fixed');
+        expect(withCode?.pegCurrency).toBe('USD');
     });
 });

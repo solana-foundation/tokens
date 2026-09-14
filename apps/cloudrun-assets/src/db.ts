@@ -2496,6 +2496,8 @@ export function makePostgresStablecoinHealthReadsRepo(sql: Sql): StablecoinHealt
                        d.error_message    AS depeg_error_message,
                        g.ok               AS pg_ok,
                        g.tier             AS pg_tier,
+                       g.peg_currency     AS pg_peg_currency,
+                       g.reference_kind   AS pg_reference_kind,
                        g.deviation_pct    AS pg_deviation_pct,
                        g.price_usd        AS pg_price_usd,
                        g.peg_usd          AS pg_peg_usd,

@@ -25,7 +25,7 @@ import {
     type SystemAdvisorySource,
 } from '@tokens/asset-registry';
 
-import type { BirdeyeMultiPriceClient } from '../clients';
+import type { BirdeyeMultiPriceClient, FiatRatesClient } from '../clients';
 import type { PegGuardRepo } from '../db/pegGuard';
 import type { CronResult } from './crons';
 import { refreshPegGuard } from './crons.pegGuard';
@@ -200,6 +200,12 @@ export interface DepegCronDeps {
     pegGuard?: {
         birdeye: BirdeyeMultiPriceClient;
         repo: PegGuardRepo;
+        /**
+         * CoinGecko-implied fiat rates for EUR/GBP/... pegs. Optional: without
+         * it non-USD mints are judged from the stored rates until those go
+         * stale, then recorded as `no_fx_rate`.
+         */
+        fiatRates?: FiatRatesClient;
         /** Env `PEG_GUARD_ENABLED === 'true'` by default. */
         isEnabled?: () => boolean;
         /** Env `PEG_GUARD_DRY_RUN`, falling back to `WEBACY_DEPEG_DRY_RUN`; true unless explicitly 'false'. */

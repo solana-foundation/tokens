@@ -6,6 +6,7 @@ import {
     makeBirdeyeOhlcvClient,
     makeClickhouseClient,
     makeCoingeckoClient,
+    makeCoingeckoFiatRatesClient,
     makePreStocksClient,
     makeRwaXyzClient,
     makeSanctumClient,
@@ -218,7 +219,13 @@ if (birdeyeApiKey) {
         repo: makePostgresDepegRepo(sql),
         curated,
         now: () => Date.now(),
-        pegGuard: { birdeye, repo: makePostgresPegGuardRepo(sql) },
+        pegGuard: {
+            birdeye,
+            repo: makePostgresPegGuardRepo(sql),
+            // Fiat pegs (EURC, tGBP, ...) are judged against a CoinGecko-implied
+            // rate; the key is the same one the markets refresh uses.
+            fiatRates: makeCoingeckoFiatRatesClient({ apiKey: process.env.COINGECKO_API_KEY?.trim() }),
+        },
     };
     if (!webacyApiKey) {
         console.warn('[cloudrun-assets] WEBACY_API_KEY not set: Webacy depeg jobs disabled (peg guard still runs)');

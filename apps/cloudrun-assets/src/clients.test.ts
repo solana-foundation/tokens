@@ -1,6 +1,12 @@
 import { describe, expect, test } from 'bun:test';
 
-import { makeBirdeyeClient, makeClickhouseClient, makeWebacyDepegClient, parseBirdeyeMultiPrice } from './clients';
+import {
+    makeBirdeyeClient,
+    makeClickhouseClient,
+    makeCoingeckoFiatRatesClient,
+    makeWebacyDepegClient,
+    parseBirdeyeMultiPrice,
+} from './clients';
 import { normalizeDepegItem, normalizeStructuralHealth, tierFromOverallRisk } from './handlers/depegNormalize';
 
 const BASE_OPTS = {
@@ -161,6 +167,32 @@ describe('makeWebacyDepegClient', () => {
         const out = await client.fetchMultiPrice([USDC]);
         expect(calls).toHaveLength(2);
         expect(out).toMatchObject({ ok: false, status: 429 });
+    });
+
+    test('makeCoingeckoFiatRatesClient quotes usd-coin and tether with full precision and returns implied rates', async () => {
+        const { fetchImpl, calls } = recordingFetch(() =>
+            json({
+                'usd-coin': { usd: 1, eur: 0.8652, idr: 16_420, last_updated_at: 1_789_000_000 },
+                tether: { usd: 1, eur: 0.866, idr: 16_430 },
+            }),
+        );
+        const client = makeCoingeckoFiatRatesClient({ apiKey: 'cg', baseUrl: 'https://cg.test', fetchImpl });
+        const out = await client.fetchUsdPerUnit(['EUR', 'IDR']);
+        expect(calls).toHaveLength(1);
+        expect(calls[0]!.url.pathname).toBe('/simple/price');
+        expect(calls[0]!.url.searchParams.get('ids')).toBe('usd-coin,tether');
+        expect(calls[0]!.url.searchParams.get('vs_currencies')).toBe('usd,eur,idr');
+        expect(calls[0]!.url.searchParams.get('precision')).toBe('full');
+        expect((calls[0]!.init!.headers as Record<string, string>)['x-cg-pro-api-key']).toBe('cg');
+        expect(out.ok).toBe(true);
+        if (out.ok) {
+            expect(out.rates.get('EUR')?.usdPerUnit).toBeCloseTo(1 / 0.8652, 10);
+            expect(out.rates.get('EUR')?.source).toBe('coingecko_usd_coin');
+            expect(out.rates.get('IDR')?.usdPerUnit).toBeCloseTo(1 / 16_420, 12);
+        }
+        const failing = makeCoingeckoFiatRatesClient({ fetchImpl: recordingFetch(() => json({ error: 'nope' }, 503)).fetchImpl });
+        expect(await failing.fetchUsdPerUnit(['EUR'])).toMatchObject({ ok: false, status: 503 });
+        expect(await failing.fetchUsdPerUnit([])).toEqual({ ok: true, rates: new Map() });
     });
 
     test('tierFromOverallRisk bands at the 25/50/70 boundaries and premium from tags', () => {

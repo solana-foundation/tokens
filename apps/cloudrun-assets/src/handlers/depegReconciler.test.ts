@@ -89,6 +89,31 @@ function run(
     });
 }
 
+describe('buildDepegReason (peg guard references)', () => {
+    const base = { symbol: 'USDY', mint: USDE, tier: 'critical' as const, observedAt: 1_789_000_000_000, observer: 'peg_guard' as const, liquidityUsd: 3_100_000 };
+
+    test('high-water copy names the recent high and the yield note; tier still parses', () => {
+        const reason = buildDepegReason({ ...base, deviationPct: -7.89, pegUsd: 1.14, pegCurrency: 'USD', referenceKind: 'high_water' });
+        expect(reason).toContain('USDY Critical: trading 7.89% below its recent high of $1.1400 on Solana DEXs');
+        expect(reason).toContain('(yield-bearing token; measured against its own price history)');
+        expect(reason.length).toBeLessThanOrEqual(500);
+        expect(reason).not.toContain('\u2014');
+        expect(parseReasonTier(reason)).toBe('critical');
+    });
+
+    test('fx copy names the currency and the rate', () => {
+        const reason = buildDepegReason({ ...base, symbol: 'EURC', tier: 'warning', deviationPct: -2.4, pegUsd: 1.1556, pegCurrency: 'EUR', referenceKind: 'fx' });
+        expect(reason).toContain('EURC Warning: trading 2.40% below its EUR peg (1 EUR = $1.1556) on Solana DEXs');
+        expect(reason).not.toContain('yield-bearing');
+        expect(parseReasonTier(reason)).toBe('warning');
+    });
+
+    test('fixed copy is unchanged', () => {
+        const reason = buildDepegReason({ ...base, symbol: 'USX', deviationPct: -3.2, pegUsd: 1, pegCurrency: 'USD', referenceKind: 'fixed' });
+        expect(reason).toContain('USX Critical: trading 3.20% below its $1 peg on Solana DEXs');
+    });
+});
+
 describe('buildDepegReason', () => {
     test('includes tier, signed deviation direction, peg and UTC timestamp; stays under 500 chars', () => {
         const reason = buildDepegReason({

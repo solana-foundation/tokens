@@ -12,13 +12,14 @@ import { PegStatusPill } from '@/components/peg-status-pill';
 import { TrackedAnchor } from '@/components/tracked-link';
 import { trackEvent } from '@/lib/posthog-client';
 import {
-    PEG_TIER_COPY,
     STABLECOIN_HEALTH_VIEWED_EVENT,
     formatHealthUpdatedAt,
     pegDeviationText,
     pegPriceText,
     pegProviderAttributionUrl,
     pegProviderLabel,
+    pegReferenceDescription,
+    pegTierCopy,
     stablecoinHealthEventProps,
     structuralCategoryTooltip,
     structuralGradeTone,
@@ -86,10 +87,11 @@ function PegStatusCard({ pegHealth, mint }: { pegHealth: PegHealth | null; mint?
         );
     }
 
-    const copy = PEG_TIER_COPY[pegHealth.tier];
+    const copy = pegTierCopy(pegHealth.tier, pegHealth.referenceKind);
     const priceText = pegPriceText(pegHealth);
     const deviationText = pegDeviationText(pegHealth);
     const providerLabel = pegProviderLabel(pegHealth.provider);
+    const referenceText = pegReferenceDescription(pegHealth);
 
     return (
         <section className={CARD_CLASS_NAME} aria-labelledby="stablecoin-peg-status-heading">
@@ -99,6 +101,7 @@ function PegStatusCard({ pegHealth, mint }: { pegHealth: PegHealth | null; mint?
                         Peg status
                     </h4>
                     <p className="mt-1 text-body-sm text-text-low">Live depeg monitor by {providerLabel}</p>
+                    {referenceText ? <p className="mt-0.5 text-body-sm text-text-low">{referenceText}</p> : null}
                 </div>
                 <PegStatusPill pegHealth={pegHealth} size="md" showDeviation className="mt-0.5" />
             </div>

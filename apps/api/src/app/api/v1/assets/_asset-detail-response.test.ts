@@ -456,6 +456,7 @@ describe('buildAssetDetailResponse stablecoin pegHealth', () => {
 
         const compact = {
             provider: 'webacy',
+            referenceKind: 'fixed',
             tier: 'warning',
             deviationPct: -2.4,
             updatedAt: NOW - 1_000,

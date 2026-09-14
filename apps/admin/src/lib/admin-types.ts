@@ -135,12 +135,22 @@ export type VariantAdvisoryRow = {
 
 // Hand-copied from packages/asset-registry/src/stablecoin-health.ts (the source of truth).
 export type PegTier = 'ok' | 'watch' | 'warning' | 'critical' | 'premium';
+/**
+ * What a peg observation was measured against: a fixed 1.00, a CoinGecko-implied
+ * fiat rate, or the token's own high-water price (yield-bearing USD variants).
+ * Hand-copied from packages/asset-registry/src/stablecoin-health.ts (the source of truth).
+ */
+export type PegReferenceKind = 'fixed' | 'fx' | 'high_water';
 export type StructuralGrade = 'A+' | 'A' | 'A-' | 'B+' | 'B' | 'B-' | 'C+' | 'C' | 'C-' | 'D+' | 'D' | 'D-' | 'E' | 'F';
 
 /** Compact depeg status for a stablecoin mint, as serialized on admin variant rows. */
 export type AdminPegHealth = {
     /** `webacy` while Webacy covers the mint, `tokens` for the in-house peg monitor; absent on older builds. */
     provider?: 'webacy' | 'tokens';
+    /** ISO 4217 code of the peg when the observer knows it; absent on builds that predate peg guard phase 2. */
+    pegCurrency?: string | null;
+    /** Absent on builds that predate peg guard phase 2; treat a missing value as `fixed`. */
+    referenceKind?: PegReferenceKind | null;
     tier: PegTier;
     /** Signed percent from peg; negative = below peg. */
     deviationPct: number | null;
