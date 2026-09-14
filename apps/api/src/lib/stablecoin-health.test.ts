@@ -1,12 +1,7 @@
 import { afterEach, describe, expect, it } from 'bun:test';
 import { Effect } from 'effect';
 
-import {
-    CloudRunHttpError,
-    type PegHealthRead,
-    type StablecoinHealthGetByMintsResult,
-    type StructuralHealthRead,
-} from '@/lib/cloudrun';
+import { CloudRunHttpError, type PegHealthRead, type StructuralHealthRead } from '@/lib/cloudrun';
 
 import {
     __setStablecoinHealthLoaderForTests,
@@ -24,11 +19,13 @@ const USDT = 'Es9vMFrzaCERmJfrF4H2FYD4KCoNkYtvdQ7BPP3Qz1n';
 const NOW = 1_800_000_000_000;
 
 const pegRead: PegHealthRead = {
+    provider: 'webacy',
     tier: 'warning',
     overallRisk: 62.5,
     deviationPct: -2.4,
     priceUsd: 0.976,
     pegUsd: 1,
+    liquidityUsd: null,
     tierSince: NOW - 60_000,
     updatedAt: NOW - 1_000,
     ok: true,
@@ -59,7 +56,7 @@ describe('toPegHealth', () => {
         expect(toPegHealth(undefined, NOW)).toBeNull();
     });
 
-    it('stamps provider, computes stale, and strips worker-internal fields', () => {
+    it('carries provider, computes stale, and strips worker-internal fields', () => {
         const peg = toPegHealth(pegRead, NOW);
         expect(peg).toEqual({
             provider: 'webacy',
@@ -68,12 +65,32 @@ describe('toPegHealth', () => {
             deviationPct: -2.4,
             priceUsd: 0.976,
             pegUsd: 1,
+            liquidityUsd: null,
             tierSince: NOW - 60_000,
             updatedAt: NOW - 1_000,
             stale: false,
         });
         expect('ok' in peg!).toBe(false);
         expect('errorMessage' in peg!).toBe(false);
+    });
+
+    it('passes the peg guard provider and liquidity through', () => {
+        const peg = toPegHealth({ ...pegRead, provider: 'tokens', overallRisk: null, liquidityUsd: 1_250_000 }, NOW);
+        expect(peg?.provider).toBe('tokens');
+        expect(peg?.overallRisk).toBeNull();
+        expect(peg?.liquidityUsd).toBe(1_250_000);
+    });
+
+    it('defaults provider to webacy for worker builds that predate the peg guard', () => {
+        const legacy = { ...pegRead } as Partial<PegHealthRead>;
+        delete legacy.provider;
+        delete legacy.liquidityUsd;
+        const peg = toPegHealth(legacy as PegHealthRead, NOW);
+        expect(peg?.provider).toBe('webacy');
+        expect(peg?.liquidityUsd).toBeNull();
+        expect(toPegHealth({ ...pegRead, provider: 'someone-else' as PegHealthRead['provider'] }, NOW)?.provider).toBe(
+            'webacy',
+        );
     });
 
     it('flags stale strictly past the 9h bound', () => {
@@ -129,13 +146,15 @@ describe('toStructuralHealth', () => {
 });
 
 describe('toCompactPegHealth', () => {
-    it('projects to the four per-variant fields', () => {
+    it('projects to the per-variant fields and keeps the provider', () => {
         expect(toCompactPegHealth(toPegHealth(pegRead, NOW))).toEqual({
+            provider: 'webacy',
             tier: 'warning',
             deviationPct: -2.4,
             updatedAt: NOW - 1_000,
             stale: false,
         });
+        expect(toCompactPegHealth(toPegHealth({ ...pegRead, provider: 'tokens' }, NOW))?.provider).toBe('tokens');
         expect(toCompactPegHealth(null)).toBeNull();
     });
 });

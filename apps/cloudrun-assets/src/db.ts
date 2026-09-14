@@ -2479,8 +2479,9 @@ export function makePostgresStablecoinHealthReadsRepo(sql: Sql): StablecoinHealt
     return {
         async findLatestByMints(mints) {
             if (mints.length === 0) return [];
-            // Webacy's depeg/structural tables key Solana rows by chain = 'solana'
-            // (unlike the older webacy_*_latest caches, which use 'sol').
+            // Webacy's depeg/structural tables and peg_guard_latest key Solana
+            // rows by chain = 'solana' (unlike the older webacy_*_latest caches,
+            // which use 'sol'). The handler picks Webacy or the peg guard per mint.
             const rows = await sql<StablecoinHealthRow[]>`
                 SELECT v.mint,
                        d.ok               AS depeg_ok,
@@ -2493,6 +2494,16 @@ export function makePostgresStablecoinHealthReadsRepo(sql: Sql): StablecoinHealt
                        d.last_fetched_at  AS depeg_last_fetched_at,
                        d.last_ok_at       AS depeg_last_ok_at,
                        d.error_message    AS depeg_error_message,
+                       g.ok               AS pg_ok,
+                       g.tier             AS pg_tier,
+                       g.deviation_pct    AS pg_deviation_pct,
+                       g.price_usd        AS pg_price_usd,
+                       g.peg_usd          AS pg_peg_usd,
+                       g.liquidity_usd    AS pg_liquidity_usd,
+                       g.tier_since_at    AS pg_tier_since_at,
+                       g.last_fetched_at  AS pg_last_fetched_at,
+                       g.last_ok_at       AS pg_last_ok_at,
+                       g.error_message    AS pg_error_message,
                        s.ok               AS sh_ok,
                        s.composite_grade  AS sh_composite_grade,
                        s.composite_score  AS sh_composite_score,
@@ -2501,8 +2512,9 @@ export function makePostgresStablecoinHealthReadsRepo(sql: Sql): StablecoinHealt
                        s.last_ok_at       AS sh_last_ok_at
                 FROM unnest(${sql.array([...mints])}::text[]) AS v(mint)
                 LEFT JOIN webacy_depeg_latest d ON d.chain = 'solana' AND d.address = v.mint
+                LEFT JOIN peg_guard_latest g ON g.chain = 'solana' AND g.address = v.mint
                 LEFT JOIN webacy_structural_health_latest s ON s.chain = 'solana' AND s.address = v.mint
-                WHERE d.address IS NOT NULL OR s.address IS NOT NULL
+                WHERE d.address IS NOT NULL OR g.address IS NOT NULL OR s.address IS NOT NULL
             `;
             return rows;
         },

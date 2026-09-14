@@ -12,6 +12,9 @@ import {
     isStablecoinCategory,
     normalizeCompactPegHealth,
     normalizePegHealth,
+    PEG_PROVIDER_LABELS,
+    pegProviderAttributionUrl,
+    pegProviderLabel,
     normalizeStructuralHealth,
     pegDeviationText,
     pegPriceText,
@@ -73,8 +76,9 @@ describe('normalizeCompactPegHealth', () => {
     test('decodes a well-formed compact payload and drops extra fields', () => {
         expect(
             normalizeCompactPegHealth({ tier: 'warning', deviationPct: -2.4, updatedAt: UPDATED_AT, stale: false }),
-        ).toEqual({ tier: 'warning', deviationPct: -2.4, updatedAt: UPDATED_AT, stale: false });
+        ).toEqual({ provider: 'webacy', tier: 'warning', deviationPct: -2.4, updatedAt: UPDATED_AT, stale: false });
         expect(normalizeCompactPegHealth(pegHealthPayload())).toEqual({
+            provider: 'webacy',
             tier: 'warning',
             deviationPct: -2.4,
             updatedAt: UPDATED_AT,
@@ -82,14 +86,22 @@ describe('normalizeCompactPegHealth', () => {
         });
     });
 
+    test('reads the provider and defaults unknown or missing ones to webacy', () => {
+        expect(normalizeCompactPegHealth({ tier: 'ok', provider: 'tokens' })?.provider).toBe('tokens');
+        expect(normalizeCompactPegHealth({ tier: 'ok', provider: 'someone-else' })?.provider).toBe('webacy');
+        expect(normalizeCompactPegHealth({ tier: 'ok' })?.provider).toBe('webacy');
+    });
+
     test('defaults deviation, updatedAt, and stale when missing or invalid', () => {
         expect(normalizeCompactPegHealth({ tier: 'ok' })).toEqual({
+            provider: 'webacy',
             tier: 'ok',
             deviationPct: null,
             updatedAt: 0,
             stale: false,
         });
         expect(normalizeCompactPegHealth({ tier: 'ok', deviationPct: Number.NaN, updatedAt: -1 })).toEqual({
+            provider: 'webacy',
             tier: 'ok',
             deviationPct: null,
             updatedAt: 0,
@@ -107,7 +119,7 @@ describe('normalizePegHealth', () => {
         expect(normalizePegHealth(pegHealthPayload({ tier: undefined }))).toBe(null);
     });
 
-    test('decodes a well-formed payload and pins the provider', () => {
+    test('decodes a well-formed payload and defaults an unknown provider to webacy', () => {
         expect(normalizePegHealth(pegHealthPayload({ provider: 'someone-else' }))).toEqual({
             provider: 'webacy',
             tier: 'warning',
@@ -115,10 +127,21 @@ describe('normalizePegHealth', () => {
             deviationPct: -2.4,
             priceUsd: 0.976,
             pegUsd: 1,
+            liquidityUsd: null,
             tierSince: TIER_SINCE,
             updatedAt: UPDATED_AT,
             stale: false,
         });
+    });
+
+    test('keeps the tokens provider and its liquidity', () => {
+        const result = normalizePegHealth(
+            pegHealthPayload({ provider: 'tokens', overallRisk: null, liquidityUsd: 1_250_000 }),
+        );
+        expect(result?.provider).toBe('tokens');
+        expect(result?.overallRisk).toBeNull();
+        expect(result?.liquidityUsd).toBe(1_250_000);
+        expect(normalizePegHealth(pegHealthPayload({ liquidityUsd: 'lots' }))?.liquidityUsd).toBeNull();
     });
 
     test('nulls out non-finite numerics and non-positive timestamps', () => {
@@ -140,6 +163,7 @@ describe('normalizePegHealth', () => {
             deviationPct: null,
             priceUsd: null,
             pegUsd: null,
+            liquidityUsd: null,
             tierSince: null,
             updatedAt: 0,
             stale: false,
@@ -150,7 +174,7 @@ describe('normalizePegHealth', () => {
 describe('normalizeStructuralHealth', () => {
     test('returns null for non-objects and unknown grades', () => {
         expect(normalizeStructuralHealth(null)).toBe(null);
-        expect(normalizeStructuralHealth(structuralPayload({ grade: 'E' }))).toBe(null);
+        expect(normalizeStructuralHealth(structuralPayload({ grade: 'G' }))).toBe(null);
         expect(normalizeStructuralHealth(structuralPayload({ grade: 'b+' }))).toBe(null);
         expect(normalizeStructuralHealth(structuralPayload({ grade: undefined }))).toBe(null);
     });
@@ -237,6 +261,18 @@ describe('copy helpers', () => {
         expect(pegStatusTitle({ tier: 'ok', deviationPct: null, updatedAt: 0, stale: true })).toBe(
             'Peg status: On peg, Deviation unavailable. Source: Webacy (stale)',
         );
+        expect(
+            pegStatusTitle({ provider: 'tokens', tier: 'watch', deviationPct: -0.7, updatedAt: 0, stale: false }),
+        ).toBe('Peg status: Watch, −0.70% below peg. Source: tokens.xyz peg monitor');
+    });
+
+    test('peg provider labels and attribution links', () => {
+        expect(PEG_PROVIDER_LABELS).toEqual({ webacy: 'Webacy', tokens: 'tokens.xyz peg monitor' });
+        expect(pegProviderLabel('webacy')).toBe('Webacy');
+        expect(pegProviderLabel('tokens')).toBe('tokens.xyz peg monitor');
+        expect(pegProviderLabel(undefined)).toBe('Webacy');
+        expect(pegProviderAttributionUrl('webacy')).toBe('https://dd.xyz');
+        expect(pegProviderAttributionUrl('tokens')).toBeNull();
     });
 
     test('structuralCategoryTooltip renders the weight as a percent', () => {
@@ -245,9 +281,12 @@ describe('copy helpers', () => {
         expect(structuralCategoryTooltip({ weight: null, status: 'unknown' })).toBe('Weight unknown · unknown');
     });
 
-    test('advisorySourceAttribution only fires for the depeg monitor', () => {
+    test('advisorySourceAttribution only fires for the depeg monitors', () => {
         expect(advisorySourceAttribution({ source: 'webacy_depeg' })).toBe(
             'Set automatically by the Webacy depeg monitor',
+        );
+        expect(advisorySourceAttribution({ source: 'peg_guard' })).toBe(
+            'Set automatically by the tokens.xyz peg monitor',
         );
         expect(advisorySourceAttribution({ source: 'admin' })).toBe('');
         expect(advisorySourceAttribution({})).toBe('');

@@ -5,7 +5,9 @@
  */
 
 import {
+    PEG_GUARD_ACTOR,
     WEBACY_DEPEG_ACTOR,
+    type AdminPegHealth,
     type AdvisorySource,
     type AdvisoryStatus,
     type PegTier,
@@ -107,6 +109,7 @@ const SYSTEM_ACTOR_PREFIX = 'system:';
 
 const SYSTEM_ACTOR_LABELS: Record<string, string> = {
     [WEBACY_DEPEG_ACTOR]: 'Webacy depeg monitor (automated)',
+    [PEG_GUARD_ACTOR]: 'tokens.xyz peg monitor (automated)',
 };
 
 /** True for events written by an automated actor rather than an admin. */
@@ -124,7 +127,14 @@ export function advisoryActorLabel(event: Pick<VariantAdvisoryEventRow, 'actorCl
 
 /** Short provenance label for badges/tooltips; a missing source is a human write from before 0019. */
 export function advisorySourceLabel(source: AdvisorySource | undefined): string {
-    return source === 'webacy_depeg' ? 'Auto · Webacy depeg monitor' : 'Manual';
+    switch (source) {
+        case 'webacy_depeg':
+            return 'Auto · Webacy depeg monitor';
+        case 'peg_guard':
+            return 'Auto · tokens.xyz peg monitor';
+        default:
+            return 'Manual';
+    }
 }
 
 export function isSystemManagedAdvisory(advisory: { source?: AdvisorySource } | null | undefined): boolean {
@@ -132,10 +142,15 @@ export function isSystemManagedAdvisory(advisory: { source?: AdvisorySource } | 
 }
 
 export const SYSTEM_ADVISORY_EDIT_WARNING =
-    'This advisory is managed automatically by the Webacy depeg monitor. Saving will detach it from automatic management: it will no longer be updated or cleared when the peg recovers.';
+    'This advisory is managed automatically by a depeg monitor. Saving will detach it from automatic management: it will no longer be updated or cleared when the peg recovers.';
 
 export const SYSTEM_ADVISORY_CLEAR_WARNING =
-    'This caution was set automatically by the Webacy depeg monitor. Clearing it suppresses re-flagging until the peg recovers and breaks again.';
+    'This caution was set automatically by a depeg monitor. Clearing it suppresses re-flagging until the peg recovers and breaks again.';
+
+/** Who produced a peg observation; rows from builds that predate the peg guard are Webacy's. */
+export function pegProviderLabel(provider: AdminPegHealth['provider'] | undefined): string {
+    return provider === 'tokens' ? 'tokens.xyz peg monitor' : 'Webacy';
+}
 
 export function pegTierLabel(tier: PegTier): string {
     switch (tier) {

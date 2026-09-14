@@ -1,9 +1,15 @@
 /**
- * Read RPC for stablecoin health: the latest Webacy depeg observation and
- * structural-health grade per mint, from `webacy_depeg_latest` and
- * `webacy_structural_health_latest` (migration 0019). Written by the
- * `reconcile-stablecoin-depeg` / `refresh-stablecoin-structural-health` jobs
- * in `crons.depeg.ts`; served to apps/api which attaches it to risk payloads.
+ * Read RPC for stablecoin health: the latest peg observation and
+ * structural-health grade per mint, from `webacy_depeg_latest`,
+ * `peg_guard_latest` (migration 0020) and `webacy_structural_health_latest`
+ * (migration 0019). Written by the `reconcile-stablecoin-depeg` /
+ * `refresh-peg-guard` / `refresh-stablecoin-structural-health` jobs; served to
+ * apps/api which attaches it to risk payloads.
+ *
+ * Two observers can rate the same mint. Webacy wins while it covers the mint
+ * (`ok`, a known tier, `last_ok_at` within `WEBACY_PEG_COVERAGE_MS`), else the
+ * in-house peg guard row is served with `provider: 'tokens'`. The same rule
+ * decides advisory ownership in the worker, so the page and the banner agree.
  *
  * Staleness is NOT decided here (the API applies its own bounds). Rows whose
  * last fetch failed still return their last good tier/grade so a transient
@@ -15,6 +21,7 @@ import {
     isPegTier,
     isStructuralCategoryStatus,
     isStructuralGrade,
+    type PegProvider,
     type PegTier,
     type StructuralCategoryKey,
     type StructuralCategoryStatus,
@@ -25,7 +32,18 @@ import { InvalidArgsError } from './assets';
 
 export const STABLECOIN_HEALTH_MAX_MINTS = 200;
 
-/** One LEFT-JOINed row per requested mint; bigint columns may arrive as string or bigint. */
+/**
+ * Webacy "covers" a mint while its last successful observation is younger
+ * than this. Matches the Webacy reconciler's staleness bound and the API's
+ * `PEG_STALE_AFTER_MS`; the peg guard job defines the same 9h constant.
+ */
+export const WEBACY_PEG_COVERAGE_MS = 9 * 60 * 60_000;
+
+/**
+ * One LEFT-JOINed row per requested mint; bigint columns may arrive as string
+ * or bigint. `pg_*` columns come from `peg_guard_latest` and are absent on
+ * pre-0020 builds of the SELECT.
+ */
 export interface StablecoinHealthRow {
     mint: string;
     depeg_ok: boolean | null;
@@ -38,6 +56,16 @@ export interface StablecoinHealthRow {
     depeg_last_fetched_at: number | string | bigint | null;
     depeg_last_ok_at?: number | string | bigint | null;
     depeg_error_message: string | null;
+    pg_ok?: boolean | null;
+    pg_tier?: string | null;
+    pg_deviation_pct?: number | string | null;
+    pg_price_usd?: number | string | null;
+    pg_peg_usd?: number | string | null;
+    pg_liquidity_usd?: number | string | null;
+    pg_tier_since_at?: number | string | bigint | null;
+    pg_last_fetched_at?: number | string | bigint | null;
+    pg_last_ok_at?: number | string | bigint | null;
+    pg_error_message?: string | null;
     sh_ok: boolean | null;
     sh_composite_grade: string | null;
     sh_composite_score: number | string | null;
@@ -51,12 +79,17 @@ export interface StablecoinHealthReadsRepo {
 }
 
 export interface PegHealthRead {
+    /** `webacy` while Webacy covers the mint, else `tokens` (in-house peg guard). */
+    provider: PegProvider;
     tier: PegTier;
+    /** Webacy 0-100 depeg risk; always null for the peg guard. */
     overallRisk: number | null;
     /** Signed percent from peg; negative = below peg. */
     deviationPct: number | null;
     priceUsd: number | null;
     pegUsd: number | null;
+    /** DEX liquidity behind the price; only the peg guard reports it. */
+    liquidityUsd: number | null;
     /** Unix ms when the current tier streak began. */
     tierSince: number | null;
     /** Unix ms of the last SUCCESSFUL fetch (falls back to the last attempt for pre-last_ok_at rows). */
@@ -122,21 +155,65 @@ export function parseCategoryScores(value: unknown): StructuralHealthCategoryRea
     });
 }
 
-export function toPegHealthRead(row: StablecoinHealthRow): PegHealthRead | null {
+function toWebacyPegHealthRead(row: StablecoinHealthRow): PegHealthRead | null {
     if (!isPegTier(row.depeg_tier)) return null;
     const updatedAt = toEpochMs(row.depeg_last_ok_at) ?? toEpochMs(row.depeg_last_fetched_at);
     if (updatedAt === null) return null;
     return {
+        provider: 'webacy',
         tier: row.depeg_tier,
         overallRisk: toFiniteNumber(row.depeg_overall_risk),
         deviationPct: toFiniteNumber(row.depeg_deviation_pct),
         priceUsd: toFiniteNumber(row.depeg_price_usd),
         pegUsd: toFiniteNumber(row.depeg_peg_usd),
+        liquidityUsd: null,
         tierSince: toEpochMs(row.depeg_tier_since_at),
         updatedAt,
         ok: row.depeg_ok !== false,
         errorMessage: row.depeg_ok === false ? (row.depeg_error_message ?? null) : null,
     };
+}
+
+function toPegGuardPegHealthRead(row: StablecoinHealthRow): PegHealthRead | null {
+    if (!isPegTier(row.pg_tier)) return null;
+    const updatedAt = toEpochMs(row.pg_last_ok_at) ?? toEpochMs(row.pg_last_fetched_at);
+    if (updatedAt === null) return null;
+    return {
+        provider: 'tokens',
+        tier: row.pg_tier,
+        overallRisk: null,
+        deviationPct: toFiniteNumber(row.pg_deviation_pct),
+        priceUsd: toFiniteNumber(row.pg_price_usd),
+        pegUsd: toFiniteNumber(row.pg_peg_usd),
+        liquidityUsd: toFiniteNumber(row.pg_liquidity_usd),
+        tierSince: toEpochMs(row.pg_tier_since_at),
+        updatedAt,
+        ok: row.pg_ok !== false,
+        errorMessage: row.pg_ok === false ? (row.pg_error_message ?? null) : null,
+    };
+}
+
+/**
+ * Webacy owns the mint while its row is healthy, carries a known tier and its
+ * last successful observation is within `WEBACY_PEG_COVERAGE_MS`. Same rule as
+ * the peg guard job's `webacyCoversMint`.
+ */
+export function webacyCoversRow(row: StablecoinHealthRow, nowMs: number): boolean {
+    if (row.depeg_ok === false || !isPegTier(row.depeg_tier)) return false;
+    const lastOkAt = toEpochMs(row.depeg_last_ok_at) ?? toEpochMs(row.depeg_last_fetched_at);
+    if (lastOkAt === null) return false;
+    return nowMs - lastOkAt <= WEBACY_PEG_COVERAGE_MS;
+}
+
+/**
+ * Webacy when it covers the mint; else the peg guard row when it has a tier;
+ * else the (stale or failing) Webacy row so a last-good tier keeps rendering
+ * with `ok: false` / `stale` rather than blanking the UI.
+ */
+export function toPegHealthRead(row: StablecoinHealthRow, nowMs: number = Date.now()): PegHealthRead | null {
+    const webacy = toWebacyPegHealthRead(row);
+    if (webacy && webacyCoversRow(row, nowMs)) return webacy;
+    return toPegGuardPegHealthRead(row) ?? webacy;
 }
 
 export function toStructuralHealthRead(row: StablecoinHealthRow): StructuralHealthRead | null {
@@ -175,6 +252,7 @@ function readMints(args: unknown): string[] {
 export async function stablecoinHealthGetByMints(
     repo: StablecoinHealthReadsRepo,
     args: unknown,
+    nowMs: number = Date.now(),
 ): Promise<StablecoinHealthEntry[]> {
     const mints = readMints(args);
     if (mints.length === 0) return [];
@@ -184,6 +262,6 @@ export async function stablecoinHealthGetByMints(
     return mints.map(mint => {
         const row = byMint.get(mint);
         if (!row) return { mint, pegHealth: null, structuralHealth: null };
-        return { mint, pegHealth: toPegHealthRead(row), structuralHealth: toStructuralHealthRead(row) };
+        return { mint, pegHealth: toPegHealthRead(row, nowMs), structuralHealth: toStructuralHealthRead(row) };
     });
 }

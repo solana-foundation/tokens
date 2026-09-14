@@ -357,9 +357,10 @@ describe('buildDepegRow', () => {
 });
 
 describe('reconcile-stablecoin-depeg gates and args', () => {
-    test('is registered under both job names', () => {
+    test('is registered under all three job names', () => {
         expect(Object.keys(depegJobs).sort()).toEqual([
             'reconcile-stablecoin-depeg',
+            'refresh-peg-guard',
             'refresh-stablecoin-structural-health',
         ]);
     });

@@ -4,6 +4,7 @@ import {
     ADVISORY_BLOCKED_EVENT,
     ADVISORY_COPY,
     ASSET_ADVISORY_STATUSES,
+    DEPEG_ADVISORY_SOURCES,
     DEPEG_ADVISORY_TITLE,
     advisoryBannerTitle,
     advisoryEventProps,
@@ -208,12 +209,20 @@ describe('copy helpers', () => {
         expect(advisoryTone(depeg.status)).toBe('warning');
         expect(advisoryLabel(depeg.status)).toBe('Caution');
         expect(isTradeBlocked(depeg)).toBe(false);
+        // The in-house peg monitor writes the same predicate.
+        const pegGuard = advisory({ status: 'caution', source: 'peg_guard', url: null });
+        expect(advisoryBannerTitle(pegGuard, 'USX')).toBe('USX is trading off its peg');
+        expect(DEPEG_ADVISORY_SOURCES).toEqual(new Set(['webacy_depeg', 'peg_guard']));
         // Only the source changes the predicate; a human caution keeps the generic copy.
         expect(advisoryBannerTitle(advisory({ status: 'caution' }), 'USX')).toBe('USX has an active caution advisory');
+        expect(advisoryBannerTitle(advisory({ status: 'caution', source: 'admin' }), 'USX')).toBe(
+            'USX has an active caution advisory',
+        );
     });
 
     test('normalizeAdvisory keeps a known source and drops unknown ones', () => {
         expect(normalizeAdvisory(advisory({ source: 'webacy_depeg' }))?.source).toBe('webacy_depeg');
+        expect(normalizeAdvisory(advisory({ source: 'peg_guard' }))?.source).toBe('peg_guard');
         expect(normalizeAdvisory(advisory({ source: 'admin' }))?.source).toBe('admin');
         expect(normalizeAdvisory({ ...advisory(), source: 'robot' })?.source).toBe(undefined);
         expect(normalizeAdvisory(advisory())?.source).toBe(undefined);

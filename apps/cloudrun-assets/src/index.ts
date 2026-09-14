@@ -13,6 +13,7 @@ import {
     makeWebacyDepegClient,
 } from './clients';
 import { makePostgresDepegRepo } from './db/depeg';
+import { makePostgresPegGuardRepo } from './db/pegGuard';
 import { parseAdminClerkUserIds, parseAdminEmails } from './adminAuth';
 import {
     getSql,
@@ -128,13 +129,16 @@ if (birdeyeApiKey) {
         process.exit(1);
     }
     const coingeckoCurated = makePostgresCoingeckoCuratedSource(sql);
+    // Held separately because CronDeps.birdeye is typed as the narrower
+    // BirdeyeClient; the peg guard needs the multi-price half of this instance.
+    const birdeye = makeBirdeyeClient({
+        apiKey: birdeyeApiKey,
+        ...(process.env.BIRDEYE_ORIGIN ? { origin: process.env.BIRDEYE_ORIGIN } : {}),
+    });
     const baseDeps: CronDeps = {
         repo: makePostgresJobsRepo(sql),
         curated,
-        birdeye: makeBirdeyeClient({
-            apiKey: birdeyeApiKey,
-            ...(process.env.BIRDEYE_ORIGIN ? { origin: process.env.BIRDEYE_ORIGIN } : {}),
-        }),
+        birdeye,
         birdeyeOhlcv: makeBirdeyeOhlcvClient({
             apiKey: birdeyeApiKey,
             ...(process.env.BIRDEYE_ORIGIN ? { origin: process.env.BIRDEYE_ORIGIN } : {}),
@@ -206,17 +210,18 @@ if (birdeyeApiKey) {
         repo: makePostgresPrestocksRepo(sql),
         now: () => Date.now(),
     };
-    // Depeg jobs share the Webacy key with the token-risk refresh; without it
-    // the group 404s with depeg_jobs_disabled instead of polling nothing.
-    if (webacyApiKey) {
-        depegCronDeps = {
-            webacyDepeg: makeWebacyDepegClient({ apiKey: webacyApiKey }),
-            repo: makePostgresDepegRepo(sql),
-            curated,
-            now: () => Date.now(),
-        };
-    } else {
-        console.warn('[cloudrun-assets] WEBACY_API_KEY not set — depeg /jobs/* disabled');
+    // The depeg job group only needs Birdeye (the peg guard prices from it);
+    // the Webacy jobs share the token-risk key and return webacy_not_configured
+    // via the client's isConfigured() when it is missing.
+    depegCronDeps = {
+        webacyDepeg: makeWebacyDepegClient({ apiKey: webacyApiKey ?? '' }),
+        repo: makePostgresDepegRepo(sql),
+        curated,
+        now: () => Date.now(),
+        pegGuard: { birdeye, repo: makePostgresPegGuardRepo(sql) },
+    };
+    if (!webacyApiKey) {
+        console.warn('[cloudrun-assets] WEBACY_API_KEY not set: Webacy depeg jobs disabled (peg guard still runs)');
     }
     if (clickhouseUrl && clickhouseUser && clickhousePassword && clickhouseDatabase) {
         clickhouseExtrasCronDeps = {

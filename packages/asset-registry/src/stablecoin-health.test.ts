@@ -38,14 +38,15 @@ describe('peg tiers', () => {
 });
 
 describe('structural grades', () => {
-    it('guards the 13 grades and bands them by letter', () => {
+    it('guards the 14 grades and bands them by letter', () => {
         expect(STRUCTURAL_GRADES).toHaveLength(14);
         expect(isStructuralGrade('E')).toBe(true);
         for (const grade of STRUCTURAL_GRADES) expect(isStructuralGrade(grade)).toBe(true);
-        expect(isStructuralGrade('E')).toBe(false);
+        expect(isStructuralGrade('G')).toBe(false);
         expect(isStructuralGrade('a+')).toBe(false);
         expect(structuralGradeBand('A+')).toBe('A');
         expect(structuralGradeBand('D-')).toBe('D');
+        expect(structuralGradeBand('E')).toBe('E');
         expect(structuralGradeBand('F')).toBe('F');
     });
 
