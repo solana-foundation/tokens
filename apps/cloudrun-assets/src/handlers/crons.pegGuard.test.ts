@@ -4,8 +4,9 @@ import type { PegTier } from '@tokens/asset-registry';
 
 import { BadRequestError } from '@tokens/effect';
 
-import type { BirdeyeMultiPriceEntry, BirdeyeMultiPriceResult } from '../clients';
+import type { BirdeyeMultiPriceEntry, BirdeyeMultiPriceResult, FiatRatesResult } from '../clients';
 import type {
+    FxRateRow,
     PegGuardCurrencyVariant,
     PegGuardLatestRow,
     PegGuardMarketFallback,
@@ -22,9 +23,13 @@ import {
 import { buildPegGuardRow, refreshPegGuard, type PegGuardRefreshResult } from './crons.pegGuard';
 import type { CuratedMembershipSource } from './curatedMembershipReads';
 import { buildDepegReason, type ReconcilerAdvisory } from './depegReconciler';
+import { PEG_FX_CURRENCIES } from './pegReference';
 
 const MINUTE = 60_000;
 const HOUR = 60 * MINUTE;
+const DAY = 24 * HOUR;
+/** CoinGecko-implied USD per EUR used across the fx tests. */
+const EUR_RATE = 1.1556;
 const FIXED_NOW = 1_789_000_000_000;
 const USDC = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
 const USDT = 'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB';
@@ -110,9 +115,35 @@ function pegRow(address: string, tier: PegTier | null, overrides: Partial<PegGua
         errorMessage: null,
         priceSource: 'birdeye_multi_price',
         priceUpdatedAt: FIXED_NOW - 5 * MINUTE - 10_000,
+        referenceKind: 'fixed',
+        referenceUsd: null,
+        referenceUpdatedAt: null,
         lastFetchedAt: FIXED_NOW - 5 * MINUTE,
         lastOkAt: FIXED_NOW - 5 * MINUTE,
         ...overrides,
+    };
+}
+
+function fxRow(currency: string, usdPerUnit: number, lastOkAt: number): FxRateRow {
+    return {
+        currency,
+        usdPerUnit,
+        source: 'coingecko_usd_coin',
+        providerUpdatedAt: lastOkAt - 30_000,
+        lastFetchedAt: lastOkAt,
+        lastOkAt,
+    };
+}
+
+function fiatOk(rates: Record<string, number>): FiatRatesResult {
+    return {
+        ok: true,
+        rates: new Map(
+            Object.entries(rates).map(([currency, usdPerUnit]) => [
+                currency,
+                { usdPerUnit, source: 'coingecko_usd_coin' as const, providerUpdatedAt: FIXED_NOW - 30_000 },
+            ]),
+        ),
     };
 }
 
@@ -150,6 +181,8 @@ interface Recording {
     multiCalls: string[][];
     fallbackCalls: string[][];
     variantCalls: string[][];
+    fiatCalls: string[][];
+    fxUpserts: FxRateRow[][];
     webacyListCalls: number;
 }
 
@@ -166,6 +199,10 @@ interface Fixture {
     /** Overrides the whole Birdeye result (e.g. a failure). */
     multiResult?: BirdeyeMultiPriceResult;
     fallbackRows?: Record<string, PegGuardMarketFallback>;
+    /** Seed for the in-memory peg_fx_rates_latest table. */
+    fxRows?: FxRateRow[];
+    /** What the fake CoinGecko client answers; when absent, no fiat client is wired at all. */
+    fiatResult?: FiatRatesResult;
     configured?: boolean;
     enabled?: boolean;
     dryRunDefault?: boolean;
@@ -179,6 +216,8 @@ interface Harness {
     clock: { now: number };
     /** Live in-memory peg_guard_latest, updated by upserts. */
     latest: Map<string, PegGuardLatestRow>;
+    /** Live in-memory peg_fx_rates_latest. */
+    fxRates: Map<string, FxRateRow>;
     advisories: ReconcilerAdvisory[];
 }
 
@@ -196,12 +235,15 @@ function makeHarness(fx: Fixture = {}): Harness {
         multiCalls: [],
         fallbackCalls: [],
         variantCalls: [],
+        fiatCalls: [],
+        fxUpserts: [],
         webacyListCalls: 0,
     };
     const clock = { now: FIXED_NOW };
     const currencies = fx.currencies ?? DEFAULT_CURRENCIES;
     const variants = fx.variants ?? VARIANTS;
     const latest = new Map((fx.prevRows ?? []).map(row => [row.address, row] as const));
+    const fxRates = new Map((fx.fxRows ?? []).map(row => [row.currency, row] as const));
     const advisories = [...(fx.advisories ?? [])];
     const prices = fx.prices ?? defaultPrices(currencies);
 
@@ -314,6 +356,16 @@ function makeHarness(fx: Fixture = {}): Harness {
             for (const mint of mints) if (fx.fallbackRows?.[mint]) out.set(mint, fx.fallbackRows[mint]!);
             return out;
         },
+        async listFxRates() {
+            return [...fxRates.values()];
+        },
+        async upsertFxRates(rows) {
+            rec.fxUpserts.push([...rows]);
+            for (const row of rows) {
+                const prev = fxRates.get(row.currency);
+                fxRates.set(row.currency, { ...row, lastOkAt: row.lastOkAt ?? prev?.lastOkAt ?? null });
+            }
+        },
     };
 
     const deps: DepegCronDeps = {
@@ -343,12 +395,22 @@ function makeHarness(fx: Fixture = {}): Harness {
                           },
                       },
                       repo: pegRepo,
+                      ...(fx.fiatResult === undefined
+                          ? {}
+                          : {
+                                fiatRates: {
+                                    async fetchUsdPerUnit(list: readonly string[]) {
+                                        rec.fiatCalls.push([...list]);
+                                        return fx.fiatResult!;
+                                    },
+                                },
+                            }),
                       isEnabled: () => fx.enabled ?? true,
                       ...(fx.dryRunDefault === undefined ? {} : { isDryRunDefault: () => fx.dryRunDefault! }),
                   },
               }),
     };
-    return { deps, rec, clock, latest, advisories };
+    return { deps, rec, clock, latest, fxRates, advisories };
 }
 
 function events(rec: Recording, name: string): Record<string, unknown>[] {
@@ -436,15 +498,25 @@ describe('refresh-peg-guard gates and args', () => {
 });
 
 describe('refresh-peg-guard observations', () => {
-    test('healthy sweep: every USD mint ok, non-USD unsupported, summary always emitted', async () => {
+    test('healthy sweep: every USD mint ok, fx mints without a rate unjudged, summary always emitted', async () => {
         const h = makeHarness();
         const out = await run(h);
         expect(out.ok).toBe(true);
         expect(out.tracked).toBe(7);
         expect(out.priced).toBe(7);
         expect(out.fallbackPriced).toBe(0);
-        expect(out.unsupported).toBe(3);
-        expect(out.issues).toEqual({ thin_liquidity: 0, stale_price: 0, no_price: 0, unsupported_peg: 3 });
+        expect(out.unsupported).toBe(1);
+        expect(out.issues).toEqual({
+            thin_liquidity: 0,
+            stale_price: 0,
+            no_price: 0,
+            unsupported_peg: 1,
+            no_fx_rate: 2,
+            stale_fx: 0,
+            no_reference: 0,
+        });
+        expect(out.referenceKinds).toEqual({ fixed: 3, fx: 2, high_water: 1 });
+        expect(out.fxRates).toEqual({ fetched: false, currencies: 0, stale: 0 });
         expect(out.tierCounts).toEqual({ ok: 4, watch: 0, warning: 0, critical: 0, premium: 0, null: 3 });
         expect(out.tierChanges).toBe(4);
         expect(out.reconciled).toBe(4);
@@ -458,7 +530,9 @@ describe('refresh-peg-guard observations', () => {
             tracked: 7,
             priced: 7,
             fallback_priced: 0,
-            unsupported: 3,
+            unsupported: 1,
+            reference_kinds: { fixed: 3, fx: 2, high_water: 1 },
+            fx_rates: { fetched: false, currencies: 0, stale: 0 },
             owned_by_webacy: 0,
             reconciled: 4,
             circuit: null,
@@ -467,30 +541,35 @@ describe('refresh-peg-guard observations', () => {
         expect(typeof s.duration_ms).toBe('number');
     });
 
-    test('non-USD pegs are stored with their currency, tier null and unsupported_peg', async () => {
+    test('fx pegs with no rate anywhere are stored as no_fx_rate; BUIDL is unsupported_peg', async () => {
         const h = makeHarness();
         await run(h);
         const rows = h.rec.upserts[0]!;
         const eurc = rows.find(r => r.address === EURC)!;
         expect(eurc).toMatchObject({
             pegCurrency: 'EUR',
+            referenceKind: 'fx',
             pegUsd: null,
             tier: null,
             ok: false,
-            errorMessage: 'unsupported_peg',
+            errorMessage: 'no_fx_rate',
             priceUsd: 1,
             priceSource: 'birdeye_multi_price',
             lastOkAt: null,
         });
         expect(rows.find(r => r.address === TRYB)).toMatchObject({
             pegCurrency: 'TRY',
-            errorMessage: 'unsupported_peg',
+            referenceKind: 'fx',
+            errorMessage: 'no_fx_rate',
         });
         expect(rows.find(r => r.address === BUIDL)).toMatchObject({
             pegCurrency: null,
+            referenceKind: null,
             errorMessage: 'unsupported_peg',
         });
-        // Non-USD mints never reach the reconciler.
+        // No fiat client: CoinGecko is never called and the stored table is read once.
+        expect(h.rec.fiatCalls).toHaveLength(0);
+        // Unresolved mints with no history never reach the reconciler.
         expect(h.rec.logs.filter(l => l.event === 'depeg_advisory_skipped' && l.mint === EURC)).toHaveLength(0);
     });
 
@@ -626,9 +705,12 @@ describe('refresh-peg-guard circuits', () => {
         expect(events(h.rec, 'peg_guard_price_fetch_failed')).toHaveLength(1);
         const circuit = events(h.rec, 'depeg_circuit_open');
         expect(circuit).toHaveLength(1);
+        // Tracked = USDC, USDT, USDE (fixed pegs resolve without a price); USDY
+        // has no high-water mark yet and the fx mints have no rate.
         expect(circuit[0]).toMatchObject({
             reason: 'price_fetch_failed',
-            usd_mints: 4,
+            usd_mints: 3,
+            tracked_mints: 3,
             fresh_fallback: 1,
             ignored: false,
         });
@@ -667,7 +749,9 @@ describe('refresh-peg-guard circuits', () => {
         const out = await run(h);
         expect(out.ok).toBe(false);
         expect(out.circuit).toBe('price_fetch_failed');
-        expect(out.issues.no_price).toBe(4);
+        // USDY cannot seed a high-water mark without a price, so it reads no_reference first.
+        expect(out.issues.no_price).toBe(3);
+        expect(out.issues.no_reference).toBe(1);
         expect(summary(h.rec).ok).toBe(false);
     });
 
@@ -678,7 +762,8 @@ describe('refresh-peg-guard circuits', () => {
         });
         const out = await run(h, { ignoreCircuitBreaker: true });
         expect(out.circuit).toBeNull();
-        expect(out.reconciled).toBe(4);
+        // USDY has no price to seed its high-water mark from, so only the three fixed pegs are tracked.
+        expect(out.reconciled).toBe(3);
         expect(events(h.rec, 'depeg_circuit_open')[0]).toMatchObject({ reason: 'price_fetch_failed', ignored: true });
     });
 
@@ -967,7 +1052,9 @@ describe('buildPegGuardRow', () => {
             prev,
             address: USDC,
             symbol: 'USDC',
-            peg: { currency: 'USD', pegUsd: 1 },
+            peg: { currency: 'USD', pegUsd: 1, reference: 'fixed' },
+            pegUsd: 1,
+            reference: null,
             price: { priceUsd: 1, updatedAt: FIXED_NOW - 1000, liquidityUsd: 1_000_000, source: 'birdeye_multi_price' },
             evaluation: { ok: true, tier: 'ok', deviationPct: 0 },
             source: 'sweep',
@@ -989,7 +1076,9 @@ describe('buildPegGuardRow', () => {
             prev,
             address: USDE,
             symbol: 'USDe',
-            peg: { currency: 'USD', pegUsd: 1 },
+            peg: { currency: 'USD', pegUsd: 1, reference: 'fixed' },
+            pegUsd: 1,
+            reference: null,
             price: {
                 priceUsd: 0.95,
                 updatedAt: FIXED_NOW - 1000,
@@ -1012,6 +1101,7 @@ describe('buildPegGuardRow', () => {
             newTier: 'critical',
             source: 'manual',
             liquidityUsd: 1_000_000,
+            referenceKind: 'fixed',
         });
     });
 
@@ -1020,7 +1110,9 @@ describe('buildPegGuardRow', () => {
             prev: null,
             address: USDE,
             symbol: 'USDe',
-            peg: { currency: 'USD', pegUsd: 1 },
+            peg: { currency: 'USD', pegUsd: 1, reference: 'fixed' },
+            pegUsd: 1,
+            reference: null,
             price: {
                 priceUsd: 0.98,
                 updatedAt: FIXED_NOW - 2 * HOUR,
@@ -1042,5 +1134,428 @@ describe('buildPegGuardRow', () => {
             observations: 0,
             lastOkAt: null,
         });
+    });
+
+    test('a failed observation carries the previous high-water mark when this run produced none', () => {
+        const prev = pegRow(USDY, 'ok', {
+            referenceKind: 'high_water',
+            referenceUsd: 1.14,
+            referenceUpdatedAt: FIXED_NOW - DAY,
+            pegUsd: 1.14,
+        });
+        const { row } = buildPegGuardRow({
+            prev,
+            address: USDY,
+            symbol: 'USDY',
+            peg: { currency: 'USD', pegUsd: null, reference: 'high_water' },
+            pegUsd: null,
+            reference: null,
+            price: null,
+            evaluation: { ok: false, issue: 'no_price', deviationPct: null },
+            source: 'sweep',
+            now: FIXED_NOW,
+        });
+        expect(row).toMatchObject({
+            ok: false,
+            errorMessage: 'no_price',
+            referenceKind: 'high_water',
+            referenceUsd: 1.14,
+            referenceUpdatedAt: FIXED_NOW - DAY,
+            pegUsd: null,
+            tier: 'ok',
+        });
+    });
+
+    test('a resolved high-water observation stores the advanced mark and tags the tier event', () => {
+        const { row, event } = buildPegGuardRow({
+            prev: null,
+            address: USDY,
+            symbol: 'USDY',
+            peg: { currency: 'USD', pegUsd: null, reference: 'high_water' },
+            pegUsd: 1.14,
+            reference: { referenceUsd: 1.14, referenceUpdatedAt: FIXED_NOW },
+            price: {
+                priceUsd: 1.14,
+                updatedAt: FIXED_NOW - 1000,
+                liquidityUsd: 900_000,
+                source: 'birdeye_multi_price',
+            },
+            evaluation: { ok: true, tier: 'ok', deviationPct: 0 },
+            source: 'sweep',
+            now: FIXED_NOW,
+        });
+        expect(row).toMatchObject({
+            referenceKind: 'high_water',
+            referenceUsd: 1.14,
+            referenceUpdatedAt: FIXED_NOW,
+            pegUsd: 1.14,
+            tier: 'ok',
+        });
+        expect(event).toMatchObject({ newTier: 'ok', pegUsd: 1.14, referenceKind: 'high_water' });
+    });
+});
+
+describe('refresh-peg-guard fiat references', () => {
+    /** EURC at -0.3% of the EUR rate: ok. */
+    const eurcOnPeg = entry(EURC, EUR_RATE * 0.997, { liquidityUsd: 890_000 });
+
+    test('EURC is judged against a fetched EUR rate, which is stored and logged once per run', async () => {
+        const h = makeHarness({
+            currencies: [USDC, EURC, TRYB],
+            prices: { [USDC]: entry(USDC, 1), [EURC]: eurcOnPeg, [TRYB]: entry(TRYB, 0.024) },
+            fiatResult: fiatOk({ EUR: EUR_RATE }),
+        });
+        const out = await run(h);
+        expect(h.rec.fiatCalls).toEqual([[...PEG_FX_CURRENCIES]]);
+        expect(h.rec.fxUpserts).toEqual([
+            [
+                {
+                    currency: 'EUR',
+                    usdPerUnit: EUR_RATE,
+                    source: 'coingecko_usd_coin',
+                    providerUpdatedAt: FIXED_NOW - 30_000,
+                    lastFetchedAt: FIXED_NOW,
+                    lastOkAt: FIXED_NOW,
+                },
+            ],
+        ]);
+        expect(events(h.rec, 'peg_guard_fx_rates_refreshed')).toEqual([
+            expect.objectContaining({ count: 1, currencies: ['EUR'] }),
+        ]);
+        const eurc = h.rec.upserts[0]!.find(r => r.address === EURC)!;
+        expect(eurc).toMatchObject({
+            pegCurrency: 'EUR',
+            referenceKind: 'fx',
+            pegUsd: EUR_RATE,
+            tier: 'ok',
+            ok: true,
+            errorMessage: null,
+            referenceUsd: null,
+        });
+        expect(eurc.deviationPct).toBeCloseTo(-0.3, 6);
+        // TRY was not in the answer: still no_fx_rate.
+        expect(h.rec.upserts[0]!.find(r => r.address === TRYB)).toMatchObject({ errorMessage: 'no_fx_rate' });
+        expect(out.issues.no_fx_rate).toBe(1);
+        expect(out.fxRates).toEqual({ fetched: true, currencies: 1, stale: 0 });
+        // EURC is tracked and reconciled like a USD mint.
+        expect(out.reconciled).toBe(2);
+        expect(events(h.rec, 'depeg_tier_changed').find(l => l.mint === EURC)).toMatchObject({
+            peg_usd: EUR_RATE,
+            peg_currency: 'EUR',
+            reference_kind: 'fx',
+        });
+        expect(h.rec.tierEvents[0]!.find(e => e.address === EURC)).toMatchObject({ referenceKind: 'fx' });
+    });
+
+    test('a targeted run without an fx-pegged mint never calls CoinGecko', async () => {
+        const h = makeHarness({ fiatResult: fiatOk({ EUR: EUR_RATE }) });
+        await run(h, { mints: [USDC, USDY] });
+        expect(h.rec.fiatCalls).toHaveLength(0);
+        expect(h.rec.fxUpserts).toHaveLength(0);
+        expect(summary(h.rec).fx_rates).toEqual({ fetched: false, currencies: 0, stale: 0 });
+    });
+
+    test('an fx advisory reason names the currency and the rate', async () => {
+        const h = makeHarness({
+            currencies: [EURC],
+            prevRows: [
+                pegRow(EURC, 'warning', {
+                    pegCurrency: 'EUR',
+                    referenceKind: 'fx',
+                    pegUsd: EUR_RATE,
+                    badSinceAt: FIXED_NOW - HOUR,
+                }),
+            ],
+            prices: { [EURC]: entry(EURC, EUR_RATE * 0.975, { liquidityUsd: 890_000 }) },
+            fiatResult: fiatOk({ EUR: EUR_RATE }),
+        });
+        const out = await run(h, { dryRun: false });
+        expect(out.actionsSet).toBe(1);
+        const reason = h.rec.sets[0]!.reason;
+        expect(reason).toContain(
+            'tokens.xyz peg monitor rates EURC Warning: trading 2.50% below its EUR peg (1 EUR = $1.1556)',
+        );
+        expect(reason).not.toContain('\u2014');
+        expect(reason.length).toBeLessThanOrEqual(500);
+    });
+
+    test('CoinGecko failure with a 2h-old stored rate: still judged, failure logged, nothing written', async () => {
+        const h = makeHarness({
+            currencies: [EURC],
+            prices: { [EURC]: eurcOnPeg },
+            fxRows: [fxRow('EUR', EUR_RATE, FIXED_NOW - 2 * HOUR)],
+            fiatResult: { ok: false, status: 503, message: 'upstream' },
+        });
+        const out = await run(h);
+        expect(events(h.rec, 'peg_guard_fx_fetch_failed')).toEqual([
+            expect.objectContaining({ provider: 'coingecko', status: 503, message: 'upstream' }),
+        ]);
+        expect(events(h.rec, 'peg_guard_fx_rates_refreshed')).toHaveLength(0);
+        expect(h.rec.fxUpserts).toHaveLength(0);
+        expect(h.rec.upserts[0]![0]).toMatchObject({ tier: 'ok', ok: true, pegUsd: EUR_RATE, referenceKind: 'fx' });
+        expect(out.fxRates).toEqual({ fetched: false, currencies: 1, stale: 0 });
+        expect(out.reconciled).toBe(1);
+    });
+
+    test('a fresh fetch overrides a stored rate for the same currency', async () => {
+        const h = makeHarness({
+            currencies: [EURC],
+            prices: { [EURC]: eurcOnPeg },
+            fxRows: [fxRow('EUR', 1.5, FIXED_NOW - 2 * HOUR)],
+            fiatResult: fiatOk({ EUR: EUR_RATE }),
+        });
+        await run(h);
+        expect(h.rec.upserts[0]![0]).toMatchObject({ tier: 'ok', pegUsd: EUR_RATE });
+        expect(h.fxRates.get('EUR')).toMatchObject({ usdPerUnit: EUR_RATE, lastOkAt: FIXED_NOW });
+    });
+
+    test('a 7h-old stored rate is stale_fx: not judged, previous tier kept, no clear', async () => {
+        const h = makeHarness({
+            currencies: [EURC],
+            prevRows: [
+                pegRow(EURC, 'ok', {
+                    pegCurrency: 'EUR',
+                    referenceKind: 'fx',
+                    pegUsd: EUR_RATE,
+                    tierSinceAt: FIXED_NOW - 7 * HOUR,
+                }),
+            ],
+            advisories: [advisory(EURC, 'warning', 'peg_guard')],
+            prices: { [EURC]: eurcOnPeg },
+            fxRows: [fxRow('EUR', EUR_RATE, FIXED_NOW - 7 * HOUR)],
+        });
+        const out = await run(h, { dryRun: false });
+        expect(out.issues.stale_fx).toBe(1);
+        expect(out.fxRates).toEqual({ fetched: false, currencies: 1, stale: 1 });
+        expect(h.rec.upserts[0]![0]).toMatchObject({
+            ok: false,
+            errorMessage: 'stale_fx',
+            tier: 'ok',
+            pegUsd: null,
+            referenceKind: 'fx',
+            lastOkAt: FIXED_NOW - 5 * MINUTE,
+        });
+        // Still tracked because it was judged before, so the reconciler sees it and declines.
+        expect(out.reconciled).toBe(1);
+        expect(out.skipped).toEqual({ no_observation: 1 });
+        expect(h.rec.clears).toHaveLength(0);
+        expect(h.advisories).toHaveLength(1);
+    });
+
+    test('the same 7h-old episode clears once the rate is fresh again', async () => {
+        const h = makeHarness({
+            currencies: [EURC],
+            prevRows: [
+                pegRow(EURC, 'ok', {
+                    pegCurrency: 'EUR',
+                    referenceKind: 'fx',
+                    pegUsd: EUR_RATE,
+                    tierSinceAt: FIXED_NOW - 7 * HOUR,
+                }),
+            ],
+            advisories: [advisory(EURC, 'warning', 'peg_guard')],
+            prices: { [EURC]: eurcOnPeg },
+            fxRows: [fxRow('EUR', EUR_RATE, FIXED_NOW - 2 * HOUR)],
+        });
+        const out = await run(h, { dryRun: false });
+        expect(out.actionsCleared).toBe(1);
+        expect(h.rec.clears[0]).toMatchObject({ mint: EURC, note: 'tokens.xyz peg monitor: on peg for 7h' });
+    });
+
+    test('fxStaleMs tightens the fallback window', async () => {
+        const h = makeHarness({
+            currencies: [EURC],
+            prices: { [EURC]: eurcOnPeg },
+            fxRows: [fxRow('EUR', EUR_RATE, FIXED_NOW - 2 * HOUR)],
+        });
+        const out = await run(h, { fxStaleMs: HOUR });
+        expect(out.issues.stale_fx).toBe(1);
+        expect(out.fxRates.stale).toBe(1);
+    });
+});
+
+describe('refresh-peg-guard high-water references', () => {
+    test('USDY seeds its reference at the first liquid price and is judged against it straight away', async () => {
+        const h = makeHarness({ currencies: [USDY], prices: { [USDY]: entry(USDY, 1.14, { liquidityUsd: 900_000 }) } });
+        const out = await run(h, { dryRun: false });
+        expect(out.issues.no_reference).toBe(0);
+        expect(out.referenceKinds).toEqual({ fixed: 0, fx: 0, high_water: 1 });
+        const row = h.rec.upserts[0]![0]!;
+        expect(row).toMatchObject({
+            pegCurrency: 'USD',
+            referenceKind: 'high_water',
+            referenceUsd: 1.14,
+            referenceUpdatedAt: FIXED_NOW,
+            pegUsd: 1.14,
+            deviationPct: 0,
+            tier: 'ok',
+            ok: true,
+        });
+        expect(h.rec.tierEvents[0]![0]).toMatchObject({ newTier: 'ok', pegUsd: 1.14, referenceKind: 'high_water' });
+        expect(out.reconciled).toBe(1);
+        expect(out.skipped).toEqual({ unchanged: 1 });
+    });
+
+    test('the seed never sits below $1.00, so a yield token first seen at 0.97 is already warning', async () => {
+        const h = makeHarness({ currencies: [USDY], prices: { [USDY]: entry(USDY, 0.97) } });
+        await run(h);
+        const row = h.rec.upserts[0]![0]!;
+        expect(row).toMatchObject({ referenceUsd: 1, pegUsd: 1, tier: 'warning' });
+        expect(row.deviationPct).toBeCloseTo(-3, 6);
+    });
+
+    test('USDY at 1.05 after a 1.14 high is critical and the advisory names the recent high', async () => {
+        const h = makeHarness({ currencies: [USDY], prices: { [USDY]: entry(USDY, 1.14, { liquidityUsd: 900_000 }) } });
+        await run(h, { dryRun: false });
+
+        h.clock.now = FIXED_NOW + 5 * MINUTE;
+        const drop = entry(USDY, 1.05, { liquidityUsd: 900_000 });
+        h.deps.pegGuard!.birdeye = {
+            async fetchMultiPrice() {
+                return {
+                    ok: true,
+                    byMint: new Map([[USDY, { ...drop, updatedAt: h.clock.now - 10_000 }]]),
+                    missing: [],
+                };
+            },
+        };
+        const second = await run(h, { dryRun: false });
+        expect(second.tierChanges).toBe(1);
+        expect(second.skipped).toEqual({ hysteresis_pending: 1 });
+        expect(h.rec.tierEvents[1]![0]).toMatchObject({
+            oldTier: 'ok',
+            newTier: 'critical',
+            pegUsd: 1.14,
+            referenceKind: 'high_water',
+        });
+        const row = h.latest.get(USDY)!;
+        expect(row).toMatchObject({
+            tier: 'critical',
+            referenceUsd: 1.14,
+            referenceUpdatedAt: FIXED_NOW,
+            pegUsd: 1.14,
+        });
+        expect(row.deviationPct).toBeCloseTo(((1.05 - 1.14) / 1.14) * 100, 6);
+
+        h.clock.now = FIXED_NOW + 15 * MINUTE;
+        const third = await run(h, { dryRun: false });
+        expect(third.actionsSet).toBe(1);
+        const reason = h.rec.sets[0]!.reason;
+        expect(reason.startsWith('tokens.xyz peg monitor rates USDY Critical:')).toBe(true);
+        expect(reason).toContain('below its recent high of $1.1400');
+        expect(reason).toContain('(yield-bearing token; measured against its own price history)');
+        expect(reason.length).toBeLessThanOrEqual(500);
+    });
+
+    test('a wick to 1.30 on thin liquidity leaves the mark at 1.14 (and is thin_liquidity)', async () => {
+        const h = makeHarness({
+            currencies: [USDY],
+            prevRows: [
+                pegRow(USDY, 'ok', {
+                    referenceKind: 'high_water',
+                    referenceUsd: 1.14,
+                    referenceUpdatedAt: FIXED_NOW - DAY,
+                    pegUsd: 1.14,
+                }),
+            ],
+            prices: { [USDY]: entry(USDY, 1.3, { liquidityUsd: 50_000 }) },
+        });
+        const out = await run(h);
+        expect(out.issues.thin_liquidity).toBe(1);
+        const row = h.rec.upserts[0]![0]!;
+        expect(row).toMatchObject({
+            ok: false,
+            errorMessage: 'thin_liquidity',
+            referenceUsd: 1.14,
+            referenceUpdatedAt: FIXED_NOW - DAY,
+            pegUsd: 1.14,
+            tier: 'ok',
+        });
+    });
+
+    test('a wick to 1.30 on deep liquidity one day later moves the mark by at most 0.1%', async () => {
+        const h = makeHarness({
+            currencies: [USDY],
+            prevRows: [
+                pegRow(USDY, 'ok', {
+                    referenceKind: 'high_water',
+                    referenceUsd: 1.14,
+                    referenceUpdatedAt: FIXED_NOW - DAY,
+                    pegUsd: 1.14,
+                }),
+            ],
+            prices: { [USDY]: entry(USDY, 1.3, { liquidityUsd: 5_000_000 }) },
+        });
+        const out = await run(h);
+        const row = h.rec.upserts[0]![0]!;
+        expect(row.referenceUsd!).toBeGreaterThan(1.14);
+        expect(row.referenceUsd!).toBeLessThanOrEqual(1.14 * 1.001);
+        expect(row.referenceUpdatedAt).toBe(FIXED_NOW);
+        expect(row.pegUsd).toBe(row.referenceUsd);
+        // Above its own high is never premium for a yield token.
+        expect(row.tier).toBe('ok');
+        expect(out.skipped).toEqual({ unchanged: 1 });
+    });
+
+    test('referenceMaxDailyRisePct widens the cap and rejects out-of-range values', async () => {
+        const fixture = () =>
+            makeHarness({
+                currencies: [USDY],
+                prevRows: [
+                    pegRow(USDY, 'ok', {
+                        referenceKind: 'high_water',
+                        referenceUsd: 1.14,
+                        referenceUpdatedAt: FIXED_NOW - DAY,
+                        pegUsd: 1.14,
+                    }),
+                ],
+                prices: { [USDY]: entry(USDY, 1.3, { liquidityUsd: 5_000_000 }) },
+            });
+        const wide = fixture();
+        await run(wide, { referenceMaxDailyRisePct: 1 });
+        expect(wide.rec.upserts[0]![0]!.referenceUsd!).toBeCloseTo(1.14 * 1.01, 9);
+        await expect(run(fixture(), { referenceMaxDailyRisePct: 6 })).rejects.toBeInstanceOf(BadRequestError);
+        await expect(run(fixture(), { referenceMaxDailyRisePct: 'fast' })).rejects.toBeInstanceOf(BadRequestError);
+    });
+
+    test('a run with no price keeps the stored mark and stays tracked', async () => {
+        const h = makeHarness({
+            currencies: [USDY],
+            prevRows: [
+                pegRow(USDY, 'ok', {
+                    referenceKind: 'high_water',
+                    referenceUsd: 1.14,
+                    referenceUpdatedAt: FIXED_NOW - DAY,
+                    pegUsd: 1.14,
+                }),
+            ],
+            prices: {},
+        });
+        const out = await run(h);
+        expect(out.issues.no_price).toBe(1);
+        expect(out.issues.no_reference).toBe(0);
+        expect(h.rec.upserts[0]![0]).toMatchObject({
+            ok: false,
+            errorMessage: 'no_price',
+            referenceUsd: 1.14,
+            referenceUpdatedAt: FIXED_NOW - DAY,
+            pegUsd: 1.14,
+        });
+        expect(out.reconciled).toBe(1);
+    });
+
+    test('a yield token with no price and no history is no_reference and is not reconciled', async () => {
+        const h = makeHarness({ currencies: [USDY], prices: {} });
+        const out = await run(h);
+        expect(out.issues.no_reference).toBe(1);
+        expect(h.rec.upserts[0]![0]).toMatchObject({
+            ok: false,
+            errorMessage: 'no_reference',
+            referenceKind: 'high_water',
+            referenceUsd: null,
+            pegUsd: null,
+        });
+        expect(out.reconciled).toBe(0);
+        expect(h.rec.webacyListCalls).toBe(0);
     });
 });

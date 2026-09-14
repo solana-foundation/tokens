@@ -49,7 +49,7 @@ When using includes, additional params apply:
 - `asset.primaryVariant` is chosen deterministically from the asset’s spot-like variants (`native`, `wrapped`, `bridged`, `stablecoin`, `lst`, `tokenized_equity`, `basket`) by highest liquidity, then trust tier, then 24h volume, then curated mint rank unless an opt-in primary strategy applies. Variants flagged `compromised` or `blocked` are skipped by every strategy (see [Advisories](#advisories)).
 - `asset.primaryVariant.advisory` and every variant object under `asset.variantGroups.*[]` carry `advisory: { status, reason, url, since } | null`. The key is always present; `null` means the mint is not flagged.
 - `asset.advisories` is always present: an array of `{ mint, variantId, status, reason, url, since, source }` for every flagged variant of the asset (`[]` when none). It includes variants that list surfaces hide, so a page can show a “sibling flagged” notice even when the primary variant is fine.
-- For assets with `category: "stablecoin"` only, `asset.primaryVariant` and every variant object under `asset.variantGroups.*[]` carry `pegHealth: { provider, tier, deviationPct, updatedAt, stale } | null`, a compact per-mint view of the live depeg monitor (`null` when that mint is not monitored). The key is absent on every other category. The full block, plus the structural-health grade, lives on `include=risk` and the `/risk-*` routes; see [Stablecoin health](#stablecoin-health).
+- For assets with `category: "stablecoin"` only, `asset.primaryVariant` and every variant object under `asset.variantGroups.*[]` carry `pegHealth: { provider, referenceKind, tier, deviationPct, updatedAt, stale } | null`, a compact per-mint view of the live depeg monitor (`null` when that mint is not monitored). The key is absent on every other category. The full block, plus the structural-health grade, lives on `include=risk` and the `/risk-*` routes; see [Stablecoin health](#stablecoin-health).
 - `primaryVariantStrategy=stock_redeemability` applies to equities and tokenized equities. It favors `share_redeemable` over `cash_redeemable` over `not_redeemable` or missing stock tiers when the higher-tier variant has zero/unknown liquidity on both sides or is within `5x` of the more liquid variant.
 - `asset.primaryVariant.stockVariantTier` and `asset.variantGroups.tokenizedEquity[].stockVariantTier` may be present with `share_redeemable`, `cash_redeemable`, or `not_redeemable`. This is informational API metadata, not legal, tax, accounting, or investment advice.
 - Variant market blocks may include `source`, `metricsSource`, `volume1hUSD`, `trade1h`, `trade24h`, `uniqueWallet1h`, `uniqueWallet24h`, `lastTradeAt`, and `asOf` when those fields are available in the Convex cache. `metricsSource="clickhouse_trades"` means market metrics were materialized from successful direct USD-stable Solana trades. Public API routes still read these fields from Convex/cache only.
@@ -316,14 +316,17 @@ Peg status comes from one of two observers per mint, named by `provider`:
 ```ts
 type PegTier = 'ok' | 'watch' | 'warning' | 'critical' | 'premium';
 type PegProvider = 'webacy' | 'tokens';
+type PegReferenceKind = 'fixed' | 'fx' | 'high_water';
 
 interface PegHealth {
     provider: PegProvider; // which observer produced this row; tier semantics differ (see below)
+    pegCurrency: string | null; // ISO 4217 code of the peg (USD, EUR, ...); null when the observer does not say
+    referenceKind: PegReferenceKind; // what pegUsd is (see "Reference kinds"); older API builds omit it, treat as 'fixed'
     tier: PegTier;
     overallRisk: number | null; // Webacy 0-100, higher = riskier; always null for provider 'tokens'
-    deviationPct: number | null; // signed percent from peg; negative = below peg
+    deviationPct: number | null; // signed percent from the reference; negative = below it
     priceUsd: number | null;
-    pegUsd: number | null;
+    pegUsd: number | null; // the resolved reference the tier was judged against (1.00, the fiat rate, or the high-water mark)
     liquidityUsd?: number | null; // DEX liquidity behind the price; reported by provider 'tokens', null for 'webacy'
     tierSince: number | null; // unix ms the current tier streak began
     updatedAt: number; // unix ms of the last successful observation
@@ -333,6 +336,7 @@ interface PegHealth {
 // On GET /v1/assets/:assetId variant objects (stablecoin category only).
 interface CompactPegHealth {
     provider?: PegProvider; // omitted by older API builds; treat a missing value as 'webacy'
+    referenceKind?: PegReferenceKind; // omitted by older API builds; treat a missing value as 'fixed'
     tier: PegTier;
     deviationPct: number | null;
     updatedAt: number;
@@ -371,11 +375,22 @@ interface StructuralHealth {
 | `GET /v1/assets/:assetId/risk-summary` (`risk`)                      | `PegHealth \| null`        | `{ provider, grade, updatedAt, stale } \| null` |
 | `GET /v1/assets/:assetId/risk-details` (`risk`)                      | `PegHealth \| null`        | `StructuralHealth \| null`                      |
 
+### Reference kinds
+
+`pegUsd` is always the resolved reference the tier was judged against, and `referenceKind` says what that reference is:
+
+- `fixed`: a fixed 1.00 per unit of `pegCurrency`. Every Webacy row is `fixed`, as is every USD stablecoin the tokens.xyz peg monitor judges.
+- `fx`: a non-USD peg (EUR, GBP, CHF, SGD, JPY, TRY, BRL, MXN, NGN, ZAR, AUD, MYR, IDR). `pegUsd` is the USD value of one unit of `pegCurrency`, implied from CoinGecko's USDC and USDT quotes in that currency and refreshed every peg guard run. A CoinGecko outage reuses the last good rate for up to 6 hours; after that the mint is not judged and its last tier is served with `stale: true` once the observation ages out.
+- `high_water`: a yield-bearing USD variant (USDY, syrupUSDC, sUSD, ...) whose price accrues above 1.00 by design, judged against its own recent high rather than 1.00. `pegUsd` is that high-water mark. The reference only rises, only on observations with enough liquidity, and by at most 0.1% per elapsed day, so a thin-market wick cannot inflate it; it never falls.
+
+The web app renders a `high_water` `ok` row as **"Holding value"** (not "On peg") and its `watch` row as "Slipping", because a small dip below the recent high is not a peg wobble. Use the same vocabulary if you surface these rows.
+
 ### Guidance
 
-- **Tier semantics depend on `provider`.**
+- **Tier semantics depend on `provider` and `referenceKind`.**
     - `webacy`: `tier` is derived by Webacy from `overallRisk`, a score over a multi-signal model (ok <25, watch 25-49, warning 50-69, critical >=70). `premium` means the token trades 2%+ **above** its peg with no risk signals; it is not a depeg.
-    - `tokens`: `tier` is derived from `deviationPct` alone, and only below-peg deviation counts: `ok` at or above -0.5%, `watch` down to -1%, `warning` down to -3%, `critical` below -3%. Yield-bearing variants (which trade above 1.00 by design) never show `premium`; any deviation at or above zero reads as `ok`. `overallRisk` is always `null`.
+    - `tokens`, `fixed` and `fx`: `tier` is derived from `deviationPct` alone, and only below-reference deviation counts: `ok` at or above -0.5%, `watch` down to -1%, `warning` down to -3%, `critical` below -3%. `overallRisk` is always `null`.
+    - `tokens`, `high_water`: wider bands against the token's recent high: `ok` at or above -1%, `watch` down to -2%, `warning` down to -5%, `critical` below -5%. These rows never show `premium`; any deviation at or above zero reads as `ok`.
 - **Higher score = riskier.** `overallRisk`, `score`, and every category `score` are Webacy risk scores on a 0-100 scale where 0 is best. Do not render them next to gauges that read the other way; prefer `tier`, `grade`, and category `status`.
 - `stale: true` means the observation is older than the serving bound (peg ~9h, structural ~3 days). Show the block with a staleness note rather than hiding it; the last good value is still more informative than nothing.
 - A `warning` or `critical` tier normally arrives together with a `caution` advisory whose `source` is `webacy_depeg` or `peg_guard`, matching the peg `provider`. Use the advisory for the banner and `pegHealth` for the live numbers.

@@ -29,6 +29,7 @@ import type { BirdeyeMarketsClient, TokenMarketEntry } from './handlers/crons.mi
 import type { PreStocksApiSnapshot, PreStocksClient } from './handlers/crons.prestocks';
 import type { StructuralHealthBatchEntry, WebacyDepegClient } from './handlers/crons.depeg';
 import { extractDepegListItems, normalizeDepegItem, type WebacyDepegItem } from './handlers/depegNormalize';
+import { impliedUsdPerUnit, type PegCurrency } from './handlers/pegReference';
 
 // Shadow-mode envelope schemas (warn on mismatch, pass through) — the two
 // highest-traffic blind casts. Row shapes stay unknown/T on purpose.
@@ -646,6 +647,77 @@ interface MakeCoingeckoOptions {
 
 const COINGECKO_PRO_BASE_URL = 'https://pro-api.coingecko.com/api/v3';
 const COINGECKO_PUBLIC_BASE_URL = 'https://api.coingecko.com/api/v3';
+
+export interface FiatRateQuote {
+    usdPerUnit: number;
+    source: 'coingecko_usd_coin' | 'coingecko_tether';
+    providerUpdatedAt: number | null;
+}
+
+export type FiatRatesResult =
+    | { ok: true; rates: Map<string, FiatRateQuote> }
+    | { ok: false; status: number; message: string };
+
+/** One CoinGecko call per peg guard run for the fiat pegs; separate from CoingeckoClient so its fakes stay small. */
+export interface FiatRatesClient {
+    fetchUsdPerUnit(currencies: readonly PegCurrency[]): Promise<FiatRatesResult>;
+}
+
+interface MakeCoingeckoFiatRatesOptions {
+    apiKey?: string | undefined;
+    baseUrl?: string;
+    fetchImpl?: typeof fetch;
+}
+
+/**
+ * Implied fiat rates from `simple/price`: quote usd-coin and tether in USD and
+ * every requested currency, then usd_per_unit = price_usd / price_ccy
+ * (`impliedUsdPerUnit` cross-checks the two coins). `precision=full` matters
+ * for IDR and NGN, whose per-dollar quotes run into the thousands.
+ */
+export function makeCoingeckoFiatRatesClient(opts: MakeCoingeckoFiatRatesOptions): FiatRatesClient {
+    const apiKey = opts.apiKey?.trim();
+    const baseUrl = (opts.baseUrl ?? (apiKey ? COINGECKO_PRO_BASE_URL : COINGECKO_PUBLIC_BASE_URL)).replace(/\/+$/, '');
+    const fetchImpl = opts.fetchImpl ?? fetch;
+    const headers: Record<string, string> = { Accept: 'application/json' };
+    if (apiKey) headers['x-cg-pro-api-key'] = apiKey;
+    return {
+        async fetchUsdPerUnit(currencies) {
+            const wanted = [...new Set(currencies.map(c => c.toLowerCase()))].filter(c => c !== 'usd');
+            if (wanted.length === 0) return { ok: true, rates: new Map() };
+            const url = new URL(`${baseUrl}/simple/price`);
+            url.searchParams.set('ids', 'usd-coin,tether');
+            url.searchParams.set('vs_currencies', ['usd', ...wanted].join(','));
+            url.searchParams.set('precision', 'full');
+            url.searchParams.set('include_last_updated_at', 'true');
+            try {
+                const res = await withExternalTiming('coingecko', url.toString(), () =>
+                    fetchImpl(url.toString(), { headers, signal: AbortSignal.timeout(EXTERNAL_FETCH_TIMEOUT_MS) }),
+                );
+                const text = await res.text().catch(() => '');
+                let json: unknown = null;
+                try {
+                    json = text ? JSON.parse(text) : null;
+                } catch {
+                    json = null;
+                }
+                if (!res.ok) return { ok: false, status: res.status, message: text.slice(0, 300) || res.statusText };
+                if (json === null) return { ok: false, status: res.status, message: 'non-JSON response' };
+                const rates = new Map<string, FiatRateQuote>();
+                for (const rate of impliedUsdPerUnit(json, currencies)) {
+                    rates.set(rate.currency, {
+                        usdPerUnit: rate.usdPerUnit,
+                        source: rate.source,
+                        providerUpdatedAt: rate.providerUpdatedAt,
+                    });
+                }
+                return { ok: true, rates };
+            } catch (err) {
+                return { ok: false, status: 0, message: err instanceof Error ? err.message : String(err) };
+            }
+        },
+    };
+}
 
 export function makeCoingeckoClient(opts: MakeCoingeckoOptions): CoingeckoClient {
     const apiKey = opts.apiKey?.trim();

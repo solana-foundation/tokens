@@ -75,6 +75,8 @@ describe('mapPegHealth', () => {
             ),
         ).toEqual({
             provider: 'webacy',
+            pegCurrency: null,
+            referenceKind: 'fixed',
             tier: 'warning',
             deviationPct: -2.4,
             ok: true,
@@ -88,6 +90,8 @@ describe('mapPegHealth', () => {
             ),
         ).toEqual({
             provider: 'webacy',
+            pegCurrency: null,
+            referenceKind: 'fixed',
             tier: 'ok',
             deviationPct: 0.01,
             ok: true,
@@ -109,6 +113,8 @@ describe('mapPegHealth', () => {
         );
         expect(failed).toEqual({
             provider: 'webacy',
+            pegCurrency: null,
+            referenceKind: 'fixed',
             tier: 'critical',
             deviationPct: null,
             ok: false,
@@ -133,6 +139,8 @@ describe('mapPegHealth', () => {
     describe('observer preference', () => {
         const pegGuard: Partial<PgVariantWithMarketRow> = {
             pg_tier: 'warning',
+            pg_peg_currency: 'USD',
+            pg_reference_kind: 'fixed',
             pg_deviation_pct: '-1.8',
             pg_ok: true,
             pg_error_message: null,
@@ -170,6 +178,8 @@ describe('mapPegHealth', () => {
             );
             expect(stale).toEqual({
                 provider: 'tokens',
+                pegCurrency: 'USD',
+                referenceKind: 'fixed',
                 tier: 'warning',
                 deviationPct: -1.8,
                 ok: true,
@@ -178,6 +188,41 @@ describe('mapPegHealth', () => {
             });
             expect(mapPegHealth(pgRow({ ...webacyFresh, ...pegGuard, peg_ok: false }), NOW)?.provider).toBe('tokens');
             expect(mapPegHealth(pgRow({ ...pegGuard }), NOW)?.provider).toBe('tokens');
+        });
+
+        it('carries the peg guard reference kind and currency, upper-casing the code', () => {
+            const yieldRow = mapPegHealth(
+                pgRow({ ...pegGuard, pg_peg_currency: 'usd', pg_reference_kind: 'high_water', pg_tier: 'ok' }),
+                NOW,
+            );
+            expect(yieldRow?.provider).toBe('tokens');
+            expect(yieldRow?.referenceKind).toBe('high_water');
+            expect(yieldRow?.pegCurrency).toBe('USD');
+
+            const fxRow = mapPegHealth(pgRow({ ...pegGuard, pg_peg_currency: 'EUR', pg_reference_kind: 'fx' }), NOW);
+            expect(fxRow?.referenceKind).toBe('fx');
+            expect(fxRow?.pegCurrency).toBe('EUR');
+
+            const junk = mapPegHealth(pgRow({ ...pegGuard, pg_peg_currency: ' ', pg_reference_kind: 'ema' }), NOW);
+            expect(junk?.referenceKind).toBeNull();
+            expect(junk?.pegCurrency).toBeNull();
+        });
+
+        it('reads null reference fields for peg guard rows from a SELECT that predates phase 2', () => {
+            const legacy = pgRow({ ...pegGuard });
+            delete legacy.pg_peg_currency;
+            delete legacy.pg_reference_kind;
+            const read = mapPegHealth(legacy, NOW);
+            expect(read?.provider).toBe('tokens');
+            expect(read?.referenceKind).toBeNull();
+            expect(read?.pegCurrency).toBeNull();
+        });
+
+        it('always reports Webacy rows as a fixed peg with no currency', () => {
+            const read = mapPegHealth(pgRow({ ...webacyFresh }), NOW);
+            expect(read?.provider).toBe('webacy');
+            expect(read?.referenceKind).toBe('fixed');
+            expect(read?.pegCurrency).toBeNull();
         });
 
         it('uses peg_last_fetched_at as the coverage clock when peg_last_ok_at is absent (pre-0020 SELECT)', () => {
@@ -198,6 +243,8 @@ describe('mapPegHealth', () => {
             );
             expect(read).toEqual({
                 provider: 'tokens',
+                pegCurrency: 'USD',
+                referenceKind: 'fixed',
                 tier: 'warning',
                 deviationPct: -1.8,
                 ok: false,
@@ -265,6 +312,8 @@ describe('mapVariantRow', () => {
         );
         expect(monitored.pegHealth).toEqual({
             provider: 'webacy',
+            pegCurrency: null,
+            referenceKind: 'fixed',
             tier: 'watch',
             deviationPct: -0.6,
             ok: true,
@@ -311,6 +360,8 @@ describe('makePostgresAdminReadsRepo variant queries', () => {
         expect(text).toContain('d.tier AS peg_tier');
         expect(text).toContain('d.last_ok_at AS peg_last_ok_at');
         expect(text).toContain('g.tier AS pg_tier');
+        expect(text).toContain('g.peg_currency AS pg_peg_currency');
+        expect(text).toContain('g.reference_kind AS pg_reference_kind');
         expect(text).toContain('g.last_ok_at AS pg_last_ok_at');
         expect(text).toContain('s.composite_grade AS sh_grade');
     };
@@ -339,6 +390,8 @@ describe('makePostgresAdminReadsRepo variant queries', () => {
         const row = await repo.getVariantByMint(MINT);
         expect(row?.pegHealth).toEqual({
             provider: 'webacy',
+            pegCurrency: null,
+            referenceKind: 'fixed',
             tier: 'critical',
             deviationPct: -8,
             ok: true,

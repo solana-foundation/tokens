@@ -2,6 +2,7 @@ import {
     STRUCTURAL_CATEGORY_KEYS,
     STRUCTURAL_CATEGORY_LABELS,
     isPegProvider,
+    isPegReferenceKind,
     isPegTier,
     isStructuralCategoryKey,
     isStructuralCategoryStatus,
@@ -10,6 +11,7 @@ import {
     type CompactPegHealth,
     type PegHealth,
     type PegProvider,
+    type PegReferenceKind,
     type PegTier,
     type StructuralCategoryStatus,
     type StructuralGrade,
@@ -58,6 +60,18 @@ function normalizePegProvider(value: unknown): PegProvider {
     return isPegProvider(value) ? value : 'webacy';
 }
 
+/** API builds that predate peg guard phase 2 omit `referenceKind`; every such row was judged against a fixed 1.00. */
+function normalizePegReferenceKind(value: unknown): PegReferenceKind {
+    return isPegReferenceKind(value) ? value : 'fixed';
+}
+
+/** Upper-cased ISO 4217 code, or null. */
+function normalizePegCurrency(value: unknown): string | null {
+    if (typeof value !== 'string') return null;
+    const code = value.trim().toUpperCase();
+    return code.length > 0 ? code : null;
+}
+
 /** Deviations under this magnitude (in percent) are shown as "on peg" without a direction. */
 export const ON_PEG_DEVIATION_PCT = 0.05;
 
@@ -95,6 +109,64 @@ export const PEG_TIER_COPY: Record<PegTier, PegTierCopy> = {
     },
 };
 
+/**
+ * Yield-bearing USD variants (`referenceKind: 'high_water'`) are judged against
+ * their own recent high rather than a peg, so a healthy row is "holding value"
+ * and a small slip is not a peg wobble. Tones match the fixed-peg tiers so the
+ * pill colours stay consistent across kinds.
+ */
+const HIGH_WATER_TIER_COPY: Partial<Record<PegTier, PegTierCopy>> = {
+    ok: {
+        label: 'Holding value',
+        tone: 'success',
+        description: 'Trading within 1% of its recent high.',
+    },
+    watch: {
+        label: 'Slipping',
+        tone: 'neutral',
+        description: '1 to 2% below its recent high.',
+    },
+};
+
+type PegReferenceSource = Partial<Pick<PegHealth, 'referenceKind' | 'pegCurrency'>> | null | undefined;
+
+/**
+ * Tier copy for one observation. `referenceKind` picks the vocabulary: fixed
+ * and fx pegs use `PEG_TIER_COPY`; high-water rows swap in the yield wording
+ * for `ok` and `watch` (warning/critical/premium read the same everywhere).
+ */
+export function pegTierCopy(tier: PegTier, referenceKind: PegReferenceKind | null | undefined = 'fixed'): PegTierCopy {
+    if (referenceKind === 'high_water') return HIGH_WATER_TIER_COPY[tier] ?? PEG_TIER_COPY[tier];
+    return PEG_TIER_COPY[tier];
+}
+
+/** "peg" / "its EUR peg" / "its recent high": the noun a deviation is measured against. */
+function pegReferenceNoun(source: PegReferenceSource): string {
+    const kind = source?.referenceKind ?? 'fixed';
+    if (kind === 'high_water') return 'its recent high';
+    if (kind === 'fx') {
+        const currency = normalizePegCurrency(source?.pegCurrency);
+        return currency ? `its ${currency} peg` : 'its peg';
+    }
+    return 'peg';
+}
+
+/**
+ * One-line explanation of what the observation is measured against, for the
+ * peg card subtitle. Null for fixed USD pegs, which need no qualifier.
+ */
+export function pegReferenceDescription(source: PegReferenceSource): string | null {
+    const kind = source?.referenceKind ?? 'fixed';
+    if (kind === 'high_water') return 'Yield-bearing token, measured against its own price history';
+    if (kind === 'fx') {
+        const currency = normalizePegCurrency(source?.pegCurrency);
+        return currency
+            ? `Pegged to ${currency}, judged against a CoinGecko-implied rate`
+            : 'Pegged to a fiat currency, judged against a CoinGecko-implied rate';
+    }
+    return null;
+}
+
 // ---------------------------------------------------------------------------
 // Decoding
 // ---------------------------------------------------------------------------
@@ -126,6 +198,7 @@ export function normalizeCompactPegHealth(value: unknown): CompactPegHealth | nu
 
     return {
         provider: normalizePegProvider(record.provider),
+        referenceKind: normalizePegReferenceKind(record.referenceKind),
         tier: record.tier,
         deviationPct: finiteNumberOrNull(record.deviationPct),
         updatedAt: timestampOrZero(record.updatedAt),
@@ -140,6 +213,8 @@ export function normalizePegHealth(value: unknown): PegHealth | null {
 
     return {
         provider: normalizePegProvider(record.provider),
+        pegCurrency: normalizePegCurrency(record.pegCurrency),
+        referenceKind: normalizePegReferenceKind(record.referenceKind),
         tier: record.tier,
         overallRisk: finiteNumberOrNull(record.overallRisk),
         deviationPct: finiteNumberOrNull(record.deviationPct),
@@ -197,26 +272,53 @@ export function normalizeStructuralHealth(value: unknown): StructuralHealth | nu
 // Copy
 // ---------------------------------------------------------------------------
 
-type PegDeviationSource = Pick<CompactPegHealth, 'deviationPct'> | null | undefined;
+type PegDeviationSource =
+    | (Pick<CompactPegHealth, 'deviationPct'> & Partial<Pick<PegHealth, 'referenceKind' | 'pegCurrency'>>)
+    | null
+    | undefined;
 
-/** "−2.40% below peg" / "+0.35% above peg" / "±0.01%" / "Deviation unavailable". */
+/**
+ * "−2.40% below peg" / "+0.35% above peg" / "±0.01%" / "Deviation unavailable".
+ * fx rows say "below its EUR peg" and high-water rows "below its recent high"
+ * so the number is never read as a dollar-peg deviation.
+ */
 export function pegDeviationText(pegHealth: PegDeviationSource): string {
     const deviation = pegHealth?.deviationPct;
     if (typeof deviation !== 'number' || !Number.isFinite(deviation)) return 'Deviation unavailable';
 
     const magnitude = Math.abs(deviation).toFixed(2);
     if (Math.abs(deviation) < ON_PEG_DEVIATION_PCT) return `±${magnitude}%`;
-    return deviation < 0 ? `−${magnitude}% below peg` : `+${magnitude}% above peg`;
+    const noun = pegReferenceNoun(pegHealth);
+    return deviation < 0 ? `−${magnitude}% below ${noun}` : `+${magnitude}% above ${noun}`;
 }
 
-/** "$0.9760 vs $1.00 peg"; empty when the price is unknown. */
-export function pegPriceText(pegHealth: Pick<PegHealth, 'priceUsd' | 'pegUsd'> | null | undefined): string {
+type PegPriceSource =
+    | (Pick<PegHealth, 'priceUsd' | 'pegUsd'> & Partial<Pick<PegHealth, 'referenceKind' | 'pegCurrency'>>)
+    | null
+    | undefined;
+
+/**
+ * "$0.9760 vs $1.00 peg" for fixed pegs, "$1.1500 vs EUR peg ($1.1556)" for
+ * fx pegs, "$1.0500 vs $1.1400 recent high" for yield tokens; empty when the
+ * price is unknown. `pegUsd` is always the resolved reference the tier was
+ * judged against, so fx and high-water references print with four decimals.
+ */
+export function pegPriceText(pegHealth: PegPriceSource): string {
     const price = pegHealth?.priceUsd;
     if (typeof price !== 'number' || !Number.isFinite(price)) return '';
 
     const priceText = `$${price.toFixed(4)}`;
     const peg = pegHealth?.pegUsd;
     if (typeof peg !== 'number' || !Number.isFinite(peg)) return priceText;
+
+    const kind = pegHealth?.referenceKind ?? 'fixed';
+    if (kind === 'high_water') return `${priceText} vs $${peg.toFixed(4)} recent high`;
+    if (kind === 'fx') {
+        const currency = normalizePegCurrency(pegHealth?.pegCurrency);
+        return currency
+            ? `${priceText} vs ${currency} peg ($${peg.toFixed(4)})`
+            : `${priceText} vs $${peg.toFixed(4)} peg`;
+    }
     return `${priceText} vs $${peg.toFixed(2)} peg`;
 }
 
@@ -253,10 +355,11 @@ export function formatHealthUpdatedAt(updatedAt: number | null | undefined): str
 /**
  * Accessible summary for the peg pill, e.g.
  * "Peg status: Warning, −2.40% below peg. Updated Sep 13, 2026 14:30 UTC. Source: Webacy".
- * The source names whichever observer produced the row.
+ * The source names whichever observer produced the row; yield tokens read
+ * "Holding value, −0.50% below its recent high".
  */
 export function pegStatusTitle(pegHealth: CompactPegHealth | PegHealth): string {
-    const copy = PEG_TIER_COPY[pegHealth.tier];
+    const copy = pegTierCopy(pegHealth.tier, pegHealth.referenceKind);
     const updated = formatHealthUpdatedAt(pegHealth.updatedAt);
     const sentences = [
         `Peg status: ${copy.label}, ${pegDeviationText(pegHealth)}.`,

@@ -20,6 +20,8 @@ const NOW = 1_800_000_000_000;
 
 const pegRead: PegHealthRead = {
     provider: 'webacy',
+    pegCurrency: null,
+    referenceKind: 'fixed',
     tier: 'warning',
     overallRisk: 62.5,
     deviationPct: -2.4,
@@ -60,6 +62,8 @@ describe('toPegHealth', () => {
         const peg = toPegHealth(pegRead, NOW);
         expect(peg).toEqual({
             provider: 'webacy',
+            pegCurrency: null,
+            referenceKind: 'fixed',
             tier: 'warning',
             overallRisk: 62.5,
             deviationPct: -2.4,
@@ -91,6 +95,32 @@ describe('toPegHealth', () => {
         expect(toPegHealth({ ...pegRead, provider: 'someone-else' as PegHealthRead['provider'] }, NOW)?.provider).toBe(
             'webacy',
         );
+    });
+
+    it('copies the peg currency and reference kind, defaulting unknown or missing kinds to fixed', () => {
+        const yieldPeg = toPegHealth(
+            { ...pegRead, provider: 'tokens', pegCurrency: 'USD', referenceKind: 'high_water', pegUsd: 1.14 },
+            NOW,
+        );
+        expect(yieldPeg?.pegCurrency).toBe('USD');
+        expect(yieldPeg?.referenceKind).toBe('high_water');
+
+        const fxPeg = toPegHealth({ ...pegRead, provider: 'tokens', pegCurrency: 'EUR', referenceKind: 'fx' }, NOW);
+        expect(fxPeg?.pegCurrency).toBe('EUR');
+        expect(fxPeg?.referenceKind).toBe('fx');
+
+        expect(toPegHealth({ ...pegRead, referenceKind: null }, NOW)?.referenceKind).toBe('fixed');
+        expect(
+            toPegHealth({ ...pegRead, referenceKind: 'ema' as PegHealthRead['referenceKind'] }, NOW)?.referenceKind,
+        ).toBe('fixed');
+        expect(toPegHealth({ ...pegRead, pegCurrency: '' }, NOW)?.pegCurrency).toBeNull();
+
+        const legacy = { ...pegRead } as Partial<PegHealthRead>;
+        delete legacy.pegCurrency;
+        delete legacy.referenceKind;
+        const peg = toPegHealth(legacy as PegHealthRead, NOW);
+        expect(peg?.pegCurrency).toBeNull();
+        expect(peg?.referenceKind).toBe('fixed');
     });
 
     it('flags stale strictly past the 9h bound', () => {
@@ -149,6 +179,7 @@ describe('toCompactPegHealth', () => {
     it('projects to the per-variant fields and keeps the provider', () => {
         expect(toCompactPegHealth(toPegHealth(pegRead, NOW))).toEqual({
             provider: 'webacy',
+            referenceKind: 'fixed',
             tier: 'warning',
             deviationPct: -2.4,
             updatedAt: NOW - 1_000,
@@ -156,6 +187,14 @@ describe('toCompactPegHealth', () => {
         });
         expect(toCompactPegHealth(toPegHealth({ ...pegRead, provider: 'tokens' }, NOW))?.provider).toBe('tokens');
         expect(toCompactPegHealth(null)).toBeNull();
+    });
+
+    it('carries the reference kind and defaults a missing one to fixed', () => {
+        const yieldPeg = toPegHealth({ ...pegRead, provider: 'tokens', referenceKind: 'high_water' }, NOW);
+        expect(toCompactPegHealth(yieldPeg)?.referenceKind).toBe('high_water');
+        const compact = toCompactPegHealth({ ...yieldPeg!, referenceKind: undefined });
+        expect(compact?.referenceKind).toBe('fixed');
+        expect('pegCurrency' in compact!).toBe(false);
     });
 });
 

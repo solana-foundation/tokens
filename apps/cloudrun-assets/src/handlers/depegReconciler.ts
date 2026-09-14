@@ -12,7 +12,13 @@
  * USDC).
  */
 
-import type { AdvisorySource, AdvisoryStatus, PegTier, SystemAdvisorySource } from '@tokens/asset-registry';
+import type {
+    AdvisorySource,
+    AdvisoryStatus,
+    PegReferenceKind,
+    PegTier,
+    SystemAdvisorySource,
+} from '@tokens/asset-registry';
 
 /** Who produced an observation. Each observer owns the advisories it sets. */
 export type DepegObserver = 'webacy' | 'peg_guard';
@@ -29,6 +35,10 @@ export interface ReconcilerObservation {
     observer?: DepegObserver;
     /** DEX liquidity behind the price (peg guard); quoted in the reason copy. */
     liquidityUsd?: number | null;
+    /** ISO 4217 code of the peg (peg guard); drives the fx reason copy. */
+    pegCurrency?: string | null;
+    /** What `pegUsd` is (peg guard): fixed 1.00, an fx rate, or the token's own high-water price. */
+    referenceKind?: PegReferenceKind | null;
     /** Had an active asset_variants row at observation time. */
     inRegistry: boolean;
     /** False when the last fetch failed; `tier` is then the last good value. */
@@ -190,6 +200,8 @@ export function buildDepegReason(input: {
     observedAt: number;
     observer?: DepegObserver;
     liquidityUsd?: number | null;
+    pegCurrency?: string | null;
+    referenceKind?: PegReferenceKind | null;
 }): string {
     const observer = input.observer ?? 'webacy';
     const who = OBSERVER_LABEL[observer];
@@ -210,7 +222,22 @@ export function buildDepegReason(input: {
                 input.liquidityUsd !== null && input.liquidityUsd !== undefined && Number.isFinite(input.liquidityUsd)
                     ? ` (Birdeye price, liquidity ${formatUsdCompact(input.liquidityUsd)})`
                     : ' (Birdeye price)';
-            reason = `${who} rates ${subject} ${label}: trading ${magnitude}% ${direction} ${peg} on Solana DEXs as of ${when} UTC${liquidity}. ${tail}`;
+            const pegUsd = input.pegUsd !== null && Number.isFinite(input.pegUsd) ? input.pegUsd : null;
+            const currency = input.pegCurrency?.trim().toUpperCase() || 'USD';
+            let against: string;
+            if (input.referenceKind === 'high_water') {
+                against = pegUsd !== null ? `its recent high of $${pegUsd.toFixed(4)}` : 'its recent high';
+            } else if (input.referenceKind === 'fx' || currency !== 'USD') {
+                against =
+                    pegUsd !== null ? `its ${currency} peg (1 ${currency} = $${pegUsd.toFixed(4)})` : `its ${currency} peg`;
+            } else {
+                against = peg;
+            }
+            const note =
+                input.referenceKind === 'high_water'
+                    ? ' (yield-bearing token; measured against its own price history)'
+                    : '';
+            reason = `${who} rates ${subject} ${label}: trading ${magnitude}% ${direction} ${against} on Solana DEXs as of ${when} UTC${liquidity}${note}. ${tail}`;
         } else {
             reason = `${who} rates ${subject} ${label}: trading ${magnitude}% ${direction} ${peg} as of ${when} UTC. ${tail}`;
         }
@@ -283,6 +310,8 @@ function decideMint(
                     observedAt: obs.lastFetchedAt,
                     observer,
                     liquidityUsd: obs.liquidityUsd ?? null,
+                    pegCurrency: obs.pegCurrency ?? null,
+                    referenceKind: obs.referenceKind ?? null,
                 }),
                 url: null,
                 why: 'tier_changed',
@@ -310,6 +339,8 @@ function decideMint(
                 observedAt: obs.lastFetchedAt,
                 observer,
                 liquidityUsd: obs.liquidityUsd ?? null,
+                pegCurrency: obs.pegCurrency ?? null,
+                referenceKind: obs.referenceKind ?? null,
             }),
             url: null,
             why: tier === 'critical' ? 'enter_critical' : 'enter_warning',
