@@ -49,7 +49,7 @@ When using includes, additional params apply:
 - `asset.primaryVariant` is chosen deterministically from the asset’s spot-like variants (`native`, `wrapped`, `bridged`, `stablecoin`, `lst`, `tokenized_equity`, `basket`) by highest liquidity, then trust tier, then 24h volume, then curated mint rank unless an opt-in primary strategy applies. Variants flagged `compromised` or `blocked` are skipped by every strategy (see [Advisories](#advisories)).
 - `asset.primaryVariant.advisory` and every variant object under `asset.variantGroups.*[]` carry `advisory: { status, reason, url, since } | null`. The key is always present; `null` means the mint is not flagged.
 - `asset.advisories` is always present: an array of `{ mint, variantId, status, reason, url, since, source }` for every flagged variant of the asset (`[]` when none). It includes variants that list surfaces hide, so a page can show a “sibling flagged” notice even when the primary variant is fine.
-- For assets with `category: "stablecoin"` only, `asset.primaryVariant` and every variant object under `asset.variantGroups.*[]` carry `pegHealth: { tier, deviationPct, updatedAt, stale } | null`, a compact per-mint view of the Webacy depeg monitor (`null` when that mint is not monitored). The key is absent on every other category. The full block, plus the structural-health grade, lives on `include=risk` and the `/risk-*` routes; see [Stablecoin health](#stablecoin-health).
+- For assets with `category: "stablecoin"` only, `asset.primaryVariant` and every variant object under `asset.variantGroups.*[]` carry `pegHealth: { provider, tier, deviationPct, updatedAt, stale } | null`, a compact per-mint view of the live depeg monitor (`null` when that mint is not monitored). The key is absent on every other category. The full block, plus the structural-health grade, lives on `include=risk` and the `/risk-*` routes; see [Stablecoin health](#stablecoin-health).
 - `primaryVariantStrategy=stock_redeemability` applies to equities and tokenized equities. It favors `share_redeemable` over `cash_redeemable` over `not_redeemable` or missing stock tiers when the higher-tier variant has zero/unknown liquidity on both sides or is within `5x` of the more liquid variant.
 - `asset.primaryVariant.stockVariantTier` and `asset.variantGroups.tokenizedEquity[].stockVariantTier` may be present with `share_redeemable`, `cash_redeemable`, or `not_redeemable`. This is informational API metadata, not legal, tax, accounting, or investment advice.
 - Variant market blocks may include `source`, `metricsSource`, `volume1hUSD`, `trade1h`, `trade24h`, `uniqueWallet1h`, `uniqueWallet24h`, `lastTradeAt`, and `asOf` when those fields are available in the Convex cache. `metricsSource="clickhouse_trades"` means market metrics were materialized from successful direct USD-stable Solana trades. Public API routes still read these fields from Convex/cache only.
@@ -86,7 +86,7 @@ An advisory is an operator-set flag on a **variant mint** (never on the canonica
 
 ```ts
 type AdvisoryStatus = 'caution' | 'compromised' | 'blocked';
-type AdvisorySource = 'admin' | 'webacy_depeg';
+type AdvisorySource = 'admin' | 'webacy_depeg' | 'peg_guard';
 
 // On every variant object: asset.primaryVariant, asset.variantGroups.*[],
 // and rows from /variants and /variant-markets.
@@ -113,7 +113,10 @@ interface AssetAdvisoryEntry {
 ### Sources
 
 - `admin`: set by a human operator. Any status.
-- `webacy_depeg`: set automatically when the Webacy depeg monitor rates a stablecoin mint `warning` or `critical`. System advisories are **always `caution`**; escalation to `compromised` or `blocked` is a human decision and flips `source` to `admin`. The system clears only its own rows, after the peg has recovered for a cooldown. `reason` follows a fixed template and is not refreshed with live prices; read the live deviation from `pegHealth` instead. `url` is `null` on system rows.
+- `webacy_depeg`: set automatically when the Webacy depeg monitor rates a stablecoin mint `warning` or `critical`.
+- `peg_guard`: set automatically by the tokens.xyz peg monitor, which prices every curated stablecoin mint from Birdeye DEX prices and rates it from its below-peg deviation. USD pegs only; used for mints Webacy does not cover (or while its data is stale). Always `caution`.
+
+System advisories (`webacy_depeg`, `peg_guard`) are **always `caution`**; escalation to `compromised` or `blocked` is a human decision and flips `source` to `admin`. Each monitor clears only its own rows, after the peg has recovered for a cooldown. `reason` follows a fixed template and is not refreshed with live prices; read the live deviation from `pegHealth` instead. `url` is `null` on system rows.
 
 Treat `source` as informational (attribution, copy) and keep branching on `status`. Add a default arm: a future source should degrade to a generic notice, not to silence.
 
@@ -303,18 +306,25 @@ Return a market-based score derived from cached market snapshots, plus stablecoi
 
 ## Stablecoin health
 
-Two provider-sourced blocks describe how a stablecoin mint is holding up: a live **peg status** from the Webacy depeg monitor (refreshed on tier-change webhooks, reconciled every few hours) and a slower **structural health** grade (refreshed daily). Both are keyed by mint, both are always present on `risk` payloads, and both are `null` when the mint is not monitored (which is the case for every non-stablecoin today).
+Two provider-sourced blocks describe how a stablecoin mint is holding up: a live **peg status** and a slower **structural health** grade (Webacy, refreshed daily). Both are keyed by mint, both are always present on `risk` payloads, and both are `null` when the mint is not monitored (which is the case for every non-stablecoin today).
+
+Peg status comes from one of two observers per mint, named by `provider`:
+
+- `webacy`: the Webacy depeg monitor (refreshed on tier-change webhooks, reconciled every few hours). Served while Webacy has a healthy, recent observation for the mint.
+- `tokens`: the tokens.xyz peg monitor, an in-house guard that prices every curated stablecoin mint from Birdeye DEX prices every few minutes. Served for mints Webacy does not cover, or while Webacy's observation is stale.
 
 ```ts
 type PegTier = 'ok' | 'watch' | 'warning' | 'critical' | 'premium';
+type PegProvider = 'webacy' | 'tokens';
 
 interface PegHealth {
-    provider: 'webacy';
-    tier: PegTier; // derived by Webacy from overallRisk: ok <25, watch 25-49, warning 50-69, critical >=70
-    overallRisk: number | null; // 0-100, higher = riskier
+    provider: PegProvider; // which observer produced this row; tier semantics differ (see below)
+    tier: PegTier;
+    overallRisk: number | null; // Webacy 0-100, higher = riskier; always null for provider 'tokens'
     deviationPct: number | null; // signed percent from peg; negative = below peg
     priceUsd: number | null;
     pegUsd: number | null;
+    liquidityUsd?: number | null; // DEX liquidity behind the price; reported by provider 'tokens', null for 'webacy'
     tierSince: number | null; // unix ms the current tier streak began
     updatedAt: number; // unix ms of the last successful observation
     stale: boolean; // true when updatedAt is older than ~9h
@@ -322,6 +332,7 @@ interface PegHealth {
 
 // On GET /v1/assets/:assetId variant objects (stablecoin category only).
 interface CompactPegHealth {
+    provider?: PegProvider; // omitted by older API builds; treat a missing value as 'webacy'
     tier: PegTier;
     deviationPct: number | null;
     updatedAt: number;
@@ -362,11 +373,13 @@ interface StructuralHealth {
 
 ### Guidance
 
+- **Tier semantics depend on `provider`.**
+    - `webacy`: `tier` is derived by Webacy from `overallRisk`, a score over a multi-signal model (ok <25, watch 25-49, warning 50-69, critical >=70). `premium` means the token trades 2%+ **above** its peg with no risk signals; it is not a depeg.
+    - `tokens`: `tier` is derived from `deviationPct` alone, and only below-peg deviation counts: `ok` at or above -0.5%, `watch` down to -1%, `warning` down to -3%, `critical` below -3%. Yield-bearing variants (which trade above 1.00 by design) never show `premium`; any deviation at or above zero reads as `ok`. `overallRisk` is always `null`.
 - **Higher score = riskier.** `overallRisk`, `score`, and every category `score` are Webacy risk scores on a 0-100 scale where 0 is best. Do not render them next to gauges that read the other way; prefer `tier`, `grade`, and category `status`.
-- `premium` is not a depeg: the token trades 2%+ **above** its peg with no risk signals.
 - `stale: true` means the observation is older than the serving bound (peg ~9h, structural ~3 days). Show the block with a staleness note rather than hiding it; the last good value is still more informative than nothing.
-- A `warning` or `critical` tier normally arrives together with a `caution` advisory whose `source` is `webacy_depeg`. Use the advisory for the banner and `pegHealth` for the live numbers.
-- Peg and structural data are provided by [Webacy](https://dd.xyz) (dd.xyz). Attribute it when you display it.
+- A `warning` or `critical` tier normally arrives together with a `caution` advisory whose `source` is `webacy_depeg` or `peg_guard`, matching the peg `provider`. Use the advisory for the banner and `pegHealth` for the live numbers.
+- **Attribution.** Structural data is always provided by [Webacy](https://dd.xyz) (dd.xyz). Peg data is Webacy's only when `provider` is `webacy`; attribute Webacy for those rows and not for `tokens` rows, which are produced by the tokens.xyz peg monitor.
 
 ## Description: `GET /v1/assets/:assetId/description`
 

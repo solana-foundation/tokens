@@ -1,6 +1,7 @@
 import {
     STRUCTURAL_CATEGORY_KEYS,
     STRUCTURAL_CATEGORY_LABELS,
+    isPegProvider,
     isPegTier,
     isStructuralCategoryKey,
     isStructuralCategoryStatus,
@@ -8,6 +9,7 @@ import {
     structuralGradeBand,
     type CompactPegHealth,
     type PegHealth,
+    type PegProvider,
     type PegTier,
     type StructuralCategoryStatus,
     type StructuralGrade,
@@ -23,10 +25,12 @@ import type { AssetAdvisory } from './asset-advisory';
  * it is usable from server components, client components, and bun:test.
  *
  * The API emits a compact `pegHealth` on stablecoin variants and the full
- * `pegHealth` / `structuralHealth` blocks on risk payloads. Both come from
- * Webacy (branded dd.xyz). Deploy order may briefly leave the fields absent,
- * so every reader goes through a `normalize*` helper and degrades to "no
- * data" instead of rendering a half-populated card.
+ * `pegHealth` / `structuralHealth` blocks on risk payloads. Peg data comes
+ * from one of two observers per mint (`provider`): Webacy (branded dd.xyz)
+ * or the in-house tokens.xyz peg monitor (no external attribution).
+ * Structural grades are always Webacy's. Deploy order may briefly leave the
+ * fields absent, so every reader goes through a `normalize*` helper and
+ * degrades to "no data" instead of rendering a half-populated card.
  */
 
 export type HealthTone = 'success' | 'neutral' | 'warning' | 'destructive' | 'info';
@@ -34,6 +38,25 @@ export type HealthTone = 'success' | 'neutral' | 'warning' | 'destructive' | 'in
 export const WEBACY_ATTRIBUTION_URL = 'https://dd.xyz';
 export const WEBACY_PROVIDER_LABEL = 'Webacy';
 export const STABLECOIN_HEALTH_VIEWED_EVENT = 'stablecoin_health_viewed';
+
+export const PEG_PROVIDER_LABELS: Record<PegProvider, string> = {
+    webacy: WEBACY_PROVIDER_LABEL,
+    tokens: 'tokens.xyz peg monitor',
+};
+
+/** External attribution link per peg observer; the in-house monitor has none. */
+export function pegProviderAttributionUrl(provider: PegProvider): string | null {
+    return provider === 'webacy' ? WEBACY_ATTRIBUTION_URL : null;
+}
+
+export function pegProviderLabel(provider: PegProvider | undefined): string {
+    return PEG_PROVIDER_LABELS[provider ?? 'webacy'];
+}
+
+/** API builds that predate the peg guard omit `provider`; every such row is Webacy's. */
+function normalizePegProvider(value: unknown): PegProvider {
+    return isPegProvider(value) ? value : 'webacy';
+}
 
 /** Deviations under this magnitude (in percent) are shown as "on peg" without a direction. */
 export const ON_PEG_DEVIATION_PCT = 0.05;
@@ -102,6 +125,7 @@ export function normalizeCompactPegHealth(value: unknown): CompactPegHealth | nu
     if (!record || !isPegTier(record.tier)) return null;
 
     return {
+        provider: normalizePegProvider(record.provider),
         tier: record.tier,
         deviationPct: finiteNumberOrNull(record.deviationPct),
         updatedAt: timestampOrZero(record.updatedAt),
@@ -115,12 +139,13 @@ export function normalizePegHealth(value: unknown): PegHealth | null {
     if (!record || !isPegTier(record.tier)) return null;
 
     return {
-        provider: 'webacy',
+        provider: normalizePegProvider(record.provider),
         tier: record.tier,
         overallRisk: finiteNumberOrNull(record.overallRisk),
         deviationPct: finiteNumberOrNull(record.deviationPct),
         priceUsd: finiteNumberOrNull(record.priceUsd),
         pegUsd: finiteNumberOrNull(record.pegUsd),
+        liquidityUsd: finiteNumberOrNull(record.liquidityUsd),
         tierSince: timestampOrNull(record.tierSince),
         updatedAt: timestampOrZero(record.updatedAt),
         stale: record.stale === true,
@@ -228,6 +253,7 @@ export function formatHealthUpdatedAt(updatedAt: number | null | undefined): str
 /**
  * Accessible summary for the peg pill, e.g.
  * "Peg status: Warning, −2.40% below peg. Updated Sep 13, 2026 14:30 UTC. Source: Webacy".
+ * The source names whichever observer produced the row.
  */
 export function pegStatusTitle(pegHealth: CompactPegHealth | PegHealth): string {
     const copy = PEG_TIER_COPY[pegHealth.tier];
@@ -235,7 +261,7 @@ export function pegStatusTitle(pegHealth: CompactPegHealth | PegHealth): string 
     const sentences = [
         `Peg status: ${copy.label}, ${pegDeviationText(pegHealth)}.`,
         ...(updated ? [`Updated ${updated}.`] : []),
-        `Source: ${WEBACY_PROVIDER_LABEL}`,
+        `Source: ${pegProviderLabel(pegHealth.provider)}`,
     ];
     return `${sentences.join(' ')}${pegHealth.stale ? ' (stale)' : ''}`;
 }
@@ -293,9 +319,16 @@ export function isStablecoinCategory(category: unknown): boolean {
     return category === 'stablecoin';
 }
 
-/** Footer line for advisories the Webacy depeg monitor set; empty for manual rows. */
+/** Footer line for advisories a depeg monitor set; empty for manual rows. */
 export function advisorySourceAttribution(advisory: Pick<AssetAdvisory, 'source'> | null | undefined): string {
-    return advisory?.source === 'webacy_depeg' ? 'Set automatically by the Webacy depeg monitor' : '';
+    switch (advisory?.source) {
+        case 'webacy_depeg':
+            return 'Set automatically by the Webacy depeg monitor';
+        case 'peg_guard':
+            return 'Set automatically by the tokens.xyz peg monitor';
+        default:
+            return '';
+    }
 }
 
 /** Analytics properties for `stablecoin_health_viewed` (nulls are omitted). */

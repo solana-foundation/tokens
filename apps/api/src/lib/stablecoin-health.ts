@@ -2,6 +2,7 @@ import { Effect } from 'effect';
 
 import {
     STRUCTURAL_CATEGORY_LABELS,
+    isPegProvider,
     type CompactPegHealth,
     type PegHealth,
     type StablecoinHealth,
@@ -17,17 +18,22 @@ import {
 } from '@/lib/cloudrun';
 
 /**
- * Serving-side view of Webacy stablecoin health (depeg tier + structural
- * grade). The worker writes `webacy_depeg_latest` / `webacy_structural_health_latest`
- * (webhook-driven, with a 4h reconciliation sweep); cloudrun-assets serves
- * them raw via `stablecoinHealthGetByMints`; this module decides staleness,
- * stamps `provider`, attaches category labels, and fails open.
+ * Serving-side view of stablecoin health (depeg tier + structural grade).
+ * The worker writes `webacy_depeg_latest` / `webacy_structural_health_latest`
+ * (webhook-driven, with a 4h reconciliation sweep) and `peg_guard_latest`
+ * (in-house peg guard, 5 min); cloudrun-assets picks one peg observer per
+ * mint via `stablecoinHealthGetByMints`; this module decides staleness,
+ * carries `provider` through, attaches category labels, and fails open.
  *
  * No API-side cache: the RPC is an indexed read on a tiny table and every
  * caller already runs it concurrently with a market read.
  */
 
-/** Two missed sweeps. Webhooks keep the row fresher than this in practice. */
+/**
+ * Two missed Webacy sweeps; also the bound the worker uses to decide whether
+ * Webacy still covers a mint before falling back to the peg guard. Webhooks
+ * (Webacy) and the 5 min job (peg guard) keep rows fresher than this.
+ */
 export const PEG_STALE_AFTER_MS = 9 * 60 * 60_000;
 
 /** Structural grades refresh daily; three missed runs before we say so. */
@@ -52,16 +58,18 @@ function isStale(updatedAt: number, nowMs: number, staleAfterMs: number): boolea
  * Public peg block. Drops the worker-internal `ok` / `errorMessage`: a failed
  * refresh keeps serving the last good tier, and `stale` (driven by the
  * observation age) is the only freshness signal clients should branch on.
+ * `provider` defaults to `webacy` for worker builds that predate the peg guard.
  */
 export function toPegHealth(read: PegHealthRead | null | undefined, nowMs: number): PegHealth | null {
     if (!read) return null;
     return {
-        provider: 'webacy',
+        provider: isPegProvider(read.provider) ? read.provider : 'webacy',
         tier: read.tier,
         overallRisk: read.overallRisk,
         deviationPct: read.deviationPct,
         priceUsd: read.priceUsd,
         pegUsd: read.pegUsd,
+        liquidityUsd: read.liquidityUsd ?? null,
         tierSince: read.tierSince,
         updatedAt: read.updatedAt,
         stale: isStale(read.updatedAt, nowMs, PEG_STALE_AFTER_MS),
@@ -93,7 +101,13 @@ export function toStructuralHealth(
 /** Per-variant projection for `GET /v1/assets/{id}` on stablecoin-category assets. */
 export function toCompactPegHealth(peg: PegHealth | null | undefined): CompactPegHealth | null {
     if (!peg) return null;
-    return { tier: peg.tier, deviationPct: peg.deviationPct, updatedAt: peg.updatedAt, stale: peg.stale };
+    return {
+        provider: peg.provider,
+        tier: peg.tier,
+        deviationPct: peg.deviationPct,
+        updatedAt: peg.updatedAt,
+        stale: peg.stale,
+    };
 }
 
 function chunk<T>(items: readonly T[], size: number): T[][] {

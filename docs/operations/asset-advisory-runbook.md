@@ -78,7 +78,7 @@ Stablecoin mints (active Solana variants plus every `currencies` list member) ar
 
 **Recognising a system row**
 
-`asset_variant_advisories.source = 'webacy_depeg'`, `managed_by_system = true`, `set_by = 'system:webacy_depeg'`, `set_by_email` null. The admin curation row shows an "auto" badge; the reason starts with "Webacy's depeg monitor rates ... Warning:" or "... Critical:". Events carry `source = 'webacy_depeg'` and the same actor. The public banner reads "{symbol} is trading off its peg" with a Webacy attribution link.
+`asset_variant_advisories.managed_by_system = true` with `source = 'webacy_depeg'` and `set_by = 'system:webacy_depeg'` (this job) or `source = 'peg_guard'` and `set_by = 'system:peg_guard'` (the tokens.xyz peg monitor below); `set_by_email` null either way. The admin curation row shows an "auto" badge; the reason starts with "Webacy's depeg monitor rates ... Warning:" or "... Critical:" (or "tokens.xyz peg monitor rates ..."). Events carry the same source and actor. The public banner reads "{symbol} is trading off its peg" with a Webacy attribution link for Webacy rows and no external link for peg monitor rows. Each observer only re-words or clears the rows it set; the other observer's rows are skipped as `other_system_owner`.
 
 **Taking over**
 
@@ -127,3 +127,45 @@ Targeted mode fetches only the listed mints, writes their snapshot and tier even
 > Webacy's depeg monitor rates [Symbol] ([mint]) **[Warning|Critical]**: it is trading [x.xx]% [below|above] its $[peg] peg as of [time] UTC. tokens.xyz shows a caution advisory on the token while this persists. This is not a confirmation of lost backing. Verify redemptions and liquidity with [issuer] before trading. We will clear the advisory once the peg has held for several hours, or escalate if the issuer confirms a problem.
 
 State the observed deviation and the source; do not speculate on cause, recoverability or backing.
+
+## Automated depeg advisories (tokens.xyz peg monitor)
+
+Webacy's depeg monitor has live Solana data for USDC, USDT and PYUSD only (verified 2026-09-14). The in-house peg guard (`apps/cloudrun-assets`, job `refresh-peg-guard`, observer `peg_guard`) covers every other curated stablecoin: every 5 minutes (15 on staging) it prices every `currencies` list mint with one Birdeye `GET /defi/multi_price` call, derives a tier from below-peg deviation, and feeds the same reconciler the Webacy job uses. Only USD-pegged variants (`usd:*`, about 30 mints) drive advisories; EUR, GBP, CHF, SGD, JPY, TRY, BRL, MXN, NGN, ZAR, AUD, MYR and IDR stables are stored with `tier` null and `error_message = 'unsupported_peg'` until a fiat reference rate exists, and BUIDL (a fund NAV token) has no peg at all.
+
+**Data source and bands**
+
+- Price and DEX liquidity come from Birdeye (`price_source = 'birdeye_multi_price'`). When the call fails or omits a mint the last price the markets refresh stored is used instead (`price_source = 'variant_markets_latest'`, judged for staleness on its own `last_fetched_at`).
+- Signed deviation from $1.00: `ok` at or above -0.5%, `watch` down to -1%, `warning` down to -3%, `critical` below -3%. Only below-peg deviation counts. Non-yield variants at +2% or more read `premium`; yield-bearing variants (`kind = 'yield'`: USDY, sUSD, syrupUSDC, USD*) trade above 1.00 by design, so anything at or above peg is `ok` for them.
+- Liquidity floor: below $100k of DEX liquidity (or unknown liquidity) the observation is recorded with `ok = false` and `error_message = 'thin_liquidity'`; it neither sets nor clears. A Birdeye price older than 30 minutes is `stale_price`; no price anywhere is `no_price`. A failed observation keeps the previous tier and streak in `peg_guard_latest` and leaves `last_ok_at` alone, so the reconciler sees it as stale after 30 minutes.
+- Confirmation is stricter than Webacy's because there is no vendor hysteresis: warning after 20 minutes of consecutive bad runs, critical after 10 (`criticalImmediate` is false), clear after 6 hours on peg, at most 5 actions per run.
+
+**Ownership rule**
+
+Webacy owns a mint while its `webacy_depeg_latest` row is a successful observation with a tier and `last_ok_at` within 9 hours (`webacyCoverageMs`, the same bound the API uses for `pegHealth`). The peg guard reconciles every USD mint Webacy does not cover, plus any mint whose live advisory has `source = 'peg_guard'`, so an advisory it set during a Webacy outage is still cleared once Webacy is fresh again. The summary line reports both counts (`owned_by_webacy`, `reconciled`). When both observers have a tier for the same mint and exactly one of them reads warning or critical, the run logs `peg_guard_disagreement{mint, webacy_tier, peg_guard_tier, webacy_covers}`; a burst of these means one feed is skewed, look at both prices before trusting either.
+
+**Recognising a peg monitor row**
+
+`asset_variant_advisories.source = 'peg_guard'`, `managed_by_system = true`, `set_by = 'system:peg_guard'`, `set_by_email` null. The reason starts with "tokens.xyz peg monitor rates {SYMBOL} Warning:" or "... Critical:" and quotes the Birdeye price and liquidity. Admin shows "Auto · tokens.xyz peg monitor"; the public banner reads "{symbol} is trading off its peg" with no external attribution link. Taking over works exactly as for Webacy rows (edit to detach, clear to suppress the current episode). Observations live in `peg_guard_latest`, tier transitions in `peg_guard_tier_events`.
+
+**Pausing**
+
+- `PEG_GUARD_ENABLED` must be `true` on the assets worker for the scheduled run to do anything (the handler returns `disabled` with `reason: peg_guard_disabled` otherwise). Unset it to stop the peg guard without touching the Webacy jobs.
+- `PEG_GUARD_DRY_RUN` keeps observations and tier events flowing but replaces every advisory write with a `depeg_advisory_would_set|would_update|would_clear` log line (`observer: 'peg_guard'`). It falls back to `WEBACY_DEPEG_DRY_RUN` when unset, so one switch takes both observers live; set it only to stagger the peg guard behind Webacy. The scheduler body pins `dryRun` from the Terraform variable `peg_guard_dry_run`, which should track `webacy_depeg_dry_run`.
+
+**Circuit breakers** (`event: depeg_circuit_open`, `observer: 'peg_guard'`, field `reason`)
+
+| reason | trigger | effect |
+|---|---|---|
+| `mass_tier_flip` | more than `maxTierFlipSharePct`% (25) of mints that had a tier last run changed tier (needs at least 4 such mints) | observations and tier events are written, no advisory action |
+| `price_fetch_failed` | Birdeye failed and fewer than half of the USD mints got a fallback price fresher than `priceStaleMs` | observations written, no advisory action; the run is `ok: false` only when no fallback price was usable at all |
+| `mass_action` | more than `maxActionsPerRun` (5) actions due | criticals first, clears last, the rest deferred to the next run |
+
+The first two usually mean a Birdeye incident or a market-wide move. Check a few `peg_guard_latest` rows against another price source before re-running with `"ignoreCircuitBreaker": true` (lifts the first two; the action cap always applies). `peg_guard_price_fetch_failed` carries Birdeye's status and message.
+
+**Manual run**
+
+```
+node scripts/_jobs.mjs refresh-peg-guard '{"mints":["<mint>"],"trigger":"manual","dryRun":true}'
+```
+
+Targeted mode prices only the listed mints, writes their snapshot and tier event with `source='manual'`, and logs what the reconciler would do. Drop `dryRun` (or pass `false`) to apply. A full sweep is `{"trigger":"sweep","dryRun":true}`; add `"requireEnabled": false` to run while the flag is off. Every run ends with one `peg_guard_summary` line (`tracked`, `priced`, `fallback_priced`, `unsupported`, `issues`, `tier_counts`, `tier_changes`, `owned_by_webacy`, `reconciled`, `actions_*`, `skipped`, `circuit`); the `stablecoin-peg-guard-stale` alert fires when none appears for 30 minutes, and `stablecoin-peg-guard-critical` (Slack only during the shadow period) on any peg guard critical transition.

@@ -16,7 +16,7 @@
                 "to": 0
             },
             "model": {
-                "expr": "sum(count_over_time({service=~\"tokens-assets(-jobs)?-prd-us\"} | json | event=\"depeg_poll_summary\" [9h]))",
+                "expr": "sum(count_over_time({service=~\"tokens-assets(-jobs)?-prd-us\"} | json | job=\"reconcile-stablecoin-depeg\" | event=\"depeg_poll_summary\" [9h]))",
                 "queryType": "range",
                 "refId": "A"
             }

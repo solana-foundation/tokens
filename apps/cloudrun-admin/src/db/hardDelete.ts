@@ -123,6 +123,14 @@ export function makePostgresHardDeleteRepo(sql: Sql): HardDeleteRepo {
                 const webacyStructuralDaily = await tx`
                     DELETE FROM webacy_structural_health_daily WHERE chain = 'solana' AND address = ANY(${mintsArray}::text[])
                 `;
+                // In-house peg guard snapshots (0020): same per-mint provider
+                // data shape as the Webacy tables, counted with them.
+                const pegGuard = await tx`
+                    DELETE FROM peg_guard_latest WHERE chain = 'solana' AND address = ANY(${mintsArray}::text[])
+                `;
+                const pegGuardEvents = await tx`
+                    DELETE FROM peg_guard_tier_events WHERE chain = 'solana' AND address = ANY(${mintsArray}::text[])
+                `;
                 const ohlcv = await tx`DELETE FROM ohlcv_candles WHERE address = ANY(${mintsArray}::text[])`;
 
                 // 6. CoinGecko caches (only when the asset had a coingecko id).
@@ -188,7 +196,9 @@ export function makePostgresHardDeleteRepo(sql: Sql): HardDeleteRepo {
                         webacyDepeg.count +
                         webacyDepegEvents.count +
                         webacyStructural.count +
-                        webacyStructuralDaily.count,
+                        webacyStructuralDaily.count +
+                        pegGuard.count +
+                        pegGuardEvents.count,
                     rwaTokenCacheDeleted: rwaTokens.count,
                     rwaAssetCacheDeleted,
                     assetMarketDeleted: assetMarket.count,

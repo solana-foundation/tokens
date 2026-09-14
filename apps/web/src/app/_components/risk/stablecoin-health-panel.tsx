@@ -4,7 +4,7 @@ import { useEffect, type ReactNode } from 'react';
 import { ArrowUpRight } from 'lucide-react';
 import { IconCheckmark, IconExclamationmarkTriangleFill, IconInfoCircleFill, IconXmark } from 'symbols-react';
 
-import type { PegHealth, StructuralHealth, StructuralHealthCategory } from '@tokens/asset-registry';
+import type { PegHealth, PegProvider, StructuralHealth, StructuralHealthCategory } from '@tokens/asset-registry';
 import { cn } from '@tokens/ui/cn';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@tokens/ui/tooltip';
 
@@ -14,11 +14,11 @@ import { trackEvent } from '@/lib/posthog-client';
 import {
     PEG_TIER_COPY,
     STABLECOIN_HEALTH_VIEWED_EVENT,
-    WEBACY_ATTRIBUTION_URL,
-    WEBACY_PROVIDER_LABEL,
     formatHealthUpdatedAt,
     pegDeviationText,
     pegPriceText,
+    pegProviderAttributionUrl,
+    pegProviderLabel,
     stablecoinHealthEventProps,
     structuralCategoryTooltip,
     structuralGradeTone,
@@ -38,9 +38,10 @@ const CARD_CLASS_NAME = 'rounded-[18px] border border-border-light bg-white p-6'
 
 /**
  * Two-card stablecoin block rendered above the market-score risk cards for
- * stablecoin variants: live peg status (Webacy depeg monitor, ~20 min cadence)
- * and the structural health grade (Webacy v3, daily). Webacy's 0-100 scores
- * are higher-is-riskier and are deliberately not rendered so they cannot be
+ * stablecoin variants: live peg status (Webacy's depeg monitor where it covers
+ * the mint, else the in-house tokens.xyz peg monitor every 5 min) and the
+ * structural health grade (Webacy v3, daily). Webacy's 0-100 scores are
+ * higher-is-riskier and are deliberately not rendered so they cannot be
  * misread next to the higher-is-better Market Score gauge.
  */
 export function StablecoinHealthPanel({ pegHealth, structuralHealth, mint, className }: StablecoinHealthPanelProps) {
@@ -79,7 +80,7 @@ function PegStatusCard({ pegHealth, mint }: { pegHealth: PegHealth | null; mint?
         return (
             <UnavailableCard
                 heading="Peg status"
-                subtitle="Live depeg monitor by Webacy"
+                subtitle="Live depeg monitor"
                 message="Peg monitor not available for this token."
             />
         );
@@ -88,6 +89,7 @@ function PegStatusCard({ pegHealth, mint }: { pegHealth: PegHealth | null; mint?
     const copy = PEG_TIER_COPY[pegHealth.tier];
     const priceText = pegPriceText(pegHealth);
     const deviationText = pegDeviationText(pegHealth);
+    const providerLabel = pegProviderLabel(pegHealth.provider);
 
     return (
         <section className={CARD_CLASS_NAME} aria-labelledby="stablecoin-peg-status-heading">
@@ -96,7 +98,7 @@ function PegStatusCard({ pegHealth, mint }: { pegHealth: PegHealth | null; mint?
                     <h4 id="stablecoin-peg-status-heading" className="text-title-sm text-text-extra-high">
                         Peg status
                     </h4>
-                    <p className="mt-1 text-body-sm text-text-low">Live depeg monitor by Webacy</p>
+                    <p className="mt-1 text-body-sm text-text-low">Live depeg monitor by {providerLabel}</p>
                 </div>
                 <PegStatusPill pegHealth={pegHealth} size="md" showDeviation className="mt-0.5" />
             </div>
@@ -117,7 +119,12 @@ function PegStatusCard({ pegHealth, mint }: { pegHealth: PegHealth | null; mint?
                 <StaleNotice>Peg data is stale. The monitor has not reported a fresh observation recently.</StaleNotice>
             ) : null}
 
-            <AttributionFooter updatedAt={pegHealth.updatedAt} surface="peg_status" mint={mint} />
+            <AttributionFooter
+                updatedAt={pegHealth.updatedAt}
+                surface="peg_status"
+                provider={pegHealth.provider}
+                mint={mint}
+            />
         </section>
     );
 }
@@ -180,7 +187,12 @@ function StructuralHealthCard({
                 <StaleNotice>Structural grade is stale. The last daily refresh did not complete.</StaleNotice>
             ) : null}
 
-            <AttributionFooter updatedAt={structuralHealth.updatedAt} surface="structural_health" mint={mint} />
+            <AttributionFooter
+                updatedAt={structuralHealth.updatedAt}
+                surface="structural_health"
+                provider="webacy"
+                mint={mint}
+            />
         </section>
     );
 }
@@ -276,38 +288,50 @@ function StaleNotice({ children }: { children: ReactNode }) {
     );
 }
 
+/**
+ * "Updated ... · Data by Webacy ↗" for Webacy rows; the in-house peg monitor
+ * has no external site, so its label renders as plain text.
+ */
 function AttributionFooter({
     updatedAt,
     surface,
+    provider,
     mint,
 }: {
     updatedAt: number;
     surface: 'peg_status' | 'structural_health';
+    provider: PegProvider;
     mint?: string | null;
 }) {
     const updated = formatHealthUpdatedAt(updatedAt);
+    const label = pegProviderLabel(provider);
+    const attributionUrl = pegProviderAttributionUrl(provider);
 
     return (
         <p className="mt-5 flex flex-wrap items-center gap-x-1 text-[12px] text-text-extra-low">
             {updated ? <span>Updated {updated} ·</span> : null}
             <span>Data by</span>
-            <TrackedAnchor
-                href={WEBACY_ATTRIBUTION_URL}
-                target="_blank"
-                rel="noopener noreferrer"
-                trackingEvent="external_link_clicked"
-                trackingProperties={{
-                    link_type: 'data_provider',
-                    link_url: WEBACY_ATTRIBUTION_URL,
-                    provider: 'webacy',
-                    source: `stablecoin_health_${surface}`,
-                    ...(mint ? { token_address: mint } : {}),
-                }}
-                className="inline-flex items-center gap-0.5 font-medium text-text-medium transition-colors hover:text-text-extra-high"
-            >
-                {WEBACY_PROVIDER_LABEL}
-                <ArrowUpRight className="size-3" aria-hidden />
-            </TrackedAnchor>
+            {attributionUrl ? (
+                <TrackedAnchor
+                    href={attributionUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    trackingEvent="external_link_clicked"
+                    trackingProperties={{
+                        link_type: 'data_provider',
+                        link_url: attributionUrl,
+                        provider,
+                        source: `stablecoin_health_${surface}`,
+                        ...(mint ? { token_address: mint } : {}),
+                    }}
+                    className="inline-flex items-center gap-0.5 font-medium text-text-medium transition-colors hover:text-text-extra-high"
+                >
+                    {label}
+                    <ArrowUpRight className="size-3" aria-hidden />
+                </TrackedAnchor>
+            ) : (
+                <span className="font-medium text-text-medium">{label}</span>
+            )}
         </p>
     );
 }

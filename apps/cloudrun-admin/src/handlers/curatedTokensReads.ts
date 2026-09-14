@@ -18,6 +18,7 @@ import { classifyLiquidityTier, getCanonicalFallbackLogoPath } from '@tokens/ass
 import type {
     AssetCategory,
     LiquidityTier,
+    PegProvider,
     PegTier,
     StockVariantTier,
     StructuralGrade,
@@ -66,12 +67,17 @@ export interface VariantMarketRow {
     lastFetchedAt: number | null;
 }
 
-/** Latest Webacy depeg observation for a stablecoin mint (webacy_depeg_latest). */
+/**
+ * Latest peg observation for a stablecoin mint: Webacy (`webacy_depeg_latest`)
+ * while it covers the mint, else the in-house peg guard (`peg_guard_latest`).
+ */
 export interface VariantPegHealthRow {
+    /** `webacy` or `tokens` (in-house peg guard). Optional for builds that predate 0020. */
+    provider?: PegProvider;
     tier: PegTier;
     /** Signed percent from peg; negative = below peg. */
     deviationPct: number | null;
-    /** False when the last Webacy fetch failed; `tier` is then the last good value. */
+    /** False when the observer's last fetch failed; `tier` is then the last good value. */
     ok: boolean;
     errorMessage: string | null;
     /** Unix ms of the last fetch attempt. */
@@ -100,7 +106,7 @@ export interface VariantWithMarketRow {
     market: VariantMarketRow | null;
     /** Active admin advisory on this mint (asset_variant_advisories), or null. */
     advisory: VariantAdvisory | null;
-    /** Webacy depeg tier for stablecoin mints, or null when unmonitored. */
+    /** Live depeg tier for stablecoin mints, or null when unmonitored. */
     pegHealth: VariantPegHealthRow | null;
     /** Webacy structural grade for stablecoin mints, or null when unmonitored. */
     structuralHealth: VariantStructuralHealthRow | null;

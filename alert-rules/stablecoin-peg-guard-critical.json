@@ -1,6 +1,6 @@
 {
-    "uid": "tokens-stablecoin-depeg-warning",
-    "title": "tokens-assets: stablecoin entered Webacy depeg tier WARNING",
+    "uid": "tokens-stablecoin-peg-guard-critical",
+    "title": "tokens-assets: stablecoin entered peg guard tier CRITICAL",
     "ruleGroup": "tokens-stablecoin-depeg",
     "folderUID": "tokens-xyz",
     "noDataState": "OK",
@@ -16,7 +16,7 @@
                 "to": 0
             },
             "model": {
-                "expr": "sum(count_over_time({service=~\"tokens-assets(-jobs)?-prd-us\"} | json | event=\"depeg_tier_changed\" | observer!=\"peg_guard\" | new_tier=\"warning\" [15m]))",
+                "expr": "sum(count_over_time({service=~\"tokens-assets(-jobs)?-prd-us\"} | json | event=\"depeg_tier_changed\" | observer=\"peg_guard\" | new_tier=\"critical\" [15m]))",
                 "queryType": "range",
                 "refId": "A"
             }
@@ -81,8 +81,8 @@
         "slack": "true"
     },
     "annotations": {
-        "summary": "A tracked stablecoin moved to Webacy depeg tier warning",
-        "description": "A tracked Solana stablecoin entered Webacy depeg tier warning (score 50-69) in the last 15 minutes (event: depeg_tier_changed, fields: mint, symbol, old_tier, deviation_pct, source). With warningConfirmMs = 0 the reconciler sets a caution advisory on the next reconcile unless dry-run is on or a human already owns the row. Watch for a follow-up critical alert; no page for warning alone.",
-        "runbook_url": "https://github.com/solana-foundation/tokens/blob/main/docs/operations/asset-advisory-runbook.md#automated-depeg-advisories"
+        "summary": "The tokens.xyz peg monitor saw a stablecoin trade more than 3% below its peg",
+        "description": "The in-house peg guard (job refresh-peg-guard, observer peg_guard) observed a curated USD stablecoin enter tier critical (Birdeye price more than 3% below $1.00 with at least $100k of DEX liquidity) in the last 15 minutes. The log line (event: depeg_tier_changed) carries mint, symbol, old_tier, deviation_pct, price_usd, liquidity_usd and price_source. A caution advisory is set automatically only after the tier persists for criticalConfirmMs (10 min) and only when the peg guard is not in dry run and Webacy does not cover the mint. Slack-only at severity warning during the shadow period: once a week of production data has been reviewed and the liquidity floor and bands are tuned, flip this rule to severity critical with pagerduty: true to match stablecoin-depeg-critical.",
+        "runbook_url": "https://github.com/solana-foundation/tokens/blob/main/docs/operations/asset-advisory-runbook.md#automated-depeg-advisories-tokensxyz-peg-monitor"
     }
 }

@@ -46,7 +46,7 @@ function assertNullableString(value: unknown, path: string): void {
 }
 
 const ADVISORY_STATUSES = new Set(['caution', 'compromised', 'blocked']);
-const ADVISORY_SOURCES = new Set(['admin', 'webacy_depeg']);
+const ADVISORY_SOURCES = new Set(['admin', 'webacy_depeg', 'peg_guard']);
 
 /** `advisory` must be present on every variant object: `null` or `{ status, reason, url, since }`. */
 function assertVariantAdvisory(variant: Record<string, unknown>, path: string): string | null {
@@ -64,7 +64,7 @@ function assertVariantAdvisory(variant: Record<string, unknown>, path: string): 
     if (advisory.source !== undefined) {
         assert(
             typeof advisory.source === 'string' && ADVISORY_SOURCES.has(advisory.source),
-            `${path}.advisory.source must be one of admin|webacy_depeg when present`,
+            `${path}.advisory.source must be one of admin|webacy_depeg|peg_guard when present`,
         );
     }
     return advisory.status;

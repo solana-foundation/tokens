@@ -25,7 +25,10 @@ import {
     type SystemAdvisorySource,
 } from '@tokens/asset-registry';
 
+import type { BirdeyeMultiPriceClient } from '../clients';
+import type { PegGuardRepo } from '../db/pegGuard';
 import type { CronResult } from './crons';
+import { refreshPegGuard } from './crons.pegGuard';
 import type { CuratedMembershipSource } from './curatedMembershipReads';
 import {
     normalizeStructuralHealth as normalizeStructural,
@@ -189,6 +192,19 @@ export interface DepegCronDeps {
     isDryRunDefault?: () => boolean;
     /** Structured-log seam; production prints one JSON line per call. */
     log?: (line: Record<string, unknown>) => void;
+    /**
+     * In-house peg guard (crons.pegGuard.ts). Optional so a worker without a
+     * Birdeye multi-price client still serves the Webacy jobs; the job then
+     * returns `peg_guard_not_configured`.
+     */
+    pegGuard?: {
+        birdeye: BirdeyeMultiPriceClient;
+        repo: PegGuardRepo;
+        /** Env `PEG_GUARD_ENABLED === 'true'` by default. */
+        isEnabled?: () => boolean;
+        /** Env `PEG_GUARD_DRY_RUN`, falling back to `WEBACY_DEPEG_DRY_RUN`; true unless explicitly 'false'. */
+        isDryRunDefault?: () => boolean;
+    };
 }
 
 function defaultIsRefreshEnabled(): boolean {
@@ -400,7 +416,14 @@ function readOptionalString(raw: unknown, key: string): string | null {
     return value.trim() || null;
 }
 
-export interface DepegReconcileResult extends CronResult {
+/** Write counters `applyAction` bumps; shared by the Webacy and peg guard results. */
+export interface AdvisoryActionCounters {
+    actionsSet: number;
+    actionsUpdated: number;
+    actionsCleared: number;
+}
+
+export interface DepegReconcileResult extends CronResult, AdvisoryActionCounters {
     mode: 'targeted' | 'sweep';
     dryRun: boolean;
     disabled?: boolean;
@@ -409,9 +432,6 @@ export interface DepegReconcileResult extends CronResult {
     tracked: number;
     tierCounts: Record<PegTier | 'null', number>;
     tierChanges: number;
-    actionsSet: number;
-    actionsUpdated: number;
-    actionsCleared: number;
     skipped: Partial<Record<ReconcilerSkipReason | 'missing_from_list', number>>;
     circuit: 'suspicious_drop' | 'mass_tier_flip' | 'mass_action' | null;
     truncated: boolean;
@@ -754,7 +774,7 @@ export async function applyAction(
     dryRun: boolean,
     base: Record<string, unknown>,
     log: (line: Record<string, unknown>) => void,
-    result: DepegReconcileResult,
+    result: AdvisoryActionCounters,
 ): Promise<void> {
     const nowMs = deps.now();
     if (action.kind === 'clear') {
@@ -1017,4 +1037,8 @@ export type DepegJobHandler = (deps: DepegCronDeps, args: unknown) => Promise<Cr
 export const depegJobs: Record<string, DepegJobHandler> = {
     'reconcile-stablecoin-depeg': reconcileStablecoinDepeg,
     'refresh-stablecoin-structural-health': refreshStablecoinStructuralHealth,
+    // Wrapped rather than referenced: crons.pegGuard.ts imports applyAction
+    // from this module, so the binding is resolved at call time, never during
+    // the module cycle's evaluation.
+    'refresh-peg-guard': (deps, args) => refreshPegGuard(deps, args),
 };
