@@ -49,16 +49,37 @@ function variant(overrides: Partial<VariantWithMarketRow> = {}): VariantWithMark
         isActive: true,
         market: null,
         advisory: null,
+        pegHealth: null,
+        structuralHealth: null,
         ...overrides,
     };
 }
+
+const PEG_HEALTH = {
+    provider: 'tokens' as const,
+    tier: 'warning' as const,
+    deviationPct: -2.4,
+    ok: true,
+    errorMessage: null,
+    updatedAt: 1_750_000_000_000,
+};
+const STRUCTURAL_HEALTH = { grade: 'B+' as const, updatedAt: 1_749_000_000_000 };
 
 interface FakeState {
     assets?: AssetRow[];
     variants?: VariantWithMarketRow[];
     customAliases?: Array<{ assetId: string; alias: string }>;
     members?: Array<{ slug: 'majors' | 'currencies' | 'rwas' | 'etfs' | 'metals' | 'stocks'; assetId: string }>;
-    markets?: Record<string, { symbol: string | null; name: string | null; logoURI: string | null; liquidity: number | null; lastFetchedAt: number | null }>;
+    markets?: Record<
+        string,
+        {
+            symbol: string | null;
+            name: string | null;
+            logoURI: string | null;
+            liquidity: number | null;
+            lastFetchedAt: number | null;
+        }
+    >;
 }
 
 function makeRepo(state: FakeState = {}): { repo: AdminReadsRepo; calls: Record<string, unknown[]> } {
@@ -103,7 +124,13 @@ function makeDeps(state: FakeState = {}): { deps: AdminReadsDeps; calls: Record<
 }
 
 describe('authz (reads)', () => {
-    const handlers: Array<[string, (deps: AdminReadsDeps, args: unknown, identity: { clerkUserId: string } | null) => Promise<unknown>, unknown]> = [
+    const handlers: Array<
+        [
+            string,
+            (deps: AdminReadsDeps, args: unknown, identity: { clerkUserId: string } | null) => Promise<unknown>,
+            unknown,
+        ]
+    > = [
         ['listCanonicalAssets', listCanonicalAssets, {}],
         ['listVariantsByAssetIds', listVariantsByAssetIds, { assetIds: ['bitcoin'] }],
         ['getCanonicalEditor', getCanonicalEditor, { assetId: 'bitcoin' }],
@@ -130,12 +157,24 @@ describe('listCanonicalAssets', () => {
                     mint: MINT_A,
                     variantId: 'bitcoin:wbtc',
                     label: 'WBTC',
-                    market: { symbol: 'WBTC', name: 'Wrapped BTC', logoURI: 'https://img/wbtc.png', liquidity: 100, lastFetchedAt: 111 },
+                    market: {
+                        symbol: 'WBTC',
+                        name: 'Wrapped BTC',
+                        logoURI: 'https://img/wbtc.png',
+                        liquidity: 100,
+                        lastFetchedAt: 111,
+                    },
                 }),
                 variant({
                     mint: MINT_B,
                     variantId: 'bitcoin:cbbtc',
-                    market: { symbol: 'cbBTC', name: 'Coinbase BTC', logoURI: 'https://img/cbbtc.png', liquidity: 900, lastFetchedAt: 222 },
+                    market: {
+                        symbol: 'cbBTC',
+                        name: 'Coinbase BTC',
+                        logoURI: 'https://img/cbbtc.png',
+                        liquidity: 900,
+                        lastFetchedAt: 222,
+                    },
                 }),
             ],
             customAliases: [{ assetId: 'bitcoin', alias: 'digital gold' }],
@@ -187,7 +226,9 @@ describe('listCanonicalAssets', () => {
     });
 
     it('omits optional keys and falls back to em-dash for blank name/symbol', async () => {
-        const { deps } = makeDeps({ assets: [asset({ assetId: 'mystery', name: '  ', symbol: null, coingeckoId: null })] });
+        const { deps } = makeDeps({
+            assets: [asset({ assetId: 'mystery', name: '  ', symbol: null, coingeckoId: null })],
+        });
         const rows = await listCanonicalAssets(deps, {}, ADMIN);
         const row = rows[0]!;
         expect(row.name).toBe('—');
@@ -202,7 +243,17 @@ describe('listCanonicalAssets', () => {
     it('prefers asset imageUrl over override and variant logos', async () => {
         const { deps } = makeDeps({
             assets: [asset({ imageUrl: ' https://img/custom.png ' })],
-            variants: [variant({ market: { symbol: null, name: null, logoURI: 'https://img/v.png', liquidity: 1, lastFetchedAt: null } })],
+            variants: [
+                variant({
+                    market: {
+                        symbol: null,
+                        name: null,
+                        logoURI: 'https://img/v.png',
+                        liquidity: 1,
+                        lastFetchedAt: null,
+                    },
+                }),
+            ],
         });
         const rows = await listCanonicalAssets(deps, {}, ADMIN);
         expect(rows[0]!.imageUrl).toBe('https://img/custom.png');
@@ -214,7 +265,13 @@ describe('listCanonicalAssets', () => {
             variants: [
                 variant({
                     assetId: 'random-token',
-                    market: { symbol: null, name: null, logoURI: 'https://img/v.png', liquidity: 1, lastFetchedAt: null },
+                    market: {
+                        symbol: null,
+                        name: null,
+                        logoURI: 'https://img/v.png',
+                        liquidity: 1,
+                        lastFetchedAt: null,
+                    },
                 }),
             ],
         });
@@ -269,7 +326,13 @@ describe('listVariantsByAssetIds', () => {
                     issuer: 'Issuer Inc',
                     issuerUrl: 'https://issuer.example',
                     stockVariantTier: 'share_redeemable',
-                    market: { symbol: 'BIG', name: 'Big BTC', logoURI: 'https://img/big.png', liquidity: 20_000_000, lastFetchedAt: 42 },
+                    market: {
+                        symbol: 'BIG',
+                        name: 'Big BTC',
+                        logoURI: 'https://img/big.png',
+                        liquidity: 20_000_000,
+                        lastFetchedAt: 42,
+                    },
                 }),
             ],
         });
@@ -297,6 +360,8 @@ describe('listVariantsByAssetIds', () => {
             isActive: true,
             lastFetchedAt: 42,
             advisory: null,
+            pegHealth: null,
+            structuralHealth: null,
         });
         expect(small!.liquidityTier).toBe('tier3');
         expect(small!.trustTier).toBe('tier3'); // trustTier mirrors liquidityTier
@@ -304,6 +369,34 @@ describe('listVariantsByAssetIds', () => {
         expect('lastFetchedAt' in small!).toBe(false);
         expect('logoURI' in small!).toBe(false);
         expect('label' in small!).toBe(false);
+    });
+
+    it('carries advisory source, pegHealth and structuralHealth through to the editor rows', async () => {
+        const advisory = {
+            status: 'caution' as const,
+            reason: 'Trading 2.40% below peg',
+            url: null,
+            since: 1_700_000_000_000,
+            source: 'webacy_depeg' as const,
+        };
+        const { deps } = makeDeps({
+            variants: [
+                variant({ mint: MINT_A, advisory, pegHealth: PEG_HEALTH, structuralHealth: STRUCTURAL_HEALTH }),
+                variant({ mint: MINT_B, variantId: 'bitcoin:plain' }),
+            ],
+        });
+        const result = await listVariantsByAssetIds(deps, { assetIds: ['bitcoin'] }, ADMIN);
+        const rows = result[0]!.variants;
+        const monitored = rows.find(row => row.mint === MINT_A)!;
+        const plain = rows.find(row => row.mint === MINT_B)!;
+        expect(monitored.advisory).toEqual(advisory);
+        expect(monitored.pegHealth).toEqual(PEG_HEALTH);
+        expect(monitored.structuralHealth).toEqual(STRUCTURAL_HEALTH);
+        // Always present (null, never omitted) so the UI can treat undefined as "old server build".
+        expect(plain.advisory).toBeNull();
+        expect(plain.pegHealth).toBeNull();
+        expect(plain.structuralHealth).toBeNull();
+        expect('pegHealth' in plain && 'structuralHealth' in plain).toBe(true);
     });
 
     it('returns an empty array without hitting the repo when no ids survive normalization', async () => {
@@ -340,7 +433,13 @@ describe('getCanonicalEditor', () => {
             assets: [asset({ imageUrl: null })],
             variants: [
                 variant({
-                    market: { symbol: 'WBTC', name: 'Wrapped', logoURI: 'https://img/v.png', liquidity: 10, lastFetchedAt: 5 },
+                    market: {
+                        symbol: 'WBTC',
+                        name: 'Wrapped',
+                        logoURI: 'https://img/v.png',
+                        liquidity: 10,
+                        lastFetchedAt: 5,
+                    },
                 }),
             ],
             customAliases: [{ assetId: 'bitcoin', alias: 'digital gold' }],
@@ -371,7 +470,13 @@ describe('getCanonicalEditor', () => {
             variants: [
                 variant({
                     assetId: 'random-token',
-                    market: { symbol: null, name: null, logoURI: 'https://img/v.png', liquidity: 1, lastFetchedAt: null },
+                    market: {
+                        symbol: null,
+                        name: null,
+                        logoURI: 'https://img/v.png',
+                        liquidity: 1,
+                        lastFetchedAt: null,
+                    },
                 }),
             ],
         });
@@ -384,7 +489,16 @@ describe('getCanonicalEditor', () => {
 
     it("reports 'url' with an 'override'/'variant'/'none' fallback when imageUrl is set", async () => {
         const { deps } = makeDeps({
-            assets: [asset({ assetId: 'random-token', name: 'Random', symbol: 'RND', coingeckoId: null, imageUrl: 'https://img/a.png', description: 'desc' })],
+            assets: [
+                asset({
+                    assetId: 'random-token',
+                    name: 'Random',
+                    symbol: 'RND',
+                    coingeckoId: null,
+                    imageUrl: 'https://img/a.png',
+                    description: 'desc',
+                }),
+            ],
         });
         const result = await getCanonicalEditor(deps, { assetId: 'random-token' }, ADMIN);
         expect(result?.asset.imageUrl).toBe('https://img/a.png');
@@ -424,6 +538,8 @@ describe('getVariantEditor', () => {
                 label: 'WBTC',
                 isActive: true,
                 advisory: null,
+                pegHealth: null,
+                structuralHealth: null,
             },
             canonical: { assetId: 'bitcoin', name: 'Bitcoin', symbol: 'BTC' },
             market: { symbol: 'WBTC' },
@@ -431,7 +547,12 @@ describe('getVariantEditor', () => {
     });
 
     it('carries the active advisory through to the editor row', async () => {
-        const advisory = { status: 'compromised' as const, reason: 'Treasury exploited', url: 'https://x.test/p', since: 1_700_000_000_000 };
+        const advisory = {
+            status: 'compromised' as const,
+            reason: 'Treasury exploited',
+            url: 'https://x.test/p',
+            since: 1_700_000_000_000,
+        };
         const { deps } = makeDeps({ assets: [asset()], variants: [variant({ advisory })] });
         const result = await getVariantEditor(deps, { mint: MINT_A }, ADMIN);
         expect(result?.variant.advisory).toEqual(advisory);
@@ -441,6 +562,16 @@ describe('getVariantEditor', () => {
         const { deps } = makeDeps({ assets: [asset()], variants: [variant({ market: null })] });
         const result = await getVariantEditor(deps, { mint: MINT_A }, ADMIN);
         expect(result?.market).toBeNull();
+    });
+
+    it('carries pegHealth and structuralHealth through to the editor row', async () => {
+        const { deps } = makeDeps({
+            assets: [asset()],
+            variants: [variant({ pegHealth: PEG_HEALTH, structuralHealth: STRUCTURAL_HEALTH })],
+        });
+        const result = await getVariantEditor(deps, { mint: MINT_A }, ADMIN);
+        expect(result?.variant.pegHealth).toEqual(PEG_HEALTH);
+        expect(result?.variant.structuralHealth).toEqual(STRUCTURAL_HEALTH);
     });
 });
 
@@ -471,7 +602,13 @@ describe('previewMint', () => {
     it('suggests solana-<mint> when the mint is unknown and reports market presence', async () => {
         const { deps } = makeDeps({
             markets: {
-                [MINT_A]: { symbol: 'NEW', name: 'New Token', logoURI: 'https://img/new.png', liquidity: 1, lastFetchedAt: 77 },
+                [MINT_A]: {
+                    symbol: 'NEW',
+                    name: 'New Token',
+                    logoURI: 'https://img/new.png',
+                    liquidity: 1,
+                    lastFetchedAt: 77,
+                },
             },
         });
         expect(await previewMint(deps, { mint: MINT_A }, ADMIN)).toEqual({

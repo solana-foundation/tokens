@@ -6,16 +6,21 @@ import {
     makeBirdeyeOhlcvClient,
     makeClickhouseClient,
     makeCoingeckoClient,
+    makeCoingeckoFiatRatesClient,
     makePreStocksClient,
     makeRwaXyzClient,
     makeSanctumClient,
     makeWebacyClient,
+    makeWebacyDepegClient,
 } from './clients';
+import { makePostgresDepegRepo } from './db/depeg';
+import { makePostgresPegGuardRepo } from './db/pegGuard';
 import { parseAdminClerkUserIds, parseAdminEmails } from './adminAuth';
 import {
     getSql,
     makePostgresAdminActionsRepo,
     makePostgresAssetAdvisoriesRepo,
+    makePostgresStablecoinHealthReadsRepo,
     makePostgresAssetCollectionsReadsRepo,
     makePostgresAssetDeletionTombstonesRepo,
     makePostgresAssetMarketsRepo,
@@ -60,6 +65,7 @@ import type { SeedCronDeps } from './handlers/crons.seed';
 import type { TrendingCronDeps } from './handlers/crons.trending';
 import type { ClickhouseExtrasCronDeps } from './handlers/crons.clickhouse.extras';
 import type { PrestocksCronDeps } from './handlers/crons.prestocks';
+import type { DepegCronDeps } from './handlers/crons.depeg';
 import { makeGoogleOidcVerifier } from './oidc';
 import { createApp, type ServiceRole } from './server';
 
@@ -105,6 +111,7 @@ let seedCronDeps: SeedCronDeps | undefined;
 let trendingCronDeps: TrendingCronDeps | undefined;
 let clickhouseExtrasCronDeps: ClickhouseExtrasCronDeps | undefined;
 let prestocksCronDeps: PrestocksCronDeps | undefined;
+let depegCronDeps: DepegCronDeps | undefined;
 let verifyOidc: ReturnType<typeof makeGoogleOidcVerifier> | undefined;
 
 // Effective curated membership is served on the read path too (the
@@ -123,13 +130,16 @@ if (birdeyeApiKey) {
         process.exit(1);
     }
     const coingeckoCurated = makePostgresCoingeckoCuratedSource(sql);
+    // Held separately because CronDeps.birdeye is typed as the narrower
+    // BirdeyeClient; the peg guard needs the multi-price half of this instance.
+    const birdeye = makeBirdeyeClient({
+        apiKey: birdeyeApiKey,
+        ...(process.env.BIRDEYE_ORIGIN ? { origin: process.env.BIRDEYE_ORIGIN } : {}),
+    });
     const baseDeps: CronDeps = {
         repo: makePostgresJobsRepo(sql),
         curated,
-        birdeye: makeBirdeyeClient({
-            apiKey: birdeyeApiKey,
-            ...(process.env.BIRDEYE_ORIGIN ? { origin: process.env.BIRDEYE_ORIGIN } : {}),
-        }),
+        birdeye,
         birdeyeOhlcv: makeBirdeyeOhlcvClient({
             apiKey: birdeyeApiKey,
             ...(process.env.BIRDEYE_ORIGIN ? { origin: process.env.BIRDEYE_ORIGIN } : {}),
@@ -201,6 +211,25 @@ if (birdeyeApiKey) {
         repo: makePostgresPrestocksRepo(sql),
         now: () => Date.now(),
     };
+    // The depeg job group only needs Birdeye (the peg guard prices from it);
+    // the Webacy jobs share the token-risk key and return webacy_not_configured
+    // via the client's isConfigured() when it is missing.
+    depegCronDeps = {
+        webacyDepeg: makeWebacyDepegClient({ apiKey: webacyApiKey ?? '' }),
+        repo: makePostgresDepegRepo(sql),
+        curated,
+        now: () => Date.now(),
+        pegGuard: {
+            birdeye,
+            repo: makePostgresPegGuardRepo(sql),
+            // Fiat pegs (EURC, tGBP, ...) are judged against a CoinGecko-implied
+            // rate; the key is the same one the markets refresh uses.
+            fiatRates: makeCoingeckoFiatRatesClient({ apiKey: process.env.COINGECKO_API_KEY?.trim() }),
+        },
+    };
+    if (!webacyApiKey) {
+        console.warn('[cloudrun-assets] WEBACY_API_KEY not set: Webacy depeg jobs disabled (peg guard still runs)');
+    }
     if (clickhouseUrl && clickhouseUser && clickhousePassword && clickhouseDatabase) {
         clickhouseExtrasCronDeps = {
             clickhouse: makeClickhouseClient({
@@ -323,6 +352,7 @@ const app = createApp({
     assetsApiRepo: makePostgresAssetsApiRepo(sql),
     deletionTombstonesRepo: makePostgresAssetDeletionTombstonesRepo(sql),
     assetAdvisoriesRepo: makePostgresAssetAdvisoriesRepo(sql),
+    stablecoinHealthReadsRepo: makePostgresStablecoinHealthReadsRepo(sql),
     sanctumLstsRepo: makePostgresSanctumLstsRepo(sql),
     assetMarketsRepo: makePostgresAssetMarketsRepo(sql),
     variantMarketsRepo: makePostgresVariantMarketsRepo(sql),
@@ -352,6 +382,7 @@ const app = createApp({
     ...(trendingCronDeps ? { trendingCronDeps } : {}),
     ...(clickhouseExtrasCronDeps ? { clickhouseExtrasCronDeps } : {}),
     ...(prestocksCronDeps ? { prestocksCronDeps } : {}),
+    ...(depegCronDeps ? { depegCronDeps } : {}),
     ...(cacheWarmDeps ? { cacheWarmDeps } : {}),
     ...(adminActionsDeps ? { adminActionsDeps } : {}),
     tokenListsAdminDeps: { adminAllowlist, lists: tokenListsMutationsDeps },

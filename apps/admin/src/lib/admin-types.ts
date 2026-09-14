@@ -93,9 +93,19 @@ export type CanonicalRow = {
 
 /* ── variant advisories ─────────────────────────────────────────────────── */
 
-// Hand-copied from ADVISORY_STATUSES / VariantAdvisory in
+// Hand-copied from ADVISORY_STATUSES / ADVISORY_SOURCES / VariantAdvisory in
 // packages/asset-registry/src/types.ts (the source of truth).
 export type AdvisoryStatus = 'caution' | 'compromised' | 'blocked';
+/**
+ * `admin` = human-authored; `webacy_depeg` = set automatically from Webacy's
+ * depeg monitor; `peg_guard` = set automatically by the in-house tokens.xyz
+ * peg monitor.
+ */
+export type AdvisorySource = 'admin' | 'webacy_depeg' | 'peg_guard';
+/** `set_by` / actor id used by the Webacy depeg reconciler (mirrors WEBACY_DEPEG_ACTOR). */
+export const WEBACY_DEPEG_ACTOR = 'system:webacy_depeg';
+/** `set_by` / actor id used by the tokens.xyz peg monitor (mirrors PEG_GUARD_ACTOR). */
+export const PEG_GUARD_ACTOR = 'system:peg_guard';
 
 /** The active advisory attached to a variant mint, as serialized on admin variant rows. */
 export type VariantAdvisory = {
@@ -104,6 +114,8 @@ export type VariantAdvisory = {
     url: string | null;
     /** Unix ms; reset when the status changes, kept when only reason/url are edited. */
     since: number;
+    /** Omitted by cloudrun-admin builds that predate 0019; treat as `'admin'`. */
+    source?: AdvisorySource;
 };
 
 /** Mirrors `VariantAdvisoryRow` in cloudrun-admin handlers/variantAdvisories.ts. */
@@ -115,6 +127,44 @@ export type VariantAdvisoryRow = {
     setBy: string;
     setByEmail: string | null;
     setAt: number;
+    updatedAt: number;
+    source?: AdvisorySource;
+    /** True only while the depeg automation owns the row. */
+    managedBySystem?: boolean;
+};
+
+// Hand-copied from packages/asset-registry/src/stablecoin-health.ts (the source of truth).
+export type PegTier = 'ok' | 'watch' | 'warning' | 'critical' | 'premium';
+/**
+ * What a peg observation was measured against: a fixed 1.00, a CoinGecko-implied
+ * fiat rate, or the token's own high-water price (yield-bearing USD variants).
+ * Hand-copied from packages/asset-registry/src/stablecoin-health.ts (the source of truth).
+ */
+export type PegReferenceKind = 'fixed' | 'fx' | 'high_water';
+export type StructuralGrade = 'A+' | 'A' | 'A-' | 'B+' | 'B' | 'B-' | 'C+' | 'C' | 'C-' | 'D+' | 'D' | 'D-' | 'E' | 'F';
+
+/** Compact depeg status for a stablecoin mint, as serialized on admin variant rows. */
+export type AdminPegHealth = {
+    /** `webacy` while Webacy covers the mint, `tokens` for the in-house peg monitor; absent on older builds. */
+    provider?: 'webacy' | 'tokens';
+    /** ISO 4217 code of the peg when the observer knows it; absent on builds that predate peg guard phase 2. */
+    pegCurrency?: string | null;
+    /** Absent on builds that predate peg guard phase 2; treat a missing value as `fixed`. */
+    referenceKind?: PegReferenceKind | null;
+    tier: PegTier;
+    /** Signed percent from peg; negative = below peg. */
+    deviationPct: number | null;
+    /** False when the observer's last fetch for this mint failed (tier is the last good value). */
+    ok: boolean;
+    errorMessage: string | null;
+    /** Unix ms of the last fetch attempt. */
+    updatedAt: number;
+};
+
+/** Compact Webacy structural health grade for a stablecoin mint. */
+export type AdminStructuralHealth = {
+    grade: StructuralGrade;
+    /** Unix ms of the last successful fetch. */
     updatedAt: number;
 };
 
@@ -130,6 +180,7 @@ export type VariantAdvisoryEventRow = {
     actorClerkUserId: string;
     actorEmail: string | null;
     createdAt: number;
+    source?: AdvisorySource;
 };
 
 export type SetVariantAdvisoryArgs = {
@@ -177,6 +228,10 @@ export type AdminVariantRow = {
      * the UI treats `undefined` the same as `null`.
      */
     advisory?: VariantAdvisory | null;
+    /** Webacy depeg tier for stablecoin mints, or null. Optional for rollout safety like `advisory`. */
+    pegHealth?: AdminPegHealth | null;
+    /** Webacy structural grade for stablecoin mints, or null. Optional for rollout safety like `advisory`. */
+    structuralHealth?: AdminStructuralHealth | null;
 };
 
 export type VariantsByAssetIdRow = {

@@ -1,0 +1,88 @@
+{
+    "uid": "tokens-depeg-webhook-forward-failed",
+    "title": "tokens-usage: Webacy depeg webhook could not be forwarded to the worker",
+    "ruleGroup": "tokens-stablecoin-depeg",
+    "folderUID": "tokens-xyz",
+    "noDataState": "OK",
+    "execErrState": "OK",
+    "for": "0s",
+    "data": [
+        {
+            "refId": "A",
+            "datasourceUid": "grafanacloud-logs",
+            "queryType": "range",
+            "relativeTimeRange": {
+                "from": 900,
+                "to": 0
+            },
+            "model": {
+                "expr": "sum(count_over_time({service=\"tokens-usage-prd-us\"} |= \"depeg_webhook_forward_failed\" [15m]))",
+                "queryType": "range",
+                "refId": "A"
+            }
+        },
+        {
+            "refId": "B",
+            "datasourceUid": "__expr__",
+            "queryType": "",
+            "relativeTimeRange": {
+                "from": 0,
+                "to": 0
+            },
+            "model": {
+                "type": "reduce",
+                "refId": "B",
+                "expression": "A",
+                "reducer": "last",
+                "settings": {
+                    "mode": "replaceNN",
+                    "replaceWithValue": 0
+                }
+            }
+        },
+        {
+            "refId": "C",
+            "datasourceUid": "__expr__",
+            "queryType": "",
+            "relativeTimeRange": {
+                "from": 0,
+                "to": 0
+            },
+            "model": {
+                "type": "threshold",
+                "refId": "C",
+                "expression": "B",
+                "conditions": [
+                    {
+                        "evaluator": {
+                            "type": "gt",
+                            "params": [0]
+                        },
+                        "operator": {
+                            "type": "and"
+                        },
+                        "query": {
+                            "params": ["B"]
+                        },
+                        "reducer": {
+                            "type": "last",
+                            "params": []
+                        },
+                        "type": "query"
+                    }
+                ]
+            }
+        }
+    ],
+    "condition": "C",
+    "labels": {
+        "service": "tokens-usage",
+        "severity": "warning",
+        "slack": "true"
+    },
+    "annotations": {
+        "summary": "tokens-usage: a verified Webacy depeg webhook was recorded but not forwarded to the jobs worker",
+        "description": "POST /hooks/webacy verified and stored a DEPEG_TIER_CHANGE delivery but the nudge to POST /jobs/reconcile-stablecoin-depeg on the assets jobs service failed in the last 15 minutes (outcome=forward_failed). The `why` field names the cause: jobs_url_unset (TOKENS_CLOUDRUN_ASSETS_JOBS_URL missing on the usage service), id_token_unavailable / id_token_error (metadata server), http_401 or http_403 (the usage runtime SA lacks roles/run.invoker on the worker, or its email is not listed in the worker's TOKENS_CRON_INVOKER_SA), http_5xx, timeout, fetch_error. The mint is still reconciled by the next 4-hourly sweep, so this is a latency regression rather than a missed advisory.",
+        "runbook_url": "https://github.com/solana-foundation/tokens/blob/main/docs/operations/asset-advisory-runbook.md#automated-depeg-advisories"
+    }
+}

@@ -1,0 +1,88 @@
+{
+    "uid": "tokens-depeg-webhook-rejected",
+    "title": "tokens-usage: Webacy depeg webhooks being rejected",
+    "ruleGroup": "tokens-stablecoin-depeg",
+    "folderUID": "tokens-xyz",
+    "noDataState": "OK",
+    "execErrState": "OK",
+    "for": "5m",
+    "data": [
+        {
+            "refId": "A",
+            "datasourceUid": "grafanacloud-logs",
+            "queryType": "range",
+            "relativeTimeRange": {
+                "from": 3600,
+                "to": 0
+            },
+            "model": {
+                "expr": "sum(count_over_time({service=\"tokens-usage-prd-us\"} |= \"depeg_webhook_rejected\" [1h]))",
+                "queryType": "range",
+                "refId": "A"
+            }
+        },
+        {
+            "refId": "B",
+            "datasourceUid": "__expr__",
+            "queryType": "",
+            "relativeTimeRange": {
+                "from": 0,
+                "to": 0
+            },
+            "model": {
+                "type": "reduce",
+                "refId": "B",
+                "expression": "A",
+                "reducer": "last",
+                "settings": {
+                    "mode": "replaceNN",
+                    "replaceWithValue": 0
+                }
+            }
+        },
+        {
+            "refId": "C",
+            "datasourceUid": "__expr__",
+            "queryType": "",
+            "relativeTimeRange": {
+                "from": 0,
+                "to": 0
+            },
+            "model": {
+                "type": "threshold",
+                "refId": "C",
+                "expression": "B",
+                "conditions": [
+                    {
+                        "evaluator": {
+                            "type": "gt",
+                            "params": [3]
+                        },
+                        "operator": {
+                            "type": "and"
+                        },
+                        "query": {
+                            "params": ["B"]
+                        },
+                        "reducer": {
+                            "type": "last",
+                            "params": []
+                        },
+                        "type": "query"
+                    }
+                ]
+            }
+        }
+    ],
+    "condition": "C",
+    "labels": {
+        "service": "tokens-usage",
+        "severity": "warning",
+        "slack": "true"
+    },
+    "annotations": {
+        "summary": "tokens-usage: more than 3 Webacy webhook deliveries rejected in the last hour",
+        "description": "POST /hooks/webacy logged depeg_webhook_rejected more than 3 times in 1h. The `why` field says which check failed: bad_signature (secret rotated on one side only, or a forged caller), stale_timestamp (Webacy retrying an old event past the 5 minute window, or clock skew), missing_signature / missing_event_id (unexpected caller or payload shape), secret_unset (WEBACY_WEBHOOK_SECRET not mounted on the usage service). Rejected deliveries are recorded in webacy_webhook_deliveries with signature_ok/outcome for inspection; a verified retry supersedes a rejected_signature row.",
+        "runbook_url": "https://github.com/solana-foundation/tokens/blob/main/docs/operations/asset-advisory-runbook.md#automated-depeg-advisories"
+    }
+}

@@ -23,6 +23,7 @@ import { assetsApiSearchPrefetchForApi } from './handlers/assetsApiSearchPrefetc
 import { setAssetDescriptionByAssetId } from './handlers/assetsMutations';
 import { listDeletedRefs, type AssetDeletionTombstonesRepo } from './handlers/assetDeletionTombstones';
 import { listAdvisories, type AssetAdvisoriesRepo } from './handlers/assetAdvisoriesReads';
+import { stablecoinHealthGetByMints, type StablecoinHealthReadsRepo } from './handlers/stablecoinHealthReads';
 import {
     listActive as sanctumListActive,
     resolveRef as sanctumResolveRef,
@@ -137,6 +138,7 @@ import {
 } from './handlers/crons.assetVariants';
 import { seedJobs, type SeedCronDeps, type SeedJobHandler } from './handlers/crons.seed';
 import { prestocksJobs, type PrestocksCronDeps, type PrestocksJobHandler } from './handlers/crons.prestocks';
+import { depegJobs, type DepegCronDeps, type DepegJobHandler } from './handlers/crons.depeg';
 import { trendingJobs, type TrendingCronDeps, type TrendingJobHandler } from './handlers/crons.trending';
 import {
     clickhouseExtrasJobs,
@@ -175,6 +177,7 @@ export interface ServerDeps {
     assetsApiRepo: AssetsApiRepo;
     deletionTombstonesRepo: AssetDeletionTombstonesRepo;
     assetAdvisoriesRepo: AssetAdvisoriesRepo;
+    stablecoinHealthReadsRepo: StablecoinHealthReadsRepo;
     sanctumLstsRepo: SanctumLstsRepo;
     assetMarketsRepo: AssetMarketsRepo;
     variantMarketsRepo: VariantMarketsRepo;
@@ -205,6 +208,8 @@ export interface ServerDeps {
     trendingCronDeps?: TrendingCronDeps;
     clickhouseExtrasCronDeps?: ClickhouseExtrasCronDeps;
     prestocksCronDeps?: PrestocksCronDeps;
+    /** Webacy depeg reconcile + structural health; present only when WEBACY_API_KEY is set. */
+    depegCronDeps?: DepegCronDeps;
     cacheWarmDeps?: CacheWarmDeps;
     adminActionsDeps?: AdminActionsDeps;
     /** Admin-only token-list build tools (CSV import, create-for-project); allowlist-gated. */
@@ -247,6 +252,7 @@ const ATOMIC_RETRY_QUERY_NAMES = new Set([
     'listByCategory',
     'listDeletedRefs',
     'assetAdvisoriesList',
+    'stablecoinHealthGetByMints',
     'sanctumListActive',
     'assetMarketsGetLatestByAssetId',
     'assetMarketsGetLatestByAssetIds',
@@ -422,6 +428,7 @@ export function createApp(deps: ServerDeps) {
         );
     queries.listDeletedRefs = args => listDeletedRefs(deps.deletionTombstonesRepo, args);
     queries.assetAdvisoriesList = () => listAdvisories(deps.assetAdvisoriesRepo);
+    queries.stablecoinHealthGetByMints = args => stablecoinHealthGetByMints(deps.stablecoinHealthReadsRepo, args);
     queries.sanctumListActive = args => sanctumListActive(deps.sanctumLstsRepo, args);
     queries.sanctumResolveRef = args => sanctumResolveRef(deps.sanctumLstsRepo, args);
     queries.assetMarketsGetLatestByAssetId = args => assetMarketsGetLatestByAssetId(deps.assetMarketsRepo, args);
@@ -645,6 +652,7 @@ export function createApp(deps: ServerDeps) {
     const prestocksJobsTable: Record<string, PrestocksJobHandler> = {
         ...prestocksJobs,
     };
+    const depegJobsTable: Record<string, DepegJobHandler> = { ...depegJobs };
 
     interface JobGroup {
         has(name: string): boolean;
@@ -694,6 +702,11 @@ export function createApp(deps: ServerDeps) {
             run: deps.prestocksCronDeps
                 ? (name, args) => prestocksJobsTable[name]!(deps.prestocksCronDeps!, args)
                 : null,
+        },
+        {
+            has: name => Object.hasOwn(depegJobsTable, name),
+            run: deps.depegCronDeps ? (name, args) => depegJobsTable[name]!(deps.depegCronDeps!, args) : null,
+            disabledError: 'depeg_jobs_disabled',
         },
     ];
 

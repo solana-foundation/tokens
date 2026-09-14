@@ -1,14 +1,18 @@
 import { Effect } from 'effect';
-import type { VariantAdvisory } from '@tokens/asset-registry';
+import type { PegHealth, StructuralHealth, VariantAdvisory } from '@tokens/asset-registry';
 
 import { getCuratedListSlugsForMint } from '@/lib/curated-membership';
 import { variantMarketsGetLatestByMints } from '@/lib/cloudrun';
 import { scheduleCacheWarm } from '@/lib/cloudrun/cacheWarm';
+import { loadStablecoinHealthOrEmpty } from '@/lib/stablecoin-health';
 import { computeMarketScore, type MarketScoreInput } from '@/lib/token-risk-helpers';
 
 import type { LoadedAssetVariantContext } from './_asset-route-loader';
 
 export const SOL_MINT = 'So11111111111111111111111111111111111111112';
+
+/** `structuralHealth` as projected on `/risk-summary`: grade only, no per-category detail. */
+export type StructuralHealthSummary = Pick<StructuralHealth, 'provider' | 'grade' | 'updatedAt' | 'stale'>;
 
 export interface AssetRiskPayload {
     assetId: string;
@@ -19,8 +23,12 @@ export interface AssetRiskPayload {
               marketScore: ReturnType<typeof computeMarketScore>;
               marketScoreInput: MarketScoreInput;
               tags: [];
-              /** Active admin advisory on the selected mint (always present, `null` when none). */
+              /** Active advisory on the selected mint (always present, `null` when none). */
               advisory: VariantAdvisory | null;
+              /** Webacy depeg-monitor status (always present, `null` when the mint is unmonitored). */
+              pegHealth: PegHealth | null;
+              /** Webacy structural-health grade (always present, `null` when the mint is unmonitored). */
+              structuralHealth: StructuralHealth | null;
               lastUpdatedAt: number | null;
           }
         | {
@@ -84,8 +92,14 @@ export function loadAssetRisk(
 ): Effect.Effect<AssetRiskPayload, unknown> {
     return Effect.gen(function* () {
         const mint = context.selectedMint;
-        const rows = yield* variantMarketsGetLatestByMints({ mints: [mint] });
+        // Market snapshot and stablecoin health are independent reads; the health
+        // load fails open (empty map), so it never affects the market path.
+        const [rows, healthByMint] = yield* Effect.all(
+            [variantMarketsGetLatestByMints({ mints: [mint] }), loadStablecoinHealthOrEmpty([mint])],
+            { concurrency: 'unbounded' },
+        );
         const market = rows[0]?.market ?? null;
+        const health = healthByMint.get(mint) ?? null;
 
         const isStaleMarket = market ? Date.now() - market.lastFetchedAt > 60 * 60_000 : true;
         if (!market || isStaleMarket) yield* scheduleVariantMarketWarm(mint, options.operation);
@@ -111,10 +125,22 @@ export function loadAssetRisk(
                 marketScoreInput,
                 tags: [],
                 advisory: context.selectedVariant.advisory ?? context.advisoriesByMint.get(mint) ?? null,
+                pegHealth: health?.pegHealth ?? null,
+                structuralHealth: health?.structuralHealth ?? null,
                 lastUpdatedAt: market?.lastFetchedAt ?? null,
             },
         };
     });
+}
+
+export function toStructuralHealthSummary(structural: StructuralHealth | null): StructuralHealthSummary | null {
+    if (!structural) return null;
+    return {
+        provider: structural.provider,
+        grade: structural.grade,
+        updatedAt: structural.updatedAt,
+        stale: structural.stale,
+    };
 }
 
 export function toRiskSummary(payload: AssetRiskPayload): {
@@ -124,6 +150,8 @@ export function toRiskSummary(payload: AssetRiskPayload): {
         | {
               ok: true;
               marketScore: ReturnType<typeof computeMarketScore>;
+              pegHealth: PegHealth | null;
+              structuralHealth: StructuralHealthSummary | null;
               lastUpdatedAt: number | null;
           }
         | {
@@ -139,6 +167,8 @@ export function toRiskSummary(payload: AssetRiskPayload): {
         risk: {
             ok: true,
             marketScore: payload.risk.marketScore,
+            pegHealth: payload.risk.pegHealth,
+            structuralHealth: toStructuralHealthSummary(payload.risk.structuralHealth),
             lastUpdatedAt: payload.risk.lastUpdatedAt,
         },
     };

@@ -27,6 +27,7 @@ import type { ActiveStockMapping, ClickhouseRepo } from './handlers/crons.clickh
 import type { MiscJobsRepo } from './handlers/crons.misc';
 import type { AssetDeletionTombstonesRepo } from './handlers/assetDeletionTombstones';
 import type { AssetAdvisoriesRepo, AssetAdvisoryRow } from './handlers/assetAdvisoriesReads';
+import type { StablecoinHealthReadsRepo, StablecoinHealthRow } from './handlers/stablecoinHealthReads';
 import type { SanctumLstRow, SanctumLstsRepo } from './handlers/sanctumLsts';
 import type { AssetMarketRow, AssetMarketsRepo } from './handlers/assetMarkets';
 import type { VariantMarketRow, VariantMarketsRepo } from './handlers/variantMarkets';
@@ -315,7 +316,8 @@ export function makePostgresCacheWarmAssetsRepo(sql: Sql): CacheWarmAssetsRepo {
     };
 }
 
-function randomId(prefix: string): string {
+/** Exported for the per-domain repos under `src/db/` (e.g. db/depeg.ts). */
+export function randomId(prefix: string): string {
     return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
 }
 
@@ -2464,9 +2466,57 @@ export function makePostgresAssetAdvisoriesRepo(sql: Sql): AssetAdvisoriesRepo {
     return {
         async listAll() {
             const rows = await sql<AssetAdvisoryRow[]>`
-                SELECT mint, status, reason, url, set_at, updated_at
+                SELECT mint, status, reason, url, set_at, updated_at, source
                 FROM asset_variant_advisories
                 ORDER BY mint
+            `;
+            return rows;
+        },
+    };
+}
+
+export function makePostgresStablecoinHealthReadsRepo(sql: Sql): StablecoinHealthReadsRepo {
+    return {
+        async findLatestByMints(mints) {
+            if (mints.length === 0) return [];
+            // Webacy's depeg/structural tables and peg_guard_latest key Solana
+            // rows by chain = 'solana' (unlike the older webacy_*_latest caches,
+            // which use 'sol'). The handler picks Webacy or the peg guard per mint.
+            const rows = await sql<StablecoinHealthRow[]>`
+                SELECT v.mint,
+                       d.ok               AS depeg_ok,
+                       d.tier             AS depeg_tier,
+                       d.overall_risk     AS depeg_overall_risk,
+                       d.deviation_pct    AS depeg_deviation_pct,
+                       d.price_usd        AS depeg_price_usd,
+                       d.peg_usd          AS depeg_peg_usd,
+                       d.tier_since_at    AS depeg_tier_since_at,
+                       d.last_fetched_at  AS depeg_last_fetched_at,
+                       d.last_ok_at       AS depeg_last_ok_at,
+                       d.error_message    AS depeg_error_message,
+                       g.ok               AS pg_ok,
+                       g.tier             AS pg_tier,
+                       g.peg_currency     AS pg_peg_currency,
+                       g.reference_kind   AS pg_reference_kind,
+                       g.deviation_pct    AS pg_deviation_pct,
+                       g.price_usd        AS pg_price_usd,
+                       g.peg_usd          AS pg_peg_usd,
+                       g.liquidity_usd    AS pg_liquidity_usd,
+                       g.tier_since_at    AS pg_tier_since_at,
+                       g.last_fetched_at  AS pg_last_fetched_at,
+                       g.last_ok_at       AS pg_last_ok_at,
+                       g.error_message    AS pg_error_message,
+                       s.ok               AS sh_ok,
+                       s.composite_grade  AS sh_composite_grade,
+                       s.composite_score  AS sh_composite_score,
+                       s.category_scores  AS sh_category_scores,
+                       s.last_fetched_at  AS sh_last_fetched_at,
+                       s.last_ok_at       AS sh_last_ok_at
+                FROM unnest(${sql.array([...mints])}::text[]) AS v(mint)
+                LEFT JOIN webacy_depeg_latest d ON d.chain = 'solana' AND d.address = v.mint
+                LEFT JOIN peg_guard_latest g ON g.chain = 'solana' AND g.address = v.mint
+                LEFT JOIN webacy_structural_health_latest s ON s.chain = 'solana' AND s.address = v.mint
+                WHERE d.address IS NOT NULL OR g.address IS NOT NULL OR s.address IS NOT NULL
             `;
             return rows;
         },

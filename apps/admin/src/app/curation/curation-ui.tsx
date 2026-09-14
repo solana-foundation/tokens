@@ -37,7 +37,18 @@ import type {
     RemoveFromCategoryResult,
     VariantsByAssetIdRow,
 } from '@/lib/admin-types';
-import { advisoryBadgeVariant } from '@/lib/advisory-labels';
+import {
+    SYSTEM_ADVISORY_CLEAR_WARNING,
+    advisoryBadgeVariant,
+    advisorySourceLabel,
+    formatPegDeviation,
+    isSystemManagedAdvisory,
+    pegProviderLabel,
+    pegReferenceLabel,
+    pegTierBadgeVariant,
+    pegTierLabel,
+    structuralGradeBadgeVariant,
+} from '@/lib/advisory-labels';
 import { Button } from '@tokens/ui/button';
 import { Input } from '@tokens/ui/input';
 import {
@@ -76,6 +87,16 @@ type VariantRow = AdminVariantRow;
 
 function variantDisplaySymbol(variant: VariantRow): string {
     return variant.symbol ?? variant.label ?? variant.variantId;
+}
+
+/** Absolute UTC minute for tooltips, e.g. "2026-09-13 21:43 UTC" (SSR-safe, no locale). */
+function formatUtcMinute(timestampMs: number): string {
+    return `${new Date(timestampMs).toISOString().slice(0, 16).replace('T', ' ')} UTC`;
+}
+
+function pegHealthTitle(pegHealth: NonNullable<VariantRow['pegHealth']>): string {
+    const base = `Peg ${pegTierLabel(pegHealth.tier, pegHealth.referenceKind)} · ${formatPegDeviation(pegHealth.deviationPct)} vs ${pegReferenceLabel(pegHealth.referenceKind, pegHealth.pegCurrency)} · updated ${formatUtcMinute(pegHealth.updatedAt)} · ${pegProviderLabel(pegHealth.provider)}`;
+    return pegHealth.ok === false ? `${base} · last poll failed: ${pegHealth.errorMessage ?? 'unknown error'}` : base;
 }
 
 const columnHelper = createColumnHelper<CanonicalRow>();
@@ -153,6 +174,8 @@ function VariantRows({
                 const variantName = variant.name ?? variant.label ?? variant.symbol ?? variant.variantId;
                 // Optional on the wire until every cloudrun-admin build serializes it.
                 const advisory = variant.advisory ?? null;
+                const pegHealth = variant.pegHealth ?? null;
+                const structuralHealth = variant.structuralHealth ?? null;
                 return (
                     <div
                         key={variant.mint}
@@ -181,9 +204,18 @@ function VariantRows({
                                         <Badge
                                             variant={advisoryBadgeVariant(advisory.status)}
                                             className="align-middle"
-                                            title={advisory.reason}
+                                            title={`${advisory.reason}\n${advisorySourceLabel(advisory.source)}`}
                                         >
                                             {advisory.status}
+                                        </Badge>
+                                    ) : null}
+                                    {advisory && isSystemManagedAdvisory(advisory) ? (
+                                        <Badge
+                                            variant="info"
+                                            className="align-middle"
+                                            title={advisorySourceLabel(advisory.source)}
+                                        >
+                                            auto
                                         </Badge>
                                     ) : null}
                                 </div>
@@ -213,6 +245,22 @@ function VariantRows({
                                         {tag}
                                     </Badge>
                                 ))}
+                                {pegHealth ? (
+                                    <Badge
+                                        variant={pegTierBadgeVariant(pegHealth.tier)}
+                                        title={pegHealthTitle(pegHealth)}
+                                    >
+                                        peg: {pegHealth.tier}
+                                    </Badge>
+                                ) : null}
+                                {structuralHealth ? (
+                                    <Badge
+                                        variant={structuralGradeBadgeVariant(structuralHealth.grade)}
+                                        title={`Webacy structural grade · updated ${formatUtcMinute(structuralHealth.updatedAt)}`}
+                                    >
+                                        grade {structuralHealth.grade}
+                                    </Badge>
+                                ) : null}
                             </div>
                             <div className="text-xs text-muted-foreground">
                                 {variant.lastFetchedAt
@@ -302,6 +350,7 @@ export function CurationUi(): React.JSX.Element {
     const [editingVariantMint, setEditingVariantMint] = useState<string | null>(null);
     const [moveVariantMint, setMoveVariantMint] = useState<string | null>(null);
     const [advisoryVariant, setAdvisoryVariant] = useState<VariantRow | null>(null);
+    const [clearingAdvisoryVariant, setClearingAdvisoryVariant] = useState<VariantRow | null>(null);
     const [addVariantCanonical, setAddVariantCanonical] = useState<CanonicalRow | null>(null);
     const [hardDeletingAsset, setHardDeletingAsset] = useState<{ assetId: string; symbol: string } | null>(null);
     const [removingAsset, setRemovingAsset] = useState<{ assetId: string; symbol: string; collection: string } | null>(
@@ -596,7 +645,7 @@ export function CurationUi(): React.JSX.Element {
         }
     }
 
-    async function onClearAdvisory(variant: VariantRow) {
+    async function clearAdvisoryNow(variant: VariantRow) {
         const symbol = variantDisplaySymbol(variant);
         try {
             const result = await clearVariantAdvisory({ mint: variant.mint });
@@ -605,6 +654,15 @@ export function CurationUi(): React.JSX.Element {
         } catch (error) {
             toast.error(error instanceof Error ? error.message : String(error));
         }
+    }
+
+    /** Human-set advisories clear immediately; automated (Webacy) ones confirm first, since clearing suppresses re-flagging. */
+    async function onClearAdvisory(variant: VariantRow) {
+        if (isSystemManagedAdvisory(variant.advisory)) {
+            setClearingAdvisoryVariant(variant);
+            return;
+        }
+        await clearAdvisoryNow(variant);
     }
 
     const totalPages = Math.max(1, table.getPageCount());
@@ -1005,6 +1063,20 @@ export function CurationUi(): React.JSX.Element {
                 assetSymbol={removingAsset?.symbol ?? ''}
                 assetId={removingAsset?.assetId ?? ''}
                 onConfirm={onRemoveConfirm}
+            />
+            <RemoveConfirmDialog
+                open={clearingAdvisoryVariant !== null}
+                onOpenChange={open => {
+                    if (!open) setClearingAdvisoryVariant(null);
+                }}
+                assetSymbol={clearingAdvisoryVariant ? variantDisplaySymbol(clearingAdvisoryVariant) : ''}
+                assetId={clearingAdvisoryVariant?.mint ?? ''}
+                title={`Clear advisory on ${clearingAdvisoryVariant ? variantDisplaySymbol(clearingAdvisoryVariant) : ''}?`}
+                description={SYSTEM_ADVISORY_CLEAR_WARNING}
+                confirmLabel="Clear advisory"
+                onConfirm={() => {
+                    if (clearingAdvisoryVariant) void clearAdvisoryNow(clearingAdvisoryVariant);
+                }}
             />
         </div>
     );

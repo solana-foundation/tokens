@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'bun:test';
+import type { StablecoinHealth } from '@tokens/asset-registry';
 
 import { buildAssetDetailResponse } from './_asset-detail-response';
 import { absolutizeLocalLogoUrl } from './_asset-helpers';
@@ -325,7 +326,13 @@ describe('buildAssetDetailResponse advisories', () => {
     }
 
     it('emits advisory on every variant group row and on the primary; advisories defaults to []', () => {
-        const ondo = { variantId: 'silver:ondo', mint: ONDO, kind: 'wrapped' as const, trustTier: 'tier2' as const, tags: [] };
+        const ondo = {
+            variantId: 'silver:ondo',
+            mint: ONDO,
+            kind: 'wrapped' as const,
+            trustTier: 'tier2' as const,
+            tags: [],
+        };
         const silv = {
             variantId: 'silver:silv',
             mint: SILV,
@@ -384,5 +391,119 @@ describe('buildAssetDetailResponse advisories', () => {
         expect(result.asset.advisories.map(a => a.mint)).toEqual([BLOCKED, SILV]);
         expect(result.asset.advisories[0]?.variantId).toBe('silver:blocked');
         expect(result.asset.advisories[0]?.status).toBe('blocked');
+    });
+});
+
+describe('buildAssetDetailResponse stablecoin pegHealth', () => {
+    const USDC = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
+    const USDT = 'Es9vMFrzaCERmJfrF4H2FYD4KCoNkYtvdQ7BPP3Qz1n';
+    const NOW = 1_800_000_000_000;
+
+    const usdcHealth: StablecoinHealth = {
+        pegHealth: {
+            provider: 'webacy',
+            tier: 'warning',
+            overallRisk: 62.5,
+            deviationPct: -2.4,
+            priceUsd: 0.976,
+            pegUsd: 1,
+            tierSince: NOW - 60_000,
+            updatedAt: NOW - 1_000,
+            stale: false,
+        },
+        structuralHealth: null,
+    };
+
+    const usdc = { variantId: 'usd:usdc', mint: USDC, kind: 'native' as const, trustTier: 'tier1' as const, tags: [] };
+    const usdt = { variantId: 'usd:usdt', mint: USDT, kind: 'native' as const, trustTier: 'tier1' as const, tags: [] };
+
+    function baseParams(asset: Parameters<typeof buildAssetDetailResponse>[0]['asset']) {
+        return {
+            asset,
+            assetDescription: null,
+            token: undefined,
+            tokenByMint: new Map(),
+            fillQualityByMint: new Map(),
+            marketMeta: undefined,
+            marketMetaByMint: new Map(),
+            effectiveStats: null,
+            imageUrl: null,
+            symbols: ['USD'],
+            stockSymbol: null,
+            canonicalMarket: undefined,
+            mintRank: new Map(),
+            sanctumActiveMints: null,
+            includeMint: null,
+            variantsMode: '',
+            includesOut: {},
+            hasIncludes: false,
+        };
+    }
+
+    it('emits compact pegHealth on every variant row and the primary for stablecoin assets (null when no entry)', () => {
+        const result = buildAssetDetailResponse({
+            ...baseParams({
+                assetId: 'usd',
+                name: 'US Dollar',
+                symbol: 'USD',
+                category: 'stablecoin',
+                aliases: ['usd'],
+                variants: [usdc, usdt],
+            }),
+            primaryVariant: usdc,
+            stablecoinHealthByMint: new Map([[USDC, usdcHealth]]),
+        });
+
+        const compact = {
+            provider: 'webacy',
+            referenceKind: 'fixed',
+            tier: 'warning',
+            deviationPct: -2.4,
+            updatedAt: NOW - 1_000,
+            stale: false,
+        };
+        expect(result.asset.primaryVariant?.pegHealth).toEqual(compact);
+        expect('overallRisk' in (result.asset.primaryVariant?.pegHealth as object)).toBe(false);
+
+        const byMint = new Map(result.asset.variantGroups.spot.map(v => [v.mint, v] as const));
+        expect(byMint.get(USDC)?.pegHealth).toEqual(compact);
+        expect(byMint.get(USDT)?.pegHealth).toBeNull();
+        expect('pegHealth' in byMint.get(USDT)!).toBe(true);
+    });
+
+    it('still emits pegHealth: null for stablecoin assets when no map is provided', () => {
+        const result = buildAssetDetailResponse({
+            ...baseParams({
+                assetId: 'usd',
+                name: 'US Dollar',
+                symbol: 'USD',
+                category: 'stablecoin',
+                aliases: ['usd'],
+                variants: [usdc],
+            }),
+            primaryVariant: usdc,
+        });
+
+        expect('pegHealth' in result.asset.primaryVariant!).toBe(true);
+        expect(result.asset.primaryVariant?.pegHealth).toBeNull();
+        expect(result.asset.variantGroups.spot[0]?.pegHealth).toBeNull();
+    });
+
+    it('omits the pegHealth key entirely for non-stablecoin assets, even with a populated map', () => {
+        const result = buildAssetDetailResponse({
+            ...baseParams({
+                assetId: 'silver',
+                name: 'Silver',
+                symbol: 'XAG',
+                category: 'commodity',
+                aliases: [],
+                variants: [usdc],
+            }),
+            primaryVariant: usdc,
+            stablecoinHealthByMint: new Map([[USDC, usdcHealth]]),
+        });
+
+        expect('pegHealth' in result.asset.primaryVariant!).toBe(false);
+        expect('pegHealth' in result.asset.variantGroups.spot[0]!).toBe(false);
     });
 });

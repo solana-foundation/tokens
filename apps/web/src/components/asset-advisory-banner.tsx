@@ -15,6 +15,7 @@ import {
     type AssetAdvisory,
     type AssetAdvisoryEntry,
 } from '@/lib/asset-advisory';
+import { WEBACY_ATTRIBUTION_URL, advisorySourceAttribution } from '@/lib/stablecoin-health';
 
 interface AssetAdvisoryBannerProps {
     advisory: AssetAdvisory | null | undefined;
@@ -36,6 +37,15 @@ export function AssetAdvisoryBanner({ advisory, symbol, mint, className }: Asset
     const tone = advisoryTone(advisory.status);
     const isDestructive = tone === 'destructive';
     const since = formatAdvisorySince(advisory.since);
+    // System rows (depeg monitors) have no per-token URL; attribute the source
+    // instead of a "Read more", and link the provider only when it has an
+    // external site (Webacy). The tokens.xyz peg monitor is ours.
+    const sourceAttribution = advisorySourceAttribution(advisory);
+    const showWebacyLink = advisory.source === 'webacy_depeg';
+    const linkClassName = cn(
+        'inline-flex items-center gap-0.5 font-medium underline underline-offset-2 transition-colors',
+        isDestructive ? 'text-rose-900 hover:text-rose-950' : 'text-amber-900 hover:text-amber-950',
+    );
 
     return (
         <Alert
@@ -52,10 +62,13 @@ export function AssetAdvisoryBanner({ advisory, symbol, mint, className }: Asset
                 {advisoryBannerTitle(advisory, symbol)}
             </AlertTitle>
             <AlertDescription
-                className={cn('text-[14px] leading-relaxed text-pretty', isDestructive ? 'text-rose-900' : 'text-amber-900')}
+                className={cn(
+                    'text-[14px] leading-relaxed text-pretty',
+                    isDestructive ? 'text-rose-900' : 'text-amber-900',
+                )}
             >
                 <p>{advisoryReasonText(advisory)}</p>
-                {since || advisory.url ? (
+                {since || advisory.url || sourceAttribution ? (
                     <div
                         className={cn(
                             'mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-[13px]',
@@ -63,6 +76,26 @@ export function AssetAdvisoryBanner({ advisory, symbol, mint, className }: Asset
                         )}
                     >
                         {since ? <span>Flagged {since}</span> : null}
+                        {sourceAttribution ? <span>{sourceAttribution}</span> : null}
+                        {sourceAttribution && showWebacyLink ? (
+                            <TrackedAnchor
+                                href={WEBACY_ATTRIBUTION_URL}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                trackingEvent="external_link_clicked"
+                                trackingProperties={advisoryEventProps(advisory, {
+                                    link_type: 'data_provider',
+                                    link_url: WEBACY_ATTRIBUTION_URL,
+                                    provider: 'webacy',
+                                    source: 'advisory_banner',
+                                    ...(mint ? { token_address: mint } : {}),
+                                })}
+                                className={linkClassName}
+                            >
+                                Webacy
+                                <ArrowUpRight className="size-3" aria-hidden />
+                            </TrackedAnchor>
+                        ) : null}
                         {advisory.url ? (
                             <TrackedAnchor
                                 href={advisory.url}
@@ -75,12 +108,7 @@ export function AssetAdvisoryBanner({ advisory, symbol, mint, className }: Asset
                                     source: 'advisory_banner',
                                     ...(mint ? { token_address: mint } : {}),
                                 })}
-                                className={cn(
-                                    'inline-flex items-center gap-0.5 font-medium underline underline-offset-2 transition-colors',
-                                    isDestructive
-                                        ? 'text-rose-900 hover:text-rose-950'
-                                        : 'text-amber-900 hover:text-amber-950',
-                                )}
+                                className={linkClassName}
                             >
                                 Read more
                                 <ArrowUpRight className="size-3" aria-hidden />
@@ -105,7 +133,12 @@ interface AssetAdvisorySiblingNoticeProps {
  * viewed one is flagged (e.g. `/silver` while SILV is compromised). Styled
  * like the data-source note; links are internal so they stay enabled.
  */
-export function AssetAdvisorySiblingNotice({ entries, assetId, displayName, className }: AssetAdvisorySiblingNoticeProps) {
+export function AssetAdvisorySiblingNotice({
+    entries,
+    assetId,
+    displayName,
+    className,
+}: AssetAdvisorySiblingNoticeProps) {
     if (entries.length === 0) return null;
 
     const hasDestructive = entries.some(entry => advisoryTone(entry.status) === 'destructive');

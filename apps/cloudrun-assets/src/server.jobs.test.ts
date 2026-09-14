@@ -3,6 +3,7 @@ import { describe, expect, it } from 'bun:test';
 import type { AssetsRepo } from './handlers/assets';
 import type { AssetDeletionTombstonesRepo } from './handlers/assetDeletionTombstones';
 import type { AssetAdvisoriesRepo } from './handlers/assetAdvisoriesReads';
+import type { StablecoinHealthReadsRepo } from './handlers/stablecoinHealthReads';
 import type { SanctumLstsRepo } from './handlers/sanctumLsts';
 import type { AssetMarketsRepo } from './handlers/assetMarkets';
 import type { VariantMarketsRepo } from './handlers/variantMarkets';
@@ -12,6 +13,7 @@ import type { CoingeckoReadsRepo } from './handlers/coingeckoReads';
 import type { StockReadsRepo } from './handlers/stockReads';
 import type { OhlcvReadsRepo } from './handlers/ohlcvReads';
 import type { PrestocksReadsRepo } from './handlers/prestocksReads';
+import type { DepegCronDeps } from './handlers/crons.depeg';
 import type { TokensReadsRepo } from './handlers/tokensReads';
 import type { TrendingReadsRepo } from './handlers/trendingReads';
 import type { FillQualityReadsRepo } from './handlers/fillQualityReads';
@@ -30,6 +32,9 @@ const noopDeletionTombstonesRepo: AssetDeletionTombstonesRepo = {
 };
 const noopAssetAdvisoriesRepo: AssetAdvisoriesRepo = {
     listAll: async () => [],
+};
+const noopStablecoinHealthReadsRepo: StablecoinHealthReadsRepo = {
+    findLatestByMints: async () => [],
 };
 const noopSanctumLstsRepo: SanctumLstsRepo = {
     async listActive() {
@@ -298,6 +303,7 @@ const baseDeps = {
     assetsApiRepo: noopAssetsApiRepo,
     deletionTombstonesRepo: noopDeletionTombstonesRepo,
     assetAdvisoriesRepo: noopAssetAdvisoriesRepo,
+    stablecoinHealthReadsRepo: noopStablecoinHealthReadsRepo,
     sanctumLstsRepo: noopSanctumLstsRepo,
     assetMarketsRepo: noopAssetMarketsRepo,
     variantMarketsRepo: noopVariantMarketsRepo,
@@ -486,6 +492,109 @@ describe('POST /jobs/:name', () => {
         });
         expect(res.status).toBe(404);
         expect(((await res.json()) as { error: string }).error).toBe('clickhouse_jobs_disabled');
+    });
+
+    it('returns 404 depeg_jobs_disabled for depeg jobs when those deps are missing', async () => {
+        const app = createApp({
+            ...baseDeps,
+            repo: noopRepo,
+            authToken: 'tok',
+            cronDeps: emptyCronDeps(),
+            verifyOidc: allowOidc,
+        });
+        const res = await call(app, '/jobs/reconcile-stablecoin-depeg', {
+            method: 'POST',
+            headers: { authorization: 'Bearer x' },
+            body: '{}',
+        });
+        expect(res.status).toBe(404);
+        expect(((await res.json()) as { error: string }).error).toBe('depeg_jobs_disabled');
+    });
+
+    it('dispatches depeg jobs to depegCronDeps when present', async () => {
+        const depegCronDeps: DepegCronDeps = {
+            webacyDepeg: {
+                isConfigured: () => false,
+                async fetchDepegToken() {
+                    return { ok: false, status: 0, message: 'n/a' };
+                },
+                async fetchDepegList() {
+                    return { ok: false, status: 0, message: 'n/a' };
+                },
+                async fetchStructuralHealthBatch() {
+                    return [];
+                },
+            },
+            repo: undefined as unknown as DepegCronDeps['repo'],
+            curated: noopCuratedMembershipSource,
+            now: () => 1_780_000_000_000,
+            isRefreshEnabled: () => true,
+            isDryRunDefault: () => true,
+            log: () => {},
+        };
+        const app = createApp({
+            ...baseDeps,
+            repo: noopRepo,
+            authToken: 'tok',
+            cronDeps: emptyCronDeps(),
+            depegCronDeps,
+            verifyOidc: allowOidc,
+        });
+        const res = await call(app, '/jobs/reconcile-stablecoin-depeg', {
+            method: 'POST',
+            headers: { authorization: 'Bearer jwt', 'content-type': 'application/json' },
+            body: '{}',
+        });
+        expect(res.status).toBe(200);
+        const payload = (await res.json()) as { ok: boolean; disabled?: boolean; reason?: string; mode?: string };
+        expect(payload.ok).toBe(true);
+        expect(payload.disabled).toBe(true);
+        expect(payload.reason).toBe('webacy_not_configured');
+        expect(payload.mode).toBe('sweep');
+    });
+
+    it('dispatches refresh-peg-guard through the depeg job group', async () => {
+        // `pegGuard` omitted on purpose: the job reports itself unconfigured
+        // instead of the group 404ing, so the Webacy jobs stay reachable.
+        const depegCronDeps: DepegCronDeps = {
+            webacyDepeg: {
+                isConfigured: () => false,
+                async fetchDepegToken() {
+                    return { ok: false, status: 0, message: 'n/a' };
+                },
+                async fetchDepegList() {
+                    return { ok: false, status: 0, message: 'n/a' };
+                },
+                async fetchStructuralHealthBatch() {
+                    return [];
+                },
+            },
+            repo: undefined as unknown as DepegCronDeps['repo'],
+            curated: noopCuratedMembershipSource,
+            now: () => 1_780_000_000_000,
+            isRefreshEnabled: () => true,
+            isDryRunDefault: () => true,
+            log: () => {},
+        };
+        const app = createApp({
+            ...baseDeps,
+            repo: noopRepo,
+            authToken: 'tok',
+            cronDeps: emptyCronDeps(),
+            depegCronDeps,
+            verifyOidc: allowOidc,
+        });
+        const res = await call(app, '/jobs/refresh-peg-guard', {
+            method: 'POST',
+            headers: { authorization: 'Bearer jwt', 'content-type': 'application/json' },
+            body: '{"trigger":"manual"}',
+        });
+        expect(res.status).toBe(200);
+        const payload = (await res.json()) as { ok: boolean; disabled?: boolean; reason?: string; trigger?: string };
+        expect(payload.ok).toBe(true);
+        expect(payload.disabled).toBe(true);
+        expect(payload.reason).toBe('peg_guard_not_configured');
+        expect(payload.trigger).toBe('manual');
     });
 
     it('returns 404 jobs_disabled when cronDeps is missing', async () => {
