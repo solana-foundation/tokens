@@ -156,6 +156,39 @@ describe('makeWebacyDepegClient', () => {
         expect(normalizeStructuralHealth({ grade: 'Z' }).compositeGrade).toBeNull();
     });
 
+    test('normalizeStructuralHealth reads the live v3 shape: composite.grade/score and composite.drivers[] by category', () => {
+        // Captured from GET /v3/rwa/grades (2026-09-14): categories live under
+        // composite.drivers (array) and composite.contributors (map); the
+        // top-level `categories` object is empty.
+        const out = normalizeStructuralHealth({
+            schema_version: '3',
+            metadata: { address: '0xabc', chain: 'base', symbol: 'usdtb' },
+            composite: {
+                grading_scheme: 'v2',
+                grade: 'A+',
+                stars: 5,
+                score: 5,
+                contributors: {
+                    smart_contract: { score: 0, weight: 0.2, weighted_contribution: 0 },
+                    market_liquidity: { score: 10, weight: 0.2, weighted_contribution: 2 },
+                },
+                drivers: [
+                    { category: 'market_liquidity', category_name: 'Market & liquidity', score: 10, weight: 0.2, criteria: [{ status: 'warn' }] },
+                    { category: 'smart_contract', category_name: 'Smart contract', score: 0, weight: 0.2, criteria: [{ status: 'pass' }] },
+                    { category: 'counterparty', score: 0, weight: 0, criteria: [] },
+                ],
+            },
+            categories: {},
+        });
+        expect(out.compositeGrade).toBe('A+');
+        expect(out.compositeScore).toBe(5);
+        expect(out.categoryScores.market_liquidity).toEqual({ score: 10, weight: 0.2, status: 'warn' });
+        expect(out.categoryScores.smart_contract).toEqual({ score: 0, weight: 0.2, status: 'pass' });
+        expect(out.categoryScores.asset_collateral.status).toBe('unknown');
+        expect(out.warnCount).toBe(1);
+        expect(normalizeStructuralHealth({ composite: { grade: 'E', score: 92 } }).compositeGrade).toBe('E');
+    });
+
     test('unconfigured key returns {ok:false,status:0} everywhere without touching the network', async () => {
         const { fetchImpl, calls } = recordingFetch(() => json({}));
         const client = makeWebacyDepegClient({ apiKey: undefined, fetchImpl });
@@ -171,13 +204,13 @@ describe('makeWebacyDepegClient', () => {
         expect(calls).toHaveLength(0);
     });
 
-    test('fetchDepegToken hits /rwa/{address}?chain=solana with the api key and normalises the item', async () => {
+    test('fetchDepegToken hits /rwa/{address}?chain=sol (Webacy slug for solana) with the api key and normalises the item', async () => {
         const { fetchImpl, calls } = recordingFetch(() =>
             json({ address: USDC, risk: { overallRisk: 75, tags: [] }, metadata: { symbol: 'USDC' }, deviation_pct: -3.2, peg_usd: 1 }),
         );
         const client = makeWebacyDepegClient({ apiKey: 'k', baseUrl: 'https://webacy.test/', fetchImpl });
         const out = await client.fetchDepegToken({ chain: 'solana', address: USDC });
-        expect(calls[0]!.url.href).toBe(`https://webacy.test/rwa/${USDC}?chain=solana`);
+        expect(calls[0]!.url.href).toBe(`https://webacy.test/rwa/${USDC}?chain=sol`);
         expect((calls[0]!.init!.headers as Record<string, string>)['x-api-key']).toBe('k');
         expect(out).toMatchObject({ ok: true, status: 200 });
         if (out.ok) expect(out.item).toMatchObject({ address: USDC, tier: 'critical', deviationPct: -3.2, pegUsd: 1, symbol: 'USDC' });
@@ -201,7 +234,7 @@ describe('makeWebacyDepegClient', () => {
         if (out.ok) expect(out.items.map(i => i.address)).toEqual(['Mint1A', 'Mint1B', 'Mint2A', 'Mint2B', 'Mint3A', 'Mint3B']);
         expect(calls.map(c => c.url.searchParams.get('page'))).toEqual(['1', '2', '3']);
         expect(calls[0]!.url.pathname).toBe('/rwa');
-        expect(calls[0]!.url.searchParams.get('chain')).toBe('solana');
+        expect(calls[0]!.url.searchParams.get('chain')).toBe('sol');
         expect(calls[0]!.url.searchParams.get('pageSize')).toBe('2');
     });
 
@@ -246,7 +279,7 @@ describe('makeWebacyDepegClient', () => {
         expect(out).toMatchObject({ ok: true, pages: 1, truncated: true });
     });
 
-    test('fetchStructuralHealthBatch POSTs /v3/rwa/batch and maps results by address', async () => {
+    test('fetchStructuralHealthBatch POSTs /v3/rwa/batch/structural-health with { tokens } and maps results by address', async () => {
         const { fetchImpl, calls } = recordingFetch(() =>
             json({ results: [{ address: USDC, composite_grade: 'A' }, { address: USDT, error: 'unsupported' }] }),
         );
@@ -256,12 +289,12 @@ describe('makeWebacyDepegClient', () => {
             { address: USDT, chain: 'solana' },
         ]);
         expect(calls).toHaveLength(1);
-        expect(calls[0]!.url.href).toBe('https://webacy.test/v3/rwa/batch');
+        expect(calls[0]!.url.href).toBe('https://webacy.test/v3/rwa/batch/structural-health');
         expect(calls[0]!.init!.method).toBe('POST');
         expect(JSON.parse(String(calls[0]!.init!.body))).toEqual({
-            addresses: [
-                { address: USDC, chain: 'solana' },
-                { address: USDT, chain: 'solana' },
+            tokens: [
+                { address: USDC, chain: 'sol' },
+                { address: USDT, chain: 'sol' },
             ],
         });
         expect(out[0]).toMatchObject({ address: USDC, ok: true, data: { address: USDC, composite_grade: 'A' } });
@@ -270,7 +303,7 @@ describe('makeWebacyDepegClient', () => {
 
     test('fetchStructuralHealthBatch falls back to per-address GET /v3/rwa/{address} on 404', async () => {
         const { fetchImpl, calls } = recordingFetch(url => {
-            if (url.pathname === '/v3/rwa/batch') return json({ message: 'not found' }, 404);
+            if (url.pathname === '/v3/rwa/batch/structural-health') return json({ message: 'not found' }, 404);
             const address = url.pathname.split('/').pop()!;
             return address === USDT ? json({ error: 'boom' }, 500) : json({ composite_grade: 'A-' });
         });
@@ -279,8 +312,8 @@ describe('makeWebacyDepegClient', () => {
             { address: USDC, chain: 'solana' },
             { address: USDT, chain: 'solana' },
         ]);
-        expect(calls.map(c => c.url.pathname)).toEqual(['/v3/rwa/batch', `/v3/rwa/${USDC}`, `/v3/rwa/${USDT}`]);
-        expect(calls[1]!.url.searchParams.get('chain')).toBe('solana');
+        expect(calls.map(c => c.url.pathname)).toEqual(['/v3/rwa/batch/structural-health', `/v3/rwa/${USDC}`, `/v3/rwa/${USDT}`]);
+        expect(calls[1]!.url.searchParams.get('chain')).toBe('sol');
         expect(out).toEqual([
             { address: USDC, ok: true, status: 200, data: { composite_grade: 'A-' } },
             { address: USDT, ok: false, status: 500, message: '{"error":"boom"}' },
@@ -289,12 +322,95 @@ describe('makeWebacyDepegClient', () => {
 
     test('fetchStructuralHealthBatch falls back when the batch body has nothing it can map', async () => {
         const { fetchImpl, calls } = recordingFetch(url =>
-            url.pathname === '/v3/rwa/batch' ? json({ queued: true }) : json({ grade: 'B' }),
+            url.pathname === '/v3/rwa/batch/structural-health' ? json({ queued: true }) : json({ grade: 'B' }),
         );
         const client = makeWebacyDepegClient({ apiKey: 'k', fetchImpl });
         const out = await client.fetchStructuralHealthBatch([{ address: USDC, chain: 'solana' }]);
         expect(calls).toHaveLength(2);
         expect(out[0]).toMatchObject({ ok: true, data: { grade: 'B' } });
+    });
+
+    test('live /rwa shape (2026-09-14): items envelope, score/tier fields, fraction deviation, totalPages stop', async () => {
+        // Captured from GET /rwa?chain=sol: deviation is an unsigned FRACTION on
+        // the list (abs_dev_clean) and Webacy echoes chain 'sol'.
+        const liveItem = {
+            address: USDC,
+            chain: 'sol',
+            symbol: 'usdc',
+            score: 2,
+            tier: 'ok',
+            price: 0.9998,
+            peg_value: 1,
+            abs_dev_clean: 0.0002,
+            reference_price: 0.9998,
+            has_monitor_data: true,
+            token_type: 'standard',
+        };
+        const { fetchImpl, calls } = recordingFetch(() =>
+            json({ items: [liveItem], pagination: { total: 1, page: 1, pageSize: 200, totalPages: 1 }, tier_counts: {}, stale: false }),
+        );
+        const client = makeWebacyDepegClient({ apiKey: 'k', fetchImpl });
+        const out = await client.fetchDepegList({ chain: 'solana', pageSize: 200, maxPages: 4 });
+        expect(calls).toHaveLength(1);
+        expect(out).toMatchObject({ ok: true, pages: 1, truncated: false });
+        if (out.ok) {
+            expect(out.items[0]).toMatchObject({
+                address: USDC,
+                symbol: 'usdc',
+                tier: 'ok',
+                overallRisk: 2,
+                priceUsd: 0.9998,
+                pegUsd: 1,
+            });
+            // -0.02%: derived from price vs peg, not the unsigned fraction.
+            expect(out.items[0]!.deviationPct).toBeCloseTo(-0.02, 6);
+        }
+    });
+
+    test('live /rwa/{address} shape (2026-09-14): token + snapshot are merged, dev_clean is a signed fraction', async () => {
+        const { fetchImpl } = recordingFetch(() =>
+            json({
+                token: { address: USDC, chain: 'sol', symbol: 'usdc', name: 'USD Coin (Solana)', peg_range: [0.99, 1.01] },
+                snapshot: { ts: '2026-09-14T04:52:37Z', score: 62, tier: 'warning', price: 0.976, peg_value: 1, abs_dev_clean: 0.024, dev_clean: -0.024 },
+                history: {},
+                depegEvents: [],
+            }),
+        );
+        const client = makeWebacyDepegClient({ apiKey: 'k', fetchImpl });
+        const out = await client.fetchDepegToken({ chain: 'solana', address: USDC });
+        expect(out.ok).toBe(true);
+        if (out.ok) {
+            expect(out.item).toMatchObject({ address: USDC, symbol: 'usdc', tier: 'warning', overallRisk: 62, priceUsd: 0.976, pegUsd: 1 });
+            expect(out.item.deviationPct).toBeCloseTo(-2.4, 6);
+        }
+    });
+
+    test('unmonitored list items (tier/score null) normalise to tier null', async () => {
+        const { fetchImpl } = recordingFetch(() =>
+            json({ items: [{ address: USDT, chain: 'sol', symbol: 'usde', score: null, tier: null, price: null, peg_value: null, has_monitor_data: false }] }),
+        );
+        const client = makeWebacyDepegClient({ apiKey: 'k', fetchImpl });
+        const out = await client.fetchDepegList({ chain: 'solana', pageSize: 200, maxPages: 1 });
+        if (out.ok) expect(out.items[0]).toMatchObject({ address: USDT, tier: null, overallRisk: null, deviationPct: null });
+    });
+
+    test('batch NOT_FOUND entries (live shape) are reported as status 404 so the job counts them as uncovered', async () => {
+        const { fetchImpl } = recordingFetch(() =>
+            json({
+                schema_version: '3',
+                results: [
+                    { address: USDC, chain: 'sol', ok: false, error_code: 'NOT_FOUND' },
+                    { address: USDT, chain: 'sol', ok: true, composite: { grade: 'A', score: 4 } },
+                ],
+            }),
+        );
+        const client = makeWebacyDepegClient({ apiKey: 'k', fetchImpl });
+        const out = await client.fetchStructuralHealthBatch([
+            { address: USDC, chain: 'solana' },
+            { address: USDT, chain: 'solana' },
+        ]);
+        expect(out[0]).toMatchObject({ address: USDC, ok: false, status: 404, message: 'NOT_FOUND' });
+        expect(out[1]).toMatchObject({ address: USDT, ok: true });
     });
 
     test('a 5xx on the batch route is reported per address without fanning out', async () => {

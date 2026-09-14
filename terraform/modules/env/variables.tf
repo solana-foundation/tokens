@@ -216,6 +216,6 @@ variable "webacy_depeg_dry_run" {
 
 variable "webacy_depeg_max_pages" {
   type        = number
-  default     = 3
-  description = "Maximum GET /rwa pages (100 items each) the depeg sweep fetches per run. Bounds Webacy CU spend; 3 covers ~300 tokens."
+  default     = 4
+  description = "Maximum GET /rwa pages (200 items each) the depeg sweep fetches per run. Bounds Webacy CU spend; Webacy listed 572 Solana pegged tokens on 2026-09-14, so 4 pages leaves headroom."
 }

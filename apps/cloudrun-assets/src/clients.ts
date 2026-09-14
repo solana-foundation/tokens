@@ -326,7 +326,8 @@ export function makeWebacyDepegClient(opts: MakeWebacyDepegOptions): WebacyDepeg
     return {
         isConfigured: () => apiKey.length > 0,
 
-        async fetchDepegToken({ chain, address }) {
+        async fetchDepegToken({ chain: chainArg, address }) {
+            const chain = toWebacyChainSlug(chainArg);
             const url = `${baseUrl}/rwa/${encodeURIComponent(address)}?chain=${encodeURIComponent(chain)}`;
             const res = await request(url);
             if (!res.ok) return res;
@@ -338,7 +339,8 @@ export function makeWebacyDepegClient(opts: MakeWebacyDepegOptions): WebacyDepeg
             return { ok: true, status: res.status, item: { ...item, address } };
         },
 
-        async fetchDepegList({ chain, pageSize, maxPages }) {
+        async fetchDepegList({ chain: chainArg, pageSize, maxPages }) {
+            const chain = toWebacyChainSlug(chainArg);
             const items: WebacyDepegItem[] = [];
             const seen = new Set<string>();
             let pages = 0;
@@ -357,6 +359,8 @@ export function makeWebacyDepegClient(opts: MakeWebacyDepegOptions): WebacyDepeg
                 pages += 1;
                 const rawItems = extractDepegListItems(res.data);
                 if (rawItems.length === 0) break;
+                // Verified envelope: { items, pagination: { total, page, pageSize, totalPages } }.
+                const totalPages = readTotalPages(res.data);
                 const normalized = rawItems.map(normalizeDepegItem).filter((i): i is WebacyDepegItem => i !== null);
                 const first = normalized[0]?.address ?? null;
                 // Endpoints that ignore `page` return the same page forever.
@@ -371,13 +375,15 @@ export function makeWebacyDepegClient(opts: MakeWebacyDepegOptions): WebacyDepeg
                 }
                 if (added === 0) break;
                 if (rawItems.length < pageSize) break;
+                if (totalPages !== null && page >= totalPages) break;
                 if (page === maxPages) truncated = true;
             }
             return { ok: true, items, pages, truncated };
         },
 
-        async fetchStructuralHealthBatch(addresses) {
-            if (addresses.length === 0) return [];
+        async fetchStructuralHealthBatch(requested) {
+            if (requested.length === 0) return [];
+            const addresses = requested.map(({ address, chain }) => ({ address, chain: toWebacyChainSlug(chain) }));
             const perAddress = async (): Promise<StructuralHealthBatchEntry[]> => {
                 const out: StructuralHealthBatchEntry[] = [];
                 for (const { address, chain } of addresses) {
@@ -392,14 +398,18 @@ export function makeWebacyDepegClient(opts: MakeWebacyDepegOptions): WebacyDepeg
                 return out;
             };
 
-            const batch = await request(`${baseUrl}/v3/rwa/batch`, { method: 'POST', body: { addresses } });
+            // Verified 2026-09-14: POST /v3/rwa/batch/structural-health, body
+            // { tokens: [{ address, chain }] }, always 200 with per-token `ok`.
+            const batch = await request(`${baseUrl}/v3/rwa/batch/structural-health`, {
+                method: 'POST',
+                body: { tokens: addresses },
+            });
             if (!batch.ok) {
                 // Unconfigured key: do not fan out into N more failures.
                 if (batch.status === 0 && !apiKey) {
                     return addresses.map(({ address }) => ({ address, ok: false, status: 0, message: batch.message }));
                 }
-                // The batch route is not confirmed in Webacy's docs; fall back to
-                // the documented per-token endpoint when it is missing or broken.
+                // Fall back to the per-token endpoint when the batch route is missing or broken.
                 if (batch.status === 404 || batch.status === 405 || batch.message === 'non-JSON response') {
                     return perAddress();
                 }
@@ -415,6 +425,24 @@ export function makeWebacyDepegClient(opts: MakeWebacyDepegOptions): WebacyDepeg
             return entries;
         },
     };
+}
+
+/**
+ * Webacy's chain slug for Solana is `sol` (verified 2026-09-14 against
+ * /rwa, /v3/rwa and the batch endpoint; `solana` is tolerated by /rwa only).
+ * Our own tables key Solana rows by 'solana', so translate at the edge.
+ */
+export function toWebacyChainSlug(chain: string): string {
+    const lower = chain.trim().toLowerCase();
+    return lower === 'solana' ? 'sol' : lower;
+}
+
+function readTotalPages(payload: unknown): number | null {
+    if (!payload || typeof payload !== 'object') return null;
+    const pagination = (payload as Record<string, unknown>).pagination;
+    if (!pagination || typeof pagination !== 'object') return null;
+    const total = (pagination as Record<string, unknown>).totalPages;
+    return typeof total === 'number' && Number.isFinite(total) && total > 0 ? total : null;
 }
 
 /**
@@ -450,8 +478,18 @@ function extractStructuralBatchEntries(
         const data = byAddress.get(address);
         if (data === undefined) return { address, ok: false, status: 404, message: 'not in batch response' };
         const rec = data && typeof data === 'object' ? (data as Record<string, unknown>) : null;
-        if (rec && (rec.error !== undefined || rec.ok === false)) {
-            return { address, ok: false, status: 200, message: String(rec.error ?? rec.message ?? 'error') };
+        if (rec && (rec.error !== undefined || rec.ok === false || rec.error_code !== undefined)) {
+            const code = typeof rec.error_code === 'string' ? rec.error_code : null;
+            // NOT_FOUND / UNSUPPORTED_CHAIN mean Webacy does not grade the token
+            // (no Solana stablecoin is graded as of 2026-09-14); surface them as
+            // 404 so the job counts them as uncovered rather than failed.
+            const uncovered = code === 'NOT_FOUND' || code === 'UNSUPPORTED_CHAIN' || code === 'INVALID_ADDRESS';
+            return {
+                address,
+                ok: false,
+                status: uncovered ? 404 : 200,
+                message: String(code ?? rec.error ?? rec.message ?? 'error'),
+            };
         }
         return { address, ok: true, status: 200, data };
     });

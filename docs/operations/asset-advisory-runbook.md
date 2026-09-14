@@ -112,7 +112,14 @@ Targeted mode fetches only the listed mints, writes their snapshot and tier even
 
 - Subscription: `scripts/webacy-webhook-subscribe.ts` (`--create | --list | --deliveries [--since] | --retry <id> | --delete <id>`). `--create` stores the signing secret straight into Doppler as `WEBACY_WEBHOOK_SECRET` and prints only the subscription id.
 - Delivery audit: every inbound event lands in `webacy_webhook_deliveries` with `signature_ok` and `outcome` (`forwarded | duplicate | rejected_signature | rejected_stale | forward_failed | ignored`). Webacy's side is `GET /webhooks/deliveries`; replay one with `POST /webhooks/deliveries/{id}/retry`.
-- Secret rotation: create the new subscription, seed the secret, confirm a `forwarded` delivery, then delete the old subscription.
+- Secret rotation: prefer `POST /webhooks/subscriptions/{id}/rotate-secret` (the old key stays valid for 24h and deliveries carry `X-Webhook-Previous-Signature`, which the receiver accepts); seed the new secret within that window. Creating a second subscription and deleting the old one also works.
+- Connectivity check without waiting for a depeg: `POST /webhooks/subscriptions/{id}/test` sends a synthetic event (`test: true`, no token). The receiver verifies it, records `outcome='ignored'` and answers 200, so a `rejected_signature` row here means the secret on our side is wrong.
+
+**Verified against the live API (2026-09-14)**
+
+- Webacy's Solana slug is `sol` (items echo `chain: 'sol'`; `/v3/rwa` rejects anything else). Our tables still key rows by `chain = 'solana'`; the client translates at the edge, and the subscription filter is `chains: ['sol']`.
+- `GET /rwa` returns `{ items, pagination: { total, page, pageSize, totalPages } }` with `score`, `tier`, `price`, `peg_value` and an unsigned fractional `abs_dev_clean`; the detail route adds a signed `dev_clean`. 572 Solana pegged tokens were listed, so the sweep uses `pageSize=200`, `maxPages=4`. Unmonitored tokens (`has_monitor_data: false`) carry `tier: null` and are skipped as `no_observation`.
+- Structural health: `POST /v3/rwa/batch/structural-health` with `{ tokens: [{ address, chain }] }`; grades live under `composite.grade` / `composite.drivers[]` and the enum includes `E`. No Solana stablecoin had a grade yet (USDC, USDT, PYUSD returned `NOT_FOUND`), so the daily job counts them as `uncovered`, not failed, and the web panel shows nothing until Webacy adds coverage.
 - Alerts: `stablecoin-depeg-critical` (page), `stablecoin-depeg-warning`, `stablecoin-depeg-advisory-changed`, `stablecoin-depeg-circuit-open` (page), `stablecoin-depeg-sweep-stale`, `stablecoin-structural-grade-downgrade`, plus the usage-side `stablecoin-depeg-webhook-*` rules.
 
 **Depeg notice template**

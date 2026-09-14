@@ -360,8 +360,8 @@ export function buildDepegRow(input: BuildRowInput): { row: DepegLatestRow; even
 const RECONCILE_ARG_SPECS = {
     requireRefreshEnabled: { kind: 'bool', fallback: true },
     mints: { kind: 'targets', label: 'mints' },
-    pageSize: { kind: 'int', fallback: 100, min: 10, max: 200 },
-    maxPages: { kind: 'int', fallback: 3, min: 1, max: 20 },
+    pageSize: { kind: 'int', fallback: 200, min: 10, max: 200 },
+    maxPages: { kind: 'int', fallback: 4, min: 1, max: 20 },
     criticalImmediate: { kind: 'bool', fallback: true },
     warningConfirmMs: { kind: 'int', fallback: 0, min: 0, max: 6 * HOUR_MS },
     clearCooldownMs: { kind: 'int', fallback: 6 * HOUR_MS, min: 0, max: 48 * HOUR_MS },
@@ -819,6 +819,8 @@ export interface StructuralHealthRefreshResult extends CronResult {
     targets: number;
     succeeded: number;
     failed: number;
+    /** Tokens Webacy does not grade (404 / NOT_FOUND); not failures. */
+    uncovered: number;
     gradeChanges: number;
 }
 
@@ -841,6 +843,7 @@ export async function refreshStablecoinStructuralHealth(deps: DepegCronDeps, raw
         targets: 0,
         succeeded: 0,
         failed: 0,
+        uncovered: 0,
         gradeChanges: 0,
     };
     const finish = (): StructuralHealthRefreshResult => ({ ...result, durationMs: deps.now() - start });
@@ -891,7 +894,12 @@ export async function refreshStablecoinStructuralHealth(deps: DepegCronDeps, raw
             const prev = previous.get(address) ?? null;
             result.processed += 1;
             if (!entry.ok) {
-                result.failed += 1;
+                // 404 = Webacy does not grade this token (true for every Solana
+                // stablecoin as of 2026-09-14). Cache it so the read side shows
+                // nothing, but do not count it as a failure or the daily job would
+                // report total failure and page every day.
+                if (entry.status === 404) result.uncovered += 1;
+                else result.failed += 1;
                 latestRows.push({
                     chain: DEPEG_CHAIN,
                     address,
@@ -958,7 +966,7 @@ export async function refreshStablecoinStructuralHealth(deps: DepegCronDeps, raw
 
     if (latestRows.length > 0) await deps.repo.upsertStructuralHealthLatest(latestRows);
     if (dailyRows.length > 0) await deps.repo.upsertStructuralHealthDaily(dailyRows);
-    result.ok = !(result.processed > 0 && result.succeeded === 0);
+    result.ok = !(result.processed > 0 && result.succeeded === 0 && result.failed > 0);
     log({
         ...base,
         event: 'structural_health_refreshed',
@@ -967,6 +975,7 @@ export async function refreshStablecoinStructuralHealth(deps: DepegCronDeps, raw
         processed: result.processed,
         succeeded: result.succeeded,
         failed: result.failed,
+        uncovered: result.uncovered,
         grade_changes: result.gradeChanges,
         partial: result.partial ?? false,
     });

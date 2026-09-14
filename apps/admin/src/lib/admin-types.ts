@@ -129,20 +129,7 @@ export type VariantAdvisoryRow = {
 
 // Hand-copied from packages/asset-registry/src/stablecoin-health.ts (the source of truth).
 export type PegTier = 'ok' | 'watch' | 'warning' | 'critical' | 'premium';
-export type StructuralGrade =
-    | 'A+'
-    | 'A'
-    | 'A-'
-    | 'B+'
-    | 'B'
-    | 'B-'
-    | 'C+'
-    | 'C'
-    | 'C-'
-    | 'D+'
-    | 'D'
-    | 'D-'
-    | 'F';
+export type StructuralGrade = 'A+' | 'A' | 'A-' | 'B+' | 'B' | 'B-' | 'C+' | 'C' | 'C-' | 'D+' | 'D' | 'D-' | 'E' | 'F';
 
 /** Compact Webacy depeg status for a stablecoin mint, as serialized on admin variant rows. */
 export type AdminPegHealth = {

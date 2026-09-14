@@ -15,7 +15,7 @@
  *
  * `--create` refuses when a subscription for the same webhookUrl already
  * exists, then POSTs `{ webhookUrl, eventTypes: ['DEPEG_TIER_CHANGE'],
- * filters: { chains: ['solana'] } }`. Webacy returns `secret_key` exactly once;
+ * filters: { chains: ['sol'] } }`. Webacy returns `secret_key` exactly once;
  * it is piped straight into `doppler secrets set WEBACY_WEBHOOK_SECRET` over
  * stdin and never printed. Only the subscription id is echoed.
  *
@@ -39,7 +39,8 @@
 /* eslint-disable no-console */
 
 const EVENT_TYPES = ['DEPEG_TIER_CHANGE'] as const;
-const FILTERS = { chains: ['solana'] } as const;
+// Webacy's Solana slug is `sol` (verified against /rwa: items echo chain: 'sol').
+const FILTERS = { chains: ['sol'] } as const;
 
 const apiKey = (process.env.WEBACY_API_KEY ?? '').trim();
 const apiBase = (process.env.WEBACY_API_BASE ?? 'https://api.webacy.com').trim().replace(/\/+$/, '');

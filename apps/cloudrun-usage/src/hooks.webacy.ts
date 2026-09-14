@@ -339,13 +339,21 @@ export function registerWebacyHookRoutes(app: Hono, deps: WebacyHookDeps): void 
 
         const secret = deps.webhookSecret?.trim() || undefined;
         const signature = str(c.req.header('x-webhook-signature'));
+        // During Webacy's 24h rotate-secret grace window deliveries also carry
+        // the old-key signature; accept either so rotation never drops events.
+        const previousSignature = str(c.req.header('x-webhook-previous-signature'));
+        const verify = async (): Promise<boolean> =>
+            !!secret &&
+            !!signature &&
+            ((await verifyWebacySignature(secret, rawBody, signature)) ||
+                (!!previousSignature && (await verifyWebacySignature(secret, rawBody, previousSignature))));
 
         // 1. Anything but a depeg tier change is acknowledged and dropped. The
         //    audit row is only written when the delivery authenticates, so an
         //    unauthenticated caller cannot fill the table.
         if (eventType !== WEBACY_DEPEG_EVENT_TYPE) {
             let recorded = false;
-            if (eventId && secret && signature && (await verifyWebacySignature(secret, rawBody, signature))) {
+            if (eventId && (await verify())) {
                 await recordDeliveryIfAbsent(sql, {
                     eventId,
                     eventType: eventType ?? 'unknown',
@@ -371,7 +379,7 @@ export function registerWebacyHookRoutes(app: Hono, deps: WebacyHookDeps): void 
             log({ event: 'depeg_webhook_rejected', why: 'missing_signature', ...fields });
             return c.text('missing signature', 401);
         }
-        const signatureOk = await verifyWebacySignature(secret, rawBody, signature);
+        const signatureOk = await verify();
         if (!signatureOk) {
             if (eventId) {
                 await recordDeliveryIfAbsent(sql, {
@@ -427,6 +435,18 @@ export function registerWebacyHookRoutes(app: Hono, deps: WebacyHookDeps): void 
             return c.json({ duplicate: true }, 200);
         }
         log({ event: 'depeg_webhook_received', duplicate: false, ...fields });
+
+        // Webacy's `POST /webhooks/subscriptions/{id}/test` sends a synthetic
+        // event with `test: true` and no token; a real event without an address
+        // cannot be reconciled either. Both are acknowledged and recorded as
+        // ignored (the sweep needs nothing from them) instead of tripping the
+        // forward-failed alert.
+        if (event?.test === true || !address) {
+            const why = event?.test === true ? 'test_event' : 'missing_token_address';
+            await sql`UPDATE webacy_webhook_deliveries SET outcome = 'ignored' WHERE event_id = ${eventId}`;
+            log({ event: 'depeg_webhook_ignored', why, ...fields, event_type: eventType, recorded: true });
+            return c.json({ ignored: true, why }, 200);
+        }
 
         // 5 + 6. Nudge the worker; always 200 from here on.
         let forwarded = false;

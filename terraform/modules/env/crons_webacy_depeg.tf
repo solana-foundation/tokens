@@ -21,7 +21,7 @@ locals {
         requireRefreshEnabled = true
         dryRun                = var.webacy_depeg_dry_run
         trigger               = "sweep"
-        pageSize              = 100
+        pageSize              = 200
         maxPages              = var.webacy_depeg_max_pages
         budgetMs              = 90000
       })

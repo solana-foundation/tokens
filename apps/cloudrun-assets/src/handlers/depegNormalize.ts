@@ -82,6 +82,31 @@ function stringList(value: unknown): string[] {
 const PREMIUM_MARKERS = ['premium', 'above_peg', 'above-peg', 'abovepeg'];
 
 /**
+ * Signed percent from peg (negative = below). Webacy's `/rwa` payloads carry
+ * deviation as a FRACTION: `dev_clean` (signed, detail only) and
+ * `abs_dev_clean` (unsigned, list and detail). The webhook payload alone uses a
+ * percent field. Order: explicit percent, signed fraction, price vs peg, then
+ * the unsigned fraction signed by price vs peg.
+ */
+export function derivePegDeviationPct(input: {
+    explicitPct: number | null;
+    signedFraction: number | null;
+    absFraction: number | null;
+    priceUsd: number | null;
+    pegUsd: number | null;
+}): number | null {
+    if (input.explicitPct !== null) return input.explicitPct;
+    if (input.signedFraction !== null) return input.signedFraction * 100;
+    const { priceUsd, pegUsd } = input;
+    if (priceUsd !== null && pegUsd !== null && pegUsd > 0) return ((priceUsd - pegUsd) / pegUsd) * 100;
+    if (input.absFraction !== null) {
+        const below = priceUsd !== null && pegUsd !== null && priceUsd < pegUsd;
+        return Math.abs(input.absFraction) * 100 * (below ? -1 : 1);
+    }
+    return null;
+}
+
+/**
  * Webacy's tier bands over the 0-100 depeg score. `premium` is not a score
  * band: it is a tag meaning "trading above peg with no risk signals".
  */
@@ -114,8 +139,12 @@ export function extractDepegListItems(payload: unknown): unknown[] {
 export function normalizeDepegItem(raw: unknown): WebacyDepegItem | null {
     const rec = asRecord(raw);
     if (!rec) return null;
-    // Single-token responses may wrap the item one level down.
-    const item = asRecord(rec.token) ?? asRecord(rec.data) ?? rec;
+    // GET /rwa/{address} answers `{ token: {...identity}, snapshot: {...score/tier/price} }`
+    // (verified 2026-09-14); the list endpoint flattens both into one item.
+    const token = asRecord(rec.token);
+    const snapshot = asRecord(rec.snapshot);
+    const item: Record<string, unknown> =
+        token || snapshot ? { ...(token ?? {}), ...(snapshot ?? {}) } : (asRecord(rec.data) ?? rec);
     const address = nonEmptyString(firstDefined(item, ['address', 'token_address', 'tokenAddress', 'mint']));
     if (!address) return null;
 
@@ -139,9 +168,15 @@ export function normalizeDepegItem(raw: unknown): WebacyDepegItem | null {
                 firstDefined(item, keys) ??
                 (metadata ? firstDefined(metadata, keys) : undefined),
         );
-    const deviationPct = numericSource(['deviation_pct', 'deviationPct', 'peg_deviation_pct', 'pegDeviationPct']);
     const priceUsd = numericSource(['price_usd', 'priceUsd', 'price']);
-    const pegUsd = numericSource(['peg_usd', 'pegUsd', 'peg', 'peg_price', 'pegPrice']);
+    const pegUsd = numericSource(['peg_usd', 'pegUsd', 'peg_value', 'pegValue', 'peg', 'peg_price', 'pegPrice']);
+    const deviationPct = derivePegDeviationPct({
+        explicitPct: numericSource(['deviation_pct', 'deviationPct', 'peg_deviation_pct', 'pegDeviationPct']),
+        signedFraction: numericSource(['dev_clean', 'devClean']),
+        absFraction: numericSource(['abs_dev_clean', 'absDevClean']),
+        priceUsd,
+        pegUsd,
+    });
 
     return { address, symbol, tier, overallRisk, deviationPct, priceUsd, pegUsd, tags, raw };
 }
@@ -223,7 +258,14 @@ export function normalizeStructuralHealth(raw: unknown): NormalizedStructuralHea
             firstDefined(structural, ['composite_score', 'compositeScore', 'score']),
     );
 
-    const categoriesRaw = structural.categories ?? body.categories;
+    // v3 (verified 2026-09-14): `composite.drivers[]` carries { category, score,
+    // weight, criteria[] } and `composite.contributors` is keyed by category;
+    // the top-level `categories` object is empty. Prefer whichever has entries.
+    const hasEntries = (value: unknown): boolean =>
+        Array.isArray(value) ? value.length > 0 : Object.keys(asRecord(value) ?? {}).length > 0;
+    const categoriesRaw = [structural.categories, body.categories, composite.drivers, composite.contributors].find(
+        hasEntries,
+    );
     const entries: Array<[unknown, Record<string, unknown>]> = [];
     if (Array.isArray(categoriesRaw)) {
         for (const item of categoriesRaw) {

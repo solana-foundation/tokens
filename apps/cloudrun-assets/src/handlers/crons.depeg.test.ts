@@ -570,7 +570,7 @@ describe('reconcile-stablecoin-depeg sweep mode', () => {
         expect(out.mode).toBe('sweep');
         expect(out.tokensReturned).toBe(5);
         expect(out.tracked).toBe(4);
-        expect(rec.listCalls).toEqual([{ pageSize: 100, maxPages: 3 }]);
+        expect(rec.listCalls).toEqual([{ pageSize: 200, maxPages: 4 }]);
         expect(rec.upserts[0]!.map(r => r.address).sort()).toEqual([USDC, USDT, USDE, PYUSD].sort());
         expect(
             rec.upserts[0]!.every(r => r.inRegistry && r.lastSource === 'sweep' && r.lastSeenInListAt === FIXED_NOW),
@@ -740,7 +740,7 @@ describe('reconcile-stablecoin-depeg sweep mode', () => {
         const { deps, rec } = makeDeps({
             listResult: { ok: true, items: [item(USDC, 'ok')], pages: 3, truncated: true },
         });
-        const out = await reconcile(deps, { maxPages: 3 });
+        const out = await reconcile(deps, { maxPages: 4 });
         expect(out.truncated).toBe(true);
         expect(events(rec, 'depeg_list_truncated')[0]).toMatchObject({ pages: 3 });
     });

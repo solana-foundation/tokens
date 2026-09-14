@@ -253,6 +253,50 @@ describe('POST /hooks/webacy', () => {
         });
     });
 
+    it('acknowledges Webacy test deliveries ({ test: true }, no token) as ignored without forwarding', async () => {
+        // Shape documented for POST /webhooks/subscriptions/{id}/test.
+        const event = {
+            event_type: 'DEPEG_TIER_CHANGE',
+            event_id: 'e4c2e1d0-0000-4000-8000-00000000test',
+            timestamp: '2026-06-19T18:01:30.702Z',
+            test: true,
+            data: { message: 'This is a test delivery' },
+        };
+        const { body, signature } = await signedBody(event);
+        const h = makeApp();
+        const res = await post(h.app, body, depegHeaders(event, signature));
+        expect(res.status).toBe(200);
+        expect(await res.json()).toEqual({ ignored: true, why: 'test_event' });
+        expect(h.forwards).toHaveLength(0);
+        const update = h.fake.queries.find(q => q.text.startsWith('UPDATE webacy_webhook_deliveries'));
+        expect(update?.params).toEqual([event.event_id]);
+        expect(update?.text).toContain("'ignored'");
+        expect(h.logs.map(l => l.event)).toEqual(['depeg_webhook_received', 'depeg_webhook_ignored']);
+    });
+
+    it('acknowledges a verified event without token_address as ignored (missing_token_address)', async () => {
+        const event = makeEvent({}, { token_address: undefined });
+        const { body, signature } = await signedBody(event);
+        const h = makeApp();
+        const res = await post(h.app, body, depegHeaders(event, signature));
+        expect(res.status).toBe(200);
+        expect(await res.json()).toEqual({ ignored: true, why: 'missing_token_address' });
+        expect(h.forwards).toHaveLength(0);
+        expect(h.logs.some(l => l.event === 'depeg_webhook_forward_failed')).toBe(false);
+    });
+
+    it('accepts the X-Webhook-Previous-Signature header during a rotate-secret grace window', async () => {
+        const event = makeEvent();
+        const { body, signature: oldKeySignature } = await signedBody(event, 'previous-signing-key');
+        const h = makeApp({ webhookSecret: 'previous-signing-key' });
+        const res = await post(h.app, body, {
+            ...depegHeaders(event, 'a'.repeat(64)),
+            'X-Webhook-Previous-Signature': oldKeySignature,
+        });
+        expect(res.status).toBe(200);
+        expect(await res.json()).toEqual({ ok: true, forwarded: true });
+    });
+
     it('verifies a delivery whose raw key order differs from JSON.stringify via the substring strategy', async () => {
         const { body, signature } = await rawOrderSignedBody();
         const h = makeApp();

@@ -274,6 +274,7 @@ export function structuralGradeTone(grade: StructuralGrade): HealthTone {
         case 'C':
             return 'warning';
         case 'D':
+        case 'E':
         case 'F':
             return 'destructive';
     }
