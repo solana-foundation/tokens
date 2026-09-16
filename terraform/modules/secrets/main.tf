@@ -72,15 +72,17 @@ resource "google_secret_manager_secret_iam_member" "api_key_encryption_secret_ac
 }
 
 # Observability/webhook ingest secrets for the usage service's /hooks/* routes
-# (Vercel log drain + Clerk webhook → Loki). Versions are seeded out-of-band
-# from Doppler, mirroring the Convex deployment's env:
-#   LOKI_PUSH_URL, LOKI_PUSH_AUTH, VERCEL_DRAIN_SECRET, CLERK_WEBHOOK_SECRET
+# (Vercel log drain + Clerk webhook → Loki, Webacy depeg webhook → jobs worker).
+# Versions are seeded out-of-band from Doppler via scripts/seed-usage-hook-secrets.sh:
+#   LOKI_PUSH_URL, LOKI_PUSH_AUTH, VERCEL_DRAIN_SECRET, CLERK_WEBHOOK_SECRET,
+#   WEBACY_WEBHOOK_SECRET
 resource "google_secret_manager_secret" "usage_hooks" {
   for_each = toset([
     "loki-push-url",
     "loki-push-auth",
     "vercel-drain-secret",
     "clerk-webhook-secret",
+    "webacy-webhook-secret",
   ])
 
   project   = var.project_id
