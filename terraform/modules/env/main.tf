@@ -127,6 +127,12 @@ module "cloud_run" {
       PG_POOL_MAX        = "16"
       PG_CONNECT_TIMEOUT = "3"
     } : {},
+    # The usage service forwards verified Webacy depeg webhooks to the jobs
+    # target (POST /jobs/reconcile-stablecoin-depeg with an OIDC bearer whose
+    # audience is this URL). Resolved by name via the data source below.
+    each.value == "usage" && var.enable_crons ? {
+      TOKENS_CLOUDRUN_ASSETS_JOBS_URL = data.google_cloud_run_v2_service.assets_jobs_target[0].uri
+    } : {},
   )
 
   secret_env_vars = merge(
@@ -139,8 +145,9 @@ module "cloud_run" {
       }
     },
     # Usage-service-only secrets: key reveal encryption (dashboard reset/reveal)
-    # and the /hooks/* observability ingest. Versions seeded out-of-band — see
-    # modules/secrets.
+    # and the /hooks/* ingest (Loki push, Vercel drain, Clerk + Webacy webhook
+    # secrets). Every entry of usage_hooks_secret_ids is mounted, so a new secret
+    # only needs adding in modules/secrets. Versions seeded out-of-band.
     each.value == "usage" ? merge(
       {
         TOKENS_API_KEY_ENCRYPTION_SECRET = {
@@ -208,6 +215,34 @@ module "cloud_run_assets_jobs" {
 locals {
   assets_jobs_service_url  = var.route_assets_jobs_to_worker ? module.cloud_run_assets_jobs[0].url : module.cloud_run["assets"].url
   assets_jobs_service_name = var.route_assets_jobs_to_worker ? module.cloud_run_assets_jobs[0].service_name : module.cloud_run["assets"].service_name
+}
+
+# Read-only lookup of the jobs target for the usage service's
+# TOKENS_CLOUDRUN_ASSETS_JOBS_URL. module.cloud_run is a single for_each call,
+# so its "usage" instance cannot reference module.cloud_run["assets"] (or the
+# worker module, which depends on module.cloud_run["assets"].image) without a
+# cycle; resolving the URL by name sidesteps that. The `uri` matches the
+# out-of-band SCHEDULER_OIDC_AUDIENCE pin on the target, which a deterministic
+# run.app URL would not. Guarded by enable_crons so a fresh env bootstraps
+# (crons off) before the target exists.
+data "google_cloud_run_v2_service" "assets_jobs_target" {
+  count = var.enable_crons ? 1 : 0
+
+  project  = var.project_id
+  location = var.region
+  name     = var.route_assets_jobs_to_worker ? "tokens-assets-jobs-${var.env}${var.name_suffix}" : "tokens-assets-${var.env}${var.name_suffix}"
+}
+
+# The usage service (shared Cloud Run runtime SA) invokes the jobs target to
+# forward Webacy depeg webhooks. Cloud Run IAM is checked before the handler's
+# own OIDC verification, which additionally requires the runtime SA's email to
+# be listed in the target's TOKENS_CRON_INVOKER_SA (comma-separated).
+resource "google_cloud_run_v2_service_iam_member" "usage_invokes_assets_jobs" {
+  project  = var.project_id
+  location = var.region
+  name     = local.assets_jobs_service_name
+  role     = "roles/run.invoker"
+  member   = "serviceAccount:${module.iam.cloud_run_runtime_sa_email}"
 }
 
 module "scheduler_tasks" {
