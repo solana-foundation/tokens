@@ -34,8 +34,23 @@ export function pegTierSeverity(tier: PegTier): number {
     }
 }
 
-/** Webacy v3 composite letter grade. A+ is lowest risk, F is critical risk. */
-export const STRUCTURAL_GRADES = ['A+', 'A', 'A-', 'B+', 'B', 'B-', 'C+', 'C', 'C-', 'D+', 'D', 'D-', 'F'] as const;
+/** Webacy v3 composite letter grade (live enum includes `E`). A+ is lowest risk, F is critical risk. */
+export const STRUCTURAL_GRADES = [
+    'A+',
+    'A',
+    'A-',
+    'B+',
+    'B',
+    'B-',
+    'C+',
+    'C',
+    'C-',
+    'D+',
+    'D',
+    'D-',
+    'E',
+    'F',
+] as const;
 export type StructuralGrade = (typeof STRUCTURAL_GRADES)[number];
 
 export function isStructuralGrade(value: unknown): value is StructuralGrade {
@@ -43,8 +58,8 @@ export function isStructuralGrade(value: unknown): value is StructuralGrade {
 }
 
 /** Letter band without the +/- modifier; drives badge tone. */
-export function structuralGradeBand(grade: StructuralGrade): 'A' | 'B' | 'C' | 'D' | 'F' {
-    return grade.charAt(0) as 'A' | 'B' | 'C' | 'D' | 'F';
+export function structuralGradeBand(grade: StructuralGrade): 'A' | 'B' | 'C' | 'D' | 'E' | 'F' {
+    return grade.charAt(0) as 'A' | 'B' | 'C' | 'D' | 'E' | 'F';
 }
 
 /**
