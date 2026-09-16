@@ -62,7 +62,11 @@ CREATE TABLE webacy_depeg_latest (
     last_source           text CHECK (last_source IS NULL OR last_source IN ('webhook', 'sweep', 'manual')),
     payload_json          text,
     error_message         text,
+    -- Last attempt (success or failure) and last successful fetch. The API
+    -- computes staleness from last_ok_at so a run of failed fetches reads
+    -- as stale instead of fresh-looking last-good data.
     last_fetched_at       bigint NOT NULL,
+    last_ok_at            bigint,
     created_at            timestamptz NOT NULL DEFAULT now()
 );
 
@@ -124,6 +128,7 @@ CREATE TABLE webacy_structural_health_latest (
     payload_json         text,
     error_message        text,
     last_fetched_at      bigint NOT NULL,
+    last_ok_at           bigint,
     created_at           timestamptz NOT NULL DEFAULT now()
 );
 
