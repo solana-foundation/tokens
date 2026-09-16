@@ -138,6 +138,7 @@ import {
 } from './handlers/crons.assetVariants';
 import { seedJobs, type SeedCronDeps, type SeedJobHandler } from './handlers/crons.seed';
 import { prestocksJobs, type PrestocksCronDeps, type PrestocksJobHandler } from './handlers/crons.prestocks';
+import { depegJobs, type DepegCronDeps, type DepegJobHandler } from './handlers/crons.depeg';
 import { trendingJobs, type TrendingCronDeps, type TrendingJobHandler } from './handlers/crons.trending';
 import {
     clickhouseExtrasJobs,
@@ -207,6 +208,8 @@ export interface ServerDeps {
     trendingCronDeps?: TrendingCronDeps;
     clickhouseExtrasCronDeps?: ClickhouseExtrasCronDeps;
     prestocksCronDeps?: PrestocksCronDeps;
+    /** Webacy depeg reconcile + structural health; present only when WEBACY_API_KEY is set. */
+    depegCronDeps?: DepegCronDeps;
     cacheWarmDeps?: CacheWarmDeps;
     adminActionsDeps?: AdminActionsDeps;
     /** Admin-only token-list build tools (CSV import, create-for-project); allowlist-gated. */
@@ -649,6 +652,7 @@ export function createApp(deps: ServerDeps) {
     const prestocksJobsTable: Record<string, PrestocksJobHandler> = {
         ...prestocksJobs,
     };
+    const depegJobsTable: Record<string, DepegJobHandler> = { ...depegJobs };
 
     interface JobGroup {
         has(name: string): boolean;
@@ -698,6 +702,11 @@ export function createApp(deps: ServerDeps) {
             run: deps.prestocksCronDeps
                 ? (name, args) => prestocksJobsTable[name]!(deps.prestocksCronDeps!, args)
                 : null,
+        },
+        {
+            has: name => Object.hasOwn(depegJobsTable, name),
+            run: deps.depegCronDeps ? (name, args) => depegJobsTable[name]!(deps.depegCronDeps!, args) : null,
+            disabledError: 'depeg_jobs_disabled',
         },
     ];
 
