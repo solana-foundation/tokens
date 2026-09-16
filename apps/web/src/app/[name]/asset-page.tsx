@@ -3,7 +3,14 @@ import Image from 'next/image';
 import Link from 'next/link';
 import { ArrowUpRight } from 'lucide-react';
 
-import type { AssetVariant, CanonicalAsset, LiquidityTier, TrustTier, VariantHub } from '@tokens/asset-registry';
+import type {
+    AssetVariant,
+    CanonicalAsset,
+    CompactPegHealth,
+    LiquidityTier,
+    TrustTier,
+    VariantHub,
+} from '@tokens/asset-registry';
 import { getVariantHubById, liquidityTierPriority } from '@tokens/asset-registry';
 import { Skeleton } from '@tokens/ui/skeleton';
 
@@ -23,6 +30,7 @@ import {
 import { cleanTokenName, getMintLogoOverride, getTokenLogoURLForMintWithSecondarySymbol } from '@/lib/logo-overrides';
 import { fetchApiAppJsonOrNull } from '@/lib/api-app';
 import { formatLargeNumber } from '@/lib/format';
+import { isStablecoinCategory, normalizeCompactPegHealth } from '@/lib/stablecoin-health';
 import { getGlobalTokenStats, type GlobalTokenStats } from '@/lib/coingecko';
 import { looksLikeSolanaMintAddress } from '@/lib/solana-address';
 import { AssetPriceChartSection } from './components/asset-price-chart-section';
@@ -164,6 +172,8 @@ interface VariantWithMarket extends AssetVariant {
     displayName: string;
     /** Normalized advisory on this mint (set explicitly in `buildVariantsWithMarket`). */
     advisory?: AssetAdvisory | null;
+    /** Normalized live peg status (stablecoin assets only; set explicitly in `buildVariantsWithMarket`). */
+    pegHealth?: CompactPegHealth | null;
 }
 
 type ApiAssetVariant = AssetVariant & {
@@ -174,6 +184,8 @@ type ApiAssetVariant = AssetVariant & {
     preStocks?: PreStocksVariantSnapshot | null;
     /** `{ status, reason, url, since } | null`, always present on the API; decoded defensively. */
     advisory?: AssetAdvisory | null;
+    /** `{ tier, deviationPct, updatedAt, stale } | null`; only emitted for `category === 'stablecoin'`. */
+    pegHealth?: CompactPegHealth | null;
 };
 
 interface AssetIncludeOk<T> {
@@ -208,6 +220,7 @@ interface AssetsV1AssetResponse {
                   rank?: number;
                   preStocks?: PreStocksVariantSnapshot | null;
                   advisory?: AssetAdvisory | null;
+                  pegHealth?: CompactPegHealth | null;
               })
             | null;
         variantGroups: Partial<
@@ -343,7 +356,12 @@ function humanizeAssetRef(value: string | undefined | null): string {
 function buildVariantsWithMarket(
     asset: CanonicalAsset,
     tokenByMint: Map<string, MarketSnapshot>,
-    options?: { assetSymbol?: string; assetName?: string; advisoryByMint?: ReadonlyMap<string, AssetAdvisory> },
+    options?: {
+        assetSymbol?: string;
+        assetName?: string;
+        advisoryByMint?: ReadonlyMap<string, AssetAdvisory>;
+        pegHealthByMint?: ReadonlyMap<string, CompactPegHealth>;
+    },
 ): VariantWithMarket[] {
     const assetFallbackSymbol = pickFirstSymbol(options?.assetSymbol, asset.symbol);
     const assetFallbackName = pickFirstDisplayName(options?.assetName, asset.name) || assetFallbackSymbol;
@@ -379,6 +397,9 @@ function buildVariantsWithMarket(
             // Set explicitly (not via the spread) so the API annotation always
             // wins over whatever the registry/DB variant object carried.
             advisory: options?.advisoryByMint?.get(variant.mint) ?? normalizeAdvisory(variant.advisory),
+            pegHealth:
+                options?.pegHealthByMint?.get(variant.mint) ??
+                normalizeCompactPegHealth((variant as { pegHealth?: unknown }).pegHealth),
         };
     });
 }
@@ -918,17 +939,25 @@ async function loadAssetPageModel({ asset, requestedName, requestedMint }: Asset
     // spread variant) so the page's badges, banner, and trade gating all
     // agree on one normalized value per mint.
     const advisoryByMint = new Map<string, AssetAdvisory>();
+    // Compact peg status per mint; the API only emits it for stablecoin assets.
+    const pegHealthByMint = new Map<string, CompactPegHealth>();
     if (apiAsset) {
         const primary = apiAsset.asset.primaryVariant;
         if (primary?.market) tokenByMint.set(primary.mint, primary.market);
         if (primary?.preStocks) preStocksByMint.set(primary.mint, primary.preStocks);
         const primaryAdvisory = normalizeAdvisory(primary?.advisory);
         if (primary && primaryAdvisory) advisoryByMint.set(primary.mint, primaryAdvisory);
+        const primaryPegHealth = normalizeCompactPegHealth(primary?.pegHealth);
+        if (primary && primaryPegHealth) pegHealthByMint.set(primary.mint, primaryPegHealth);
 
         for (const variant of getApiVariantRows(apiAsset.asset.variantGroups)) {
             if (variant.preStocks) preStocksByMint.set(variant.mint, variant.preStocks);
             const variantAdvisory = normalizeAdvisory(variant.advisory);
             if (variantAdvisory && !advisoryByMint.has(variant.mint)) advisoryByMint.set(variant.mint, variantAdvisory);
+            const variantPegHealth = normalizeCompactPegHealth(variant.pegHealth);
+            if (variantPegHealth && !pegHealthByMint.has(variant.mint)) {
+                pegHealthByMint.set(variant.mint, variantPegHealth);
+            }
             if (!variant.market) continue;
             tokenByMint.set(variant.mint, variant.market);
         }
@@ -992,6 +1021,7 @@ async function loadAssetPageModel({ asset, requestedName, requestedMint }: Asset
         assetName: apiDisplayName,
         assetSymbol: apiDisplaySymbol,
         advisoryByMint,
+        pegHealthByMint,
     });
     const apiPrimaryMint = apiAsset?.asset.primaryVariant?.mint ?? null;
     const apiPrimaryVariant = apiPrimaryMint ? (variants.find(v => v.mint === apiPrimaryMint) ?? null) : null;
@@ -1076,6 +1106,12 @@ async function loadAssetPageModel({ asset, requestedName, requestedMint }: Asset
     const siblingAdvisories = getSiblingAdvisories(advisoryEntries, activeMint);
     const tradeBlocked = isTradeBlocked(viewedAdvisory);
 
+    // Stablecoin health: the viewed variant's peg status drives the header
+    // pill (single-mint views only) and unlocks the Security section on the
+    // canonical view for single-variant stablecoins.
+    const isStablecoin = isStablecoinCategory(effectiveAsset.category);
+    const viewedPegHealth = (requestedVariant ?? primary)?.pegHealth ?? null;
+
     return {
         assetRef,
         canonicalAssetId,
@@ -1091,6 +1127,8 @@ async function loadAssetPageModel({ asset, requestedName, requestedMint }: Asset
         advisoryEntries,
         siblingAdvisories,
         tradeBlocked,
+        isStablecoin,
+        viewedPegHealth,
         canonicalMarket,
         shouldUseCanonicalMarket,
         shouldEnableRealtimePrice,
@@ -1132,9 +1170,18 @@ async function AssetPageContent(props: AssetPageProps) {
         variants,
         viewedAdvisory,
         siblingAdvisories,
+        isStablecoin,
+        viewedPegHealth,
     } = await loadAssetPageModel(props);
 
     const activeSymbol = requestedVariant?.displaySymbol ?? displaySymbol;
+    // The header describes exactly one mint on a variant view or when the
+    // asset has a single variant; otherwise the per-mint pills live in the
+    // variants list so the canonical `usd` view never shows one mint's peg
+    // as if it were the asset's.
+    const isSingleMintView = isVariantView || variants.length === 1;
+    const headerPegHealth = isSingleMintView ? viewedPegHealth : null;
+    const showSecuritySection = Boolean(activeMint) && (isVariantView || (isStablecoin && variants.length === 1));
 
     return (
         <TokenPageScaffold
@@ -1205,6 +1252,7 @@ async function AssetPageContent(props: AssetPageProps) {
                         showSingletonVariantBadge,
                         variantCurrentAddress: activeMint ?? undefined,
                         advisory: viewedAdvisory,
+                        pegHealth: headerPegHealth,
                     }}
                 />
             }
@@ -1299,7 +1347,7 @@ async function AssetPageContent(props: AssetPageProps) {
                 />
             )}
 
-            {isVariantView && activeMint && <AssetRiskSection assetId={canonicalAssetId} mint={activeMint} />}
+            {showSecuritySection && activeMint && <AssetRiskSection assetId={canonicalAssetId} mint={activeMint} />}
 
             <AssetVariantsSection
                 canonicalAssetId={canonicalAssetId}

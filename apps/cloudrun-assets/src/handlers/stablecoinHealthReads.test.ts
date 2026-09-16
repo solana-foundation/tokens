@@ -105,11 +105,25 @@ describe('stablecoinHealthGetByMints', () => {
     });
 
     it('fills missing categories with unknown status and ignores extra keys', () => {
-        const parsed = parseCategoryScores({ asset_collateral: { score: '7', weight: 0.3, status: 'FAIL' }, bogus: {} });
+        const parsed = parseCategoryScores({
+            asset_collateral: { score: '7', weight: 0.3, status: 'FAIL' },
+            bogus: {},
+        });
         expect(parsed).toHaveLength(5);
         expect(parsed[0]).toEqual({ key: 'asset_collateral', score: 7, weight: 0.3, status: 'unknown' });
         expect(parsed[1]).toEqual({ key: 'market_liquidity', score: null, weight: null, status: 'unknown' });
         expect(parseCategoryScores(null)).toHaveLength(5);
+    });
+
+    it('prefers last_ok_at over last_fetched_at for updatedAt', async () => {
+        const [entry] = await stablecoinHealthGetByMints(
+            repoWith([
+                row({ depeg_ok: false, depeg_last_fetched_at: 2000, depeg_last_ok_at: 1500, sh_last_ok_at: '900' }),
+            ]),
+            { mints: [USDC] },
+        );
+        expect(entry!.pegHealth?.updatedAt).toBe(1500);
+        expect(entry!.structuralHealth?.updatedAt).toBe(900);
     });
 
     it('caps the request size', async () => {

@@ -60,11 +60,7 @@ export {
 
 export { listDeletedRefs, type ListDeletedRefsArgs, type ListDeletedRefsResult } from './assetDeletionTombstones';
 
-export {
-    assetAdvisoriesList,
-    type AssetAdvisoriesListResult,
-    type AssetAdvisoryRow,
-} from './assetAdvisories';
+export { assetAdvisoriesList, type AssetAdvisoriesListResult, type AssetAdvisoryRow } from './assetAdvisories';
 
 export {
     listActive as sanctumListActive,
@@ -146,6 +142,16 @@ export {
     type VariantFillQualityGetLatestByMintsArgs,
     type VariantFillQualityGetLatestByMintsResult,
 } from './fillQualityReads';
+
+export {
+    stablecoinHealthGetByMints,
+    type PegHealthRead,
+    type StablecoinHealthEntry,
+    type StablecoinHealthGetByMintsArgs,
+    type StablecoinHealthGetByMintsResult,
+    type StructuralHealthCategoryRead,
+    type StructuralHealthRead,
+} from './stablecoinHealthReads';
 
 export {
     assetCollectionsGetMembers,

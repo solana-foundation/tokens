@@ -36,12 +36,14 @@ export interface StablecoinHealthRow {
     depeg_peg_usd: number | string | null;
     depeg_tier_since_at: number | string | bigint | null;
     depeg_last_fetched_at: number | string | bigint | null;
+    depeg_last_ok_at?: number | string | bigint | null;
     depeg_error_message: string | null;
     sh_ok: boolean | null;
     sh_composite_grade: string | null;
     sh_composite_score: number | string | null;
     sh_category_scores: unknown;
     sh_last_fetched_at: number | string | bigint | null;
+    sh_last_ok_at?: number | string | bigint | null;
 }
 
 export interface StablecoinHealthReadsRepo {
@@ -57,7 +59,7 @@ export interface PegHealthRead {
     pegUsd: number | null;
     /** Unix ms when the current tier streak began. */
     tierSince: number | null;
-    /** Unix ms of the last fetch attempt. */
+    /** Unix ms of the last SUCCESSFUL fetch (falls back to the last attempt for pre-last_ok_at rows). */
     updatedAt: number;
     /** False when the last fetch failed; the tier is then the last good value. */
     ok: boolean;
@@ -77,7 +79,7 @@ export interface StructuralHealthRead {
     /** Composite 0-100; higher = riskier. */
     score: number | null;
     categories: StructuralHealthCategoryRead[];
-    /** Unix ms of the last fetch attempt. */
+    /** Unix ms of the last SUCCESSFUL fetch (falls back to the last attempt for pre-last_ok_at rows). */
     updatedAt: number;
     ok: boolean;
 }
@@ -108,7 +110,8 @@ function toFiniteNumber(value: number | string | null | undefined): number | nul
  * nulls and `unknown` status so the UI always has the five rows.
  */
 export function parseCategoryScores(value: unknown): StructuralHealthCategoryRead[] {
-    const record = value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
+    const record =
+        value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
     return STRUCTURAL_CATEGORY_KEYS.map(key => {
         const raw = record[key];
         const entry = raw && typeof raw === 'object' && !Array.isArray(raw) ? (raw as Record<string, unknown>) : {};
@@ -121,7 +124,7 @@ export function parseCategoryScores(value: unknown): StructuralHealthCategoryRea
 
 export function toPegHealthRead(row: StablecoinHealthRow): PegHealthRead | null {
     if (!isPegTier(row.depeg_tier)) return null;
-    const updatedAt = toEpochMs(row.depeg_last_fetched_at);
+    const updatedAt = toEpochMs(row.depeg_last_ok_at) ?? toEpochMs(row.depeg_last_fetched_at);
     if (updatedAt === null) return null;
     return {
         tier: row.depeg_tier,
@@ -132,13 +135,13 @@ export function toPegHealthRead(row: StablecoinHealthRow): PegHealthRead | null 
         tierSince: toEpochMs(row.depeg_tier_since_at),
         updatedAt,
         ok: row.depeg_ok !== false,
-        errorMessage: row.depeg_ok === false ? row.depeg_error_message ?? null : null,
+        errorMessage: row.depeg_ok === false ? (row.depeg_error_message ?? null) : null,
     };
 }
 
 export function toStructuralHealthRead(row: StablecoinHealthRow): StructuralHealthRead | null {
     if (!isStructuralGrade(row.sh_composite_grade)) return null;
-    const updatedAt = toEpochMs(row.sh_last_fetched_at);
+    const updatedAt = toEpochMs(row.sh_last_ok_at) ?? toEpochMs(row.sh_last_fetched_at);
     if (updatedAt === null) return null;
     return {
         grade: row.sh_composite_grade,

@@ -7,6 +7,7 @@ import * as React from 'react';
 
 import { cn } from '@tokens/ui/cn';
 import { AssetAdvisoryBadge } from '@/components/asset-advisory-badge';
+import { PegStatusPill } from '@/components/peg-status-pill';
 import { isTradeBlocked, type AssetAdvisory } from '@/lib/asset-advisory';
 import { formatLargeNumber } from '@/lib/format';
 import { groupAssetVariantsByDisplayCategory } from '@/lib/asset-variant-categories';
@@ -15,7 +16,7 @@ import { formatCompactAddress } from '@/app/token/[address]/lib/format';
 import { normalizeLogoSrc } from '@/lib/normalize-logo-src';
 import { AssetVariantTokenLogo } from './asset-variant-token-logo';
 
-import type { LiquidityTier, StockVariantTier, TrustTier, VariantKind } from '@tokens/asset-registry';
+import type { CompactPegHealth, LiquidityTier, StockVariantTier, TrustTier, VariantKind } from '@tokens/asset-registry';
 
 interface MarketSnapshotLite {
     source?: 'birdeye' | 'rwa_xyz' | 'clickhouse_trades';
@@ -50,6 +51,8 @@ export interface VariantWithMarketLite {
     displayName: string;
     /** Active admin advisory on this mint (already normalized), if any. */
     advisory?: AssetAdvisory | null;
+    /** Live peg status (stablecoin assets only, already normalized), if any. */
+    pegHealth?: CompactPegHealth | null;
 }
 
 function kindLabel(kind: VariantKind): string {
@@ -240,6 +243,7 @@ export function AssetVariantsList({
                                                             {kindLabel(variant.kind)}
                                                         </span>
                                                         <AssetAdvisoryBadge advisory={advisory} size="sm" />
+                                                        <PegStatusPill pegHealth={variant.pegHealth} size="sm" />
                                                     </div>
                                                 </div>
                                             </div>
