@@ -10,7 +10,9 @@ import {
     makeRwaXyzClient,
     makeSanctumClient,
     makeWebacyClient,
+    makeWebacyDepegClient,
 } from './clients';
+import { makePostgresDepegRepo } from './db/depeg';
 import { parseAdminClerkUserIds, parseAdminEmails } from './adminAuth';
 import {
     getSql,
@@ -61,6 +63,7 @@ import type { SeedCronDeps } from './handlers/crons.seed';
 import type { TrendingCronDeps } from './handlers/crons.trending';
 import type { ClickhouseExtrasCronDeps } from './handlers/crons.clickhouse.extras';
 import type { PrestocksCronDeps } from './handlers/crons.prestocks';
+import type { DepegCronDeps } from './handlers/crons.depeg';
 import { makeGoogleOidcVerifier } from './oidc';
 import { createApp, type ServiceRole } from './server';
 
@@ -106,6 +109,7 @@ let seedCronDeps: SeedCronDeps | undefined;
 let trendingCronDeps: TrendingCronDeps | undefined;
 let clickhouseExtrasCronDeps: ClickhouseExtrasCronDeps | undefined;
 let prestocksCronDeps: PrestocksCronDeps | undefined;
+let depegCronDeps: DepegCronDeps | undefined;
 let verifyOidc: ReturnType<typeof makeGoogleOidcVerifier> | undefined;
 
 // Effective curated membership is served on the read path too (the
@@ -202,6 +206,18 @@ if (birdeyeApiKey) {
         repo: makePostgresPrestocksRepo(sql),
         now: () => Date.now(),
     };
+    // Depeg jobs share the Webacy key with the token-risk refresh; without it
+    // the group 404s with depeg_jobs_disabled instead of polling nothing.
+    if (webacyApiKey) {
+        depegCronDeps = {
+            webacyDepeg: makeWebacyDepegClient({ apiKey: webacyApiKey }),
+            repo: makePostgresDepegRepo(sql),
+            curated,
+            now: () => Date.now(),
+        };
+    } else {
+        console.warn('[cloudrun-assets] WEBACY_API_KEY not set — depeg /jobs/* disabled');
+    }
     if (clickhouseUrl && clickhouseUser && clickhousePassword && clickhouseDatabase) {
         clickhouseExtrasCronDeps = {
             clickhouse: makeClickhouseClient({
@@ -354,6 +370,7 @@ const app = createApp({
     ...(trendingCronDeps ? { trendingCronDeps } : {}),
     ...(clickhouseExtrasCronDeps ? { clickhouseExtrasCronDeps } : {}),
     ...(prestocksCronDeps ? { prestocksCronDeps } : {}),
+    ...(depegCronDeps ? { depegCronDeps } : {}),
     ...(cacheWarmDeps ? { cacheWarmDeps } : {}),
     ...(adminActionsDeps ? { adminActionsDeps } : {}),
     tokenListsAdminDeps: { adminAllowlist, lists: tokenListsMutationsDeps },

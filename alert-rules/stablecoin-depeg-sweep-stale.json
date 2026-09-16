@@ -1,0 +1,88 @@
+{
+    "uid": "tokens-stablecoin-depeg-sweep-stale",
+    "title": "tokens-assets: no depeg sweep summary in 9h",
+    "ruleGroup": "tokens-stablecoin-depeg",
+    "folderUID": "tokens-xyz",
+    "noDataState": "Alerting",
+    "execErrState": "OK",
+    "for": "0s",
+    "data": [
+        {
+            "refId": "A",
+            "datasourceUid": "grafanacloud-logs",
+            "queryType": "range",
+            "relativeTimeRange": {
+                "from": 32400,
+                "to": 0
+            },
+            "model": {
+                "expr": "sum(count_over_time({service=~\"tokens-assets(-jobs)?-prd-us\"} | json | event=\"depeg_poll_summary\" [9h]))",
+                "queryType": "range",
+                "refId": "A"
+            }
+        },
+        {
+            "refId": "B",
+            "datasourceUid": "__expr__",
+            "queryType": "",
+            "relativeTimeRange": {
+                "from": 0,
+                "to": 0
+            },
+            "model": {
+                "type": "reduce",
+                "refId": "B",
+                "expression": "A",
+                "reducer": "last",
+                "settings": {
+                    "mode": "replaceNN",
+                    "replaceWithValue": 0
+                }
+            }
+        },
+        {
+            "refId": "C",
+            "datasourceUid": "__expr__",
+            "queryType": "",
+            "relativeTimeRange": {
+                "from": 0,
+                "to": 0
+            },
+            "model": {
+                "type": "threshold",
+                "refId": "C",
+                "expression": "B",
+                "conditions": [
+                    {
+                        "evaluator": {
+                            "type": "lt",
+                            "params": [1]
+                        },
+                        "operator": {
+                            "type": "and"
+                        },
+                        "query": {
+                            "params": ["B"]
+                        },
+                        "reducer": {
+                            "type": "last",
+                            "params": []
+                        },
+                        "type": "query"
+                    }
+                ]
+            }
+        }
+    ],
+    "condition": "C",
+    "labels": {
+        "service": "tokens-assets",
+        "severity": "warning",
+        "slack": "true"
+    },
+    "annotations": {
+        "summary": "The stablecoin depeg reconciliation sweep has not completed in 9 hours",
+        "description": "No depeg_poll_summary log line from reconcile-stablecoin-depeg in 9 hours (two missed 4-hourly sweeps). Either the Cloud Scheduler job is failing (check the scheduler run history and the job's HTTP status), WEBACY_DEPEG_REFRESH_ENABLED is not 'true' on the assets worker (the handler returns disabled without a summary), or the worker is down. Peg status served by the API goes stale after 9h and the reconciler stops setting or clearing advisories on stale observations, so system advisories freeze in place until the sweep resumes.",
+        "runbook_url": "https://github.com/solana-foundation/tokens/blob/main/docs/operations/asset-advisory-runbook.md#automated-depeg-advisories"
+    }
+}
