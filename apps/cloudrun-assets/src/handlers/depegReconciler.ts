@@ -12,11 +12,23 @@
  * USDC).
  */
 
-import type { AdvisorySource, AdvisoryStatus, PegTier } from '@tokens/asset-registry';
+import type { AdvisorySource, AdvisoryStatus, PegTier, SystemAdvisorySource } from '@tokens/asset-registry';
+
+/** Who produced an observation. Each observer owns the advisories it sets. */
+export type DepegObserver = 'webacy' | 'peg_guard';
+
+export const ADVISORY_SOURCE_BY_OBSERVER: Record<DepegObserver, SystemAdvisorySource> = {
+    webacy: 'webacy_depeg',
+    peg_guard: 'peg_guard',
+};
 
 export interface ReconcilerObservation {
     mint: string;
     symbol: string | null;
+    /** Defaults to 'webacy' so the original Webacy job is unchanged. */
+    observer?: DepegObserver;
+    /** DEX liquidity behind the price (peg guard); quoted in the reason copy. */
+    liquidityUsd?: number | null;
     /** Had an active asset_variants row at observation time. */
     inRegistry: boolean;
     /** False when the last fetch failed; `tier` is then the last good value. */
@@ -50,6 +62,8 @@ export interface ReconcilerConfig {
     setTiers: readonly PegTier[];
     /** Set on the first critical sighting regardless of `warningConfirmMs`. */
     criticalImmediate: boolean;
+    /** How long a critical must persist when `criticalImmediate` is false (default 0). */
+    criticalConfirmMs?: number;
     /** How long a warning must persist before it sets an advisory. */
     warningConfirmMs: number;
     /** Tiers that count as healthy for the purposes of clearing. */
@@ -66,6 +80,7 @@ export type ReconcilerAction =
     | {
           kind: 'set';
           mint: string;
+          observer: DepegObserver;
           tier: 'warning' | 'critical';
           reason: string;
           url: null;
@@ -74,18 +89,20 @@ export type ReconcilerAction =
     | {
           kind: 'update_reason';
           mint: string;
+          observer: DepegObserver;
           tier: 'warning' | 'critical';
           reason: string;
           url: null;
           why: 'tier_changed';
       }
-    | { kind: 'clear'; mint: string; note: string; why: 'recovered' };
+    | { kind: 'clear'; mint: string; observer: DepegObserver; note: string; why: 'recovered' };
 
 export type ReconcilerSkipReason =
     | 'not_in_registry'
     | 'no_observation'
     | 'stale_observation'
     | 'human_managed'
+    | 'other_system_owner'
     | 'suppressed_by_human_clear'
     | 'hysteresis_pending'
     | 'cooldown_pending'
@@ -152,6 +169,18 @@ function formatPeg(pegUsd: number): string {
  * deviation is available) is what `parseReasonTier` reads back, so the
  * reconciler can tell warning from critical without a separate column.
  */
+/** `$1.2M`, `$850k`, `$12,345`; used in the peg guard reason copy. */
+export function formatUsdCompact(value: number): string {
+    if (value >= 1_000_000) return `$${(value / 1_000_000).toFixed(1).replace(/\.0$/, '')}M`;
+    if (value >= 10_000) return `$${Math.round(value / 1_000)}k`;
+    return `$${Math.round(value).toLocaleString('en-US')}`;
+}
+
+const OBSERVER_LABEL: Record<DepegObserver, string> = {
+    webacy: "Webacy's depeg monitor",
+    peg_guard: 'tokens.xyz peg monitor',
+};
+
 export function buildDepegReason(input: {
     symbol: string | null;
     mint: string;
@@ -159,20 +188,32 @@ export function buildDepegReason(input: {
     deviationPct: number | null;
     pegUsd: number | null;
     observedAt: number;
+    observer?: DepegObserver;
+    liquidityUsd?: number | null;
 }): string {
+    const observer = input.observer ?? 'webacy';
+    const who = OBSERVER_LABEL[observer];
     const subject = input.symbol?.trim() ? input.symbol.trim() : shortMint(input.mint);
     const label = tierLabel(input.tier);
     const when = formatReasonTimestamp(input.observedAt);
     const tail = 'This is not a confirmation of lost backing. Verify redemptions and liquidity before trading.';
     let reason: string;
     if (input.deviationPct === null || !Number.isFinite(input.deviationPct)) {
-        reason = `Webacy's depeg monitor rates ${subject} ${label} as of ${when} UTC. ${tail}`;
+        reason = `${who} rates ${subject} ${label} as of ${when} UTC. ${tail}`;
     } else {
         const direction = input.deviationPct < 0 ? 'below' : 'above';
         const magnitude = Math.abs(input.deviationPct).toFixed(2);
         const peg =
             input.pegUsd !== null && Number.isFinite(input.pegUsd) ? `its $${formatPeg(input.pegUsd)} peg` : 'its peg';
-        reason = `Webacy's depeg monitor rates ${subject} ${label}: trading ${magnitude}% ${direction} ${peg} as of ${when} UTC. ${tail}`;
+        if (observer === 'peg_guard') {
+            const liquidity =
+                input.liquidityUsd !== null && input.liquidityUsd !== undefined && Number.isFinite(input.liquidityUsd)
+                    ? ` (Birdeye price, liquidity ${formatUsdCompact(input.liquidityUsd)})`
+                    : ' (Birdeye price)';
+            reason = `${who} rates ${subject} ${label}: trading ${magnitude}% ${direction} ${peg} on Solana DEXs as of ${when} UTC${liquidity}. ${tail}`;
+        } else {
+            reason = `${who} rates ${subject} ${label}: trading ${magnitude}% ${direction} ${peg} as of ${when} UTC. ${tail}`;
+        }
     }
     return reason.length > MAX_REASON_CHARS ? reason.slice(0, MAX_REASON_CHARS) : reason;
 }
@@ -184,8 +225,9 @@ export function parseReasonTier(reason: string): BadTier | null {
     return match[1] === 'Warning' ? 'warning' : 'critical';
 }
 
-export function buildClearNote(tier: PegTier, healthyForMs: number): string {
+export function buildClearNote(tier: PegTier, healthyForMs: number, observer: DepegObserver = 'webacy'): string {
     const hours = Math.max(0, Math.floor(healthyForMs / HOUR_MS));
+    if (observer === 'peg_guard') return `tokens.xyz peg monitor: on peg for ${hours}h`;
     return `Webacy tier ${tier} for ${hours}h`;
 }
 
@@ -209,6 +251,12 @@ function decideMint(
     if (!obs.ok || obs.tier === null) return 'no_observation';
     if (now - obs.lastFetchedAt > config.staleObservationMs) return 'stale_observation';
     if (advisory && !advisory.managedBySystem) return 'human_managed';
+    const observer: DepegObserver = obs.observer ?? 'webacy';
+    // Each observer only manages the advisories it set; the other one's rows
+    // are left alone even when this observer disagrees.
+    if (advisory && advisory.managedBySystem && advisory.source !== ADVISORY_SOURCE_BY_OBSERVER[observer]) {
+        return 'other_system_owner';
+    }
 
     const tier = obs.tier;
 
@@ -224,6 +272,7 @@ function decideMint(
             return {
                 kind: 'update_reason',
                 mint: obs.mint,
+                observer,
                 tier,
                 reason: buildDepegReason({
                     symbol: obs.symbol,
@@ -232,17 +281,25 @@ function decideMint(
                     deviationPct: obs.deviationPct,
                     pegUsd: obs.pegUsd,
                     observedAt: obs.lastFetchedAt,
+                    observer,
+                    liquidityUsd: obs.liquidityUsd ?? null,
                 }),
                 url: null,
                 why: 'tier_changed',
             };
         }
 
-        const immediate = tier === 'critical' && config.criticalImmediate;
-        if (!immediate && now - badSince < config.warningConfirmMs) return 'hysteresis_pending';
+        const confirmMs =
+            tier === 'critical'
+                ? config.criticalImmediate
+                    ? 0
+                    : (config.criticalConfirmMs ?? 0)
+                : config.warningConfirmMs;
+        if (now - badSince < confirmMs) return 'hysteresis_pending';
         return {
             kind: 'set',
             mint: obs.mint,
+            observer,
             tier,
             reason: buildDepegReason({
                 symbol: obs.symbol,
@@ -251,6 +308,8 @@ function decideMint(
                 deviationPct: obs.deviationPct,
                 pegUsd: obs.pegUsd,
                 observedAt: obs.lastFetchedAt,
+                observer,
+                liquidityUsd: obs.liquidityUsd ?? null,
             }),
             url: null,
             why: tier === 'critical' ? 'enter_critical' : 'enter_warning',
@@ -266,7 +325,13 @@ function decideMint(
         const healthySince = obs.tierSinceAt ?? obs.lastFetchedAt;
         const healthyFor = now - healthySince;
         if (healthyFor < config.clearCooldownMs) return 'cooldown_pending';
-        return { kind: 'clear', mint: obs.mint, note: buildClearNote(tier, healthyFor), why: 'recovered' };
+        return {
+            kind: 'clear',
+            mint: obs.mint,
+            observer,
+            note: buildClearNote(tier, healthyFor, observer),
+            why: 'recovered',
+        };
     }
 
     // Neither a set nor a clear tier: an existing system advisory stays as is.

@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 
-import { makeClickhouseClient, makeWebacyDepegClient } from './clients';
+import { makeBirdeyeClient, makeClickhouseClient, makeWebacyDepegClient, parseBirdeyeMultiPrice } from './clients';
 import { normalizeDepegItem, normalizeStructuralHealth, tierFromOverallRisk } from './handlers/depegNormalize';
 
 const BASE_OPTS = {
@@ -105,6 +105,63 @@ describe('makeWebacyDepegClient', () => {
     function page(addresses: string[]) {
         return { tokens: addresses.map(address => ({ address, risk: { overallRisk: 10, issues: [], tags: [] }, metadata: { symbol: 'X' } })) };
     }
+
+    test('parseBirdeyeMultiPrice maps the documented payload, converts seconds to ms and reports null entries as missing', () => {
+        const out = parseBirdeyeMultiPrice(
+            {
+                success: true,
+                data: {
+                    [USDC]: { value: 0.9998, updateUnixTime: 1757800000, liquidity: 1234567.8, isScaledUiToken: false },
+                    [USDT]: null,
+                },
+            },
+            [USDC, USDT, 'MintZ'],
+        );
+        expect(out.ok).toBe(true);
+        if (out.ok) {
+            expect(out.byMint.get(USDC)).toEqual({
+                mint: USDC,
+                priceUsd: 0.9998,
+                updatedAt: 1757800000000,
+                liquidityUsd: 1234567.8,
+                isScaledUiToken: false,
+            });
+            expect(out.missing).toEqual([USDT, 'MintZ']);
+        }
+        expect(parseBirdeyeMultiPrice({ success: false, message: 'bad key' }, [USDC])).toEqual({
+            ok: false,
+            status: 200,
+            message: 'bad key',
+        });
+    });
+
+    test('fetchMultiPrice chunks 101 mints into two calls with the api key and chain headers, then merges', async () => {
+        const mints = Array.from({ length: 101 }, (_, i) => `Mint${i}`);
+        const { fetchImpl, calls } = recordingFetch(url => {
+            const list = (url.searchParams.get('list_address') ?? '').split(',');
+            const data: Record<string, unknown> = {};
+            for (const m of list) data[m] = { value: 1, updateUnixTime: 1757800000 };
+            return json({ success: true, data });
+        });
+        const client = makeBirdeyeClient({ apiKey: 'bk', fetchImpl });
+        const out = await client.fetchMultiPrice(mints);
+        expect(calls).toHaveLength(2);
+        expect(calls[0]!.url.pathname).toBe('/defi/multi_price');
+        expect(calls[0]!.url.searchParams.get('include_liquidity')).toBe('true');
+        expect((calls[0]!.init!.headers as Record<string, string>)['X-API-KEY']).toBe('bk');
+        expect((calls[0]!.init!.headers as Record<string, string>)['x-chain']).toBe('solana');
+        expect(calls[0]!.url.searchParams.get('list_address')!.split(',')).toHaveLength(100);
+        expect(out.ok).toBe(true);
+        if (out.ok) expect(out.byMint.size).toBe(101);
+    });
+
+    test('fetchMultiPrice retries once on 429 and reports the failure after the second', async () => {
+        const { fetchImpl, calls } = recordingFetch(() => json({ message: 'rate limited' }, 429));
+        const client = makeBirdeyeClient({ apiKey: 'bk', fetchImpl });
+        const out = await client.fetchMultiPrice([USDC]);
+        expect(calls).toHaveLength(2);
+        expect(out).toMatchObject({ ok: false, status: 429 });
+    });
 
     test('tierFromOverallRisk bands at the 25/50/70 boundaries and premium from tags', () => {
         expect(tierFromOverallRisk(0, [])).toBe('ok');

@@ -21,6 +21,7 @@ const pegHealth: PegHealth = {
     deviationPct: -2.4,
     priceUsd: 0.976,
     pegUsd: 1,
+    liquidityUsd: null,
     tierSince: NOW - 60_000,
     updatedAt: NOW - 1_000,
     stale: false,

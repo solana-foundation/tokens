@@ -1,14 +1,19 @@
 import { describe, expect, it } from 'bun:test';
 
 import {
+    WEBACY_PEG_COVERAGE_MS,
     parseCategoryScores,
     stablecoinHealthGetByMints,
+    toPegHealthRead,
+    webacyCoversRow,
     type StablecoinHealthReadsRepo,
     type StablecoinHealthRow,
 } from './stablecoinHealthReads';
 
 const USDC = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
 const USDT = 'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB';
+/** Fixed clock so the 9h Webacy coverage rule is deterministic; 1h after the fixture's last fetch. */
+const NOW = 1757703600000 + 60 * 60_000;
 
 function row(overrides: Partial<StablecoinHealthRow> = {}): StablecoinHealthRow {
     return {
@@ -50,15 +55,17 @@ describe('stablecoinHealthGetByMints', () => {
     });
 
     it('returns one entry per requested mint in input order, nulls when no row', async () => {
-        const result = await stablecoinHealthGetByMints(repoWith([row()]), { mints: [USDT, USDC, USDT] });
+        const result = await stablecoinHealthGetByMints(repoWith([row()]), { mints: [USDT, USDC, USDT] }, NOW);
         expect(result.map(e => e.mint)).toEqual([USDT, USDC]);
         expect(result[0]).toEqual({ mint: USDT, pegHealth: null, structuralHealth: null });
         expect(result[1]!.pegHealth).toEqual({
+            provider: 'webacy',
             tier: 'ok',
             overallRisk: 3.5,
             deviationPct: -0.02,
             priceUsd: 0.9998,
             pegUsd: 1,
+            liquidityUsd: null,
             tierSince: 1757700000000,
             updatedAt: 1757703600000,
             ok: true,
@@ -92,15 +99,18 @@ describe('stablecoinHealthGetByMints', () => {
                 }),
             ]),
             { mints: [USDC] },
+            NOW,
         );
         expect(entry!.pegHealth?.ok).toBe(false);
         expect(entry!.pegHealth?.errorMessage).toBe('HTTP 502');
         expect(entry!.pegHealth?.tier).toBe('ok');
         expect(entry!.structuralHealth).toBeNull();
 
-        const [unknownTier] = await stablecoinHealthGetByMints(repoWith([row({ depeg_tier: 'meh' })]), {
-            mints: [USDC],
-        });
+        const [unknownTier] = await stablecoinHealthGetByMints(
+            repoWith([row({ depeg_tier: 'meh' })]),
+            { mints: [USDC] },
+            NOW,
+        );
         expect(unknownTier!.pegHealth).toBeNull();
     });
 
@@ -121,6 +131,7 @@ describe('stablecoinHealthGetByMints', () => {
                 row({ depeg_ok: false, depeg_last_fetched_at: 2000, depeg_last_ok_at: 1500, sh_last_ok_at: '900' }),
             ]),
             { mints: [USDC] },
+            NOW,
         );
         expect(entry!.pegHealth?.updatedAt).toBe(1500);
         expect(entry!.structuralHealth?.updatedAt).toBe(900);
@@ -129,5 +140,123 @@ describe('stablecoinHealthGetByMints', () => {
     it('caps the request size', async () => {
         const mints = Array.from({ length: 201 }, (_, i) => `mint${i}`);
         await expect(stablecoinHealthGetByMints(repoWith([]), { mints })).rejects.toThrow(/at most 200/);
+    });
+});
+
+describe('toPegHealthRead provider preference', () => {
+    const pegGuard: Partial<StablecoinHealthRow> = {
+        pg_ok: true,
+        pg_tier: 'warning',
+        pg_deviation_pct: '-1.8',
+        pg_price_usd: 0.982,
+        pg_peg_usd: 1,
+        pg_liquidity_usd: '1250000',
+        pg_tier_since_at: '1757690000000',
+        pg_last_fetched_at: NOW - 5 * 60_000,
+        pg_last_ok_at: NOW - 5 * 60_000,
+        pg_error_message: null,
+    };
+
+    it('serves Webacy when its row is fresh, even with a peg guard row present', () => {
+        const read = toPegHealthRead(row({ ...pegGuard, depeg_last_ok_at: NOW - 60 * 60_000 }), NOW);
+        expect(read?.provider).toBe('webacy');
+        expect(read?.tier).toBe('ok');
+        expect(read?.overallRisk).toBe(3.5);
+        expect(read?.liquidityUsd).toBeNull();
+    });
+
+    it('falls through to the peg guard when the Webacy observation is older than 9h', () => {
+        const stale = row({
+            ...pegGuard,
+            depeg_last_ok_at: NOW - 10 * 60 * 60_000,
+            depeg_last_fetched_at: NOW - 10 * 60 * 60_000,
+        });
+        expect(webacyCoversRow(stale, NOW)).toBe(false);
+        expect(toPegHealthRead(stale, NOW)).toEqual({
+            provider: 'tokens',
+            tier: 'warning',
+            overallRisk: null,
+            deviationPct: -1.8,
+            priceUsd: 0.982,
+            pegUsd: 1,
+            liquidityUsd: 1250000,
+            tierSince: 1757690000000,
+            updatedAt: NOW - 5 * 60_000,
+            ok: true,
+            errorMessage: null,
+        });
+    });
+
+    it('treats the coverage bound as inclusive and a failing or tierless Webacy row as not covering', () => {
+        const atBound = row({ depeg_last_ok_at: NOW - WEBACY_PEG_COVERAGE_MS });
+        const pastBound = row({ depeg_last_ok_at: NOW - WEBACY_PEG_COVERAGE_MS - 1 });
+        expect(webacyCoversRow(atBound, NOW)).toBe(true);
+        expect(webacyCoversRow(pastBound, NOW)).toBe(false);
+        expect(webacyCoversRow(row({ depeg_ok: false, depeg_last_ok_at: NOW }), NOW)).toBe(false);
+        expect(webacyCoversRow(row({ depeg_tier: null, depeg_last_ok_at: NOW }), NOW)).toBe(false);
+        expect(toPegHealthRead(row({ ...pegGuard, depeg_ok: false, depeg_last_ok_at: NOW }), NOW)?.provider).toBe(
+            'tokens',
+        );
+    });
+
+    it('serves the peg guard alone for mints Webacy does not list', () => {
+        const only = row({
+            ...pegGuard,
+            depeg_ok: null,
+            depeg_tier: null,
+            depeg_overall_risk: null,
+            depeg_deviation_pct: null,
+            depeg_price_usd: null,
+            depeg_peg_usd: null,
+            depeg_tier_since_at: null,
+            depeg_last_fetched_at: null,
+            depeg_last_ok_at: null,
+        });
+        const read = toPegHealthRead(only, NOW);
+        expect(read?.provider).toBe('tokens');
+        expect(read?.tier).toBe('warning');
+        expect(read?.liquidityUsd).toBe(1250000);
+    });
+
+    it('keeps a failing peg guard row on its last good tier with the error surfaced', () => {
+        const failing = row({
+            ...pegGuard,
+            depeg_tier: null,
+            pg_ok: false,
+            pg_error_message: 'thin_liquidity',
+            pg_last_fetched_at: NOW,
+            pg_last_ok_at: NOW - 30 * 60_000,
+        });
+        const read = toPegHealthRead(failing, NOW);
+        expect(read?.provider).toBe('tokens');
+        expect(read?.ok).toBe(false);
+        expect(read?.errorMessage).toBe('thin_liquidity');
+        expect(read?.updatedAt).toBe(NOW - 30 * 60_000);
+    });
+
+    it('returns null when neither observer has a tier, and ignores a peg guard row without one', () => {
+        expect(toPegHealthRead(row({ depeg_tier: null, pg_tier: null, pg_ok: true }), NOW)).toBeNull();
+        expect(
+            toPegHealthRead(
+                row({ depeg_tier: null, pg_ok: false, pg_tier: null, pg_error_message: 'unsupported_peg' }),
+                NOW,
+            ),
+        ).toBeNull();
+    });
+
+    it('falls back to the stale Webacy row when there is no peg guard row (pre-0020 row shape)', () => {
+        const legacy = row({ depeg_last_ok_at: NOW - 10 * 60 * 60_000 });
+        expect('pg_tier' in legacy).toBe(false);
+        const read = toPegHealthRead(legacy, NOW);
+        expect(read?.provider).toBe('webacy');
+        expect(read?.tier).toBe('ok');
+        expect(read?.updatedAt).toBe(NOW - 10 * 60 * 60_000);
+    });
+
+    it('defaults nowMs to the wall clock for the RPC entry point', async () => {
+        const [entry] = await stablecoinHealthGetByMints(repoWith([row({ depeg_last_ok_at: Date.now() })]), {
+            mints: [USDC],
+        });
+        expect(entry!.pegHealth?.provider).toBe('webacy');
     });
 });

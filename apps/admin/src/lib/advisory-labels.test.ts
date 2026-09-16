@@ -15,9 +15,12 @@ import {
     isAdvisoryStatus,
     isSystemActor,
     isSystemManagedAdvisory,
+    pegProviderLabel,
     pegTierBadgeVariant,
     pegTierLabel,
     structuralGradeBadgeVariant,
+    SYSTEM_ADVISORY_CLEAR_WARNING,
+    SYSTEM_ADVISORY_EDIT_WARNING,
     validateAdvisoryReason,
     validateAdvisoryUrl,
 } from './advisory-labels';
@@ -114,6 +117,9 @@ describe('event and toast copy', () => {
         expect(advisoryActorLabel({ actorClerkUserId: 'system:webacy_depeg', actorEmail: null })).toBe(
             'Webacy depeg monitor (automated)',
         );
+        expect(advisoryActorLabel({ actorClerkUserId: 'system:peg_guard', actorEmail: null })).toBe(
+            'tokens.xyz peg monitor (automated)',
+        );
         expect(advisoryActorLabel({ actorClerkUserId: 'system:other_bot', actorEmail: null })).toBe(
             'Automated (other_bot)',
         );
@@ -127,10 +133,26 @@ describe('advisory provenance and stablecoin health labels', () => {
         expect(advisorySourceLabel(undefined)).toBe('Manual');
         expect(advisorySourceLabel('admin')).toBe('Manual');
         expect(advisorySourceLabel('webacy_depeg')).toBe('Auto · Webacy depeg monitor');
+        expect(advisorySourceLabel('peg_guard')).toBe('Auto · tokens.xyz peg monitor');
         expect(isSystemManagedAdvisory({ source: 'webacy_depeg' })).toBe(true);
+        expect(isSystemManagedAdvisory({ source: 'peg_guard' })).toBe(true);
         expect(isSystemManagedAdvisory({ source: 'admin' })).toBe(false);
         expect(isSystemManagedAdvisory({})).toBe(false);
         expect(isSystemManagedAdvisory(null)).toBe(false);
+    });
+
+    it('keeps the system-advisory warnings generic across observers', () => {
+        for (const warning of [SYSTEM_ADVISORY_EDIT_WARNING, SYSTEM_ADVISORY_CLEAR_WARNING]) {
+            expect(warning).toContain('a depeg monitor');
+            expect(warning).not.toContain('Webacy');
+            expect(warning).not.toContain('\u2014');
+        }
+    });
+
+    it('labels the peg observer and defaults rows without one to Webacy', () => {
+        expect(pegProviderLabel('webacy')).toBe('Webacy');
+        expect(pegProviderLabel('tokens')).toBe('tokens.xyz peg monitor');
+        expect(pegProviderLabel(undefined)).toBe('Webacy');
     });
 
     it('maps peg tiers and grades to badge tones', () => {

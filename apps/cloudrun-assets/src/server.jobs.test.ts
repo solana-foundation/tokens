@@ -553,6 +553,50 @@ describe('POST /jobs/:name', () => {
         expect(payload.mode).toBe('sweep');
     });
 
+    it('dispatches refresh-peg-guard through the depeg job group', async () => {
+        // `pegGuard` omitted on purpose: the job reports itself unconfigured
+        // instead of the group 404ing, so the Webacy jobs stay reachable.
+        const depegCronDeps: DepegCronDeps = {
+            webacyDepeg: {
+                isConfigured: () => false,
+                async fetchDepegToken() {
+                    return { ok: false, status: 0, message: 'n/a' };
+                },
+                async fetchDepegList() {
+                    return { ok: false, status: 0, message: 'n/a' };
+                },
+                async fetchStructuralHealthBatch() {
+                    return [];
+                },
+            },
+            repo: undefined as unknown as DepegCronDeps['repo'],
+            curated: noopCuratedMembershipSource,
+            now: () => 1_780_000_000_000,
+            isRefreshEnabled: () => true,
+            isDryRunDefault: () => true,
+            log: () => {},
+        };
+        const app = createApp({
+            ...baseDeps,
+            repo: noopRepo,
+            authToken: 'tok',
+            cronDeps: emptyCronDeps(),
+            depegCronDeps,
+            verifyOidc: allowOidc,
+        });
+        const res = await call(app, '/jobs/refresh-peg-guard', {
+            method: 'POST',
+            headers: { authorization: 'Bearer jwt', 'content-type': 'application/json' },
+            body: '{"trigger":"manual"}',
+        });
+        expect(res.status).toBe(200);
+        const payload = (await res.json()) as { ok: boolean; disabled?: boolean; reason?: string; trigger?: string };
+        expect(payload.ok).toBe(true);
+        expect(payload.disabled).toBe(true);
+        expect(payload.reason).toBe('peg_guard_not_configured');
+        expect(payload.trigger).toBe('manual');
+    });
+
     it('returns 404 jobs_disabled when cronDeps is missing', async () => {
         const app = createApp({ ...baseDeps, repo: noopRepo, authToken: 'tok' });
         const res = await call(app, '/jobs/sync-sanctum-lsts', {

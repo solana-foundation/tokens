@@ -18,9 +18,17 @@
 import { Effect } from 'effect';
 import { BadRequestError } from '@tokens/effect';
 import { decodeJobArgs, type JobArgSpecs } from '@tokens/effect/job-args';
-import { STRUCTURAL_GRADES, type PegTier, type StructuralGrade } from '@tokens/asset-registry';
+import {
+    STRUCTURAL_GRADES,
+    type PegTier,
+    type StructuralGrade,
+    type SystemAdvisorySource,
+} from '@tokens/asset-registry';
 
+import type { BirdeyeMultiPriceClient } from '../clients';
+import type { PegGuardRepo } from '../db/pegGuard';
 import type { CronResult } from './crons';
+import { refreshPegGuard } from './crons.pegGuard';
 import type { CuratedMembershipSource } from './curatedMembershipReads';
 import {
     normalizeStructuralHealth as normalizeStructural,
@@ -28,6 +36,7 @@ import {
     type WebacyDepegItem,
 } from './depegNormalize';
 import {
+    ADVISORY_SOURCE_BY_OBSERVER,
     reconcileDepegAdvisories,
     type ReconcilerAction,
     type ReconcilerAdvisory,
@@ -138,8 +147,9 @@ export interface StructuralHealthDailyRow {
     recordedAt: number;
 }
 
-export type SetSystemAdvisoryOutcome = 'set' | 'updated' | 'unchanged' | 'skipped_human_owned' | 'variant_not_found';
-export type ClearSystemAdvisoryOutcome = 'cleared' | 'skipped_not_system' | 'not_found';
+export type SetSystemAdvisoryOutcome =
+    'set' | 'updated' | 'unchanged' | 'skipped_human_owned' | 'skipped_other_system_owner' | 'variant_not_found';
+export type ClearSystemAdvisoryOutcome = 'cleared' | 'skipped_not_system' | 'skipped_other_system_owner' | 'not_found';
 
 export interface DepegRepo {
     listDepegLatest(chain: string): Promise<DepegLatestRow[]>;
@@ -152,8 +162,18 @@ export interface DepegRepo {
     listAdvisoriesForReconcile(mints: readonly string[]): Promise<ReconcilerAdvisory[]>;
     /** Latest `action='clear' AND source='admin'` event time per mint. */
     listLastAdminClearAtByMints(mints: readonly string[]): Promise<Map<string, number>>;
-    setSystemAdvisory(args: { mint: string; reason: string; nowMs: number }): Promise<SetSystemAdvisoryOutcome>;
-    clearSystemAdvisory(args: { mint: string; note: string; nowMs: number }): Promise<ClearSystemAdvisoryOutcome>;
+    setSystemAdvisory(args: {
+        mint: string;
+        reason: string;
+        nowMs: number;
+        source: SystemAdvisorySource;
+    }): Promise<SetSystemAdvisoryOutcome>;
+    clearSystemAdvisory(args: {
+        mint: string;
+        note: string;
+        nowMs: number;
+        source: SystemAdvisorySource;
+    }): Promise<ClearSystemAdvisoryOutcome>;
     upsertStructuralHealthLatest(rows: readonly StructuralHealthLatestRow[]): Promise<void>;
     upsertStructuralHealthDaily(rows: readonly StructuralHealthDailyRow[]): Promise<void>;
     listStructuralHealthLatest(chain: string): Promise<StructuralHealthLatestRow[]>;
@@ -172,6 +192,19 @@ export interface DepegCronDeps {
     isDryRunDefault?: () => boolean;
     /** Structured-log seam; production prints one JSON line per call. */
     log?: (line: Record<string, unknown>) => void;
+    /**
+     * In-house peg guard (crons.pegGuard.ts). Optional so a worker without a
+     * Birdeye multi-price client still serves the Webacy jobs; the job then
+     * returns `peg_guard_not_configured`.
+     */
+    pegGuard?: {
+        birdeye: BirdeyeMultiPriceClient;
+        repo: PegGuardRepo;
+        /** Env `PEG_GUARD_ENABLED === 'true'` by default. */
+        isEnabled?: () => boolean;
+        /** Env `PEG_GUARD_DRY_RUN`, falling back to `WEBACY_DEPEG_DRY_RUN`; true unless explicitly 'false'. */
+        isDryRunDefault?: () => boolean;
+    };
 }
 
 function defaultIsRefreshEnabled(): boolean {
@@ -238,6 +271,7 @@ function toObservation(row: DepegLatestRow): ReconcilerObservation {
     return {
         mint: row.address,
         symbol: row.symbol,
+        observer: 'webacy',
         inRegistry: row.inRegistry,
         ok: row.ok,
         tier: row.tier,
@@ -363,6 +397,7 @@ const RECONCILE_ARG_SPECS = {
     pageSize: { kind: 'int', fallback: 200, min: 10, max: 200 },
     maxPages: { kind: 'int', fallback: 4, min: 1, max: 20 },
     criticalImmediate: { kind: 'bool', fallback: true },
+    criticalConfirmMs: { kind: 'int', fallback: 0, min: 0, max: 6 * 60 * 60_000 },
     warningConfirmMs: { kind: 'int', fallback: 0, min: 0, max: 6 * HOUR_MS },
     clearCooldownMs: { kind: 'int', fallback: 6 * HOUR_MS, min: 0, max: 48 * HOUR_MS },
     clearOnWatch: { kind: 'bool', fallback: false },
@@ -381,7 +416,14 @@ function readOptionalString(raw: unknown, key: string): string | null {
     return value.trim() || null;
 }
 
-export interface DepegReconcileResult extends CronResult {
+/** Write counters `applyAction` bumps; shared by the Webacy and peg guard results. */
+export interface AdvisoryActionCounters {
+    actionsSet: number;
+    actionsUpdated: number;
+    actionsCleared: number;
+}
+
+export interface DepegReconcileResult extends CronResult, AdvisoryActionCounters {
     mode: 'targeted' | 'sweep';
     dryRun: boolean;
     disabled?: boolean;
@@ -390,9 +432,6 @@ export interface DepegReconcileResult extends CronResult {
     tracked: number;
     tierCounts: Record<PegTier | 'null', number>;
     tierChanges: number;
-    actionsSet: number;
-    actionsUpdated: number;
-    actionsCleared: number;
     skipped: Partial<Record<ReconcilerSkipReason | 'missing_from_list', number>>;
     circuit: 'suspicious_drop' | 'mass_tier_flip' | 'mass_action' | null;
     truncated: boolean;
@@ -415,7 +454,7 @@ export async function reconcileStablecoinDepeg(deps: DepegCronDeps, rawArgs: unk
     const dryRun = dryRunArg ?? (deps.isDryRunDefault ?? defaultIsDryRun)();
     const log = deps.log ?? defaultLog;
     const job = 'reconcile-stablecoin-depeg';
-    const base = { job, trigger, dry_run: dryRun, mode };
+    const base = { job, trigger, dry_run: dryRun, mode, observer: 'webacy' as const };
     const start = deps.now();
     const budgetMs = args.budgetMs > 0 ? args.budgetMs : mode === 'targeted' ? 30_000 : 90_000;
     const overBudget = () => deps.now() - start >= budgetMs;
@@ -670,6 +709,7 @@ export async function reconcileStablecoinDepeg(deps: DepegCronDeps, rawArgs: unk
             config: {
                 setTiers: ['warning', 'critical'],
                 criticalImmediate: args.criticalImmediate,
+                criticalConfirmMs: args.criticalConfirmMs,
                 warningConfirmMs: args.warningConfirmMs,
                 clearTiers,
                 clearCooldownMs: args.clearCooldownMs,
@@ -728,13 +768,13 @@ function summaryFields(result: DepegReconcileResult): Record<string, unknown> {
     };
 }
 
-async function applyAction(
+export async function applyAction(
     deps: DepegCronDeps,
     action: ReconcilerAction,
     dryRun: boolean,
     base: Record<string, unknown>,
     log: (line: Record<string, unknown>) => void,
-    result: DepegReconcileResult,
+    result: AdvisoryActionCounters,
 ): Promise<void> {
     const nowMs = deps.now();
     if (action.kind === 'clear') {
@@ -748,7 +788,12 @@ async function applyAction(
             });
             return;
         }
-        const outcome = await deps.repo.clearSystemAdvisory({ mint: action.mint, note: action.note, nowMs });
+        const outcome = await deps.repo.clearSystemAdvisory({
+            mint: action.mint,
+            note: action.note,
+            nowMs,
+            source: ADVISORY_SOURCE_BY_OBSERVER[action.observer],
+        });
         if (outcome === 'cleared') {
             result.actionsCleared += 1;
             log({ ...base, event: 'depeg_advisory_cleared', mint: action.mint, note: action.note, why: action.why });
@@ -769,7 +814,12 @@ async function applyAction(
         });
         return;
     }
-    const outcome = await deps.repo.setSystemAdvisory({ mint: action.mint, reason: action.reason, nowMs });
+    const outcome = await deps.repo.setSystemAdvisory({
+        mint: action.mint,
+        reason: action.reason,
+        nowMs,
+        source: ADVISORY_SOURCE_BY_OBSERVER[action.observer],
+    });
     if (outcome === 'set') {
         result.actionsSet += 1;
         log({
@@ -831,7 +881,7 @@ export async function refreshStablecoinStructuralHealth(deps: DepegCronDeps, raw
     const dryRun = (deps.isDryRunDefault ?? defaultIsDryRun)();
     // Structural grades are cache writes, never advisories, so dry-run is
     // reported for log symmetry only and does not gate anything.
-    const base = { job, trigger: 'sweep' as const, dry_run: dryRun };
+    const base = { job, trigger: 'sweep' as const, dry_run: dryRun, observer: 'webacy' as const };
     const start = deps.now();
     const budgetMs = args.budgetMs > 0 ? args.budgetMs : 300_000;
 
@@ -987,4 +1037,8 @@ export type DepegJobHandler = (deps: DepegCronDeps, args: unknown) => Promise<Cr
 export const depegJobs: Record<string, DepegJobHandler> = {
     'reconcile-stablecoin-depeg': reconcileStablecoinDepeg,
     'refresh-stablecoin-structural-health': refreshStablecoinStructuralHealth,
+    // Wrapped rather than referenced: crons.pegGuard.ts imports applyAction
+    // from this module, so the binding is resolved at call time, never during
+    // the module cycle's evaluation.
+    'refresh-peg-guard': (deps, args) => refreshPegGuard(deps, args),
 };

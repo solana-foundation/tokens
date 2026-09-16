@@ -37,9 +37,11 @@ export function AssetAdvisoryBanner({ advisory, symbol, mint, className }: Asset
     const tone = advisoryTone(advisory.status);
     const isDestructive = tone === 'destructive';
     const since = formatAdvisorySince(advisory.since);
-    // System rows (Webacy depeg monitor) have no per-token URL; attribute the
-    // source and link the provider instead of a "Read more".
+    // System rows (depeg monitors) have no per-token URL; attribute the source
+    // instead of a "Read more", and link the provider only when it has an
+    // external site (Webacy). The tokens.xyz peg monitor is ours.
     const sourceAttribution = advisorySourceAttribution(advisory);
+    const showWebacyLink = advisory.source === 'webacy_depeg';
     const linkClassName = cn(
         'inline-flex items-center gap-0.5 font-medium underline underline-offset-2 transition-colors',
         isDestructive ? 'text-rose-900 hover:text-rose-950' : 'text-amber-900 hover:text-amber-950',
@@ -74,27 +76,25 @@ export function AssetAdvisoryBanner({ advisory, symbol, mint, className }: Asset
                         )}
                     >
                         {since ? <span>Flagged {since}</span> : null}
-                        {sourceAttribution ? (
-                            <>
-                                <span>{sourceAttribution}</span>
-                                <TrackedAnchor
-                                    href={WEBACY_ATTRIBUTION_URL}
-                                    target="_blank"
-                                    rel="noopener noreferrer"
-                                    trackingEvent="external_link_clicked"
-                                    trackingProperties={advisoryEventProps(advisory, {
-                                        link_type: 'data_provider',
-                                        link_url: WEBACY_ATTRIBUTION_URL,
-                                        provider: 'webacy',
-                                        source: 'advisory_banner',
-                                        ...(mint ? { token_address: mint } : {}),
-                                    })}
-                                    className={linkClassName}
-                                >
-                                    Webacy
-                                    <ArrowUpRight className="size-3" aria-hidden />
-                                </TrackedAnchor>
-                            </>
+                        {sourceAttribution ? <span>{sourceAttribution}</span> : null}
+                        {sourceAttribution && showWebacyLink ? (
+                            <TrackedAnchor
+                                href={WEBACY_ATTRIBUTION_URL}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                trackingEvent="external_link_clicked"
+                                trackingProperties={advisoryEventProps(advisory, {
+                                    link_type: 'data_provider',
+                                    link_url: WEBACY_ATTRIBUTION_URL,
+                                    provider: 'webacy',
+                                    source: 'advisory_banner',
+                                    ...(mint ? { token_address: mint } : {}),
+                                })}
+                                className={linkClassName}
+                            >
+                                Webacy
+                                <ArrowUpRight className="size-3" aria-hidden />
+                            </TrackedAnchor>
                         ) : null}
                         {advisory.url ? (
                             <TrackedAnchor

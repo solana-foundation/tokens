@@ -5,6 +5,7 @@ import {
     STRUCTURAL_CATEGORY_KEYS,
     STRUCTURAL_CATEGORY_LABELS,
     STRUCTURAL_GRADES,
+    isPegProvider,
     isPegTier,
     isStructuralCategoryKey,
     isStructuralCategoryStatus,
@@ -12,7 +13,15 @@ import {
     pegTierSeverity,
     structuralGradeBand,
 } from './stablecoin-health';
-import { isAdvisorySource, isSystemActorId, isSystemManagedAdvisory, WEBACY_DEPEG_ACTOR } from './types';
+import {
+    PEG_GUARD_ACTOR,
+    SYSTEM_ACTOR_BY_SOURCE,
+    WEBACY_DEPEG_ACTOR,
+    isAdvisorySource,
+    isSystemActorId,
+    isSystemAdvisorySource,
+    isSystemManagedAdvisory,
+} from './types';
 
 describe('peg tiers', () => {
     it('guards the five tiers only', () => {
@@ -59,6 +68,16 @@ describe('advisory provenance', () => {
         expect(isAdvisorySource('system')).toBe(false);
         expect(isSystemActorId(WEBACY_DEPEG_ACTOR)).toBe(true);
         expect(isSystemActorId('user_2abc')).toBe(false);
+    });
+
+    it('knows both automated sources and their actors', () => {
+        expect(isAdvisorySource('peg_guard')).toBe(true);
+        expect(isSystemAdvisorySource('peg_guard')).toBe(true);
+        expect(isSystemAdvisorySource('admin')).toBe(false);
+        expect(isSystemActorId(PEG_GUARD_ACTOR)).toBe(true);
+        expect(SYSTEM_ACTOR_BY_SOURCE.peg_guard).toBe(PEG_GUARD_ACTOR);
+        expect(isPegProvider('tokens')).toBe(true);
+        expect(isPegProvider('birdeye')).toBe(false);
     });
 
     it('treats a missing source as human-managed', () => {

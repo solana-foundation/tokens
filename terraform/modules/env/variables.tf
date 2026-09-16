@@ -219,3 +219,15 @@ variable "webacy_depeg_max_pages" {
   default     = 4
   description = "Maximum GET /rwa pages (200 items each) the depeg sweep fetches per run. Bounds Webacy CU spend; Webacy listed 572 Solana pegged tokens on 2026-09-14, so 4 pages leaves headroom."
 }
+
+variable "peg_guard_schedule" {
+  type        = string
+  default     = "2-57/5 * * * *"
+  description = "Cron schedule for the in-house stablecoin peg guard (refresh-peg-guard): one Birdeye multi_price call for every curated currencies mint per run. Minute offset 2 keeps it off the */5 market crons. Staging is pinned to every 15 minutes in crons_webacy_depeg.tf."
+}
+
+variable "peg_guard_dry_run" {
+  type        = bool
+  default     = true
+  description = "When true the peg guard records observations and logs would_set/would_clear decisions but never writes an advisory. Should track webacy_depeg_dry_run so one go-live flips both observers; set them apart only to stagger the peg guard behind Webacy."
+}

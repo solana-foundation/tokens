@@ -454,7 +454,13 @@ describe('buildAssetDetailResponse stablecoin pegHealth', () => {
             stablecoinHealthByMint: new Map([[USDC, usdcHealth]]),
         });
 
-        const compact = { tier: 'warning', deviationPct: -2.4, updatedAt: NOW - 1_000, stale: false };
+        const compact = {
+            provider: 'webacy',
+            tier: 'warning',
+            deviationPct: -2.4,
+            updatedAt: NOW - 1_000,
+            stale: false,
+        };
         expect(result.asset.primaryVariant?.pegHealth).toEqual(compact);
         expect('overallRisk' in (result.asset.primaryVariant?.pegHealth as object)).toBe(false);
 

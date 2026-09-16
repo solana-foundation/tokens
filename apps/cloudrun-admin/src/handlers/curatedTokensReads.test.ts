@@ -56,6 +56,7 @@ function variant(overrides: Partial<VariantWithMarketRow> = {}): VariantWithMark
 }
 
 const PEG_HEALTH = {
+    provider: 'tokens' as const,
     tier: 'warning' as const,
     deviationPct: -2.4,
     ok: true,

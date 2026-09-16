@@ -43,5 +43,28 @@ locals {
       })
       attempt_deadline = "360s"
     },
+    {
+      # In-house peg guard: prices every curated `currencies` mint from Birdeye
+      # and feeds the same reconciler as Webacy as a second observation source
+      # (Webacy covers only USDC/USDT/PYUSD on Solana). Minute offset 2 keeps it
+      # off the `*/5` market crons it shares the Birdeye key with.
+      #
+      # The handler is a no-op unless PEG_GUARD_ENABLED=true is set on the
+      # assets worker. `dryRun` here decides whether advisories are written;
+      # PEG_GUARD_DRY_RUN on the worker only applies to runs that omit it.
+      name      = "refresh-peg-guard"
+      schedule  = var.env == "stg" ? "3-58/15 * * * *" : var.peg_guard_schedule
+      http_path = "/jobs/refresh-peg-guard"
+      body_json = jsonencode({
+        requireEnabled = true
+        dryRun         = var.peg_guard_dry_run
+        trigger        = "sweep"
+        budgetMs       = 60000
+      })
+      attempt_deadline = "90s"
+      # No retry: the next tick is five minutes away and a retry would only
+      # double the Birdeye spend during an outage.
+      retry_count = 0
+    },
   ]
 }

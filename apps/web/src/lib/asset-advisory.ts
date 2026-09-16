@@ -3,6 +3,7 @@ import {
     isAdvisorySource,
     isAdvisoryStatus,
     isTradeRestrictedAdvisory,
+    type AdvisorySource,
     type AdvisoryStatus,
     type VariantAdvisory,
 } from '@tokens/asset-registry';
@@ -166,7 +167,17 @@ export function advisoryReasonText(advisory: AssetAdvisory): string {
     return advisory.reason.trim() || DEFAULT_ADVISORY_REASON;
 }
 
-/** Title predicate for the auto-caution the Webacy depeg monitor sets. */
+/** Sources written by an automated depeg monitor (Webacy or the tokens.xyz peg guard). */
+export const DEPEG_ADVISORY_SOURCES: ReadonlySet<AdvisorySource> = new Set<AdvisorySource>([
+    'webacy_depeg',
+    'peg_guard',
+]);
+
+export function isDepegAdvisorySource(source: AdvisorySource | undefined): boolean {
+    return source !== undefined && DEPEG_ADVISORY_SOURCES.has(source);
+}
+
+/** Title predicate for the auto-caution a depeg monitor sets. */
 export const DEPEG_ADVISORY_TITLE = 'is trading off its peg';
 
 /**
@@ -176,7 +187,9 @@ export const DEPEG_ADVISORY_TITLE = 'is trading off its peg';
  */
 export function advisoryBannerTitle(advisory: AssetAdvisory, symbol?: string | null): string {
     const subject = (symbol ?? '').trim() || 'This token';
-    const predicate = advisory.source === 'webacy_depeg' ? DEPEG_ADVISORY_TITLE : ADVISORY_COPY[advisory.status].title;
+    const predicate = isDepegAdvisorySource(advisory.source)
+        ? DEPEG_ADVISORY_TITLE
+        : ADVISORY_COPY[advisory.status].title;
     return `${subject} ${predicate}`;
 }
 

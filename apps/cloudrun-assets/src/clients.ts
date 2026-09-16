@@ -47,10 +47,68 @@ interface MakeBirdeyeOptions {
     apiKey: string;
     origin?: string;
     baseUrl?: string;
+    /** Test seam for `fetchMultiPrice`. */
+    fetchImpl?: typeof fetch;
 }
 
-export function makeBirdeyeClient(opts: MakeBirdeyeOptions): BirdeyeClient {
+export interface BirdeyeMultiPriceEntry {
+    mint: string;
+    priceUsd: number;
+    /** Unix ms of Birdeye's price timestamp. */
+    updatedAt: number;
+    liquidityUsd: number | null;
+    isScaledUiToken: boolean;
+}
+
+export type BirdeyeMultiPriceResult =
+    | { ok: true; byMint: Map<string, BirdeyeMultiPriceEntry>; missing: string[] }
+    | { ok: false; status: number; message: string };
+
+/** The one-call-per-batch price feed the peg guard uses; kept off `BirdeyeClient` so its fakes stay small. */
+export interface BirdeyeMultiPriceClient {
+    fetchMultiPrice(mints: readonly string[]): Promise<BirdeyeMultiPriceResult>;
+}
+
+const BIRDEYE_MULTI_PRICE_MAX = 100;
+
+/**
+ * `GET /defi/multi_price` answers `{ success, data: { [mint]: { value,
+ * updateUnixTime (seconds), liquidity, isScaledUiToken } | null } }`. Unknown
+ * mints come back as `null` and land in `missing`.
+ */
+export function parseBirdeyeMultiPrice(json: unknown, requested: readonly string[]): BirdeyeMultiPriceResult {
+    const rec = json && typeof json === 'object' ? (json as Record<string, unknown>) : null;
+    if (!rec || rec.success !== true) {
+        const message = rec && typeof rec.message === 'string' ? rec.message : 'unexpected multi_price payload';
+        return { ok: false, status: 200, message };
+    }
+    const data = rec.data && typeof rec.data === 'object' ? (rec.data as Record<string, unknown>) : {};
+    const byMint = new Map<string, BirdeyeMultiPriceEntry>();
+    const missing: string[] = [];
+    for (const mint of requested) {
+        const entry = data[mint];
+        const e = entry && typeof entry === 'object' ? (entry as Record<string, unknown>) : null;
+        const priceUsd = e ? toFiniteNumberOrNull(e.value) : null;
+        if (!e || priceUsd === null) {
+            missing.push(mint);
+            continue;
+        }
+        const rawTs = toFiniteNumberOrNull(e.updateUnixTime) ?? 0;
+        const updatedAt = rawTs > 0 && rawTs < 1e12 ? rawTs * 1000 : rawTs;
+        byMint.set(mint, {
+            mint,
+            priceUsd,
+            updatedAt,
+            liquidityUsd: toFiniteNumberOrNull(e.liquidity),
+            isScaledUiToken: e.isScaledUiToken === true,
+        });
+    }
+    return { ok: true, byMint, missing };
+}
+
+export function makeBirdeyeClient(opts: MakeBirdeyeOptions): BirdeyeClient & BirdeyeMultiPriceClient {
     const baseUrl = (opts.baseUrl ?? 'https://public-api.birdeye.so').replace(/\/+$/, '');
+    const fetchImpl = opts.fetchImpl ?? fetch;
     const headers: Record<string, string> = {
         'X-API-KEY': opts.apiKey,
         'x-chain': 'solana',
@@ -60,7 +118,54 @@ export function makeBirdeyeClient(opts: MakeBirdeyeOptions): BirdeyeClient {
         headers.Origin = opts.origin;
         headers.Referer = opts.origin.endsWith('/') ? opts.origin : `${opts.origin}/`;
     }
+
+    async function multiPriceChunk(chunk: readonly string[]): Promise<BirdeyeMultiPriceResult> {
+        const url = `${baseUrl}/defi/multi_price?list_address=${encodeURIComponent(chunk.join(','))}&include_liquidity=true`;
+        let lastFailure: { status: number; message: string } = { status: 0, message: 'no attempt' };
+        // One retry on 429/5xx; the peg guard runs every 5 minutes so anything
+        // longer just waits for the next tick.
+        for (let attempt = 0; attempt < 2; attempt++) {
+            try {
+                const res = await withExternalTiming('birdeye', url, () =>
+                    fetchImpl(url, { headers, signal: AbortSignal.timeout(EXTERNAL_FETCH_TIMEOUT_MS) }),
+                );
+                const text = await res.text().catch(() => '');
+                let json: unknown = null;
+                try {
+                    json = text ? JSON.parse(text) : null;
+                } catch {
+                    json = null;
+                }
+                if (!res.ok) {
+                    lastFailure = { status: res.status, message: text.slice(0, 300) || res.statusText || 'Request failed' };
+                    if (res.status === 429 || res.status >= 500) continue;
+                    return { ok: false, ...lastFailure };
+                }
+                if (json === null) return { ok: false, status: res.status, message: 'non-JSON response' };
+                return parseBirdeyeMultiPrice(json, chunk);
+            } catch (err) {
+                lastFailure = { status: 0, message: err instanceof Error ? err.message : String(err) };
+            }
+        }
+        return { ok: false, ...lastFailure };
+    }
+
     return {
+        async fetchMultiPrice(mints) {
+            const unique = [...new Set(mints.map(m => m.trim()).filter(Boolean))];
+            if (unique.length === 0) return { ok: true, byMint: new Map(), missing: [] };
+            const byMint = new Map<string, BirdeyeMultiPriceEntry>();
+            const missing: string[] = [];
+            for (let i = 0; i < unique.length; i += BIRDEYE_MULTI_PRICE_MAX) {
+                const chunk = unique.slice(i, i + BIRDEYE_MULTI_PRICE_MAX);
+                const res = await multiPriceChunk(chunk);
+                if (!res.ok) return res;
+                for (const [mint, entry] of res.byMint) byMint.set(mint, entry);
+                missing.push(...res.missing);
+            }
+            return { ok: true, byMint, missing };
+        },
+
         async fetchTokenOverview(mint: string): Promise<BirdeyeOverview | null> {
             const url = `${baseUrl}/defi/token_overview?address=${encodeURIComponent(mint)}`;
             const json = await Effect.runPromise(
