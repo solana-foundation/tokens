@@ -15,12 +15,15 @@ import type {
 import {
     ADVISORY_REASON_MAX_LENGTH,
     ADVISORY_STATUS_OPTIONS,
+    SYSTEM_ADVISORY_EDIT_WARNING,
     advisoryActorLabel,
     advisoryBadgeVariant,
     advisorySetToastMessage,
     advisoryStatusDescription,
     describeAdvisoryEvent,
     formatRelativeTime,
+    isSystemActor,
+    isSystemManagedAdvisory,
     validateAdvisoryReason,
     validateAdvisoryUrl,
 } from '@/lib/advisory-labels';
@@ -48,6 +51,8 @@ export function SetAdvisoryDialog({ variant, open, onOpenChange }: SetAdvisoryDi
     const existing = variant?.advisory ?? null;
     const symbol = variant?.symbol ?? variant?.label ?? variant?.variantId ?? '';
     const showReactivate = variant !== null && !variant.isActive;
+    // Any admin save stamps source='admin' and detaches the row from the depeg reconciler.
+    const isSystemManaged = isSystemManagedAdvisory(existing);
 
     const { data: history, error: historyError } = useAdminQuery<ListVariantAdvisoriesResult>(
         'listVariantAdvisories',
@@ -123,6 +128,15 @@ export function SetAdvisoryDialog({ variant, open, onOpenChange }: SetAdvisoryDi
                         within about a minute and are recorded in the audit log below.
                     </DialogDescription>
                 </DialogHeader>
+
+                {isSystemManaged ? (
+                    <div
+                        role="note"
+                        className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2.5 text-sm text-amber-900"
+                    >
+                        {SYSTEM_ADVISORY_EDIT_WARNING}
+                    </div>
+                ) : null}
 
                 {!variant ? (
                     <div className="flex items-center justify-center py-10">
@@ -238,7 +252,13 @@ export function SetAdvisoryDialog({ variant, open, onOpenChange }: SetAdvisoryDi
                         Cancel
                     </Button>
                     <Button onClick={onSubmit} disabled={isSubmitting || !variant}>
-                        {isSubmitting ? 'Saving…' : existing ? 'Save Advisory' : 'Set Advisory'}
+                        {isSubmitting
+                            ? 'Saving…'
+                            : !existing
+                              ? 'Set Advisory'
+                              : isSystemManaged
+                                ? 'Save and detach'
+                                : 'Save Advisory'}
                     </Button>
                 </DialogFooter>
             </DialogContent>
@@ -277,6 +297,7 @@ function AdvisoryHistory({
                                 {event.status ? (
                                     <Badge variant={advisoryBadgeVariant(event.status)}>{event.status}</Badge>
                                 ) : null}
+                                {isSystemActor(event) ? <Badge variant="info">auto</Badge> : null}
                                 {event.reactivatedVariant ? <Badge variant="info">re-activated</Badge> : null}
                                 <span
                                     className="ml-auto text-xs text-muted-foreground"

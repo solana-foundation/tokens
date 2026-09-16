@@ -15,7 +15,15 @@
  */
 
 import { classifyLiquidityTier, getCanonicalFallbackLogoPath } from '@tokens/asset-registry';
-import type { AssetCategory, LiquidityTier, StockVariantTier, VariantAdvisory, VariantKind } from '@tokens/asset-registry';
+import type {
+    AssetCategory,
+    LiquidityTier,
+    PegTier,
+    StockVariantTier,
+    StructuralGrade,
+    VariantAdvisory,
+    VariantKind,
+} from '@tokens/asset-registry';
 
 import {
     CURATED_CATEGORY_SLUGS,
@@ -58,6 +66,25 @@ export interface VariantMarketRow {
     lastFetchedAt: number | null;
 }
 
+/** Latest Webacy depeg observation for a stablecoin mint (webacy_depeg_latest). */
+export interface VariantPegHealthRow {
+    tier: PegTier;
+    /** Signed percent from peg; negative = below peg. */
+    deviationPct: number | null;
+    /** False when the last Webacy fetch failed; `tier` is then the last good value. */
+    ok: boolean;
+    errorMessage: string | null;
+    /** Unix ms of the last fetch attempt. */
+    updatedAt: number;
+}
+
+/** Latest Webacy structural-health grade for a stablecoin mint (webacy_structural_health_latest). */
+export interface VariantStructuralHealthRow {
+    grade: StructuralGrade;
+    /** Unix ms of the last fetch attempt. */
+    updatedAt: number;
+}
+
 export interface VariantWithMarketRow {
     assetId: string;
     mint: string;
@@ -73,6 +100,10 @@ export interface VariantWithMarketRow {
     market: VariantMarketRow | null;
     /** Active admin advisory on this mint (asset_variant_advisories), or null. */
     advisory: VariantAdvisory | null;
+    /** Webacy depeg tier for stablecoin mints, or null when unmonitored. */
+    pegHealth: VariantPegHealthRow | null;
+    /** Webacy structural grade for stablecoin mints, or null when unmonitored. */
+    structuralHealth: VariantStructuralHealthRow | null;
 }
 
 export interface SearchAssetRow {
@@ -137,6 +168,10 @@ export interface AdminVariantRow {
     lastFetchedAt?: number;
     /** Active admin advisory on this mint, or null. Always present (not omitted). */
     advisory: VariantAdvisory | null;
+    /** Webacy depeg status, or null. Always present, like `advisory`. */
+    pegHealth: VariantPegHealthRow | null;
+    /** Webacy structural grade, or null. Always present, like `advisory`. */
+    structuralHealth: VariantStructuralHealthRow | null;
 }
 
 interface RankedVariantRow {
@@ -170,6 +205,8 @@ export function buildVariantEditorRows(variants: readonly VariantWithMarketRow[]
             isActive: variant.isActive,
             ...(lastFetchedAt ? { lastFetchedAt } : {}),
             advisory: variant.advisory ?? null,
+            pegHealth: variant.pegHealth ?? null,
+            structuralHealth: variant.structuralHealth ?? null,
         };
         return { row, liquidity };
     });
@@ -426,6 +463,8 @@ export interface VariantEditorResult {
         stockVariantTier?: StockVariantTier;
         isActive: boolean;
         advisory: VariantAdvisory | null;
+        pegHealth: VariantPegHealthRow | null;
+        structuralHealth: VariantStructuralHealthRow | null;
     };
     canonical: {
         assetId: string;
@@ -469,6 +508,8 @@ export async function getVariantEditor(
             ...(variant.stockVariantTier ? { stockVariantTier: variant.stockVariantTier } : {}),
             isActive: variant.isActive,
             advisory: variant.advisory ?? null,
+            pegHealth: variant.pegHealth ?? null,
+            structuralHealth: variant.structuralHealth ?? null,
         },
         canonical: {
             assetId: asset.assetId,

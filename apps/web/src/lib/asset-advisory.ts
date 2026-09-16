@@ -166,10 +166,18 @@ export function advisoryReasonText(advisory: AssetAdvisory): string {
     return advisory.reason.trim() || DEFAULT_ADVISORY_REASON;
 }
 
-/** "SILV has been flagged as compromised" / "This token has an active caution advisory". */
+/** Title predicate for the auto-caution the Webacy depeg monitor sets. */
+export const DEPEG_ADVISORY_TITLE = 'is trading off its peg';
+
+/**
+ * "SILV has been flagged as compromised" / "This token has an active caution
+ * advisory" / "USX is trading off its peg" (depeg-monitor rows; tone and
+ * status are unchanged, only the predicate is specific).
+ */
 export function advisoryBannerTitle(advisory: AssetAdvisory, symbol?: string | null): string {
     const subject = (symbol ?? '').trim() || 'This token';
-    return `${subject} ${ADVISORY_COPY[advisory.status].title}`;
+    const predicate = advisory.source === 'webacy_depeg' ? DEPEG_ADVISORY_TITLE : ADVISORY_COPY[advisory.status].title;
+    return `${subject} ${predicate}`;
 }
 
 /** Prefix for `<meta name="description">` so text-only previews warn. */
@@ -264,10 +272,7 @@ export function formatAdvisorySince(since: number | null | undefined): string {
     return ADVISORY_SINCE_FORMATTER.format(new Date(since));
 }
 
-export function advisoryEventProps(
-    advisory: AssetAdvisory,
-    extra?: Record<string, unknown>,
-): Record<string, unknown> {
+export function advisoryEventProps(advisory: AssetAdvisory, extra?: Record<string, unknown>): Record<string, unknown> {
     return {
         advisory_status: advisory.status,
         ...(advisory.since > 0 ? { advisory_since: advisory.since } : {}),
