@@ -6,7 +6,7 @@ import type { CompactPegHealth, PegHealth } from '@tokens/asset-registry';
 import { Badge } from '@tokens/ui/badge';
 import { cn } from '@tokens/ui/cn';
 
-import { PEG_TIER_COPY, pegDeviationText, pegStatusTitle, type HealthTone } from '@/lib/stablecoin-health';
+import { pegDeviationText, pegStatusTitle, pegTierCopy, type HealthTone } from '@/lib/stablecoin-health';
 
 export type PegStatusPillSize = 'sm' | 'md';
 /** `dark` targets the tooltip-styled VARIANTS hover card; `light` is the default white surface. */
@@ -74,7 +74,7 @@ export function PegStatusPill({
 }: PegStatusPillProps) {
     if (!pegHealth) return null;
 
-    const copy = PEG_TIER_COPY[pegHealth.tier];
+    const copy = pegTierCopy(pegHealth.tier, pegHealth.referenceKind);
     const isDark = appearance === 'dark';
     const title = pegStatusTitle(pegHealth);
     const deviation =

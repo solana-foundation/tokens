@@ -18,10 +18,12 @@
 
 import {
     STRUCTURAL_CATEGORY_KEYS,
+    isPegReferenceKind,
     isPegTier,
     isStructuralCategoryStatus,
     isStructuralGrade,
     type PegProvider,
+    type PegReferenceKind,
     type PegTier,
     type StructuralCategoryKey,
     type StructuralCategoryStatus,
@@ -42,12 +44,18 @@ export const WEBACY_PEG_COVERAGE_MS = 9 * 60 * 60_000;
 /**
  * One LEFT-JOINed row per requested mint; bigint columns may arrive as string
  * or bigint. `pg_*` columns come from `peg_guard_latest` and are absent on
- * pre-0020 builds of the SELECT.
+ * pre-0020 builds of the SELECT; `pg_peg_currency` / `pg_reference_kind`
+ * are absent on builds that predate peg guard phase 2.
  */
 export interface StablecoinHealthRow {
     mint: string;
     depeg_ok: boolean | null;
     depeg_tier: string | null;
+    /**
+     * ISO 4217 code of the Webacy peg when a build exposes it (the stored
+     * `payload_json` is text and is not parsed by the SELECT today).
+     */
+    depeg_peg_currency?: string | null;
     depeg_overall_risk: number | string | null;
     depeg_deviation_pct: number | string | null;
     depeg_price_usd: number | string | null;
@@ -58,6 +66,8 @@ export interface StablecoinHealthRow {
     depeg_error_message: string | null;
     pg_ok?: boolean | null;
     pg_tier?: string | null;
+    pg_peg_currency?: string | null;
+    pg_reference_kind?: string | null;
     pg_deviation_pct?: number | string | null;
     pg_price_usd?: number | string | null;
     pg_peg_usd?: number | string | null;
@@ -81,6 +91,15 @@ export interface StablecoinHealthReadsRepo {
 export interface PegHealthRead {
     /** `webacy` while Webacy covers the mint, else `tokens` (in-house peg guard). */
     provider: PegProvider;
+    /** ISO 4217 code of the peg when known (USD, EUR, ...); null when the observer does not say. */
+    pegCurrency: string | null;
+    /**
+     * What `pegUsd` was: a fixed 1.00, a CoinGecko-implied fiat rate (`fx`), or
+     * the token's own high-water price (`high_water`, yield-bearing USD
+     * variants). Webacy rows are always `fixed`; null only for peg guard rows
+     * written before phase 2.
+     */
+    referenceKind: PegReferenceKind | null;
     tier: PegTier;
     /** Webacy 0-100 depeg risk; always null for the peg guard. */
     overallRisk: number | null;
@@ -137,6 +156,13 @@ function toFiniteNumber(value: number | string | null | undefined): number | nul
     return Number.isFinite(parsed) ? parsed : null;
 }
 
+/** Upper-cased ISO 4217 code, or null for blanks and non-strings. */
+function toPegCurrency(value: string | null | undefined): string | null {
+    if (typeof value !== 'string') return null;
+    const code = value.trim().toUpperCase();
+    return code.length > 0 ? code : null;
+}
+
 /**
  * `category_scores` is `{ [key]: { score, weight, status } }` as written by the
  * structural-health job. Unknown keys are dropped, missing keys are emitted with
@@ -161,6 +187,9 @@ function toWebacyPegHealthRead(row: StablecoinHealthRow): PegHealthRead | null {
     if (updatedAt === null) return null;
     return {
         provider: 'webacy',
+        pegCurrency: toPegCurrency(row.depeg_peg_currency),
+        // Webacy's monitor judges every mint against a fixed peg unit.
+        referenceKind: 'fixed',
         tier: row.depeg_tier,
         overallRisk: toFiniteNumber(row.depeg_overall_risk),
         deviationPct: toFiniteNumber(row.depeg_deviation_pct),
@@ -180,6 +209,8 @@ function toPegGuardPegHealthRead(row: StablecoinHealthRow): PegHealthRead | null
     if (updatedAt === null) return null;
     return {
         provider: 'tokens',
+        pegCurrency: toPegCurrency(row.pg_peg_currency),
+        referenceKind: isPegReferenceKind(row.pg_reference_kind) ? row.pg_reference_kind : null,
         tier: row.pg_tier,
         overallRisk: null,
         deviationPct: toFiniteNumber(row.pg_deviation_pct),

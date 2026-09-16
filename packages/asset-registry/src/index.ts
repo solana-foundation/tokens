@@ -35,6 +35,7 @@ export {
 export type {
     CompactPegHealth,
     PegProvider,
+    PegReferenceKind,
     PegTier,
     PegHealth,
     StablecoinHealth,
@@ -46,12 +47,14 @@ export type {
 } from './stablecoin-health';
 export {
     PEG_PROVIDERS,
+    PEG_REFERENCE_KINDS,
     PEG_TIERS,
     STRUCTURAL_CATEGORY_KEYS,
     STRUCTURAL_CATEGORY_LABELS,
     STRUCTURAL_CATEGORY_STATUSES,
     STRUCTURAL_GRADES,
     isPegProvider,
+    isPegReferenceKind,
     isPegTier,
     isStructuralCategoryKey,
     isStructuralCategoryStatus,

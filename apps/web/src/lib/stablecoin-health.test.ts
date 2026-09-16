@@ -18,7 +18,9 @@ import {
     normalizeStructuralHealth,
     pegDeviationText,
     pegPriceText,
+    pegReferenceDescription,
     pegStatusTitle,
+    pegTierCopy,
     pegTierTone,
     stablecoinHealthEventProps,
     structuralCategoryTooltip,
@@ -76,9 +78,17 @@ describe('normalizeCompactPegHealth', () => {
     test('decodes a well-formed compact payload and drops extra fields', () => {
         expect(
             normalizeCompactPegHealth({ tier: 'warning', deviationPct: -2.4, updatedAt: UPDATED_AT, stale: false }),
-        ).toEqual({ provider: 'webacy', tier: 'warning', deviationPct: -2.4, updatedAt: UPDATED_AT, stale: false });
+        ).toEqual({
+            provider: 'webacy',
+            referenceKind: 'fixed',
+            tier: 'warning',
+            deviationPct: -2.4,
+            updatedAt: UPDATED_AT,
+            stale: false,
+        });
         expect(normalizeCompactPegHealth(pegHealthPayload())).toEqual({
             provider: 'webacy',
+            referenceKind: 'fixed',
             tier: 'warning',
             deviationPct: -2.4,
             updatedAt: UPDATED_AT,
@@ -92,9 +102,20 @@ describe('normalizeCompactPegHealth', () => {
         expect(normalizeCompactPegHealth({ tier: 'ok' })?.provider).toBe('webacy');
     });
 
+    test('reads the reference kind and defaults unknown or missing ones to fixed', () => {
+        expect(normalizeCompactPegHealth({ tier: 'ok', referenceKind: 'high_water' })?.referenceKind).toBe(
+            'high_water',
+        );
+        expect(normalizeCompactPegHealth({ tier: 'ok', referenceKind: 'fx' })?.referenceKind).toBe('fx');
+        expect(normalizeCompactPegHealth({ tier: 'ok', referenceKind: 'ema' })?.referenceKind).toBe('fixed');
+        expect(normalizeCompactPegHealth({ tier: 'ok', referenceKind: null })?.referenceKind).toBe('fixed');
+        expect(normalizeCompactPegHealth({ tier: 'ok' })?.referenceKind).toBe('fixed');
+    });
+
     test('defaults deviation, updatedAt, and stale when missing or invalid', () => {
         expect(normalizeCompactPegHealth({ tier: 'ok' })).toEqual({
             provider: 'webacy',
+            referenceKind: 'fixed',
             tier: 'ok',
             deviationPct: null,
             updatedAt: 0,
@@ -102,6 +123,7 @@ describe('normalizeCompactPegHealth', () => {
         });
         expect(normalizeCompactPegHealth({ tier: 'ok', deviationPct: Number.NaN, updatedAt: -1 })).toEqual({
             provider: 'webacy',
+            referenceKind: 'fixed',
             tier: 'ok',
             deviationPct: null,
             updatedAt: 0,
@@ -122,6 +144,8 @@ describe('normalizePegHealth', () => {
     test('decodes a well-formed payload and defaults an unknown provider to webacy', () => {
         expect(normalizePegHealth(pegHealthPayload({ provider: 'someone-else' }))).toEqual({
             provider: 'webacy',
+            pegCurrency: null,
+            referenceKind: 'fixed',
             tier: 'warning',
             overallRisk: 62.5,
             deviationPct: -2.4,
@@ -144,6 +168,28 @@ describe('normalizePegHealth', () => {
         expect(normalizePegHealth(pegHealthPayload({ liquidityUsd: 'lots' }))?.liquidityUsd).toBeNull();
     });
 
+    test('reads the peg currency and reference kind, defaulting to a fixed peg with no currency', () => {
+        const yieldRow = normalizePegHealth(
+            pegHealthPayload({ provider: 'tokens', pegCurrency: 'USD', referenceKind: 'high_water', pegUsd: 1.14 }),
+        );
+        expect(yieldRow?.pegCurrency).toBe('USD');
+        expect(yieldRow?.referenceKind).toBe('high_water');
+
+        const fxRow = normalizePegHealth(
+            pegHealthPayload({ provider: 'tokens', pegCurrency: 'eur', referenceKind: 'fx' }),
+        );
+        expect(fxRow?.pegCurrency).toBe('EUR');
+        expect(fxRow?.referenceKind).toBe('fx');
+
+        const legacy = normalizePegHealth(pegHealthPayload());
+        expect(legacy?.pegCurrency).toBeNull();
+        expect(legacy?.referenceKind).toBe('fixed');
+        const junk = normalizePegHealth(pegHealthPayload({ pegCurrency: '  ', referenceKind: 'ema' }));
+        expect(junk?.pegCurrency).toBeNull();
+        expect(junk?.referenceKind).toBe('fixed');
+        expect(normalizePegHealth(pegHealthPayload({ pegCurrency: 840 }))?.pegCurrency).toBeNull();
+    });
+
     test('nulls out non-finite numerics and non-positive timestamps', () => {
         const result = normalizePegHealth(
             pegHealthPayload({
@@ -158,6 +204,8 @@ describe('normalizePegHealth', () => {
         );
         expect(result).toEqual({
             provider: 'webacy',
+            pegCurrency: null,
+            referenceKind: 'fixed',
             tier: 'warning',
             overallRisk: null,
             deviationPct: null,
@@ -235,6 +283,22 @@ describe('copy helpers', () => {
         expect(pegDeviationText(undefined)).toBe('Deviation unavailable');
     });
 
+    test('pegDeviationText names the reference for fx and high-water rows', () => {
+        expect(pegDeviationText({ deviationPct: -2.4, referenceKind: 'fixed' })).toBe('−2.40% below peg');
+        expect(pegDeviationText({ deviationPct: -2.4, referenceKind: 'fx', pegCurrency: 'EUR' })).toBe(
+            '−2.40% below its EUR peg',
+        );
+        expect(pegDeviationText({ deviationPct: 0.35, referenceKind: 'fx', pegCurrency: 'EUR' })).toBe(
+            '+0.35% above its EUR peg',
+        );
+        expect(pegDeviationText({ deviationPct: -2.4, referenceKind: 'fx' })).toBe('−2.40% below its peg');
+        expect(pegDeviationText({ deviationPct: -5.2, referenceKind: 'high_water' })).toBe(
+            '−5.20% below its recent high',
+        );
+        expect(pegDeviationText({ deviationPct: 0.02, referenceKind: 'high_water' })).toBe('±0.02%');
+        expect(pegDeviationText({ deviationPct: null, referenceKind: 'high_water' })).toBe('Deviation unavailable');
+    });
+
     test('pegPriceText is null-safe', () => {
         expect(pegPriceText({ priceUsd: 0.976, pegUsd: 1 })).toBe('$0.9760 vs $1.00 peg');
         expect(pegPriceText({ priceUsd: 1.0004, pegUsd: 1 })).toBe('$1.0004 vs $1.00 peg');
@@ -242,6 +306,62 @@ describe('copy helpers', () => {
         expect(pegPriceText({ priceUsd: null, pegUsd: 1 })).toBe('');
         expect(pegPriceText(null)).toBe('');
         expect(pegPriceText(undefined)).toBe('');
+    });
+
+    test('pegPriceText prints the resolved reference for fx and high-water rows', () => {
+        expect(pegPriceText({ priceUsd: 0.976, pegUsd: 1, referenceKind: 'fixed', pegCurrency: 'USD' })).toBe(
+            '$0.9760 vs $1.00 peg',
+        );
+        expect(pegPriceText({ priceUsd: 1.05, pegUsd: 1.14, referenceKind: 'high_water', pegCurrency: 'USD' })).toBe(
+            '$1.0500 vs $1.1400 recent high',
+        );
+        expect(pegPriceText({ priceUsd: 1.15, pegUsd: 1.1556, referenceKind: 'fx', pegCurrency: 'EUR' })).toBe(
+            '$1.1500 vs EUR peg ($1.1556)',
+        );
+        expect(pegPriceText({ priceUsd: 1.15, pegUsd: 1.1556, referenceKind: 'fx', pegCurrency: null })).toBe(
+            '$1.1500 vs $1.1556 peg',
+        );
+        expect(pegPriceText({ priceUsd: 1.05, pegUsd: null, referenceKind: 'high_water' })).toBe('$1.0500');
+    });
+
+    test('pegTierCopy swaps in the yield vocabulary only for high-water ok and watch', () => {
+        expect(pegTierCopy('ok', 'high_water')).toEqual({
+            label: 'Holding value',
+            tone: 'success',
+            description: 'Trading within 1% of its recent high.',
+        });
+        expect(pegTierCopy('watch', 'high_water')).toEqual({
+            label: 'Slipping',
+            tone: 'neutral',
+            description: '1 to 2% below its recent high.',
+        });
+        expect(pegTierCopy('warning', 'high_water')).toBe(PEG_TIER_COPY.warning);
+        expect(pegTierCopy('critical', 'high_water')).toBe(PEG_TIER_COPY.critical);
+        expect(pegTierCopy('premium', 'high_water')).toBe(PEG_TIER_COPY.premium);
+        for (const tier of PEG_TIERS) {
+            expect(pegTierCopy(tier, 'fixed')).toBe(PEG_TIER_COPY[tier]);
+            expect(pegTierCopy(tier, 'fx')).toBe(PEG_TIER_COPY[tier]);
+            expect(pegTierCopy(tier, null)).toBe(PEG_TIER_COPY[tier]);
+            expect(pegTierCopy(tier)).toBe(PEG_TIER_COPY[tier]);
+            expect(pegTierCopy(tier, 'high_water').tone).toBe(pegTierTone(tier));
+            expect(pegTierCopy(tier, 'high_water').description.includes('—')).toBe(false);
+        }
+    });
+
+    test('pegReferenceDescription explains fx and high-water references and is null for fixed pegs', () => {
+        expect(pegReferenceDescription({ referenceKind: 'high_water', pegCurrency: 'USD' })).toBe(
+            'Yield-bearing token, measured against its own price history',
+        );
+        expect(pegReferenceDescription({ referenceKind: 'fx', pegCurrency: 'EUR' })).toBe(
+            'Pegged to EUR, judged against a CoinGecko-implied rate',
+        );
+        expect(pegReferenceDescription({ referenceKind: 'fx', pegCurrency: null })).toBe(
+            'Pegged to a fiat currency, judged against a CoinGecko-implied rate',
+        );
+        expect(pegReferenceDescription({ referenceKind: 'fixed', pegCurrency: 'USD' })).toBeNull();
+        expect(pegReferenceDescription({})).toBeNull();
+        expect(pegReferenceDescription(null)).toBeNull();
+        expect(pegReferenceDescription(undefined)).toBeNull();
     });
 
     test('formatHealthUpdatedAt renders absolute UTC with minutes and empty for invalid input', () => {
@@ -264,6 +384,35 @@ describe('copy helpers', () => {
         expect(
             pegStatusTitle({ provider: 'tokens', tier: 'watch', deviationPct: -0.7, updatedAt: 0, stale: false }),
         ).toBe('Peg status: Watch, −0.70% below peg. Source: tokens.xyz peg monitor');
+    });
+
+    test('pegStatusTitle uses the yield vocabulary for high-water rows and names fx pegs', () => {
+        expect(
+            pegStatusTitle({
+                provider: 'tokens',
+                referenceKind: 'high_water',
+                tier: 'ok',
+                deviationPct: -0.5,
+                updatedAt: 0,
+                stale: false,
+            }),
+        ).toBe('Peg status: Holding value, −0.50% below its recent high. Source: tokens.xyz peg monitor');
+        expect(
+            pegStatusTitle({
+                provider: 'tokens',
+                referenceKind: 'high_water',
+                tier: 'watch',
+                deviationPct: -1.5,
+                updatedAt: 0,
+                stale: false,
+            }),
+        ).toBe('Peg status: Slipping, −1.50% below its recent high. Source: tokens.xyz peg monitor');
+        const fx = normalizePegHealth(
+            pegHealthPayload({ provider: 'tokens', referenceKind: 'fx', pegCurrency: 'EUR', updatedAt: 0 }),
+        );
+        expect(pegStatusTitle(fx!)).toBe(
+            'Peg status: Warning, −2.40% below its EUR peg. Source: tokens.xyz peg monitor',
+        );
     });
 
     test('peg provider labels and attribution links', () => {

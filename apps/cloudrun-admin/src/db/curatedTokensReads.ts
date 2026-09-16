@@ -9,7 +9,13 @@
 
 import type { Sql } from 'postgres';
 
-import { isAdvisorySource, isAdvisoryStatus, isPegTier, isStructuralGrade } from '@tokens/asset-registry';
+import {
+    isAdvisorySource,
+    isAdvisoryStatus,
+    isPegReferenceKind,
+    isPegTier,
+    isStructuralGrade,
+} from '@tokens/asset-registry';
 import type { StockVariantTier, VariantAdvisory, VariantKind } from '@tokens/asset-registry';
 
 import type {
@@ -100,6 +106,9 @@ export interface PgVariantWithMarketRow {
     peg_last_fetched_at?: string | number | bigint | null;
     peg_last_ok_at?: string | number | bigint | null;
     pg_tier?: string | null;
+    /** Absent on SELECTs that predate peg guard phase 2. */
+    pg_peg_currency?: string | null;
+    pg_reference_kind?: string | null;
     pg_deviation_pct?: number | string | null;
     pg_ok?: boolean | null;
     pg_error_message?: string | null;
@@ -130,12 +139,21 @@ type PegHealthColumns = Pick<
     | 'peg_last_fetched_at'
     | 'peg_last_ok_at'
     | 'pg_tier'
+    | 'pg_peg_currency'
+    | 'pg_reference_kind'
     | 'pg_deviation_pct'
     | 'pg_ok'
     | 'pg_error_message'
     | 'pg_last_fetched_at'
     | 'pg_last_ok_at'
 >;
+
+/** Upper-cased ISO 4217 code, or null for blanks. */
+function toPegCurrency(value: string | null | undefined): string | null {
+    if (typeof value !== 'string') return null;
+    const code = value.trim().toUpperCase();
+    return code.length > 0 ? code : null;
+}
 
 function mapWebacyPegHealth(row: PegHealthColumns): VariantPegHealthRow | null {
     if (!isPegTier(row.peg_tier)) return null;
@@ -144,6 +162,10 @@ function mapWebacyPegHealth(row: PegHealthColumns): VariantPegHealthRow | null {
     const ok = row.peg_ok !== false;
     return {
         provider: 'webacy',
+        // Webacy's monitor judges every mint against a fixed peg unit and the
+        // SELECT does not parse its payload, so the currency is unknown here.
+        pegCurrency: null,
+        referenceKind: 'fixed',
         tier: row.peg_tier,
         deviationPct: toNullableNumber(row.peg_deviation_pct),
         ok,
@@ -159,6 +181,8 @@ function mapPegGuardPegHealth(row: PegHealthColumns): VariantPegHealthRow | null
     const ok = row.pg_ok !== false;
     return {
         provider: 'tokens',
+        pegCurrency: toPegCurrency(row.pg_peg_currency),
+        referenceKind: isPegReferenceKind(row.pg_reference_kind) ? row.pg_reference_kind : null,
         tier: row.pg_tier,
         deviationPct: toNullableNumber(row.pg_deviation_pct),
         ok,
@@ -246,6 +270,8 @@ const VARIANT_MARKET_SELECT = `
     d.last_fetched_at AS peg_last_fetched_at,
     d.last_ok_at AS peg_last_ok_at,
     g.tier AS pg_tier,
+    g.peg_currency AS pg_peg_currency,
+    g.reference_kind AS pg_reference_kind,
     g.deviation_pct AS pg_deviation_pct,
     g.ok AS pg_ok,
     g.error_message AS pg_error_message,

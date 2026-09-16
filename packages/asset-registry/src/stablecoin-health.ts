@@ -107,9 +107,25 @@ export function isPegProvider(value: unknown): value is PegProvider {
     return typeof value === 'string' && (PEG_PROVIDERS as readonly string[]).includes(value);
 }
 
+/**
+ * What a peg observation was measured against: a fixed 1.00 (USD stables),
+ * a fiat rate (EUR, GBP, ... pegs, CoinGecko-implied), or the token's own
+ * high-water price (yield-bearing USD variants that accrue above 1.00).
+ */
+export const PEG_REFERENCE_KINDS = ['fixed', 'fx', 'high_water'] as const;
+export type PegReferenceKind = (typeof PEG_REFERENCE_KINDS)[number];
+
+export function isPegReferenceKind(value: unknown): value is PegReferenceKind {
+    return typeof value === 'string' && (PEG_REFERENCE_KINDS as readonly string[]).includes(value);
+}
+
 /** Live peg status for one mint, as served on risk payloads. */
 export interface PegHealth {
     provider: PegProvider;
+    /** ISO 4217 code of the peg when known (USD, EUR, ...). */
+    pegCurrency?: string | null;
+    /** Omitted by API builds that predate phase 2; readers default to `'fixed'`. */
+    referenceKind?: PegReferenceKind | null;
     tier: PegTier;
     /** Webacy 0-100 depeg risk; higher = riskier. */
     overallRisk: number | null;
@@ -131,6 +147,7 @@ export interface PegHealth {
 export interface CompactPegHealth {
     /** Omitted by API builds that predate the peg guard; readers default to `'webacy'`. */
     provider?: PegProvider;
+    referenceKind?: PegReferenceKind | null;
     tier: PegTier;
     deviationPct: number | null;
     updatedAt: number;

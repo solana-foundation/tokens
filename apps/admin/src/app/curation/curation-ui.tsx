@@ -44,6 +44,7 @@ import {
     formatPegDeviation,
     isSystemManagedAdvisory,
     pegProviderLabel,
+    pegReferenceLabel,
     pegTierBadgeVariant,
     pegTierLabel,
     structuralGradeBadgeVariant,
@@ -94,7 +95,7 @@ function formatUtcMinute(timestampMs: number): string {
 }
 
 function pegHealthTitle(pegHealth: NonNullable<VariantRow['pegHealth']>): string {
-    const base = `Peg ${pegTierLabel(pegHealth.tier)} · ${formatPegDeviation(pegHealth.deviationPct)} · updated ${formatUtcMinute(pegHealth.updatedAt)} · ${pegProviderLabel(pegHealth.provider)}`;
+    const base = `Peg ${pegTierLabel(pegHealth.tier, pegHealth.referenceKind)} · ${formatPegDeviation(pegHealth.deviationPct)} vs ${pegReferenceLabel(pegHealth.referenceKind, pegHealth.pegCurrency)} · updated ${formatUtcMinute(pegHealth.updatedAt)} · ${pegProviderLabel(pegHealth.provider)}`;
     return pegHealth.ok === false ? `${base} · last poll failed: ${pegHealth.errorMessage ?? 'unknown error'}` : base;
 }
 

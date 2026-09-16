@@ -16,6 +16,7 @@ import {
     isSystemActor,
     isSystemManagedAdvisory,
     pegProviderLabel,
+    pegReferenceLabel,
     pegTierBadgeVariant,
     pegTierLabel,
     structuralGradeBadgeVariant,
@@ -153,6 +154,30 @@ describe('advisory provenance and stablecoin health labels', () => {
         expect(pegProviderLabel('webacy')).toBe('Webacy');
         expect(pegProviderLabel('tokens')).toBe('tokens.xyz peg monitor');
         expect(pegProviderLabel(undefined)).toBe('Webacy');
+    });
+
+    it('labels yield-bearing tiers against their recent high and everything else against the peg', () => {
+        expect(pegTierLabel('ok')).toBe('On peg');
+        expect(pegTierLabel('ok', 'fixed')).toBe('On peg');
+        expect(pegTierLabel('ok', 'fx')).toBe('On peg');
+        expect(pegTierLabel('ok', null)).toBe('On peg');
+        expect(pegTierLabel('ok', 'high_water')).toBe('Holding value');
+        expect(pegTierLabel('watch', 'high_water')).toBe('Slipping');
+        expect(pegTierLabel('warning', 'high_water')).toBe('Warning');
+        expect(pegTierLabel('critical', 'high_water')).toBe('Critical');
+        expect(pegTierLabel('premium', 'high_water')).toBe('Above peg');
+    });
+
+    it('labels the peg reference with its currency or the yield high-water mark', () => {
+        expect(pegReferenceLabel('fixed', 'USD')).toBe('USD peg');
+        expect(pegReferenceLabel('fixed', null)).toBe('USD peg');
+        expect(pegReferenceLabel(undefined, undefined)).toBe('USD peg');
+        expect(pegReferenceLabel(null, 'usd')).toBe('USD peg');
+        expect(pegReferenceLabel('fx', 'EUR')).toBe('EUR peg (fx)');
+        expect(pegReferenceLabel('fx', 'gbp')).toBe('GBP peg (fx)');
+        expect(pegReferenceLabel('fx', null)).toBe('fiat peg (fx)');
+        expect(pegReferenceLabel('high_water', 'USD')).toBe('recent high (yield)');
+        expect(pegReferenceLabel('high_water', null)).toBe('recent high (yield)');
     });
 
     it('maps peg tiers and grades to badge tones', () => {
