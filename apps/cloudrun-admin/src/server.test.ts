@@ -360,6 +360,8 @@ describe('variant advisories routes', () => {
             setByEmail: null,
             setAt: 1,
             updatedAt: 2,
+            source: 'admin' as const,
+            managedBySystem: false,
         };
         const event = {
             id: 'ave_1',
@@ -372,6 +374,7 @@ describe('variant advisories routes', () => {
             actorClerkUserId: ADMIN_ID,
             actorEmail: null,
             createdAt: 1,
+            source: 'admin' as const,
         };
         const repo: VariantAdvisoriesRepo = {
             ...makeVariantAdvisoriesRepo(),

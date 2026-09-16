@@ -108,6 +108,21 @@ export function makePostgresHardDeleteRepo(sql: Sql): HardDeleteRepo {
                 const webacyHolders = await tx`
                     DELETE FROM webacy_holder_analysis_latest WHERE chain = 'solana' AND address = ANY(${mintsArray}::text[])
                 `;
+                // Stablecoin depeg / structural-health snapshots (0019). Tier and
+                // structural history is per-mint provider data, not audit; the
+                // advisory events table is the audit trail and is kept.
+                const webacyDepeg = await tx`
+                    DELETE FROM webacy_depeg_latest WHERE chain = 'solana' AND address = ANY(${mintsArray}::text[])
+                `;
+                const webacyDepegEvents = await tx`
+                    DELETE FROM webacy_depeg_tier_events WHERE chain = 'solana' AND address = ANY(${mintsArray}::text[])
+                `;
+                const webacyStructural = await tx`
+                    DELETE FROM webacy_structural_health_latest WHERE chain = 'solana' AND address = ANY(${mintsArray}::text[])
+                `;
+                const webacyStructuralDaily = await tx`
+                    DELETE FROM webacy_structural_health_daily WHERE chain = 'solana' AND address = ANY(${mintsArray}::text[])
+                `;
                 const ohlcv = await tx`DELETE FROM ohlcv_candles WHERE address = ANY(${mintsArray}::text[])`;
 
                 // 6. CoinGecko caches (only when the asset had a coingecko id).
@@ -166,7 +181,14 @@ export function makePostgresHardDeleteRepo(sql: Sql): HardDeleteRepo {
                     tokenDescriptionSummariesDeleted: summaries.count,
                     assetRiskDeleted: assetRisk.count,
                     ohlcvDeleted: ohlcv.count,
-                    webacyDeleted: webacyToken.count + webacyTrading.count + webacyHolders.count,
+                    webacyDeleted:
+                        webacyToken.count +
+                        webacyTrading.count +
+                        webacyHolders.count +
+                        webacyDepeg.count +
+                        webacyDepegEvents.count +
+                        webacyStructural.count +
+                        webacyStructuralDaily.count,
                     rwaTokenCacheDeleted: rwaTokens.count,
                     rwaAssetCacheDeleted,
                     assetMarketDeleted: assetMarket.count,
