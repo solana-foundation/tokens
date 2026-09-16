@@ -201,3 +201,13 @@ variable "cloud_run_assets_min_instances" {
   type    = number
   default = 1
 }
+
+variable "admin_local_invokers" {
+  type        = set(string)
+  description = "IAM principals (e.g. user:someone@solana.org) granted roles/run.invoker on the admin service so they can run apps/admin locally against it. Admin access still requires the TOKENS_ADMIN_* allowlist."
+  default     = []
+  validation {
+    condition     = alltrue([for m in var.admin_local_invokers : can(regex("^(user|group):", m))])
+    error_message = "admin_local_invokers entries must be user: or group: principals."
+  }
+}

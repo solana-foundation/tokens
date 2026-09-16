@@ -90,6 +90,9 @@ module "env" {
     "prices",
     "usage",
   ]
+  admin_local_invokers = [
+    "user:niran@solana.org",
+  ]
 
   # Phase-two activation (see docs/operations/assets-db-resilience.md). The
   # startup probe stays false until its own staged rollout; the worker flags
