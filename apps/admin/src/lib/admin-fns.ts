@@ -27,6 +27,7 @@ export const ADMIN_FNS: Record<string, AdminFnSpec> = {
     previewMint: { service: 'admin', kind: 'query' },
     adminListTokenLists: { service: 'admin', kind: 'query' },
     listVariantAdvisories: { service: 'admin', kind: 'query' },
+    listLaunchpadCandidates: { service: 'admin', kind: 'query' },
 
     // cloudrun-admin mutations
     createCanonicalAsset: { service: 'admin', kind: 'mutation' },
@@ -45,12 +46,19 @@ export const ADMIN_FNS: Record<string, AdminFnSpec> = {
     adminUnlockTokenList: { service: 'admin', kind: 'mutation' },
     setVariantAdvisory: { service: 'admin', kind: 'mutation' },
     clearVariantAdvisory: { service: 'admin', kind: 'mutation' },
+    approveLaunchpadMint: { service: 'admin', kind: 'mutation' },
+    revokeLaunchpadMint: { service: 'admin', kind: 'mutation' },
 
     // cloudrun-assets admin actions (awaited warms → long timeouts)
     adminCheckVariantMintForCanonical: { service: 'assets', kind: 'mutation', timeoutMs: 30_000 },
     adminAddCheckedVariant: { service: 'assets', kind: 'mutation', timeoutMs: 60_000 },
     adminSeedAsset: { service: 'assets', kind: 'mutation', timeoutMs: 60_000 },
     adminRefreshChartData: { service: 'assets', kind: 'mutation', timeoutMs: 60_000 },
+    // stonk.fun lookups for the Launches page (read-only, but the client lives on assets).
+    adminPreviewLaunchpadMint: { service: 'assets', kind: 'mutation', timeoutMs: 30_000 },
+    adminListLaunchpadTokensForQuote: { service: 'assets', kind: 'mutation', timeoutMs: 60_000 },
+    adminListLaunchpadPairs: { service: 'assets', kind: 'mutation', timeoutMs: 30_000 },
+    adminSyncLaunchpadMint: { service: 'assets', kind: 'mutation', timeoutMs: 60_000 },
 
     // cloudrun-assets token-list build tools (CSV import resolves unknown
     // mints through Birdeye, so allow a long tail per chunk).

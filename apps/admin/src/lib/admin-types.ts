@@ -151,6 +151,149 @@ export type ListVariantAdvisoriesResult = {
     events: VariantAdvisoryEventRow[];
 };
 
+/* ── launchpad approvals (mirrors cloudrun-admin handlers/launchpadApprovals.ts) ── */
+
+export type LaunchpadApproval = {
+    note: string | null;
+    approvedBy: string;
+    approvedByEmail: string | null;
+    /** Unix ms of the first approval; kept across re-approves. */
+    approvedAt: number;
+    updatedAt: number;
+};
+
+/**
+ * One row of the admin Launches table. `synced: false` = approved by address
+ * but not stored by the sync yet (token fields null); `isActive: false` on a
+ * synced row = missing identity or not in the last provider response.
+ */
+export type LaunchpadCandidateRow = {
+    launchpad: string;
+    mint: string;
+    synced: boolean;
+    isActive: boolean;
+    quoteMint: string | null;
+    quoteSymbol: string | null;
+    symbol: string | null;
+    name: string | null;
+    logoURI: string | null;
+    marketCapUsd: number | null;
+    volume24hUsd: number | null;
+    launchedAt: number | null;
+    lastSyncedAt: number | null;
+    /** Canonical asset that owns the quote mint (the page the coin shows on); null when unsynced or not curated. */
+    quoteAsset: LaunchpadQuoteAsset | null;
+    approval: LaunchpadApproval | null;
+};
+
+export type LaunchpadQuoteAsset = {
+    assetId: string;
+    name: string | null;
+    symbol: string | null;
+    imageUrl: string | null;
+};
+
+/* ── stonk.fun lookups (mirror cloudrun-assets handlers/launchpadAdminActions.ts) ── */
+
+export type LaunchpadTokenMarket = {
+    priceUsd: number | null;
+    marketCapUsd: number | null;
+    fdvUsd: number | null;
+    liquidityUsd: number | null;
+    volume24hUsd: number | null;
+    priceChange24h: number | null;
+};
+
+export type LaunchpadTokenSummary = {
+    mint: string;
+    symbol: string | null;
+    name: string | null;
+    imageUrl: string | null;
+    status: string | null;
+    launchpad: string | null;
+    mode: string | null;
+    quoteMint: string;
+    quoteSymbol: string | null;
+    market: LaunchpadTokenMarket;
+    createdAt: number | null;
+    graduatedAt: number | null;
+};
+
+export type LaunchpadMintPreview = {
+    mint: string;
+    checkedAt: number;
+    found: boolean;
+    token: LaunchpadTokenSummary | null;
+    quote: {
+        mint: string;
+        symbol: string | null;
+        curated: boolean;
+        asset: { assetId: string; symbol: string | null; name: string | null; imageUrl: string | null } | null;
+    } | null;
+    synced: boolean;
+    isActive: boolean;
+    approved: { note: string | null; approvedAt: number } | null;
+    meetsThreshold: boolean;
+    warnings: string[];
+};
+
+export type LaunchpadQuoteTokenRow = LaunchpadTokenSummary & {
+    synced: boolean;
+    isActive: boolean;
+    approved: { note: string | null; approvedAt: number } | null;
+    meetsThreshold: boolean;
+};
+
+export type ListLaunchpadTokensForQuoteResult = {
+    quoteMints: string[];
+    fetchedAt: number;
+    tokens: LaunchpadQuoteTokenRow[];
+};
+
+/** A curated asset stonk.fun accepts as a quote token (a Launches row, coins or not). */
+export type LaunchpadPairAsset = {
+    assetId: string;
+    symbol: string | null;
+    name: string | null;
+    imageUrl: string | null;
+    quoteMints: Array<{ mint: string; symbol: string | null; category: string | null }>;
+};
+
+export type ListLaunchpadPairsResult = {
+    fetchedAt: number;
+    pairsTotal: number;
+    curatedPairs: number;
+    assets: LaunchpadPairAsset[];
+};
+
+export type SyncLaunchpadMintResult = {
+    mint: string;
+    synced: boolean;
+    isActive: boolean;
+    reason: 'not_found' | 'not_graduated' | 'quote_not_curated' | 'identity_pending' | null;
+};
+
+export type ListLaunchpadCandidatesArgs = { launchpad?: 'stonkfun'; approvedOnly?: boolean; limit?: number };
+export type ApproveLaunchpadMintArgs = {
+    mint: string;
+    note?: string | null;
+    launchpad?: 'stonkfun';
+    /** Snapshot from the Check preview so the row shows under its asset before the sync stores it. */
+    quoteMint?: string | null;
+    symbol?: string | null;
+    name?: string | null;
+    logoURI?: string | null;
+};
+export type ApproveLaunchpadMintResult = {
+    launchpad: string;
+    mint: string;
+    approved: true;
+    created: boolean;
+    approvedAt: number;
+};
+export type RevokeLaunchpadMintArgs = { mint: string; launchpad?: 'stonkfun' };
+export type RevokeLaunchpadMintResult = { launchpad: string; mint: string; revoked: boolean };
+
 /* ── listVariantsByAssetIds ─────────────────────────────────────────────── */
 
 export type AdminVariantRow = {
