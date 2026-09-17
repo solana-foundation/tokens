@@ -137,6 +137,15 @@ import {
 } from './handlers/crons.assetVariants';
 import { seedJobs, type SeedCronDeps, type SeedJobHandler } from './handlers/crons.seed';
 import { prestocksJobs, type PrestocksCronDeps, type PrestocksJobHandler } from './handlers/crons.prestocks';
+import { launchpadJobs, type LaunchpadCronDeps, type LaunchpadJobHandler } from './handlers/crons.launchpad';
+import {
+    adminListLaunchpadPairs,
+    adminListLaunchpadTokensForQuote,
+    adminPreviewLaunchpadMint,
+    adminSyncLaunchpadMint,
+    type LaunchpadAdminDeps,
+} from './handlers/launchpadAdminActions';
+import { listByQuoteMints as launchpadListByQuoteMints, type LaunchpadReadsRepo } from './handlers/launchpadReads';
 import { trendingJobs, type TrendingCronDeps, type TrendingJobHandler } from './handlers/crons.trending';
 import {
     clickhouseExtrasJobs,
@@ -190,6 +199,7 @@ export interface ServerDeps {
     stockReadsRepo: StockReadsRepo;
     ohlcvReadsRepo: OhlcvReadsRepo;
     prestocksReadsRepo: PrestocksReadsRepo;
+    launchpadReadsRepo: LaunchpadReadsRepo;
     authToken: string;
     /** API serves RPC routes; worker serves Cloud Scheduler jobs only. */
     serviceRole?: ServiceRole;
@@ -205,6 +215,9 @@ export interface ServerDeps {
     trendingCronDeps?: TrendingCronDeps;
     clickhouseExtrasCronDeps?: ClickhouseExtrasCronDeps;
     prestocksCronDeps?: PrestocksCronDeps;
+    launchpadCronDeps?: LaunchpadCronDeps;
+    /** stonk.fun lookups for the admin Launches page (allowlist-gated, read-only). */
+    launchpadAdminDeps?: LaunchpadAdminDeps;
     cacheWarmDeps?: CacheWarmDeps;
     adminActionsDeps?: AdminActionsDeps;
     /** Admin-only token-list build tools (CSV import, create-for-project); allowlist-gated. */
@@ -283,6 +296,7 @@ const ATOMIC_RETRY_QUERY_NAMES = new Set([
     'stockPricesGetLatestByAssetId',
     'stockPricesGetLatestByAssetIds',
     'prestocksGetLatestByMints',
+    'launchpadListByQuoteMints',
     'stockOhlcvList',
     'ohlcvBounds',
     'ohlcvList',
@@ -471,6 +485,7 @@ export function createApp(deps: ServerDeps) {
     queries.stockPricesGetLatestByAssetId = args => stockGetPriceLatestByAssetId(deps.stockReadsRepo, args);
     queries.stockPricesGetLatestByAssetIds = args => stockGetPriceLatestByAssetIds(deps.stockReadsRepo, args);
     queries.prestocksGetLatestByMints = args => prestocksGetLatestByMints(deps.prestocksReadsRepo, args);
+    queries.launchpadListByQuoteMints = args => launchpadListByQuoteMints(deps.launchpadReadsRepo, args);
     queries.stockOhlcvList = args => listStockOhlcv(deps.ohlcvReadsRepo, args);
     queries.ohlcvBounds = args => getOhlcvBounds(deps.ohlcvReadsRepo, args);
     queries.ohlcvList = args => listOhlcv(deps.ohlcvReadsRepo, args);
@@ -520,6 +535,17 @@ export function createApp(deps: ServerDeps) {
         mutations.adminAddCheckedVariant = (args, identity) => adminAddCheckedVariant(adminActionsDeps, args, identity);
         mutations.adminSeedAsset = (args, identity) => adminSeedAsset(adminActionsDeps, args, identity);
         mutations.adminRefreshChartData = (args, identity) => adminRefreshChartData(adminActionsDeps, args, identity);
+    }
+    const launchpadAdminDeps = deps.launchpadAdminDeps;
+    if (launchpadAdminDeps) {
+        mutations.adminPreviewLaunchpadMint = (args, identity) =>
+            adminPreviewLaunchpadMint(launchpadAdminDeps, args, identity);
+        mutations.adminListLaunchpadTokensForQuote = (args, identity) =>
+            adminListLaunchpadTokensForQuote(launchpadAdminDeps, args, identity);
+        mutations.adminListLaunchpadPairs = (args, identity) =>
+            adminListLaunchpadPairs(launchpadAdminDeps, args, identity);
+        mutations.adminSyncLaunchpadMint = (args, identity) =>
+            adminSyncLaunchpadMint(launchpadAdminDeps, args, identity);
     }
 
     // Admin token-list build tools, called by the apps/admin proxy. Unlike the
@@ -645,6 +671,7 @@ export function createApp(deps: ServerDeps) {
     const prestocksJobsTable: Record<string, PrestocksJobHandler> = {
         ...prestocksJobs,
     };
+    const launchpadJobsTable: Record<string, LaunchpadJobHandler> = { ...launchpadJobs };
 
     interface JobGroup {
         has(name: string): boolean;
@@ -694,6 +721,13 @@ export function createApp(deps: ServerDeps) {
             run: deps.prestocksCronDeps
                 ? (name, args) => prestocksJobsTable[name]!(deps.prestocksCronDeps!, args)
                 : null,
+        },
+        {
+            has: name => Object.hasOwn(launchpadJobsTable, name),
+            run: deps.launchpadCronDeps
+                ? (name, args) => launchpadJobsTable[name]!(deps.launchpadCronDeps!, args)
+                : null,
+            disabledError: 'launchpad_jobs_disabled',
         },
     ];
 

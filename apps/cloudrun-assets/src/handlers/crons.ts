@@ -530,7 +530,7 @@ function normalizeUnixTimeMs(value: unknown): number | undefined {
     return value < 1_000_000_000_000 ? Math.floor(value * 1000) : Math.floor(value);
 }
 
-function birdeyeOverviewToUpsert(
+export function birdeyeOverviewToUpsert(
     mint: string,
     overview: BirdeyeOverview,
     lastFetchedAt: number,

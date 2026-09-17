@@ -18,6 +18,7 @@ import type {
 import type { StockInstrumentRow, StockPriceRow, StockReadsRepo } from './handlers/stockReads';
 import type { OhlcvCandleRow, OhlcvReadsRepo } from './handlers/ohlcvReads';
 import type { PrestocksReadsRepo } from './handlers/prestocksReads';
+import type { LaunchpadReadsRepo } from './handlers/launchpadReads';
 import type {
     AssetsApiAssetMarketRow,
     AssetsApiAssetRow,
@@ -230,6 +231,10 @@ function emptyStockReadsRepo(): StockReadsRepo {
     };
 }
 
+function emptyLaunchpadReadsRepo(): LaunchpadReadsRepo {
+    return { async listActiveByQuoteMints() { return []; } };
+}
+
 function emptyPrestocksReadsRepo(): PrestocksReadsRepo {
     return {
         async findLatestByMints() {
@@ -341,6 +346,7 @@ function deps(overrides: Partial<ServerDeps> = {}): ServerDeps {
         stockReadsRepo: overrides.stockReadsRepo ?? emptyStockReadsRepo(),
         ohlcvReadsRepo: overrides.ohlcvReadsRepo ?? emptyOhlcvReadsRepo(),
         prestocksReadsRepo: overrides.prestocksReadsRepo ?? emptyPrestocksReadsRepo(),
+        launchpadReadsRepo: overrides.launchpadReadsRepo ?? emptyLaunchpadReadsRepo(),
         tokensReadsRepo: overrides.tokensReadsRepo ?? emptyTokensReadsRepo(),
         trendingReadsRepo: overrides.trendingReadsRepo ?? emptyTrendingReadsRepo(),
         fillQualityReadsRepo: overrides.fillQualityReadsRepo ?? emptyFillQualityReadsRepo(),

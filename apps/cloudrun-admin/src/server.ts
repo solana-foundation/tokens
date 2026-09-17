@@ -18,6 +18,8 @@ import * as tokenListsAdminHandlers from './handlers/tokenListsAdmin';
 import type { TokenListsAdminRepo } from './handlers/tokenListsAdmin';
 import * as variantAdvisoriesHandlers from './handlers/variantAdvisories';
 import type { VariantAdvisoriesRepo } from './handlers/variantAdvisories';
+import * as launchpadApprovalsHandlers from './handlers/launchpadApprovals';
+import type { LaunchpadApprovalsRepo } from './handlers/launchpadApprovals';
 import * as logoUploadsHandlers from './handlers/logoUploads';
 import type { LogoUploadSigner } from './handlers/logoUploads';
 
@@ -36,6 +38,7 @@ export interface ServerDeps {
     hardDelete: HardDeleteRepo;
     tokenListsAdmin: TokenListsAdminRepo;
     variantAdvisories: VariantAdvisoriesRepo;
+    launchpadApprovals: LaunchpadApprovalsRepo;
     /** GCS signed-PUT signer for logo uploads; absent → uploads unavailable. */
     logoSigner?: LogoUploadSigner;
     /** Admin allowlist (TOKENS_ADMIN_CLERK_USER_IDS ∪ TOKENS_ADMIN_EMAILS). */
@@ -116,6 +119,11 @@ export function createApp(deps: ServerDeps) {
         adminAllowlist: deps.adminAllowlist,
         now: () => Date.now(),
     };
+    const launchpadApprovalsDeps: launchpadApprovalsHandlers.LaunchpadApprovalsDeps = {
+        repo: deps.launchpadApprovals,
+        adminAllowlist: deps.adminAllowlist,
+        now: () => Date.now(),
+    };
 
     // Every handler (queries and mutations alike) calls requireAdmin(identity)
     // first — defense in depth on top of the Next.js proxy's own admin check.
@@ -131,6 +139,8 @@ export function createApp(deps: ServerDeps) {
         tokenListsAdminHandlers.adminListTokenLists(tokenListsAdminDeps, args, identity);
     queries.listVariantAdvisories = (args, identity) =>
         variantAdvisoriesHandlers.listVariantAdvisories(variantAdvisoriesDeps, args, identity);
+    queries.listLaunchpadCandidates = (args, identity) =>
+        launchpadApprovalsHandlers.listLaunchpadCandidates(launchpadApprovalsDeps, args, identity);
 
     const mutations: Record<string, Handler> = Object.create(null);
     mutations.createCanonicalAsset = (args, identity) =>
@@ -159,6 +169,10 @@ export function createApp(deps: ServerDeps) {
         variantAdvisoriesHandlers.setVariantAdvisory(variantAdvisoriesDeps, args, identity);
     mutations.clearVariantAdvisory = (args, identity) =>
         variantAdvisoriesHandlers.clearVariantAdvisory(variantAdvisoriesDeps, args, identity);
+    mutations.approveLaunchpadMint = (args, identity) =>
+        launchpadApprovalsHandlers.approveLaunchpadMint(launchpadApprovalsDeps, args, identity);
+    mutations.revokeLaunchpadMint = (args, identity) =>
+        launchpadApprovalsHandlers.revokeLaunchpadMint(launchpadApprovalsDeps, args, identity);
     const logoUploadsDeps: logoUploadsHandlers.LogoUploadsDeps = {
         ...(deps.logoSigner ? { signer: deps.logoSigner } : {}),
         adminAllowlist: deps.adminAllowlist,

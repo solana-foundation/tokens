@@ -47,6 +47,12 @@ export function AdminTopNav() {
                         >
                             Curation
                         </Link>
+                        <Link
+                            href="/launches"
+                            className="rounded-full px-3 py-1.5 text-sm font-inter-medium text-foreground transition-colors hover:bg-white/70"
+                        >
+                            Launches
+                        </Link>
                     </div>
                 </div>
 

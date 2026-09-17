@@ -9,6 +9,7 @@ import {
     makePreStocksClient,
     makeRwaXyzClient,
     makeSanctumClient,
+    makeStonkfunClient,
     makeWebacyClient,
 } from './clients';
 import { parseAdminClerkUserIds, parseAdminEmails } from './adminAuth';
@@ -30,6 +31,8 @@ import {
     makePostgresCuratedMembershipSource,
     makePostgresFillQualityReadsRepo,
     makePostgresJobsRepo,
+    makePostgresLaunchpadJobsRepo,
+    makePostgresLaunchpadReadsRepo,
     makePostgresMiscJobsRepo,
     makePostgresOhlcvReadsRepo,
     makePostgresSanctumLstsRepo,
@@ -60,6 +63,8 @@ import type { SeedCronDeps } from './handlers/crons.seed';
 import type { TrendingCronDeps } from './handlers/crons.trending';
 import type { ClickhouseExtrasCronDeps } from './handlers/crons.clickhouse.extras';
 import type { PrestocksCronDeps } from './handlers/crons.prestocks';
+import type { LaunchpadCronDeps } from './handlers/crons.launchpad';
+import type { LaunchpadAdminDeps } from './handlers/launchpadAdminActions';
 import { makeGoogleOidcVerifier } from './oidc';
 import { createApp, type ServiceRole } from './server';
 
@@ -105,6 +110,7 @@ let seedCronDeps: SeedCronDeps | undefined;
 let trendingCronDeps: TrendingCronDeps | undefined;
 let clickhouseExtrasCronDeps: ClickhouseExtrasCronDeps | undefined;
 let prestocksCronDeps: PrestocksCronDeps | undefined;
+let launchpadCronDeps: LaunchpadCronDeps | undefined;
 let verifyOidc: ReturnType<typeof makeGoogleOidcVerifier> | undefined;
 
 // Effective curated membership is served on the read path too (the
@@ -201,6 +207,13 @@ if (birdeyeApiKey) {
         repo: makePostgresPrestocksRepo(sql),
         now: () => Date.now(),
     };
+    // stonk.fun needs no API key; the sync only runs where Birdeye is available
+    // because new coins get their identity (decimals/logo) from Birdeye.
+    launchpadCronDeps = {
+        base: baseDeps,
+        repo: makePostgresLaunchpadJobsRepo(sql),
+        stonkfun: makeStonkfunClient(),
+    };
     if (clickhouseUrl && clickhouseUser && clickhousePassword && clickhouseDatabase) {
         clickhouseExtrasCronDeps = {
             clickhouse: makeClickhouseClient({
@@ -286,6 +299,17 @@ if (adminAllowlist.clerkUserIds.size === 0 && adminAllowlist.emails.size === 0) 
 }
 
 let adminActionsDeps: AdminActionsDeps | undefined;
+// stonk.fun lookups for the admin Launches page; needs only the allowlist,
+// the provider client, and the DB (no Birdeye), so it is always available.
+const launchpadAdminDeps: LaunchpadAdminDeps = {
+    adminAllowlist,
+    stonkfun: makeStonkfunClient(),
+    repo: makePostgresLaunchpadJobsRepo(sql),
+    curated,
+    // "Sync now" can fetch identity for a brand-new coin only when Birdeye is configured.
+    ...(cronDeps ? { identity: { birdeye: cronDeps.birdeye, baseRepo: cronDeps.repo } } : {}),
+    now: () => Date.now(),
+};
 if (cronDeps && miscCronDeps && seedCronDeps) {
     adminActionsDeps = {
         adminAllowlist,
@@ -338,6 +362,7 @@ const app = createApp({
     stockReadsRepo: makePostgresStockReadsRepo(sql),
     ohlcvReadsRepo: makePostgresOhlcvReadsRepo(sql),
     prestocksReadsRepo: makePostgresPrestocksReadsRepo(sql),
+    launchpadReadsRepo: makePostgresLaunchpadReadsRepo(sql),
     authToken,
     serviceRole,
     checkDatabase: async () => {
@@ -352,6 +377,8 @@ const app = createApp({
     ...(trendingCronDeps ? { trendingCronDeps } : {}),
     ...(clickhouseExtrasCronDeps ? { clickhouseExtrasCronDeps } : {}),
     ...(prestocksCronDeps ? { prestocksCronDeps } : {}),
+    ...(launchpadCronDeps ? { launchpadCronDeps } : {}),
+    launchpadAdminDeps,
     ...(cacheWarmDeps ? { cacheWarmDeps } : {}),
     ...(adminActionsDeps ? { adminActionsDeps } : {}),
     tokenListsAdminDeps: { adminAllowlist, lists: tokenListsMutationsDeps },

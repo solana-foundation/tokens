@@ -7,6 +7,7 @@ import type { AdminMutationsRepo } from './handlers/curatedTokensMutations';
 import type { AdminReadsRepo } from './handlers/curatedTokensReads';
 import type { HardDeleteRepo } from './handlers/hardDelete';
 import type { VariantAdvisoriesRepo } from './handlers/variantAdvisories';
+import type { LaunchpadApprovalsRepo } from './handlers/launchpadApprovals';
 import { createApp, decodeIdentityHeader, IDENTITY_HEADER, type ServerDeps } from './server';
 
 const ADMIN_ID = 'admin_1';
@@ -17,8 +18,7 @@ function identityHeader(clerkUserId: string): string {
 
 function makeCategoriesRepo(summaries: CategorySummary[]): AdminRepo {
     return {
-        listCategorySummaries: async (slugs: readonly CuratedListSlug[]) =>
-            summaries.filter(s => slugs.includes(s.id)),
+        listCategorySummaries: async (slugs: readonly CuratedListSlug[]) => summaries.filter(s => slugs.includes(s.id)),
     };
 }
 
@@ -56,6 +56,14 @@ function makeHardDeleteRepo(): HardDeleteRepo {
     return { hardDeleteAsset: async () => null };
 }
 
+function makeLaunchpadApprovalsRepo(): LaunchpadApprovalsRepo {
+    return {
+        listCandidates: async () => [],
+        approve: async () => ({ created: true, approvedAt: 1 }),
+        revoke: async () => 'not_found',
+    };
+}
+
 function makeVariantAdvisoriesRepo(): VariantAdvisoriesRepo {
     return {
         set: async () => ({ outcome: 'set', reactivated: false }),
@@ -73,6 +81,7 @@ function makeDeps(overrides: Partial<ServerDeps> = {}): ServerDeps {
         hardDelete: makeHardDeleteRepo(),
         tokenListsAdmin: { listAll: async () => [], archiveBySlug: async () => false, unlockBySlug: async () => false },
         variantAdvisories: makeVariantAdvisoriesRepo(),
+        launchpadApprovals: makeLaunchpadApprovalsRepo(),
         adminAllowlist: { clerkUserIds: new Set([ADMIN_ID]), emails: new Set<string>() },
         authToken: 'tok',
         ...overrides,
@@ -301,6 +310,95 @@ describe('createApp', () => {
     });
 });
 
+describe('launchpad approvals routes', () => {
+    const MINT = 'HTmQz7My6MehV7bjhJ6jde8nDND1yvsz68d24LP7YgUQ';
+
+    it('POST /query/listLaunchpadCandidates returns the repo rows', async () => {
+        const row = {
+            launchpad: 'stonkfun',
+            mint: MINT,
+            synced: true,
+            isActive: true,
+            quoteMint: 'q',
+            quoteSymbol: 'GLDX',
+            symbol: 'GP',
+            name: 'RuneScape Gold',
+            logoURI: null,
+            marketCapUsd: 1,
+            volume24hUsd: 2,
+            launchedAt: 3,
+            lastSyncedAt: 4,
+            quoteAsset: null,
+            approval: null,
+        };
+        const app = createApp(
+            makeDeps({ launchpadApprovals: { ...makeLaunchpadApprovalsRepo(), listCandidates: async () => [row] } }),
+        );
+        const res = await call(app, '/query/listLaunchpadCandidates', {
+            method: 'POST',
+            headers: adminHeaders(),
+            body: JSON.stringify({ approvedOnly: true }),
+        });
+        expect(res.status).toBe(200);
+        expect(await res.json()).toEqual([row]);
+    });
+
+    it('POST /mutation/approveLaunchpadMint writes through the repo with the caller as actor', async () => {
+        const calls: unknown[] = [];
+        const repo: LaunchpadApprovalsRepo = {
+            ...makeLaunchpadApprovalsRepo(),
+            approve: async args => {
+                calls.push(args);
+                return { created: true, approvedAt: 99 };
+            },
+        };
+        const app = createApp(makeDeps({ launchpadApprovals: repo }));
+        const res = await call(app, '/mutation/approveLaunchpadMint', {
+            method: 'POST',
+            headers: adminHeaders(),
+            body: JSON.stringify({ mint: MINT, note: 'pick' }),
+        });
+        expect(res.status).toBe(200);
+        expect(await res.json()).toEqual({
+            launchpad: 'stonkfun',
+            mint: MINT,
+            approved: true,
+            created: true,
+            approvedAt: 99,
+        });
+        expect((calls[0] as { actor: { clerkUserId: string } }).actor.clerkUserId).toBe(ADMIN_ID);
+    });
+
+    it('POST /mutation/revokeLaunchpadMint returns revoked=false when nothing was approved', async () => {
+        const app = createApp(makeDeps());
+        const res = await call(app, '/mutation/revokeLaunchpadMint', {
+            method: 'POST',
+            headers: adminHeaders(),
+            body: JSON.stringify({ mint: MINT }),
+        });
+        expect(res.status).toBe(200);
+        expect(await res.json()).toEqual({ launchpad: 'stonkfun', mint: MINT, revoked: false });
+    });
+
+    it('rejects non-admin callers on every launchpad route', async () => {
+        const app = createApp(makeDeps());
+        for (const path of [
+            '/query/listLaunchpadCandidates',
+            '/mutation/approveLaunchpadMint',
+            '/mutation/revokeLaunchpadMint',
+        ]) {
+            const res = await call(app, path, {
+                method: 'POST',
+                headers: adminHeaders({
+                    'x-tokens-identity': Buffer.from(JSON.stringify({ clerkUserId: 'nope' })).toString('base64'),
+                }),
+                body: JSON.stringify({ mint: MINT }),
+            });
+            expect(res.status).toBe(403);
+        }
+    });
+});
+
 describe('variant advisories routes', () => {
     const MINT = 'SiLVFMgD3eD2rgK628NbTBq9MnuJF5FW2CRaVyTB35L';
 
@@ -390,7 +488,11 @@ describe('variant advisories routes', () => {
 
     it('rejects non-admin identities with 403 on all three routes', async () => {
         const app = createApp(makeDeps());
-        for (const path of ['/mutation/setVariantAdvisory', '/mutation/clearVariantAdvisory', '/query/listVariantAdvisories']) {
+        for (const path of [
+            '/mutation/setVariantAdvisory',
+            '/mutation/clearVariantAdvisory',
+            '/query/listVariantAdvisories',
+        ]) {
             const res = await call(app, path, {
                 method: 'POST',
                 headers: adminHeaders({ [IDENTITY_HEADER]: identityHeader('someone_else') }),
