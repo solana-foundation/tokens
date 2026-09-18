@@ -1,5 +1,8 @@
 {
   "title": "Endpoints",
   "defaultOpen": true,
-  "pages": ["lists"]
+  "pages": [
+    "lists",
+    "search"
+  ]
 }

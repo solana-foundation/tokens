@@ -118,6 +118,7 @@ export const SUPPRESSION_CODES = [
     'gate_impersonation',
     'gate_min_market_score',
     'gate_new_token',
+    'gate_unverified',
 ] as const;
 export type SuppressionCode = (typeof SUPPRESSION_CODES)[number];
 
