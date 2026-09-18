@@ -187,7 +187,14 @@ set with reasons so the curator sees what was filtered and why.
   - `policy` (optional): `strict` (default), `default`, or `degen` — bundles of hard gates +
     score weights. `strict` suppresses low-liquidity/day-old tokens and likely impersonators;
     `degen` shows everything and lets the warnings speak.
+  - Gate overrides: the same `minLiquidityUsd`, `minAgeDays`, `minMarketScore`,
+    `requireMarketData`, `suppressImpersonation` and `verifiedOnly` flags as
+    [`GET /v2/search`](/docs/v2/endpoints/search#policies-and-overrides). `policy` in the
+    response stays the preset id; `suppressed` is always returned here.
   - `limit` (1–50, default 10)
+
+This is the curator's view of the same pipeline behind [Search & Resolve](/docs/v2/endpoints/search);
+use `/v2/search` for end-user features.
 
 ```ts
 interface SearchTokensResponse {

@@ -1,0 +1,179 @@
+---
+title: Search & Resolve
+description: Risk-aware token search with tunable policy gates, and a resolve endpoint that answers with confidence or refuses.
+---
+
+Both endpoints on this page are Platform API endpoints authenticated with `x-api-key` and
+require only the default `assets:read` scope.
+
+Candidates come from three sources merged and deduped by mint — a live market-data provider
+(broad long-tail coverage), our token index, and the canonical asset registry — then run
+through a **judgment pipeline**: intent classification → hard gates → weighted score →
+explanations. A **policy** decides what is *suppressed* (returned with the gate that fired)
+versus *ranked*. You pick a preset and optionally override individual gates.
+
+## `GET /v2/search`
+
+- **Scope**: `assets:read`
+- **Query params**:
+  - `q` (**required**): symbol, name, or mint address (max 100 chars)
+  - `policy` (optional): `strict`, `default` (default), or `degen` — see [Policies](#policies-and-overrides)
+  - Gate overrides (optional, each layered on the preset):
+    - `minLiquidityUsd` — number ≥ 0, or `none` to disable the gate
+    - `minAgeDays` — integer ≥ 0, or `none`
+    - `minMarketScore` — integer 0–100, or `none`. Only gates tokens whose score is *known*
+    - `requireMarketData` — `true` | `false`
+    - `suppressImpersonation` — `true` | `false`
+    - `verifiedOnly` — `true` | `false`; when `true`, mints without a canonical-registry variant
+      are suppressed with `gate_unverified`
+  - `limit` (1–50, default 10) — ranked results only; `suppressed` is never truncated
+  - `includeSuppressed` (`true` | `false`, default `true`) — `false` omits the `suppressed` array
+
+```ts
+interface SearchResponse {
+    query: string;
+    interpretation: { intent: 'mint' | 'ticker' | 'name'; normalizedQuery: string; hadSuspiciousCharacters: boolean };
+    policy: {
+        id: 'strict' | 'default' | 'degen';
+        gates: {
+            minLiquidityUsd: number | null;
+            requireMarketData: boolean;
+            suppressImpersonation: boolean;
+            minMarketScore: number | null;
+            minAgeDays: number | null;
+            requireRegistry: boolean;
+        };
+        overrides: string[]; // gate keys your request changed from the preset
+    };
+    policyVersion: string;
+    scoringVersion: string;
+    sources: { provider: 'ok' | 'degraded' | 'disabled'; db: 'ok' | 'degraded'; registry: 'ok' };
+    latencyMs: number;
+    results: Array<{
+        mint: string;
+        claims: { symbol: string | null; name: string | null; attestations: Array<{ code: string; detail: string }> };
+        market: {
+            price: number | null;
+            liquidityUsd: number | null;
+            volume24hUsd: number | null;
+            marketCapUsd: number | null;
+            priceChange24hPercent: number | null;
+            holderCount: number | null;
+            decimals: number | null;
+            logoURI: string | null;
+            dataAsOf: number | null; // ms epoch of the freshest market data
+        };
+        score: { total: number; components: Record<string, number> };
+        reasons: string[];   // why it ranks: exact_symbol_match, curated_list_member, deep_liquidity, …
+        warnings: string[];  // caution signals: possible_impersonation, new_token, unverified, weak_market_score, …
+        badges: string[];    // curated:<list>, tier1|tier2|tier3, grade:A|B|C, advisory:<status>
+        verified: boolean;   // a canonical-registry variant exists for this mint
+    }>;
+    suppressed?: Array<{
+        mint: string;
+        symbol: string | null;
+        name: string | null;
+        liquidityUsd: number | null;
+        suppressedBy: string[]; // gates that fired, e.g. gate_min_liquidity, gate_unverified
+        warnings: string[];
+    }>;
+}
+```
+
+Example — a swap UI that only wants registry-attested tokens with real depth, and doesn't
+need the suppressed rows:
+
+```
+GET /v2/search?q=bonk&verifiedOnly=true&minLiquidityUsd=250000&includeSuppressed=false
+```
+
+Example — a research tool that wants everything, with the warnings doing the talking:
+
+```
+GET /v2/search?q=dog&policy=degen&limit=50
+```
+
+### Reading the output
+
+- **`reasons`** explain rank: match quality (`mint_match`, `exact_symbol_match`,
+  `symbol_prefix_match`, `name_match`), curation (`curated_list_member`, `registry_variant`),
+  and market context (`market_leader`, `deep_liquidity`, `high_activity`, `established_token`,
+  `strong_execution_quality`).
+- **`warnings`** are caution signals on a token that is still ranked: `possible_impersonation`
+  and `symbol_collision` (claims a symbol a protected token holds), `suspicious_characters`
+  (homoglyphs / invisible characters), `new_token` (younger than 7 days), `low_liquidity`,
+  `no_market_data`, `unverified` (not in the registry), `stale_data`, `high_bot_volume`,
+  `concentrated_holders`, `weak_market_score` (market score below 40), and `advisory_caution`.
+- **`suppressed`** lists candidates a gate removed. Loosen the gate (or switch to `degen`) to see
+  them ranked instead.
+- **`badges.grade:*`** is the same A/B/C market grade v1 exposes; it is computed from the
+  token's own liquidity, market cap, holders, volume and age.
+
+## `GET /v2/resolve`
+
+One answer with confidence — or an explicit refusal. A confident-looking wrong answer to
+`resolve("USDC")` is the worst possible output, so "I don't know" is a first-class response.
+
+- **Scope**: `assets:read`
+- **Query params**: `q` (**required**), `policy`, and the same gate overrides as `/v2/search`.
+  No `limit` / `includeSuppressed`.
+- **Always HTTP 200** when the request is valid; read `status`.
+
+```ts
+interface ResolveResponse {
+    query: string;
+    interpretation: SearchResponse['interpretation'];
+    policy: SearchResponse['policy'];
+    policyVersion: string;
+    scoringVersion: string;
+    sources: SearchResponse['sources'];
+    latencyMs: number;
+    status: 'resolved' | 'ambiguous' | 'no_confident_match';
+    // `resolved`: the single answer. `confidence` is 0–1 (exact mint paste → 1).
+    best: (SearchResponse['results'][number] & { confidence: number }) | null;
+    // `ambiguous`: credible contenders, best first (≤ 5). Empty otherwise.
+    candidates: SearchResponse['results'];
+}
+```
+
+- A **mint address** query is a lookup, never fuzzy: the exact mint or `no_confident_match`.
+- **`resolved`** requires the best candidate to clear the policy's refusal bar *and* beat the
+  runner-up by a margin; **`ambiguous`** means several credible claimers exist (typical for an
+  unprotected symbol shared by unrelated tokens) — show `candidates` and let the user pick.
+- Each policy has its own refusal bar: `strict` refuses most readily, `degen` least.
+
+## Policies and overrides
+
+A policy is a declarative bundle of hard gates, score weights and a refusal bar. Presets:
+
+| Gate | `strict` | `default` | `degen` |
+|---|---|---|---|
+| `minLiquidityUsd` | 10 000 | 1 000 | none |
+| `requireMarketData` | true | false | false |
+| `suppressImpersonation` | true | true | false |
+| `minMarketScore` | none | none | none |
+| `minAgeDays` | 1 | none | none |
+| `requireRegistry` (`verifiedOnly`) | false | false | false |
+
+Overrides change only the gate you name; score weights and the refusal bar always come from the
+preset. The response's `policy.gates` is the effective document and `policy.overrides` lists
+what you changed, so any result is reproducible from its own envelope.
+
+Two rules are **not** overridable, under any preset:
+
+- **Advisory gates**: mints carrying a `blocked` or `compromised` operator advisory are always
+  suppressed (`gate_advisory_blocked` / `gate_advisory_compromised`). A `caution` advisory is a
+  warning, not a gate. See [Asset by ID → Advisories](/docs/v1/endpoints/asset-by-id#advisories).
+- **Tombstones**: mints editorially deleted from the corpus are always suppressed
+  (`gate_tombstoned`).
+
+Registry-attested assets bypass the liquidity gate: it exists to filter scams and unknowns, not
+to hide verified assets that settle off-AMM (RFQ / primary-issuance tokenized stocks and funds).
+Thin tradability on those shows as a `low_liquidity` warning instead.
+
+## Limits
+
+Beyond the standard per-key rate limits, `/v2/search`, `/v2/resolve` and the curator search
+`/v2/lists/search-tokens` share one per-key **provider lookup budget** (120 calls per 10 minutes
+by default) because unique queries reach the live provider. Exhausting it returns `429` with the
+usual envelope; identical queries within 30 seconds are served from cache and don't count.

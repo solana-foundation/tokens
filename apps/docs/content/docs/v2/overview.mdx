@@ -1,9 +1,10 @@
 ---
 title: Overview
-description: API v2 introduces community token lists — curated, project-owned lists served as composable plugins.
+description: API v2 introduces community token lists and risk-aware search — composable list plugins plus a judgment layer you can tune.
 ---
 
-API v2 is additive: every v1 endpoint keeps working unchanged. v2 currently covers **token lists**.
+API v2 is additive: every v1 endpoint keeps working unchanged. v2 currently covers **token lists** and
+**risk-aware search / resolve**.
 
 ## Token lists ("lists as plugins")
 
@@ -20,3 +21,16 @@ model.
   so your UI can render appropriate caution.
 
 See [Lists endpoints](/docs/v2/endpoints/lists) for the full reference.
+
+## Risk-aware search and resolve
+
+`GET /v2/search` runs every candidate — from a live market-data provider, our token index and the
+canonical registry — through a judgment pipeline: hard gates, a weighted score, and explanations
+(`reasons`, `warnings`, `badges`). You choose a policy preset (`strict` / `default` / `degen`) and
+can override individual gates such as minimum liquidity, minimum age, or `verifiedOnly`. Whatever a
+gate removes comes back in `suppressed[]` with the gate that fired, so nothing is silently hidden.
+
+`GET /v2/resolve` answers "which mint is *USDC*?" with a single confident result — or refuses
+explicitly (`ambiguous` / `no_confident_match`) rather than guessing.
+
+See [Search & Resolve](/docs/v2/endpoints/search) for the full reference.
