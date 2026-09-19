@@ -1,7 +1,7 @@
 /**
  * Candidate sourcing + enrichment for the curator-assist token search
  * (ported from the archive repo's v2 search PR; the asset-risk cache was
- * dropped — risk falls back to computeMarketScore over candidate market data).
+ * dropped — risk is computeMarketScore over candidate market data, see risk.ts).
  *
  * Candidates come from three places (merged, deduped by mint):
  * - `provider`: live Birdeye v3 search (broad long-tail coverage)
@@ -36,6 +36,7 @@ import {
 } from '@/app/api/v1/assets/_asset-helpers';
 import { looksLikeSolanaMintAddress } from '@/app/api/v1/assets/_singleton-asset-id';
 import { registryClaimedSymbol } from './protected-symbols';
+import { riskFromMarket } from './risk';
 import type { CandidateSource, EnrichedCandidate, QueryInterpretation } from './types';
 
 const MAX_CANDIDATES = 40;
@@ -277,6 +278,18 @@ export function gatherCandidates(
             const market = marketByMint.get(raw.mint) ?? null;
             const registryMatch = getVariantByMint(raw.mint);
             const fillQuality = fillQualityByMint.get(raw.mint) ?? null;
+            // Outside the registry conditional: DB-only admin tokens get
+            // curated attestations/badges too.
+            const curatedListIds = curatedByMint.get(raw.mint) ?? [];
+            const liquidityUsd = market?.liquidity ?? raw.liquidityUsd;
+            const volume24hUsd = market?.volume24hUSD ?? raw.volume24hUsd;
+            const marketCapUsd = market?.marketCap ?? raw.marketCapUsd;
+            const holderCount = market?.holder ?? raw.holderCount;
+            // The asset-risk cache is not ported: holder concentration and
+            // Webacy tags are unknown here. The market score/grade is computed
+            // from the overlaid market fields so `minMarketScore`,
+            // `weak_market_score` and `grade:*` badges reflect real data.
+            const top10HoldersPercent = null;
 
             return {
                 mint: raw.mint,
@@ -285,20 +298,15 @@ export function gatherCandidates(
                 decimals: market?.decimals ?? raw.decimals,
                 logoURI: market?.logoURI ?? raw.logoURI,
                 price: market?.price ?? raw.price,
-                liquidityUsd: market?.liquidity ?? raw.liquidityUsd,
-                volume24hUsd: market?.volume24hUSD ?? raw.volume24hUsd,
-                marketCapUsd: market?.marketCap ?? raw.marketCapUsd,
+                liquidityUsd,
+                volume24hUsd,
+                marketCapUsd,
                 priceChange24hPercent: market?.priceChange24hPercent ?? raw.priceChange24hPercent,
-                holderCount: market?.holder ?? raw.holderCount,
-                // The asset-risk cache is not ported; holder-concentration and
-                // cached risk grades are unknown here (score falls back to
-                // computeMarketScore over the market fields above).
-                top10HoldersPercent: null,
+                holderCount,
+                top10HoldersPercent,
                 tokenMintTime: raw.tokenMintTime,
                 sources: Array.from(raw.sources.size > 0 ? raw.sources : new Set<CandidateSource>(['db'])),
-                // Outside the registry conditional: DB-only admin tokens get
-                // curated attestations/badges too.
-                curatedListIds: curatedByMint.get(raw.mint) ?? [],
+                curatedListIds,
                 registry: registryMatch
                     ? {
                           assetId: registryMatch.asset.assetId,
@@ -310,7 +318,16 @@ export function gatherCandidates(
                           trustTier: registryMatch.variant.trustTier ?? null,
                       }
                     : null,
-                risk: null,
+                risk: riskFromMarket({
+                    mint: raw.mint,
+                    liquidityUsd,
+                    marketCapUsd,
+                    holderCount,
+                    top10HoldersPercent,
+                    volume24hUsd,
+                    tokenMintTime: raw.tokenMintTime,
+                    curatedListIds,
+                }),
                 fillQuality,
                 tombstoned: tombstonedRefs.has(raw.mint.toLowerCase()) || tombstonedRefs.has(raw.mint),
                 advisory: advisoriesByMint.get(raw.mint) ?? null,
