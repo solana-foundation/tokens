@@ -414,11 +414,12 @@ export async function syncStonkfunLaunches(deps: LaunchpadCronDeps, rawArgs: unk
 
     const result = await deps.stonkfun.fetchGraduatedTokens({ maxPages: args.maxPages });
     if (!result.ok) {
+        // Total provider failure. Reporting it as a failed run lets Cloud Scheduler
+        // retry; acknowledging it would leave launches stale until the next tick.
         return {
-            ok: true,
+            ok: false,
             processed: 0,
             durationMs: deps.base.now() - start,
-            skipped: true,
             reason: result.reason,
             ...(result.reason === 'http_error' ? { status: result.status } : {}),
         };

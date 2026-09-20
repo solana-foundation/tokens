@@ -295,12 +295,27 @@ function makeHarness(opts: {
 }
 
 describe('syncStonkfunLaunches', () => {
-    it('skips the run (without deactivating anything) when the provider fetch fails', async () => {
+    it('fails the run (without deactivating anything) when the provider fetch fails', async () => {
         const h = makeHarness({ fetch: { ok: false, reason: 'http_error', status: 503 } });
         const res = await syncStonkfunLaunches(h.deps, {});
-        expect(res).toMatchObject({ ok: true, skipped: true, reason: 'http_error', status: 503 });
+        expect(res).toMatchObject({ ok: false, reason: 'http_error', status: 503 });
+        expect(res.skipped).toBeUndefined();
         expect(h.upserts).toHaveLength(0);
         expect(h.deactivateCalls).toHaveLength(0);
+    });
+
+    it('fails the run on a network error or an invalid provider payload', async () => {
+        const failures: Array<Extract<StonkfunFetchResult, { ok: false }>> = [
+            { ok: false, reason: 'error', message: 'boom' },
+            { ok: false, reason: 'invalid_payload' },
+        ];
+        for (const fetch of failures) {
+            const h = makeHarness({ fetch });
+            const res = await syncStonkfunLaunches(h.deps, {});
+            expect(res).toMatchObject({ ok: false, reason: fetch.reason });
+            expect(h.upserts).toHaveLength(0);
+            expect(h.deactivateCalls).toHaveLength(0);
+        }
     });
 
     it('skips on a suspicious drop against the existing active count', async () => {

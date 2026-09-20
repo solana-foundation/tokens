@@ -43,9 +43,14 @@ rotations keep the rows fresh.
 | `maxPages`                | 30      | provider page cap (100 per page)                          |
 | `concurrency` / `delayMs` | 2 / 200 | identity pool pacing                                      |
 
-Skips (`ok: true, skipped: true`): `http_error` / `error` / `invalid_payload`
-(provider), `no_matches`, and `suspicious_drop` (selection < 70 % of the current
-active count — guards against deactivating everything off a partial outage).
+Skips (`ok: true, skipped: true`): `no_matches` and `suspicious_drop` (selection
+< 70 % of the current active count — guards against deactivating everything off a
+partial outage). These are deliberate no-ops and are acknowledged.
+
+Failures (`ok: false` → HTTP 500, retried by Cloud Scheduler): `http_error` /
+`error` / `invalid_payload`. A total provider failure deactivates nothing and is
+retried rather than acknowledged, so a stonk.fun outage does not leave launches
+stale until the next scheduled tick.
 
 ## Operating
 
