@@ -33,7 +33,7 @@ jobs:
       services: ${{ steps.detect.outputs.services }}
       tiers: ${{ steps.detect.outputs.tiers }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.ref || github.sha }}
           fetch-depth: 2
@@ -84,13 +84,13 @@ jobs:
     env:
       DOPPLER_TOKEN: ${{ secrets.DOPPLER_TOKEN }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.ref || github.sha }}
           fetch-depth: 1
 
       - name: Install Doppler CLI
-        uses: dopplerhq/cli-action@014df23b1329b615816a38eb5f473bb9000700b1 # v3
+        uses: dopplerhq/cli-action@4819d808ab99e5cde19a0637a16536a4038fad73 # v4.0.1
 
       - name: Notify Slack — deploy started
         env:
@@ -138,7 +138,7 @@ jobs:
       matrix:
         service: ${{ fromJson(needs.changes.outputs.services) }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.ref || github.sha }}
 
@@ -146,12 +146,12 @@ jobs:
         run: echo "value=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
       - id: auth
-        uses: google-github-actions/auth@71f986410dfbc7added4569d411d040a91dc6935 # v2
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v2
         with:
           workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
           service_account: ${{ vars.GCP_CLOUDRUN_DEPLOYER_SA }}
 
-      - uses: google-github-actions/setup-gcloud@77e7a554d41e2ee56fc945c52dfd3f33d12def9a # v2
+      - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v2
 
       - name: Configure docker for Artifact Registry
         run: gcloud auth configure-docker us-east4-docker.pkg.dev --quiet
@@ -203,7 +203,7 @@ jobs:
       VERCEL_ORG_ID: ${{ vars.VERCEL_ORG_ID }}
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.ref }}
           fetch-depth: 0
@@ -213,7 +213,7 @@ jobs:
           bun-version: 1.3.6
 
       - name: Install Doppler CLI
-        uses: dopplerhq/cli-action@014df23b1329b615816a38eb5f473bb9000700b1 # v3
+        uses: dopplerhq/cli-action@4819d808ab99e5cde19a0637a16536a4038fad73 # v4.0.1
 
       - run: bun install --frozen-lockfile
 
@@ -384,7 +384,7 @@ jobs:
     env:
       DOPPLER_TOKEN: ${{ secrets.DOPPLER_TOKEN }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.ref || github.sha }}
 
@@ -392,12 +392,12 @@ jobs:
         run: echo "value=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
       - id: auth
-        uses: google-github-actions/auth@71f986410dfbc7added4569d411d040a91dc6935 # v2
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v2
         with:
           workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
           service_account: ${{ vars.GCP_CLOUDRUN_DEPLOYER_SA }}
 
-      - uses: google-github-actions/setup-gcloud@77e7a554d41e2ee56fc945c52dfd3f33d12def9a # v2
+      - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v2
 
       - name: Configure docker for Artifact Registry
         run: gcloud auth configure-docker us-east4-docker.pkg.dev --quiet
@@ -453,7 +453,7 @@ jobs:
           bun-version: 1.3.6
 
       - name: Install Doppler CLI
-        uses: dopplerhq/cli-action@014df23b1329b615816a38eb5f473bb9000700b1 # v3
+        uses: dopplerhq/cli-action@4819d808ab99e5cde19a0637a16536a4038fad73 # v4.0.1
 
       - run: bun install --frozen-lockfile
 
@@ -487,7 +487,7 @@ jobs:
       VERCEL_ORG_ID: ${{ vars.VERCEL_ORG_ID }}
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.ref }}
           fetch-depth: 0
@@ -497,7 +497,7 @@ jobs:
           bun-version: 1.3.6
 
       - name: Install Doppler CLI
-        uses: dopplerhq/cli-action@014df23b1329b615816a38eb5f473bb9000700b1 # v3
+        uses: dopplerhq/cli-action@4819d808ab99e5cde19a0637a16536a4038fad73 # v4.0.1
 
       - run: bun install --frozen-lockfile
 
@@ -565,13 +565,13 @@ jobs:
       # Vercel prod deploys until the candidate serves 100% of traffic.
       - id: gcp_auth
         if: contains(fromJson(needs.changes.outputs.services), 'assets')
-        uses: google-github-actions/auth@71f986410dfbc7added4569d411d040a91dc6935 # v2
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v2
         with:
           workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
           service_account: ${{ vars.GCP_CLOUDRUN_DEPLOYER_SA }}
 
       - if: contains(fromJson(needs.changes.outputs.services), 'assets')
-        uses: google-github-actions/setup-gcloud@77e7a554d41e2ee56fc945c52dfd3f33d12def9a # v2
+        uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v2
 
       - name: Wait for assets candidate promotion (manual)
         if: contains(fromJson(needs.changes.outputs.services), 'assets')
@@ -936,13 +936,13 @@ jobs:
     env:
       DOPPLER_TOKEN: ${{ secrets.DOPPLER_TOKEN }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.ref || github.sha }}
           fetch-depth: 1
 
       - name: Install Doppler CLI
-        uses: dopplerhq/cli-action@014df23b1329b615816a38eb5f473bb9000700b1 # v3
+        uses: dopplerhq/cli-action@4819d808ab99e5cde19a0637a16536a4038fad73 # v4.0.1
 
       - name: Notify Slack — deploy finished
         env:
