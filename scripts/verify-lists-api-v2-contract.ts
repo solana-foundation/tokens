@@ -193,6 +193,13 @@ async function verifySearch(baseUrl: string, apiKey: string): Promise<void> {
     assert(res.status === 400, `invalid policy must 400, got ${res.status}`);
 }
 
+/** The documented public path is a rewrite onto `/api/v2/*`; a 404 here means the rewrite is missing. */
+async function verifyPublicPathRewrite(baseUrl: string, apiKey: string): Promise<void> {
+    const body = await getJson(baseUrl, apiKey, 'v2/search?q=USDC&limit=1');
+    assertObject(body, 'public-path search response');
+    assert(Array.isArray(body.results) && body.results.length === 1, '/v2/search must serve the same handler as /api/v2/search');
+}
+
 async function verifyResolve(baseUrl: string, apiKey: string): Promise<void> {
     const body = await getJson(baseUrl, apiKey, 'api/v2/resolve?q=USDC');
     assertObject(body, 'resolve response');
@@ -238,6 +245,7 @@ async function main(): Promise<void> {
     await verifyCompose(baseUrl, apiKey);
     await verifySearch(baseUrl, apiKey);
     await verifyResolve(baseUrl, apiKey);
+    await verifyPublicPathRewrite(baseUrl, apiKey);
 
     console.log('Lists + search API v2 contract verification passed.');
 }
