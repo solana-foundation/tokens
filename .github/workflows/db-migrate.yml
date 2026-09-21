@@ -29,10 +29,6 @@ on:
         default: 'status'
         type: choice
         options: [status, apply]
-      only:
-        description: 'apply only these pending migrations (comma-separated names without .sql, e.g. 0021_launchpad_tokens,0022_launchpad_mint_approvals). Empty = every pending file.'
-        required: false
-        default: ''
 
 permissions:
   contents: read
@@ -103,24 +99,11 @@ jobs:
         if: inputs.mode == 'apply' && steps.status.outputs.pending != ''
         env:
           PENDING: ${{ steps.status.outputs.pending }}
-          ONLY: ${{ inputs.only }}
           LOG_OUT: /tmp/apply.log
         run: |
           set -euo pipefail
-          IFS=, read -ra pending <<<"$PENDING"
-          names=("${pending[@]}")
-          if [ -n "$ONLY" ]; then
-            # Pending-but-deliberately-skipped files exist (0010 in prd), so an
-            # explicit allow-list is the safe default for `apply`.
-            names=()
-            IFS=, read -ra wanted <<<"${ONLY// /}"
-            for w in "${wanted[@]}"; do
-              w=${w%.sql}
-              if printf '%s\n' "${pending[@]}" | grep -qx "$w"; then names+=("$w")
-              else echo "::error::'$w' is not a pending migration (pending: $PENDING)"; exit 1; fi
-            done
-          fi
           files=()
+          IFS=, read -ra names <<<"$PENDING"
           for n in "${names[@]}"; do files+=("db/migrations/$n.sql"); done
           echo "applying: ${files[*]}"
           # Only the pending files travel: env vars have a hard size cap and the

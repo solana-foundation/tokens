@@ -24,8 +24,7 @@ secret="tokens-database-url-${env_name}-us"
 network="tokens-vpc-${env_name}"
 subnet="tokens-subnet-${env_name}-us"
 
-# '@'-delimited KEY=VALUE list; base64 never contains '@'. (--args below uses
-# ';' as its delimiter because the command itself contains '|'.)
+# '@'-delimited KEY=VALUE list; base64 never contains '@'.
 env_vars="^@^JOB_SCRIPT_B64=$(base64 -w0 < "$script_file")"
 if [ -n "$env_file" ]; then
     while IFS= read -r line; do
@@ -47,22 +46,20 @@ gcloud run jobs create "$job" \
     --network="$network" --subnet="$subnet" --vpc-egress=all-traffic \
     --set-env-vars="$env_vars" \
     --command=bash \
-    --args='^;^-c;echo "$JOB_SCRIPT_B64" | base64 -d | bash' \
+    --args='^|^-c|echo "$JOB_SCRIPT_B64" | base64 -d | bash' \
     --max-retries=0 --task-timeout=20m --memory=512Mi \
     --quiet >/dev/null
 
 status=0
 gcloud run jobs execute "$job" --region="$region" --project="$project" --wait --quiet || status=$?
 
-# Log ingestion lags the execution by a few seconds; wait for the end marker
-# (each read is itself several seconds, so this is ~1-2 min worst case).
+# Log ingestion lags the execution by a few seconds; wait for the end marker.
 logs=""
-for attempt in $(seq 1 10); do
+for _ in $(seq 1 24); do
     logs=$(gcloud logging read \
         "resource.type=\"cloud_run_job\" AND resource.labels.job_name=\"$job\" AND textPayload:*" \
-        --project="$project" --freshness=1h --order=asc --limit=500 --format='value(textPayload)' 2>/dev/null || true)
+        --project="$project" --freshness=1h --order=asc --format='value(textPayload)' 2>/dev/null || true)
     if grep -q '^MIGRATE_END$' <<<"$logs" || { [ "$status" -ne 0 ] && [ -n "$logs" ]; }; then break; fi
-    echo "waiting for job logs (attempt $attempt)…"
     sleep 5
 done
 
