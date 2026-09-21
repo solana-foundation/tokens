@@ -35,6 +35,9 @@ import type { StockInstrumentRow, StockPriceRow, StockReadsRepo } from './handle
 import type { OhlcvCandleRow, OhlcvReadsRepo, TimeInterval } from './handlers/ohlcvReads';
 import type { PrestocksPriceRow, PrestocksReadsRepo } from './handlers/prestocksReads';
 import type { PrestocksRepo } from './handlers/crons.prestocks';
+import type { LaunchpadJobsRepo, LaunchpadTokenUpsert } from './handlers/crons.launchpad';
+import type { LaunchpadReadsRepo, LaunchpadTokenRow } from './handlers/launchpadReads';
+import type { TokenUpsertFromBirdeye } from './handlers/crons.misc';
 import type {
     AssetsApiAssetMarketRow,
     AssetsApiAssetRow,
@@ -2363,6 +2366,37 @@ export function makePostgresClickhouseRepo(sql: Sql): ClickhouseRepo {
     };
 }
 
+/** Shared `tokens` identity upsert (misc refresh cron + launchpad sync). */
+async function upsertTokenFromBirdeyeSql(sql: Sql, args: TokenUpsertFromBirdeye): Promise<void> {
+    await sql`
+        INSERT INTO tokens (
+            id, address, symbol, name, decimals, logo_uri,
+            price, price_change_24h_percent, price_change_1h_percent,
+            volume_24h_usd, liquidity, market_cap,
+            last_fetched_at
+        )
+        VALUES (
+            ${randomId('tok')}, ${args.address}, ${args.symbol}, ${args.name}, ${args.decimals},
+            ${args.logoUri ?? null},
+            ${args.price ?? null}, ${args.priceChange24hPercent ?? null}, ${args.priceChange1hPercent ?? null},
+            ${args.volume24hUSD ?? null}, ${args.liquidity ?? null}, ${args.marketCap ?? null},
+            ${args.lastFetchedAt}
+        )
+        ON CONFLICT (address) DO UPDATE SET
+            symbol = EXCLUDED.symbol,
+            name = EXCLUDED.name,
+            decimals = EXCLUDED.decimals,
+            logo_uri = COALESCE(EXCLUDED.logo_uri, tokens.logo_uri),
+            price = COALESCE(EXCLUDED.price, tokens.price),
+            price_change_24h_percent = COALESCE(EXCLUDED.price_change_24h_percent, tokens.price_change_24h_percent),
+            price_change_1h_percent = COALESCE(EXCLUDED.price_change_1h_percent, tokens.price_change_1h_percent),
+            volume_24h_usd = COALESCE(EXCLUDED.volume_24h_usd, tokens.volume_24h_usd),
+            liquidity = COALESCE(EXCLUDED.liquidity, tokens.liquidity),
+            market_cap = COALESCE(EXCLUDED.market_cap, tokens.market_cap),
+            last_fetched_at = EXCLUDED.last_fetched_at
+    `;
+}
+
 export function makePostgresMiscJobsRepo(sql: Sql): MiscJobsRepo {
     return {
         async listStaleTokenAddresses(beforeLastFetchedAt, limit) {
@@ -2378,33 +2412,7 @@ export function makePostgresMiscJobsRepo(sql: Sql): MiscJobsRepo {
         },
 
         async upsertTokenFromBirdeye(args) {
-            await sql`
-                INSERT INTO tokens (
-                    id, address, symbol, name, decimals, logo_uri,
-                    price, price_change_24h_percent, price_change_1h_percent,
-                    volume_24h_usd, liquidity, market_cap,
-                    last_fetched_at
-                )
-                VALUES (
-                    ${randomId('tok')}, ${args.address}, ${args.symbol}, ${args.name}, ${args.decimals},
-                    ${args.logoUri ?? null},
-                    ${args.price ?? null}, ${args.priceChange24hPercent ?? null}, ${args.priceChange1hPercent ?? null},
-                    ${args.volume24hUSD ?? null}, ${args.liquidity ?? null}, ${args.marketCap ?? null},
-                    ${args.lastFetchedAt}
-                )
-                ON CONFLICT (address) DO UPDATE SET
-                    symbol = EXCLUDED.symbol,
-                    name = EXCLUDED.name,
-                    decimals = EXCLUDED.decimals,
-                    logo_uri = COALESCE(EXCLUDED.logo_uri, tokens.logo_uri),
-                    price = COALESCE(EXCLUDED.price, tokens.price),
-                    price_change_24h_percent = COALESCE(EXCLUDED.price_change_24h_percent, tokens.price_change_24h_percent),
-                    price_change_1h_percent = COALESCE(EXCLUDED.price_change_1h_percent, tokens.price_change_1h_percent),
-                    volume_24h_usd = COALESCE(EXCLUDED.volume_24h_usd, tokens.volume_24h_usd),
-                    liquidity = COALESCE(EXCLUDED.liquidity, tokens.liquidity),
-                    market_cap = COALESCE(EXCLUDED.market_cap, tokens.market_cap),
-                    last_fetched_at = EXCLUDED.last_fetched_at
-            `;
+            await upsertTokenFromBirdeyeSql(sql, args);
         },
 
         async getTokenMarketsLastFetchedAtByMint(mint) {
@@ -5094,6 +5102,192 @@ export function makePostgresClickhouseExtrasRepo(sql: Sql): ClickhouseExtrasRepo
                 symbol: r.symbol,
                 normalizedSymbol: r.normalized_symbol,
             }));
+        },
+    };
+}
+
+export function makePostgresLaunchpadJobsRepo(sql: Sql): LaunchpadJobsRepo {
+    return {
+        async listActiveLaunchpadCount(launchpad) {
+            const rows = await sql<{ count: number }[]>`
+                SELECT COUNT(*)::int AS count
+                FROM launchpad_tokens_latest
+                WHERE launchpad = ${launchpad} AND is_active = true
+            `;
+            return rows[0]?.count ?? 0;
+        },
+
+        async upsertLaunchpadTokenLatest(args: LaunchpadTokenUpsert) {
+            await sql`
+                INSERT INTO launchpad_tokens_latest (
+                    id, launchpad, mint, quote_mint, quote_symbol, symbol, name, logo_uri,
+                    pool, status, mode, creator,
+                    price_usd, market_cap_usd, fdv_usd, liquidity_usd, volume_24h_usd, price_change_24h,
+                    launched_at, graduated_at, links_json,
+                    source_rank, raw_json, is_active, last_seen_at, last_synced_at, updated_at
+                )
+                VALUES (
+                    ${randomId('lpt')}, ${args.launchpad}, ${args.mint}, ${args.quoteMint},
+                    ${args.quoteSymbol ?? null}, ${args.symbol ?? null}, ${args.name ?? null}, ${args.logoURI ?? null},
+                    ${args.pool ?? null}, ${args.status ?? null}, ${args.mode ?? null}, ${args.creator ?? null},
+                    ${args.priceUsd ?? null}, ${args.marketCapUsd ?? null}, ${args.fdvUsd ?? null},
+                    ${args.liquidityUsd ?? null}, ${args.volume24hUsd ?? null}, ${args.priceChange24h ?? null},
+                    ${args.launchedAt ?? null}, ${args.graduatedAt ?? null}, ${args.linksJson ?? null},
+                    ${args.sourceRank}, ${args.rawJson}, ${args.isActive},
+                    ${args.lastSeenAt}, ${args.lastSyncedAt}, NOW()
+                )
+                ON CONFLICT (launchpad, mint) DO UPDATE SET
+                    quote_mint = EXCLUDED.quote_mint,
+                    quote_symbol = EXCLUDED.quote_symbol,
+                    symbol = EXCLUDED.symbol,
+                    name = EXCLUDED.name,
+                    logo_uri = EXCLUDED.logo_uri,
+                    pool = EXCLUDED.pool,
+                    status = EXCLUDED.status,
+                    mode = EXCLUDED.mode,
+                    creator = EXCLUDED.creator,
+                    price_usd = EXCLUDED.price_usd,
+                    market_cap_usd = EXCLUDED.market_cap_usd,
+                    fdv_usd = EXCLUDED.fdv_usd,
+                    liquidity_usd = EXCLUDED.liquidity_usd,
+                    volume_24h_usd = EXCLUDED.volume_24h_usd,
+                    price_change_24h = EXCLUDED.price_change_24h,
+                    launched_at = EXCLUDED.launched_at,
+                    graduated_at = EXCLUDED.graduated_at,
+                    links_json = EXCLUDED.links_json,
+                    source_rank = EXCLUDED.source_rank,
+                    raw_json = EXCLUDED.raw_json,
+                    is_active = EXCLUDED.is_active,
+                    last_seen_at = EXCLUDED.last_seen_at,
+                    last_synced_at = EXCLUDED.last_synced_at,
+                    updated_at = NOW()
+            `;
+        },
+
+        async deactivateMissingLaunchpadTokens(launchpad, activeMints, lastSyncedAt) {
+            if (activeMints.length === 0) {
+                const rows = await sql<{ count: number }[]>`
+                    WITH updated AS (
+                        UPDATE launchpad_tokens_latest
+                        SET is_active = false, last_synced_at = ${lastSyncedAt}, updated_at = NOW()
+                        WHERE launchpad = ${launchpad} AND is_active = true
+                        RETURNING 1
+                    )
+                    SELECT COUNT(*)::int AS count FROM updated
+                `;
+                return rows[0]?.count ?? 0;
+            }
+            const rows = await sql<{ count: number }[]>`
+                WITH updated AS (
+                    UPDATE launchpad_tokens_latest
+                    SET is_active = false, last_synced_at = ${lastSyncedAt}, updated_at = NOW()
+                    WHERE launchpad = ${launchpad}
+                      AND is_active = true
+                      AND mint NOT IN ${sql([...activeMints])}
+                    RETURNING 1
+                )
+                SELECT COUNT(*)::int AS count FROM updated
+            `;
+            return rows[0]?.count ?? 0;
+        },
+
+        async listApprovedMints(launchpad) {
+            const rows = await sql<{ mint: string }[]>`
+                SELECT mint FROM launchpad_mint_approvals WHERE launchpad = ${launchpad}
+            `;
+            return rows.map(r => r.mint);
+        },
+
+        async listSyncedStates(launchpad, mints) {
+            const out = new Map<string, { isActive: boolean }>();
+            for (const part of chunkStrings(mints, 500)) {
+                const rows = await sql<{ mint: string; is_active: boolean }[]>`
+                    SELECT mint, is_active FROM launchpad_tokens_latest
+                    WHERE launchpad = ${launchpad} AND mint IN ${sql([...part])}
+                `;
+                for (const row of rows) out.set(row.mint, { isActive: row.is_active });
+            }
+            return out;
+        },
+
+        async findApproval(launchpad, mint) {
+            const rows = await sql<{ note: string | null; approved_at: string | number }[]>`
+                SELECT note, approved_at FROM launchpad_mint_approvals
+                WHERE launchpad = ${launchpad} AND mint = ${mint}
+                LIMIT 1
+            `;
+            const row = rows[0];
+            return row ? { note: row.note, approvedAt: Number(row.approved_at) } : null;
+        },
+
+        async findQuoteAssetByMint(mint) {
+            const rows = await sql<
+                { asset_id: string; symbol: string | null; name: string | null; image_url: string | null }[]
+            >`
+                SELECT a.asset_id, a.symbol, a.name, a.image_url
+                FROM asset_variants av
+                JOIN assets a ON a.asset_id = av.asset_id
+                WHERE av.mint = ${mint} AND av.is_active = true
+                ORDER BY av.id ASC
+                LIMIT 1
+            `;
+            const row = rows[0];
+            return row ? { assetId: row.asset_id, symbol: row.symbol, name: row.name, imageUrl: row.image_url } : null;
+        },
+
+        async filterMintsKnownTokens(mints) {
+            const found: string[] = [];
+            for (const part of chunkStrings(mints, 500)) {
+                const rows = await sql<{ address: string }[]>`
+                    SELECT address FROM tokens WHERE address IN ${sql([...part])}
+                `;
+                for (const row of rows) found.push(row.address);
+            }
+            return found;
+        },
+
+        async filterMintsWithVariantMarket(mints) {
+            const found: string[] = [];
+            for (const part of chunkStrings(mints, 500)) {
+                const rows = await sql<{ mint: string }[]>`
+                    SELECT mint FROM variant_markets_latest WHERE mint IN ${sql([...part])}
+                `;
+                for (const row of rows) found.push(row.mint);
+            }
+            return found;
+        },
+
+        async upsertTokenFromBirdeye(args) {
+            await upsertTokenFromBirdeyeSql(sql, args);
+        },
+    };
+}
+
+export function makePostgresLaunchpadReadsRepo(sql: Sql): LaunchpadReadsRepo {
+    return {
+        async listActiveByQuoteMints(quoteMints, limit) {
+            if (quoteMints.length === 0) return [];
+            const out: LaunchpadTokenRow[] = [];
+            for (const part of chunkStrings(quoteMints, 500)) {
+                // Approved-only: the public surface never sees a coin without an
+                // admin approval row (see migration 0022).
+                const rows = await sql<LaunchpadTokenRow[]>`
+                    SELECT l.launchpad, l.mint, l.quote_mint, l.quote_symbol, l.symbol, l.name, l.logo_uri,
+                           l.pool, l.status, l.mode,
+                           l.price_usd, l.market_cap_usd, l.fdv_usd, l.liquidity_usd, l.volume_24h_usd,
+                           l.price_change_24h, l.launched_at, l.graduated_at, l.source_rank, l.last_synced_at
+                    FROM launchpad_tokens_latest l
+                    JOIN launchpad_mint_approvals a ON a.launchpad = l.launchpad AND a.mint = l.mint
+                    WHERE l.is_active = true
+                      AND l.quote_mint IN ${sql([...part])}
+                    ORDER BY l.volume_24h_usd DESC NULLS LAST, l.source_rank ASC
+                    LIMIT ${limit}
+                `;
+                out.push(...rows);
+            }
+            if (quoteMints.length <= 500) return out;
+            out.sort((a, b) => (b.volume_24h_usd ?? -1) - (a.volume_24h_usd ?? -1) || a.source_rank - b.source_rank);
+            return out.slice(0, limit);
         },
     };
 }

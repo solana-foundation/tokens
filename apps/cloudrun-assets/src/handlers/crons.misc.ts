@@ -127,7 +127,7 @@ function cleanTokenName(name: string | undefined): string {
     );
 }
 
-function birdeyeOverviewToTokenUpsert(
+export function birdeyeOverviewToTokenUpsert(
     address: string,
     overview: Record<string, unknown>,
     lastFetchedAt: number,

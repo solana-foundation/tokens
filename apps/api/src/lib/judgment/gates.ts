@@ -65,6 +65,11 @@ export function evaluateGates(
         suppressions.push('gate_min_market_score');
     }
 
+    // `verifiedOnly`: identity must be attested by the canonical registry.
+    if (policy.gates.requireRegistry && !candidate.registry) {
+        suppressions.push('gate_unverified');
+    }
+
     if (policy.gates.minAgeDays !== null) {
         const ageDays = tokenAgeDays(candidate, nowMs);
         // Unknown age is not "new" — only gate when the mint time is known.

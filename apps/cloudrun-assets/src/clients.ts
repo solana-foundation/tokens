@@ -31,6 +31,15 @@ import type {
 } from './handlers/crons.clickhouse';
 import type { BirdeyeMarketsClient, TokenMarketEntry } from './handlers/crons.misc';
 import type { PreStocksApiSnapshot, PreStocksClient } from './handlers/crons.prestocks';
+import {
+    parseStonkfunPairsPayload,
+    parseStonkfunToken,
+    parseStonkfunTokensPayload,
+    type StonkfunClient,
+    type StonkfunFetchResult,
+    type StonkfunPairsResult,
+    type StonkfunToken,
+} from './handlers/crons.launchpad';
 
 // Shadow-mode envelope schemas (warn on mismatch, pass through) — the two
 // highest-traffic blind casts. Row shapes stay unknown/T on purpose.
@@ -1171,6 +1180,97 @@ export function makeBirdeyeMarketsClient(opts: MakeBirdeyeMarketsOptions): Birde
                 byAddress.set(market.address, market);
             }
             return Array.from(byAddress.values());
+        },
+    };
+}
+
+interface MakeStonkfunOptions {
+    baseUrl?: string;
+}
+
+const STONKFUN_PAGE_SIZE = 100;
+
+/**
+ * stonk.fun public API (no auth, 300 req/min per IP). Pages `GET /tokens`
+ * (graduated, by market cap) and returns the whole set or nothing: a failure
+ * on any page aborts the run so the sync never deactivates rows off a
+ * truncated list.
+ */
+export function makeStonkfunClient(opts: MakeStonkfunOptions = {}): StonkfunClient {
+    const baseUrl = (opts.baseUrl ?? 'https://www.stonkfun.xyz/api/public/v1').replace(/\/+$/, '');
+
+    async function getJson(url: URL): Promise<{ ok: true; payload: unknown } | { ok: true; notFound: true } | Exclude<StonkfunFetchResult, { ok: true }>> {
+        let res: Response;
+        try {
+            res = await withExternalTiming('stonkfun', url.toString(), () =>
+                fetch(url, {
+                    headers: { Accept: 'application/json' },
+                    signal: AbortSignal.timeout(EXTERNAL_FETCH_TIMEOUT_MS),
+                }),
+            );
+        } catch (err) {
+            return { ok: false, reason: 'error', message: err instanceof Error ? err.message : String(err) };
+        }
+        if (res.status === 404) return { ok: true, notFound: true };
+        if (!res.ok) return { ok: false, reason: 'http_error', status: res.status };
+        try {
+            return { ok: true, payload: await res.json() };
+        } catch {
+            return { ok: false, reason: 'invalid_payload' };
+        }
+    }
+
+    /**
+     * Pages `GET /tokens` and returns the whole set or nothing: a failure on
+     * any page aborts the run so the sync never deactivates rows off a
+     * truncated list.
+     */
+    async function fetchTokenPages(params: Record<string, string>, maxPages: number): Promise<StonkfunFetchResult> {
+        const items: StonkfunToken[] = [];
+        const pageCap = Math.max(1, Math.floor(maxPages));
+        let totalPages: number | null = null;
+        for (let page = 1; page <= pageCap; page++) {
+            if (totalPages !== null && page > totalPages) break;
+            const url = new URL(`${baseUrl}/tokens`);
+            for (const [key, value] of Object.entries(params)) url.searchParams.set(key, value);
+            url.searchParams.set('pageSize', String(STONKFUN_PAGE_SIZE));
+            url.searchParams.set('page', String(page));
+            const res = await getJson(url);
+            if (!res.ok) return res;
+            if ('notFound' in res) return { ok: false, reason: 'http_error', status: 404 };
+            const parsed = parseStonkfunTokensPayload(res.payload);
+            if (!parsed) return { ok: false, reason: 'invalid_payload' };
+            items.push(...parsed.items);
+            if (parsed.totalPages !== null) totalPages = parsed.totalPages;
+            if (parsed.items.length === 0) break;
+        }
+        return { ok: true, items };
+    }
+
+    return {
+        fetchGraduatedTokens({ maxPages }) {
+            return fetchTokenPages({ status: 'graduated', sort: 'marketCap' }, maxPages);
+        },
+        fetchGraduatedTokensByQuote(quoteMint, { maxPages }) {
+            return fetchTokenPages({ status: 'graduated', sort: 'marketCap', quoteMint }, maxPages);
+        },
+        async fetchPairs(): Promise<StonkfunPairsResult> {
+            const url = new URL(`${baseUrl}/pairs`);
+            url.searchParams.set('launchable', 'true');
+            const res = await getJson(url);
+            if (!res.ok) return res;
+            if ('notFound' in res) return { ok: false, reason: 'http_error', status: 404 };
+            const pairs = parseStonkfunPairsPayload(res.payload);
+            return pairs ? { ok: true, pairs } : { ok: false, reason: 'invalid_payload' };
+        },
+        async fetchToken(mint) {
+            const res = await getJson(new URL(`${baseUrl}/tokens/${encodeURIComponent(mint)}`));
+            if (!res.ok) return res;
+            if ('notFound' in res) return { ok: true, items: [] };
+            // `GET /tokens/{mint}` nests the coin under data.token (launch record beside it).
+            const payload = res.payload as { data?: { token?: unknown } } | null;
+            const token = parseStonkfunToken(payload?.data?.token ?? payload?.data ?? null);
+            return { ok: true, items: token ? [token] : [] };
         },
     };
 }

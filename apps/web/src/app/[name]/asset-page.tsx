@@ -28,6 +28,7 @@ import { looksLikeSolanaMintAddress } from '@/lib/solana-address';
 import { AssetPriceChartSection } from './components/asset-price-chart-section';
 import { AssetMarketsSection } from './components/asset-markets-section';
 import { AssetMarketsOverviewSection } from './components/asset-markets-overview-section';
+import { AssetLaunchesSection } from './components/asset-launches-section';
 import { AssetRiskSection } from './components/asset-risk-section';
 import { AssetStatsSection } from './components/asset-stats-section';
 import { AssetVariantsList } from './components/asset-variants-list';
@@ -1289,6 +1290,8 @@ async function AssetPageContent(props: AssetPageProps) {
             />
 
             {!isVariantView && <AssetMarketsOverviewSection assetId={canonicalAssetId} />}
+
+            {!isVariantView && <AssetLaunchesSection assetId={canonicalAssetId} displaySymbol={displaySymbol} />}
 
             {isVariantView && activeMint && (
                 <AssetMarketsSection

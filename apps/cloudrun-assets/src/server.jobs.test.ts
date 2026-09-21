@@ -12,6 +12,7 @@ import type { CoingeckoReadsRepo } from './handlers/coingeckoReads';
 import type { StockReadsRepo } from './handlers/stockReads';
 import type { OhlcvReadsRepo } from './handlers/ohlcvReads';
 import type { PrestocksReadsRepo } from './handlers/prestocksReads';
+import type { LaunchpadReadsRepo } from './handlers/launchpadReads';
 import type { TokensReadsRepo } from './handlers/tokensReads';
 import type { TrendingReadsRepo } from './handlers/trendingReads';
 import type { FillQualityReadsRepo } from './handlers/fillQualityReads';
@@ -165,6 +166,12 @@ const noopOhlcvReadsRepo: OhlcvReadsRepo = {
         return [];
     },
 };
+const noopLaunchpadReadsRepo: LaunchpadReadsRepo = {
+    async listActiveByQuoteMints() {
+        return [];
+    },
+};
+
 const noopPrestocksReadsRepo: PrestocksReadsRepo = {
     async findLatestByMints() {
         return [];
@@ -306,6 +313,7 @@ const baseDeps = {
     stockReadsRepo: noopStockReadsRepo,
     ohlcvReadsRepo: noopOhlcvReadsRepo,
     prestocksReadsRepo: noopPrestocksReadsRepo,
+    launchpadReadsRepo: noopLaunchpadReadsRepo,
     tokensReadsRepo: noopTokensReadsRepo,
     trendingReadsRepo: noopTrendingReadsRepo,
     fillQualityReadsRepo: noopFillQualityReadsRepo,
@@ -486,6 +494,23 @@ describe('POST /jobs/:name', () => {
         });
         expect(res.status).toBe(404);
         expect(((await res.json()) as { error: string }).error).toBe('clickhouse_jobs_disabled');
+    });
+
+    it('returns 404 launchpad_jobs_disabled for the stonk.fun sync when those deps are missing', async () => {
+        const app = createApp({
+            ...baseDeps,
+            repo: noopRepo,
+            authToken: 'tok',
+            cronDeps: emptyCronDeps(),
+            verifyOidc: allowOidc,
+        });
+        const res = await call(app, '/jobs/sync-stonkfun-launches', {
+            method: 'POST',
+            headers: { authorization: 'Bearer x' },
+            body: '{}',
+        });
+        expect(res.status).toBe(404);
+        expect(((await res.json()) as { error: string }).error).toBe('launchpad_jobs_disabled');
     });
 
     it('returns 404 jobs_disabled when cronDeps is missing', async () => {
