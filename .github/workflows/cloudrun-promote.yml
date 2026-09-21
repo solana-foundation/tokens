@@ -1,0 +1,121 @@
+name: Cloud Run promote
+
+# Shift traffic to a Cloud Run revision without local gcloud. Prod assets
+# deploys land at 0% traffic (deploy.yml / cloudrun-deploy.yml); this is the
+# runbook's 10% → 50% → 100% promotion, runnable from CI under the same
+# deployer identity. `percent=show` only prints the current split.
+
+on:
+  workflow_dispatch:
+    inputs:
+      env:
+        description: 'Target env (stg / prd)'
+        required: true
+        default: 'prd'
+        type: choice
+        options: [stg, prd]
+      service:
+        description: 'Cloud Run service (assets / prices / usage / admin)'
+        required: true
+        default: 'assets'
+        type: choice
+        options: [assets, prices, usage, admin]
+      target:
+        description: 'service = the API service; worker = tokens-assets-jobs (assets only)'
+        required: true
+        default: 'service'
+        type: choice
+        options: [service, worker]
+      percent:
+        description: 'Traffic percent for the revision (0-100), or "show" to only print the current split'
+        required: true
+        default: 'show'
+      revision:
+        description: 'Revision name (default: the latest created revision, i.e. the newest candidate)'
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: cloudrun-promote-${{ inputs.env }}-${{ inputs.service }}-${{ inputs.target }}
+  cancel-in-progress: false
+
+jobs:
+  promote:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: ${{ inputs.env == 'prd' && 'production' || 'staging' }}
+    env:
+      GCP_PROJECT: ${{ vars.GCP_PROJECT }}
+      GCP_REGION: us-east4
+    steps:
+      - id: auth
+        uses: google-github-actions/auth@71f986410dfbc7added4569d411d040a91dc6935 # v2
+        with:
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_CLOUDRUN_DEPLOYER_SA }}
+
+      - uses: google-github-actions/setup-gcloud@77e7a554d41e2ee56fc945c52dfd3f33d12def9a # v2
+
+      - name: Resolve service + revision
+        id: resolve
+        env:
+          SERVICE: ${{ inputs.service }}
+          TARGET: ${{ inputs.target }}
+          ENV_NAME: ${{ inputs.env }}
+          REVISION: ${{ inputs.revision }}
+          PERCENT: ${{ inputs.percent }}
+        run: |
+          set -euo pipefail
+          if [ "$TARGET" = "worker" ]; then
+            if [ "$SERVICE" != "assets" ]; then
+              echo "::error::target=worker is only valid for service=assets"; exit 1
+            fi
+            name="tokens-assets-jobs-${ENV_NAME}-us"
+          else
+            name="tokens-${SERVICE}-${ENV_NAME}-us"
+          fi
+          if [ "$PERCENT" != "show" ] && ! [[ "$PERCENT" =~ ^([0-9]|[1-9][0-9]|100)$ ]]; then
+            echo "::error::percent must be an integer 0-100 or 'show' (got '$PERCENT')"; exit 1
+          fi
+          rev="$REVISION"
+          if [ -z "$rev" ]; then
+            rev=$(gcloud run services describe "$name" --region="$GCP_REGION" --project="$GCP_PROJECT" \
+              --format='value(status.latestCreatedRevisionName)')
+          fi
+          if [ -z "$rev" ]; then
+            echo "::error::Could not resolve a revision for $name"; exit 1
+          fi
+          echo "name=$name" >> "$GITHUB_OUTPUT"
+          echo "revision=$rev" >> "$GITHUB_OUTPUT"
+
+      - name: Current traffic
+        env:
+          NAME: ${{ steps.resolve.outputs.name }}
+        run: |
+          set -euo pipefail
+          echo "## $NAME — before" >> "$GITHUB_STEP_SUMMARY"
+          gcloud run services describe "$NAME" --region="$GCP_REGION" --project="$GCP_PROJECT" \
+            --format='table(status.traffic[].revisionName,status.traffic[].percent,status.traffic[].tag)' \
+            | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Update traffic
+        if: inputs.percent != 'show'
+        env:
+          NAME: ${{ steps.resolve.outputs.name }}
+          REV: ${{ steps.resolve.outputs.revision }}
+          PERCENT: ${{ inputs.percent }}
+        run: |
+          set -euo pipefail
+          # Other revisions are rebalanced proportionally by gcloud; the
+          # candidate keeps its tag.
+          gcloud run services update-traffic "$NAME" \
+            --region="$GCP_REGION" --project="$GCP_PROJECT" \
+            --to-revisions="$REV=$PERCENT" --quiet
+          echo "## $NAME — after ($REV → ${PERCENT}%)" >> "$GITHUB_STEP_SUMMARY"
+          gcloud run services describe "$NAME" --region="$GCP_REGION" --project="$GCP_PROJECT" \
+            --format='table(status.traffic[].revisionName,status.traffic[].percent,status.traffic[].tag)' \
+            | tee -a "$GITHUB_STEP_SUMMARY"
