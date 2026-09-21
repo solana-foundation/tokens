@@ -1,0 +1,123 @@
+name: DB migrate
+
+# Apply db/migrations/*.sql to an environment's Cloud SQL from CI. The
+# databases are private-IP only, so this runs the repo's own db/apply.sh
+# inside a one-off Cloud Run job attached to the env VPC (image postgres:16,
+# DATABASE_URL from Secret Manager via the runtime SA). See
+# docs/operations/db-migrations.md.
+#
+#   mode=status  read-only: applied vs pending
+#   mode=apply   status, then ships ONLY the pending files to a second job
+#                that runs db/apply.sh (advisory lock, one txn per file)
+#
+# Dispatch it on `main`: the cr-deployer SA's WIF binding is main-only.
+# Tokens Deploy never applies migrations; it only warns when a release ships
+# new ones.
+
+on:
+  workflow_dispatch:
+    inputs:
+      env:
+        description: 'Target env (stg / prd)'
+        required: true
+        default: 'prd'
+        type: choice
+        options: [stg, prd]
+      mode:
+        description: 'status = list applied/pending (read-only); apply = run pending migrations'
+        required: true
+        default: 'status'
+        type: choice
+        options: [status, apply]
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: db-migrate-${{ inputs.env }}
+  cancel-in-progress: false
+
+jobs:
+  migrate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: ${{ inputs.env == 'prd' && 'production' || 'staging' }}
+    env:
+      GCP_PROJECT: ${{ vars.GCP_PROJECT }}
+      GCP_REGION: us-east4
+      ENV_NAME: ${{ inputs.env }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - id: auth
+        uses: google-github-actions/auth@71f986410dfbc7added4569d411d040a91dc6935 # v2
+        with:
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_CLOUDRUN_DEPLOYER_SA }}
+
+      - uses: google-github-actions/setup-gcloud@77e7a554d41e2ee56fc945c52dfd3f33d12def9a # v2
+
+      - name: Status (applied vs pending)
+        id: status
+        env:
+          LOG_OUT: /tmp/status.log
+        run: |
+          set -euo pipefail
+          scripts/db-migrate/run-job.sh "$ENV_NAME" "db-migrate-${{ github.run_id }}-status" scripts/db-migrate/status.sh
+          sed -n '/^MIGRATE_BEGIN$/,/^MIGRATE_END$/p' /tmp/status.log | grep -v '^MIGRATE_' | sort -u > /tmp/applied.txt
+
+          pending=()
+          for f in db/migrations/*.sql; do
+            base=$(basename "$f" .sql)
+            grep -qx "$base" /tmp/applied.txt || pending+=("$base")
+          done
+          # Repo files applied to the DB but absent here (e.g. hotfix-only) are
+          # listed too so drift is visible.
+          unknown=$(comm -23 /tmp/applied.txt <(ls db/migrations | sed 's/\.sql$//' | sort -u) || true)
+
+          {
+            echo "## DB migrations — ${ENV_NAME}"
+            echo
+            echo "| migration | state |"
+            echo "|---|---|"
+            for f in db/migrations/*.sql; do
+              base=$(basename "$f" .sql)
+              if grep -qx "$base" /tmp/applied.txt; then echo "| \`$base\` | applied |"; else echo "| \`$base\` | **PENDING** |"; fi
+            done
+            if [ -n "$unknown" ]; then
+              echo
+              echo "Applied in the DB but not in this checkout: \`$(echo "$unknown" | paste -sd, -)\`"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          pending_csv=$(IFS=,; echo "${pending[*]-}")
+          echo "pending=$pending_csv" >> "$GITHUB_OUTPUT"
+          echo "pending: ${pending_csv:-<none>}"
+
+      - name: Apply pending migrations
+        if: inputs.mode == 'apply' && steps.status.outputs.pending != ''
+        env:
+          PENDING: ${{ steps.status.outputs.pending }}
+          LOG_OUT: /tmp/apply.log
+        run: |
+          set -euo pipefail
+          files=()
+          IFS=, read -ra names <<<"$PENDING"
+          for n in "${names[@]}"; do files+=("db/migrations/$n.sql"); done
+          echo "applying: ${files[*]}"
+          # Only the pending files travel: env vars have a hard size cap and the
+          # full migrations dir already exceeds ~25 KiB base64.
+          printf 'MIGRATIONS_TGZ_B64=%s\n' "$(tar czf - db/apply.sh "${files[@]}" | base64 -w0)" > /tmp/job.env
+          scripts/db-migrate/run-job.sh "$ENV_NAME" "db-migrate-${{ github.run_id }}-apply" scripts/db-migrate/apply.sh /tmp/job.env
+          {
+            echo
+            echo "### Applied"
+            echo '```'
+            sed -n '/^MIGRATE_BEGIN$/,/^MIGRATE_END$/p' /tmp/apply.log | grep -v '^MIGRATE_'
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Nothing to apply
+        if: inputs.mode == 'apply' && steps.status.outputs.pending == ''
+        run: echo "All db/migrations are already applied in ${ENV_NAME}." | tee -a "$GITHUB_STEP_SUMMARY"
