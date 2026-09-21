@@ -97,6 +97,22 @@ const apiProbes: Probe[] = [
         },
     },
     {
+        // `/api/v2/search` shipped outside the Clerk middleware allowlist and
+        // 401'd every API key in prod; this probe pins v2 reachability.
+        name: 'v2-search',
+        target: 'api',
+        method: 'GET',
+        path: '/api/v2/search?q=USDC&limit=5',
+        auth: true,
+        budgetMs: 5000,
+        assert: ({ json, status }) => {
+            assert(status === 200, `expected 200, got ${status}`);
+            assert(isObject(json) && Array.isArray(json.results), 'expected { results: [] }');
+            assert((json.results as unknown[]).length > 0, 'v2 search results must be non-empty for q=USDC');
+            assert(isObject(json.policy) && json.policy.id === 'default', 'expected policy.id === "default"');
+        },
+    },
+    {
         name: 'assets-curated',
         target: 'api',
         method: 'GET',

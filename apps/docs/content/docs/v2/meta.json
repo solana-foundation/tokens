@@ -1,5 +1,5 @@
 {
   "title": "API v2",
   "defaultOpen": false,
-  "pages": ["overview", "---Reference---", "./endpoints"]
+  "pages": ["overview", "quickstart", "rate-limits-and-errors", "---Reference---", "./endpoints"]
 }

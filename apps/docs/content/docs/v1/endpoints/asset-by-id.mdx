@@ -289,6 +289,59 @@ Return a market-based score derived from cached market snapshots.
 
 - `risk-details` includes more inputs in the response (for debugging/scoring transparency).
 
+## Launches: `GET /v1/assets/:assetId/launches`
+
+Coins launched on a launchpad (currently [stonk.fun](https://www.stonkfun.xyz)) using any of this
+asset's mints as the **quote** token — e.g. everything launched against USDC for `usd`. Powers the
+"Launched on &lt;SYMBOL&gt;" section on asset pages.
+
+- **Auth**: `x-api-key`
+- **Scope**: `assets:read`
+
+### Query params
+
+- `limit` (optional): `1`–`100`, default `25`
+
+### Response
+
+```ts
+interface AssetLaunchesResponse {
+    assetId: string;
+    total: number; // every visible launch, not just this page — drive "View all" from it
+    limit: number;
+    launches: Array<{
+        mint: string;
+        symbol: string | null;
+        name: string | null;
+        logoURI: string | null;
+        quoteMint: string; // which of the asset's mints it launched against
+        quoteSymbol: string | null;
+        launchpad: string; // e.g. "stonkfun"
+        price: number | null;
+        marketCap: number | null;
+        fdv: number | null;
+        liquidity: number | null;
+        volume24hUSD: number | null;
+        priceChange24hPercent: number | null;
+        launchedAt: number | null; // unix ms
+        graduatedAt: number | null; // unix ms; null while still on the launchpad curve
+        externalUrl: string; // the coin's page on the launchpad
+        advisory: VariantAdvisory | null; // same shape as the variant `advisory` field
+    }>;
+    lastUpdatedAt: number | null; // freshest launchpad sync backing this response
+}
+```
+
+### Notes
+
+- Ordered by 24h volume, descending.
+- Only launchpads and coins approved by Tokens operators appear, so `launches` is empty for most
+  assets and may be empty for a while after a launchpad integration goes live. `total: 0` is a
+  normal answer, not an error.
+- `blocked` mints are omitted; `caution` / `compromised` launches are returned with `advisory`
+  populated. Treat `compromised` as do-not-trade.
+- Accepts every asset ref form (`assetId`, alias, mint, `solana-<mint>`). Unknown assets 404.
+
 ## Description: `GET /v1/assets/:assetId/description`
 
 Return a cached per-mint description summary when available.
