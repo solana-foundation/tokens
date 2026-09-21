@@ -3,7 +3,10 @@ name: Cloud Run promote
 # Shift traffic to a Cloud Run revision without local gcloud. Prod assets
 # deploys land at 0% traffic (deploy.yml / cloudrun-deploy.yml); this is the
 # runbook's 10% → 50% → 100% promotion, runnable from CI under the same
-# deployer identity. `percent=show` only prints the current split.
+# deployer identity. The traffic change itself goes through
+# scripts/promote-assets-revision.sh, which refuses a revision that is not
+# Ready=True and allocates candidate/stable explicitly. `percent=show` only
+# prints the current split.
 
 on:
   workflow_dispatch:
@@ -27,9 +30,11 @@ on:
         type: choice
         options: [service, worker]
       percent:
-        description: 'Traffic percent for the revision (0-100), or "show" to only print the current split'
+        description: 'Runbook stage for the revision (10 / 50 / 100), or "show" to only print the current split'
         required: true
         default: 'show'
+        type: choice
+        options: [show, '10', '50', '100']
       revision:
         description: 'Revision name (default: the latest created revision, i.e. the newest candidate)'
         required: false
@@ -52,6 +57,8 @@ jobs:
       GCP_PROJECT: ${{ vars.GCP_PROJECT }}
       GCP_REGION: us-east4
     steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
       - id: auth
         uses: google-github-actions/auth@71f986410dfbc7added4569d411d040a91dc6935 # v2
         with:
@@ -78,9 +85,6 @@ jobs:
           else
             name="tokens-${SERVICE}-${ENV_NAME}-us"
           fi
-          if [ "$PERCENT" != "show" ] && ! [[ "$PERCENT" =~ ^([0-9]|[1-9][0-9]|100)$ ]]; then
-            echo "::error::percent must be an integer 0-100 or 'show' (got '$PERCENT')"; exit 1
-          fi
           rev="$REVISION"
           if [ -z "$rev" ]; then
             rev=$(gcloud run services describe "$name" --region="$GCP_REGION" --project="$GCP_PROJECT" \
@@ -102,20 +106,18 @@ jobs:
             --format='table(status.traffic[].revisionName,status.traffic[].percent,status.traffic[].tag)' \
             | tee -a "$GITHUB_STEP_SUMMARY"
 
-      - name: Update traffic
+      - name: Update traffic (readiness-gated, explicit candidate/stable split)
         if: inputs.percent != 'show'
         env:
-          NAME: ${{ steps.resolve.outputs.name }}
+          ASSETS_SERVICE: ${{ steps.resolve.outputs.name }}
           REV: ${{ steps.resolve.outputs.revision }}
           PERCENT: ${{ inputs.percent }}
         run: |
           set -euo pipefail
-          # Other revisions are rebalanced proportionally by gcloud; the
-          # candidate keeps its tag.
-          gcloud run services update-traffic "$NAME" \
-            --region="$GCP_REGION" --project="$GCP_PROJECT" \
-            --to-revisions="$REV=$PERCENT" --quiet
-          echo "## $NAME — after ($REV → ${PERCENT}%)" >> "$GITHUB_STEP_SUMMARY"
-          gcloud run services describe "$NAME" --region="$GCP_REGION" --project="$GCP_PROJECT" \
+          # The script is written for the assets service but only needs the
+          # service name; it exits non-zero if the revision is not Ready=True.
+          scripts/promote-assets-revision.sh "$REV" "$PERCENT"
+          echo "## $ASSETS_SERVICE — after ($REV → ${PERCENT}%)" >> "$GITHUB_STEP_SUMMARY"
+          gcloud run services describe "$ASSETS_SERVICE" --region="$GCP_REGION" --project="$GCP_PROJECT" \
             --format='table(status.traffic[].revisionName,status.traffic[].percent,status.traffic[].tag)' \
             | tee -a "$GITHUB_STEP_SUMMARY"
