@@ -132,8 +132,6 @@ resource "google_project_iam_member" "cloudrun_deployer_roles" {
     "roles/run.admin",
     "roles/artifactregistry.writer",
     "roles/iam.serviceAccountUser",
-    # Read one-off job output (.github/workflows/db-migrate.yml).
-    "roles/logging.viewer",
   ])
   project = var.project_id
   role    = each.value

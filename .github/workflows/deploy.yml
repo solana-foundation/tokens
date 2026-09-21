@@ -32,7 +32,6 @@ jobs:
       assets: ${{ steps.detect.outputs.assets }}
       services: ${{ steps.detect.outputs.services }}
       tiers: ${{ steps.detect.outputs.tiers }}
-      migrations: ${{ steps.detect.outputs.migrations }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -73,14 +72,9 @@ jobs:
           case " $changed " in *" assets "*) assets=true;; esac
           tiers="api+app+admin"
           [ -n "$changed" ] && tiers="api+app+admin+cloud-run/{${changed// /,}}"
-          # db/migrations/ shipped by this push. Nothing applies them (see the
-          # notice in deploy_prod); this just makes them impossible to miss.
-          migrations=$( { echo "$CHANGED_FILES" | grep -E '^db/migrations/.*\.sql$' || true; } \
-            | xargs -r -n1 basename | sed 's/\.sql$//' | paste -sd, -)
           echo "assets=$assets" >> "$GITHUB_OUTPUT"
           echo "services=$services" >> "$GITHUB_OUTPUT"
           echo "tiers=$tiers" >> "$GITHUB_OUTPUT"
-          echo "migrations=${migrations:-}" >> "$GITHUB_OUTPUT"
 
   notify_start:
     needs: changes
@@ -534,24 +528,6 @@ jobs:
             echo "::add-mask::$value"
             echo "$key=$value" >> "$GITHUB_OUTPUT"
           done
-
-      # This pipeline never applies db/migrations/ (prod Cloud SQL is
-      # private-IP; docs/operations/db-migrations.md). 2026-09-21: #138's
-      # launchpad tables were never created and the new RPC 500'd for hours
-      # behind a fail-open API. Say so loudly whenever a release ships SQL.
-      - name: Pending DB migrations notice
-        if: needs.changes.outputs.migrations != ''
-        env:
-          MIGRATIONS: ${{ needs.changes.outputs.migrations }}
-          SLACK_WEBHOOK: ${{ steps.secrets.outputs.SLACK_DEPLOY_WEBHOOK_URL }}
-          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-        run: |
-          set -euo pipefail
-          MSG="This release ships DB migrations that Tokens Deploy does NOT apply: ${MIGRATIONS}. Run the 'DB migrate' workflow on main (env=prd, mode=status, then mode=apply). Until then, handlers reading the new tables fail (the API fail-opens where it can). Run: $RUN_URL"
-          echo "::warning::$MSG"
-          { echo "### ⚠️ Pending DB migrations"; echo "$MSG"; } >> "$GITHUB_STEP_SUMMARY"
-          curl -sS -X POST -H 'Content-Type: application/json' \
-            --data "$(jq -n --arg t "$MSG" '{text: ("🗄️ " + $t)}')" "$SLACK_WEBHOOK" || true
 
       - name: Build Slack fields
         id: summary
