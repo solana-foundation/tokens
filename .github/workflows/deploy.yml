@@ -601,7 +601,7 @@ jobs:
             echo "Candidate $candidate already serving 100% — continuing."
             exit 0
           fi
-          MSG="Tokens Deploy is holding the prod Vercel deploys until assets candidate \\`$candidate\\` is promoted to 100% (currently ${served}%). Promote via the 'Cloud Run promote' workflow (env=prd, service=assets, percent 10→50→100 per the resilience runbook; then target=worker at 100) or: gcloud run services update-traffic tokens-assets-prd-us --region=us-east4 --project=${{ vars.GCP_PROJECT }} --to-revisions=$candidate=100. Run: $RUN_URL"
+          MSG="Tokens Deploy is holding the prod Vercel deploys until assets candidate '$candidate' is promoted to 100% (currently ${served}%). Promote via the 'Cloud Run promote' workflow (env=prd, service=assets, percent 10→50→100 per the resilience runbook; then target=worker at 100) or: gcloud run services update-traffic tokens-assets-prd-us --region=us-east4 --project=${{ vars.GCP_PROJECT }} --to-revisions=$candidate=100. Run: $RUN_URL"
           echo "$MSG"
           echo "### Waiting for assets promotion" >> "$GITHUB_STEP_SUMMARY"
           echo "$MSG" >> "$GITHUB_STEP_SUMMARY"
