@@ -29,6 +29,7 @@ All Platform endpoints require `x-api-key` and typically `assets:read` unless no
 | GET    | `/v1/assets/:assetId/description`    | API key                                              | Cached per-mint description summary                                                          | `{ assetId, mint, description }`                            |
 | GET    | `/v1/assets/:assetId/risk-summary`   | API key                                              | Risk summary (simple) for a mint of the asset                                                | `{ assetId, mint, risk }`                                   |
 | GET    | `/v1/assets/:assetId/risk-details`   | API key                                              | Risk summary (detailed inputs) for a mint                                                    | `{ assetId, mint, risk }`                                   |
+| GET    | `/v1/assets/:assetId/launches`       | API key                                              | Approved launchpad coins launched against this asset's mints (may be empty)                  | `{ assetId, total, limit, launches[], lastUpdatedAt }`      |
 | GET    | `/v1/news/feed`                      | API key                                              | Filterable global or token-specific news / `@tokens` activity feed                           | `{ items[], meta }`                                         |
 
 Notes:

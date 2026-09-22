@@ -6,6 +6,12 @@ description: API v2 introduces community token lists and risk-aware search — c
 API v2 is additive: every v1 endpoint keeps working unchanged. v2 currently covers **token lists** and
 **risk-aware search / resolve**.
 
+- **Base URL**: `https://api.tokens.xyz/v2` — same host and key as v1; only the prefix changes.
+- **Auth**: `x-api-key: <YOUR_API_KEY>`; every v2 endpoint needs only the default `assets:read` scope.
+
+Start with the [Quickstart](/docs/v2/quickstart) for one working call per endpoint family, and
+[Rate limits & errors](/docs/v2/rate-limits-and-errors) for the envelope and `details.code` values.
+
 ## Token lists ("lists as plugins")
 
 A token list is a named, ordered set of Solana mints with an accountable curator. Our curated lists

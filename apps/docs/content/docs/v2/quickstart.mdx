@@ -1,0 +1,99 @@
+---
+title: Quickstart
+description: Base URL, auth, and one working call per v2 endpoint family.
+---
+
+API v2 is served from the same host and with the same key as v1. If you already call v1, nothing
+changes except the path prefix.
+
+## Base URL + authentication
+
+- **Base URL**: `https://api.tokens.xyz/v2`
+- **Auth header**: `x-api-key: <YOUR_API_KEY>` (not `Authorization: Bearer`)
+- **Scope**: every v2 endpoint, reads and writes, needs only the default `assets:read` scope
+- **Content type**: for `POST` / `PATCH` / `PUT` send `Content-Type: application/json`
+
+Set these locally for the examples below:
+
+```bash
+export API_BASE_URL="https://api.tokens.xyz"
+export API_KEY="..."
+```
+
+A `401` with `"message": "Missing API key"` means the header name is wrong; `"Invalid API key"` means
+the key is not an active key in this environment — regenerate it in the dashboard.
+
+### Keep your API key server-side
+
+Treat the key like a password: call the API from your server or an edge function and proxy the
+response to the browser. See [v1 → Quickstart](/docs/v1/quickstart#keep-your-api-key-server-side).
+
+## Lists
+
+Discover the catalog, then compose the lists you trust into one corpus.
+
+```bash
+# Catalog: curated lists first, then published community lists
+curl -sS "$API_BASE_URL/v2/lists?limit=50" -H "x-api-key: $API_KEY"
+
+# One list with hydrated tokens
+curl -sS "$API_BASE_URL/v2/lists/majors?limit=100" -H "x-api-key: $API_KEY"
+
+# Compose: the union of the lists you name, deduped by mint
+curl -sS "$API_BASE_URL/v2/lists/tokens?lists=majors,currencies" -H "x-api-key: $API_KEY"
+```
+
+Reference: [Lists](/docs/v2/endpoints/lists).
+
+## Search and resolve
+
+`/v2/search` ranks candidates through a policy; `/v2/resolve` returns one answer or refuses.
+
+```bash
+# Ranked results under the default policy, suppressed rows included
+curl -sS "$API_BASE_URL/v2/search?q=USDC&limit=5" -H "x-api-key: $API_KEY"
+
+# Registry-attested tokens with real depth only, no suppressed rows
+curl -sS "$API_BASE_URL/v2/search?q=bonk&verifiedOnly=true&minLiquidityUsd=250000&includeSuppressed=false" \
+  -H "x-api-key: $API_KEY"
+
+# One confident answer, or status: ambiguous | no_confident_match
+curl -sS "$API_BASE_URL/v2/resolve?q=USDC" -H "x-api-key: $API_KEY"
+```
+
+Reference: [Search & Resolve](/docs/v2/endpoints/search).
+
+## Publish your own list
+
+Any key can create lists; the creating key's project owns them.
+
+```bash
+# Is the slug free?
+curl -sS "$API_BASE_URL/v2/lists/check-slug?slug=acme-core" -H "x-api-key: $API_KEY"
+
+# Create
+curl -sS -X POST "$API_BASE_URL/v2/lists" \
+  -H "x-api-key: $API_KEY" -H "Content-Type: application/json" \
+  -d '{"slug":"acme-core","name":"Acme Core","status":"draft"}'
+
+# Load it in one batch (≤ 250 mints per call)
+curl -sS -X POST "$API_BASE_URL/v2/lists/acme-core/members" \
+  -H "x-api-key: $API_KEY" -H "Content-Type: application/json" \
+  -d '{"mints":["EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v","So11111111111111111111111111111111111111112"]}'
+
+# Publish
+curl -sS -X PATCH "$API_BASE_URL/v2/lists/acme-core" \
+  -H "x-api-key: $API_KEY" -H "Content-Type: application/json" \
+  -d '{"status":"published"}'
+
+# Your own lists, every status
+curl -sS "$API_BASE_URL/v2/lists?mine=true" -H "x-api-key: $API_KEY"
+```
+
+Reference: [Lists → Managing lists](/docs/v2/endpoints/lists#managing-lists).
+
+## Next
+
+- [Rate limits & errors](/docs/v2/rate-limits-and-errors) — the error envelope, `details.code`
+  values, and the provider lookup budget behind `429`.
+- [Overview](/docs/v2/overview) — why lists are composed explicitly and how the judgment pipeline works.

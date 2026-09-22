@@ -1,0 +1,109 @@
+---
+title: Rate Limits & Errors
+description: The v2 error envelope, every details.code value, the provider lookup budget, and caching behavior.
+---
+
+v2 shares the platform's per-key rate limits, monthly quotas, and error envelope with v1. This page
+covers what is specific to v2; see [v1 → Rate Limits & Errors](/docs/v1/rate-limits-and-errors) for
+the retry matrix and a retry helper.
+
+## Error envelope
+
+```json
+{
+  "error": {
+    "_tag": "BadRequestError",
+    "message": "This slug is reserved",
+    "details": { "code": "reserved_slug" }
+  }
+}
+```
+
+Branch on `_tag` first, then `details.code` where present. `details` is omitted when there is
+nothing machine-readable to add.
+
+## Status codes
+
+- `400` Bad request — invalid params or body, or a list-mutation domain error (see codes below)
+- `401` Unauthorized — `"Missing API key"` (header was not `x-api-key`) or `"Invalid API key"`
+  (not an active key in this environment)
+- `403` Forbidden — insufficient scope, a list owned by another project, or a moderator-locked list
+- `404` Not found — unknown list slug, a `draft`/`archived` community list, or a member that is not
+  in the list. The body is `"List not found"` with `resource: "token_list"` in every list case, so
+  branch on the status, not the message.
+- `429` Rate-limited — per-key throughput, monthly quota, or the provider lookup budget below
+- `500` / `504` — internal error or a backend timeout; retry with backoff
+
+## List mutation codes (`details.code`)
+
+Domain errors from list writes are `400` unless noted. The code is stable; the message is not.
+
+| `details.code` | Status | When |
+|---|---|---|
+| `invalid_slug` | 400 | Slug does not match `^[a-z][a-z0-9-]{2,62}$` |
+| `reserved_slug` | 400 | Slug is a curated id or alias, or a route word (`all`, `lists`, `curated`, `tokens`, `search-tokens`, `check-slug`) |
+| `slug_conflict` | 400 | A list with this slug exists in any status |
+| `slug_held` | 400 | Slug was released recently and is reclaimable only by its previous owner during the hold-down window |
+| `invalid_mint` | 400 | Not a base58 Solana mint address |
+| `unknown_mint` | 400 | Mint not found in the registry, the token index, or the live provider |
+| `project_lists_limit` | 400 | Project is at its list cap — delete a list first |
+| `list_full` | 400 | List is at its member cap |
+| `batch_too_large` | 400 | Batch exceeds the per-call mint cap |
+| `forbidden` | 403 | Caller's project does not own the list (no `details.code` in the body) |
+| `admin_locked` | 403 | List locked by moderators (no `details.code` in the body) |
+| `not_found` | 404 | List does not exist, or is `draft`/`archived` and you are reading it |
+
+Batch add (`POST /v2/lists/{slug}/members`) reports per-mint failures inside `failed[]` using the
+same codes instead of failing the whole call.
+
+## Provider lookup budget
+
+Three endpoints can reach the live market-data provider for mints unknown to our index, so they
+share a per-**key** budget on top of the standard rate limits:
+
+| Budget | Counts | Default |
+|---|---|---|
+| `search` | `GET /v2/search`, `GET /v2/resolve`, `GET /v2/lists/search-tokens` | 120 calls / 10 min |
+| `batch` | `POST /v2/lists/{slug}/members`, `PUT /v2/lists/{slug}/members/{mint}` | 30 calls / 10 min |
+
+- Every **call** is charged, not every lookup; the API cannot know in advance how many mints will
+  miss the local index. Within a batch call, at most ~50 unknown mints are resolved against the
+  provider; the rest fail individually as `unknown_mint` and can be retried in a later batch.
+- Exhausting a budget returns `429` with `_tag: "RateLimitedError"`; back off until the window resets
+  (10 minutes by default) rather than retrying immediately.
+- The budget is keyed per API key, not per project. Defaults are server-tunable and may be raised for
+  a project on request.
+- Identical search queries within the cache window (below) are served from cache and do not count.
+- If the budget store is unavailable the check fails open — the per-call caps still bound cost.
+
+## Caching and staleness
+
+Successful `GET` responses carry `Cache-Control` and may be served from an edge cache:
+
+| Endpoint | `max-age` |
+|---|---|
+| `GET /v2/lists` | 300 s |
+| `GET /v2/lists/{slug}`, `GET /v2/lists/tokens` | 60 s |
+| `GET /v2/search`, `GET /v2/resolve`, `GET /v2/lists/search-tokens` | 30 s |
+| `GET /v2/lists/check-slug`, all writes | not cached |
+
+The catalog, list detail, and compose endpoints additionally keep a **last-good copy**: if the list
+backend is unavailable they return the most recent successful payload (up to 10 minutes old) with a
+`200` rather than a `5xx`. Treat `updatedAt` as the freshness signal, and never cache a `check-slug`
+answer — a slug freed by a delete must read as available immediately.
+
+## Limits at a glance
+
+| Limit | Value |
+|---|---|
+| Mints per batch call | 250 |
+| Members per list | 5000 (`list_full`) |
+| Lists per project | 100 (`project_lists_limit`) |
+| Slugs per compose call (`lists=`) | 10 |
+| Members composed per list | 5000 — larger lists return `truncated: true` on that list's summary |
+| `q` length | 100 characters |
+| Search `limit` | 1–50 (values above the max are clamped, not rejected) |
+| List `limit` | 1–500 catalog, 1–2000 detail and compose (clamped) |
+| Member `note` | 500 characters |
+
+Caps are enforced server-side and may change; branch on `details.code`, not on the numbers.
