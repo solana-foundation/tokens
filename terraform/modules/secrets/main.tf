@@ -108,6 +108,37 @@ resource "google_secret_manager_secret_iam_member" "usage_hooks_accessor" {
   depends_on = [google_project_service.secretmanager]
 }
 
+# Pinata dedicated-gateway access token for the assets `logo-sync` job
+# (IPFS-hosted token artwork; public gateways 429/403 everyone). NO version is
+# managed here — seed it out-of-band once the gateway exists:
+#   printf '%s' "$PINATA_GATEWAY_TOKEN" \
+#     | gcloud secrets versions add tokens-pinata-gateway-token-<env> --data-file=-
+# The job runs without it (skips the Pinata source), so the scheduler entry can
+# go live first. See docs/operations/logo-sync.md.
+resource "google_secret_manager_secret" "pinata_gateway_token" {
+  project   = var.project_id
+  secret_id = "tokens-pinata-gateway-token-${var.env}"
+
+  replication {
+    user_managed {
+      replicas {
+        location = var.region
+      }
+    }
+  }
+
+  depends_on = [google_project_service.secretmanager]
+}
+
+resource "google_secret_manager_secret_iam_member" "pinata_gateway_token_accessor" {
+  project   = var.project_id
+  secret_id = google_secret_manager_secret.pinata_gateway_token.secret_id
+  role      = "roles/secretmanager.secretAccessor"
+  member    = "serviceAccount:${var.runtime_sa_email}"
+
+  depends_on = [google_project_service.secretmanager]
+}
+
 resource "google_secret_manager_secret" "database_url" {
   project   = var.project_id
   secret_id = "tokens-database-url-${var.env}"

@@ -115,7 +115,11 @@ function mergeDbToken(candidate: RawCandidate, token: DbSearchToken): void {
     candidate.symbol ??= token.symbol || null;
     candidate.name ??= token.name || null;
     candidate.decimals ??= Number.isFinite(token.decimals) ? token.decimals : null;
-    candidate.logoURI ??= token.logoURI ?? null;
+    // DB wins for logos: cloudrun-assets resolves the first-party copy
+    // (mint_logos.logo_cdn_url) into logoURI, whereas the live Birdeye search
+    // hit carries the raw registry URL (often a rate-limited IPFS gateway).
+    if (token.logoURI) candidate.logoURI = token.logoURI;
+    else candidate.logoURI ??= null;
     candidate.price ??= token.price > 0 ? token.price : null;
     candidate.liquidityUsd ??= token.liquidity > 0 ? token.liquidity : null;
     candidate.volume24hUsd ??= token.volume24hUSD > 0 ? token.volume24hUSD : null;

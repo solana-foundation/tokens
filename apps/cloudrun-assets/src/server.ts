@@ -138,6 +138,7 @@ import {
 import { seedJobs, type SeedCronDeps, type SeedJobHandler } from './handlers/crons.seed';
 import { prestocksJobs, type PrestocksCronDeps, type PrestocksJobHandler } from './handlers/crons.prestocks';
 import { launchpadJobs, type LaunchpadCronDeps, type LaunchpadJobHandler } from './handlers/crons.launchpad';
+import { logoSyncJobs, type LogoSyncCronDeps, type LogoSyncJobHandler } from './handlers/crons.logoSync';
 import {
     adminListLaunchpadPairs,
     adminListLaunchpadTokensForQuote,
@@ -216,6 +217,8 @@ export interface ServerDeps {
     clickhouseExtrasCronDeps?: ClickhouseExtrasCronDeps;
     prestocksCronDeps?: PrestocksCronDeps;
     launchpadCronDeps?: LaunchpadCronDeps;
+    /** First-party logo re-hosting (`/jobs/logo-sync`); absent when GCS_LOGO_BUCKET is unset. */
+    logoSyncCronDeps?: LogoSyncCronDeps;
     /** stonk.fun lookups for the admin Launches page (allowlist-gated, read-only). */
     launchpadAdminDeps?: LaunchpadAdminDeps;
     cacheWarmDeps?: CacheWarmDeps;
@@ -672,6 +675,7 @@ export function createApp(deps: ServerDeps) {
         ...prestocksJobs,
     };
     const launchpadJobsTable: Record<string, LaunchpadJobHandler> = { ...launchpadJobs };
+    const logoSyncJobsTable: Record<string, LogoSyncJobHandler> = { ...logoSyncJobs };
 
     interface JobGroup {
         has(name: string): boolean;
@@ -728,6 +732,13 @@ export function createApp(deps: ServerDeps) {
                 ? (name, args) => launchpadJobsTable[name]!(deps.launchpadCronDeps!, args)
                 : null,
             disabledError: 'launchpad_jobs_disabled',
+        },
+        {
+            has: name => Object.hasOwn(logoSyncJobsTable, name),
+            run: deps.logoSyncCronDeps
+                ? (name, args) => logoSyncJobsTable[name]!(deps.logoSyncCronDeps!, args)
+                : null,
+            disabledError: 'logo_sync_disabled',
         },
     ];
 

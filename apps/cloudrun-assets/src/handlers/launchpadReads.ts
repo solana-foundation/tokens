@@ -1,4 +1,5 @@
 import { InvalidArgsError } from './assets';
+import { resolveLogoUri } from './logoUrl';
 
 // Read side of `launchpad_tokens_latest` (see crons.launchpad.ts for the sync).
 // Served over the cloudrun RPC as `launchpadListByQuoteMints`; the API joins
@@ -14,6 +15,7 @@ export interface LaunchpadTokenRow {
     symbol: string | null;
     name: string | null;
     logo_uri: string | null;
+    logo_cdn_url?: string | null;
     pool: string | null;
     status: string | null;
     mode: string | null;
@@ -80,7 +82,7 @@ export function rowToLaunchpadResult(row: LaunchpadTokenRow): LaunchpadTokenResu
         quoteSymbol: row.quote_symbol ?? null,
         symbol: row.symbol ?? null,
         name: row.name ?? null,
-        logoURI: row.logo_uri ?? null,
+        logoURI: resolveLogoUri(row),
         pool: row.pool ?? null,
         status: row.status ?? null,
         mode: row.mode ?? null,

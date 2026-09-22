@@ -33,6 +33,7 @@ import {
     makePostgresJobsRepo,
     makePostgresLaunchpadJobsRepo,
     makePostgresLaunchpadReadsRepo,
+    makePostgresLogoSyncRepo,
     makePostgresMiscJobsRepo,
     makePostgresOhlcvReadsRepo,
     makePostgresSanctumLstsRepo,
@@ -64,6 +65,9 @@ import type { TrendingCronDeps } from './handlers/crons.trending';
 import type { ClickhouseExtrasCronDeps } from './handlers/crons.clickhouse.extras';
 import type { PrestocksCronDeps } from './handlers/crons.prestocks';
 import type { LaunchpadCronDeps } from './handlers/crons.launchpad';
+import type { LogoSyncCronDeps } from './handlers/crons.logoSync';
+import { makeSharpLogoNormalizer } from './handlers/logoImage';
+import { makeGcsLogoStore } from './logoStore';
 import type { LaunchpadAdminDeps } from './handlers/launchpadAdminActions';
 import { makeGoogleOidcVerifier } from './oidc';
 import { createApp, type ServiceRole } from './server';
@@ -111,6 +115,7 @@ let trendingCronDeps: TrendingCronDeps | undefined;
 let clickhouseExtrasCronDeps: ClickhouseExtrasCronDeps | undefined;
 let prestocksCronDeps: PrestocksCronDeps | undefined;
 let launchpadCronDeps: LaunchpadCronDeps | undefined;
+let logoSyncCronDeps: LogoSyncCronDeps | undefined;
 let verifyOidc: ReturnType<typeof makeGoogleOidcVerifier> | undefined;
 
 // Effective curated membership is served on the read path too (the
@@ -214,6 +219,29 @@ if (birdeyeApiKey) {
         repo: makePostgresLaunchpadJobsRepo(sql),
         stonkfun: makeStonkfunClient(),
     };
+    // First-party logo copies land in the public asset-logo bucket (same one
+    // cloudrun-admin signs uploads for) via the runtime SA's default
+    // credentials, so the only optional inputs are the Pinata gateway.
+    const gcsLogoBucket = process.env.GCS_LOGO_BUCKET?.trim();
+    if (gcsLogoBucket) {
+        const pinataGatewayHost = process.env.PINATA_GATEWAY_HOST?.trim();
+        const pinataGatewayToken = process.env.PINATA_GATEWAY_TOKEN?.trim();
+        const jupiterTokenApiUrl = process.env.JUPITER_TOKEN_API_URL?.trim();
+        logoSyncCronDeps = {
+            base: baseDeps,
+            repo: makePostgresLogoSyncRepo(sql),
+            store: makeGcsLogoStore(gcsLogoBucket, process.env.GCS_LOGO_PUBLIC_BASE_URL?.trim()),
+            normalizer: makeSharpLogoNormalizer(),
+            ...(pinataGatewayHost ? { pinataGatewayHost } : {}),
+            ...(pinataGatewayToken ? { pinataGatewayToken } : {}),
+            ...(jupiterTokenApiUrl ? { jupiterTokenApiUrl } : {}),
+        };
+        if (!pinataGatewayHost) {
+            console.warn('[cloudrun-assets] PINATA_GATEWAY_HOST not set — logo-sync skips the Pinata source for IPFS logos');
+        }
+    } else {
+        console.warn('[cloudrun-assets] GCS_LOGO_BUCKET not set — /jobs/logo-sync disabled');
+    }
     if (clickhouseUrl && clickhouseUser && clickhousePassword && clickhouseDatabase) {
         clickhouseExtrasCronDeps = {
             clickhouse: makeClickhouseClient({
@@ -378,6 +406,7 @@ const app = createApp({
     ...(clickhouseExtrasCronDeps ? { clickhouseExtrasCronDeps } : {}),
     ...(prestocksCronDeps ? { prestocksCronDeps } : {}),
     ...(launchpadCronDeps ? { launchpadCronDeps } : {}),
+    ...(logoSyncCronDeps ? { logoSyncCronDeps } : {}),
     launchpadAdminDeps,
     ...(cacheWarmDeps ? { cacheWarmDeps } : {}),
     ...(adminActionsDeps ? { adminActionsDeps } : {}),

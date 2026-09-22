@@ -28,3 +28,8 @@ output "usage_hooks_secret_ids" {
   }
   description = "Secret ids for the usage service /hooks/* env vars (versions seeded out-of-band)."
 }
+
+output "pinata_gateway_token_secret_id" {
+  value       = google_secret_manager_secret.pinata_gateway_token.secret_id
+  description = "Secret Manager secret id for PINATA_GATEWAY_TOKEN (assets logo-sync; version seeded out-of-band)."
+}

@@ -1,4 +1,5 @@
 import { InvalidArgsError } from './assets';
+import { resolveLogoUri } from './logoUrl';
 
 export interface TokenRow {
     id: string;
@@ -7,6 +8,7 @@ export interface TokenRow {
     name: string;
     decimals: number;
     logo_uri: string | null;
+    logo_cdn_url?: string | null;
     coingecko_id: string | null;
     description: string | null;
     website: string | null;
@@ -109,7 +111,8 @@ function rowToTokenDoc(row: TokenRow): TokenDoc {
         decimals: row.decimals,
         lastFetchedAt: row.last_fetched_at,
     };
-    if (row.logo_uri !== null) doc.logoUri = row.logo_uri;
+    const docLogo = resolveLogoUri(row);
+    if (docLogo !== null) doc.logoUri = docLogo;
     if (row.coingecko_id !== null) doc.coingeckoId = row.coingecko_id;
     if (row.description !== null) doc.description = row.description;
     if (row.website !== null) doc.website = row.website;
@@ -139,7 +142,8 @@ function rowToSearchToken(row: TokenRow): TokenSearchToken {
         priceChange24hPercent: row.price_change_24h_percent ?? 0,
         marketCap: row.market_cap ?? 0,
     };
-    if (row.logo_uri !== null) out.logoURI = row.logo_uri;
+    const logoURI = resolveLogoUri(row);
+    if (logoURI !== null) out.logoURI = logoURI;
     if (row.price_change_1h_percent !== null) out.priceChange1hPercent = row.price_change_1h_percent;
     return out;
 }

@@ -127,6 +127,7 @@ module "cloud_run" {
       PG_POOL_MAX        = "16"
       PG_CONNECT_TIMEOUT = "3"
     } : {},
+    each.value == "assets" ? local.logo_sync_env_vars : {},
   )
 
   secret_env_vars = merge(
@@ -148,7 +149,9 @@ module "cloud_run" {
         }
       },
       { for name, id in module.secrets.usage_hooks_secret_ids : name => { secret_id = id } }
-    ) : {}
+    ) : {},
+    # Assets logo-sync: Pinata gateway token (version seeded out-of-band).
+    each.value == "assets" ? local.logo_sync_secret_env_vars : {},
   )
 }
 
@@ -179,30 +182,36 @@ module "cloud_run_assets_jobs" {
   deletion_protection = var.cloud_run_deletion_protection
   startup_probe_path  = "/startup"
 
-  env_vars = {
-    NODE_ENV           = "production"
-    TOKENS_ENV         = var.env
-    GCP_PROJECT        = var.project_id
-    GCP_REGION         = var.region
-    REDIS_HOST         = module.memorystore.host
-    REDIS_PORT         = tostring(module.memorystore.port)
-    SQL_INSTANCE       = module.cloud_sql.connection_name
-    SQL_DATABASE       = module.cloud_sql.database_name
-    SQL_USER           = module.cloud_sql.app_user
-    GCS_LOGO_BUCKET    = "tokens-asset-logos-${var.env}"
-    SERVICE_ROLE       = "worker"
-    PG_POOL_MAX        = "8"
-    PG_CONNECT_TIMEOUT = "3"
-  }
+  env_vars = merge(
+    {
+      NODE_ENV           = "production"
+      TOKENS_ENV         = var.env
+      GCP_PROJECT        = var.project_id
+      GCP_REGION         = var.region
+      REDIS_HOST         = module.memorystore.host
+      REDIS_PORT         = tostring(module.memorystore.port)
+      SQL_INSTANCE       = module.cloud_sql.connection_name
+      SQL_DATABASE       = module.cloud_sql.database_name
+      SQL_USER           = module.cloud_sql.app_user
+      GCS_LOGO_BUCKET    = "tokens-asset-logos-${var.env}"
+      SERVICE_ROLE       = "worker"
+      PG_POOL_MAX        = "8"
+      PG_CONNECT_TIMEOUT = "3"
+    },
+    local.logo_sync_env_vars,
+  )
 
-  secret_env_vars = {
-    DATABASE_URL = {
-      secret_id = module.secrets.database_url_secret_id
-    }
-    TOKENS_CLOUDRUN_AUTH_TOKEN = {
-      secret_id = module.secrets.cloudrun_auth_token_secret_id
-    }
-  }
+  secret_env_vars = merge(
+    {
+      DATABASE_URL = {
+        secret_id = module.secrets.database_url_secret_id
+      }
+      TOKENS_CLOUDRUN_AUTH_TOKEN = {
+        secret_id = module.secrets.cloudrun_auth_token_secret_id
+      }
+    },
+    local.logo_sync_secret_env_vars,
+  )
 }
 
 locals {
@@ -251,7 +260,7 @@ module "scheduler_jobs" {
   service_url      = local.assets_jobs_service_url
   invoker_sa_email = module.iam.scheduler_sa_email
 
-  jobs = concat(local.coingecko_cron_jobs, local.clickhouse_cron_jobs, local.prestocks_cron_jobs, local.launchpad_cron_jobs, [
+  jobs = concat(local.coingecko_cron_jobs, local.clickhouse_cron_jobs, local.prestocks_cron_jobs, local.launchpad_cron_jobs, local.logo_sync_cron_jobs, [
     {
       name      = "refresh-asset-variant-markets"
       schedule  = var.env == "stg" ? "15 2 * * *" : "*/10 * * * *"

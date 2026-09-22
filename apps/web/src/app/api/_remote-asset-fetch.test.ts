@@ -25,4 +25,14 @@ describe('remote asset host validation', () => {
         expect(isAllowedRemoteHost('127.0.0.1', allowedHosts)).toBe(false);
         expect(isAllowedRemoteHost('192.168.1.20', allowedHosts)).toBe(false);
     });
+
+    test('allows the first-party logo hosts and no longer trusts public IPFS gateways', () => {
+        const allowedHosts = buildAllowedRemoteHosts();
+
+        expect(isAllowedRemoteHost('storage.googleapis.com', allowedHosts)).toBe(true);
+        expect(isAllowedRemoteHost('img.tokens.xyz', allowedHosts)).toBe(true);
+        expect(isAllowedRemoteHost('ipfs.io', allowedHosts)).toBe(false);
+        expect(isAllowedRemoteHost('cf-ipfs.com', allowedHosts)).toBe(false);
+        expect(isAllowedRemoteHost('dweb.link', allowedHosts)).toBe(false);
+    });
 });

@@ -1,4 +1,5 @@
 import { InvalidArgsError } from './assets';
+import { resolveLogoUri } from './logoUrl';
 
 export const TRENDING_SCORING_VERSION = 'solana-direct-stable-v1';
 export const FRESH_TRENDING_SCORING_VERSION = 'birdeye-selected-fresh-v1';
@@ -37,6 +38,7 @@ export interface TrendingMarketRow {
     name: string;
     decimals: number | null;
     logo_uri: string | null;
+    logo_cdn_url?: string | null;
     source: string;
     scoring_version: string;
     price: number | null;
@@ -72,6 +74,7 @@ export interface FreshTrendingMarketRow {
     name: string;
     decimals: number | null;
     logo_uri: string | null;
+    logo_cdn_url?: string | null;
     source: string;
     metrics_source: string | null;
     scoring_version: string;
@@ -233,7 +236,8 @@ function rowToTrendingResult(row: TrendingMarketRow): TrendingMarketResult | nul
         lastComputedAt: row.last_computed_at,
     };
     if (row.decimals !== null) out.decimals = row.decimals;
-    if (row.logo_uri !== null) out.logoURI = row.logo_uri;
+    const logoURI = resolveLogoUri(row);
+    if (logoURI !== null) out.logoURI = logoURI;
     if (row.price !== null) out.price = row.price;
     if (row.price_change_1h_percent !== null) out.priceChange1hPercent = row.price_change_1h_percent;
     if (row.price_change_24h_percent !== null) out.priceChange24hPercent = row.price_change_24h_percent;
@@ -260,7 +264,8 @@ function rowToFreshTrendingResult(row: FreshTrendingMarketRow): FreshTrendingMar
         lastComputedAt: row.last_computed_at,
     };
     if (row.decimals !== null) out.decimals = row.decimals;
-    if (row.logo_uri !== null) out.logoURI = row.logo_uri;
+    const logoURI = resolveLogoUri(row);
+    if (logoURI !== null) out.logoURI = logoURI;
     if (isMarketSource(row.metrics_source)) out.metricsSource = row.metrics_source;
     if (row.price !== null) out.price = row.price;
     if (row.liquidity !== null) out.liquidity = row.liquidity;
