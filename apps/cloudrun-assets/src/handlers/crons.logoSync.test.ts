@@ -106,6 +106,8 @@ function makeHarness(
             },
         },
         fetchImpl: scriptedFetch(script, calls),
+        // Scripted hosts (*.example, mypinata) are never resolved for real; pretend they are public.
+        resolveHost: async () => ['93.184.216.34'],
         ...(opts.pinata === false ? {} : { pinataGatewayHost: 'tokens.mypinata.cloud', pinataGatewayToken: 'tok' }),
     };
     return { deps, calls, puts, successes, failures, listArgs };
@@ -176,7 +178,7 @@ describe('syncLogos', () => {
             `https://tokens.mypinata.cloud/ipfs/${CID}/logo.png`,
             `https://dd.dexscreener.com/ds-data/tokens/solana/${MINT_A}.png`,
         ]);
-        expect(h.calls.some(u => u.includes('ipfs.io'))).toBe(false);
+        expect(h.calls.map(u => new URL(u).hostname)).not.toContain('ipfs.io');
 
         expect(h.puts).toHaveLength(1);
         expect(h.puts[0]!.key).toBe(logoObjectKey(MINT_A));

@@ -4,7 +4,7 @@ import { runJobPool } from '@tokens/effect/job-runner';
 
 import type { CronDeps, CronResult } from './crons';
 import { InvalidArgsError } from './crons';
-import { fetchLogoBytes, LOGO_MAX_BYTES } from './logoFetch';
+import { fetchLogoBytes, LOGO_MAX_BYTES, type ResolveHost } from './logoFetch';
 import { LOGO_OUTPUT_CONTENT_TYPE, sniffImageContentType, type LogoNormalizer } from './logoImage';
 import {
     buildDirectAttempts,
@@ -92,8 +92,9 @@ export interface LogoSyncCronDeps {
     repo: LogoSyncRepo;
     store: LogoStore;
     normalizer: LogoNormalizer;
-    /** Test seam. */
+    /** Test seams; production uses global fetch + dns.lookup. */
     fetchImpl?: typeof fetch;
+    resolveHost?: ResolveHost;
     pinataGatewayHost?: string;
     pinataGatewayToken?: string;
     jupiterTokenApiUrl?: string;
@@ -234,6 +235,7 @@ async function tryDirectAttempt(
         timeoutMs: args.fetchTimeoutMs,
         maxBytes: args.maxBytes,
         ...(deps.fetchImpl ? { fetchImpl: deps.fetchImpl } : {}),
+        ...(deps.resolveHost ? { resolveHost: deps.resolveHost } : {}),
     });
     if (!fetched.ok) {
         return { ok: false, error: fetched.status !== undefined ? `${fetched.reason}(${fetched.status})` : fetched.reason };
@@ -262,6 +264,7 @@ async function tryJupiterLookup(
         timeoutMs: args.fetchTimeoutMs,
         maxBytes: 512 * 1024,
         ...(deps.fetchImpl ? { fetchImpl: deps.fetchImpl } : {}),
+        ...(deps.resolveHost ? { resolveHost: deps.resolveHost } : {}),
     });
     if (!fetched.ok) {
         return { ok: false, error: `lookup_${fetched.status !== undefined ? `${fetched.reason}(${fetched.status})` : fetched.reason}` };

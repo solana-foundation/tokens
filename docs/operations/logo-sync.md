@@ -30,6 +30,8 @@ Cloud Scheduler  →  POST /jobs/logo-sync   (cloudrun-assets worker, prd every 
                 2. original URL              (unless its host is a public IPFS gateway)
                 3. https://dd.dexscreener.com/ds-data/tokens/solana/<mint>.png
                 4. Jupiter token API lookup → `icon`, fetched through rules 1–2
+              SSRF guard: hostname denylist + every hop's RESOLVED addresses must be public
+              (no loopback / RFC1918 / link-local incl. 169.254.169.254 / CGNAT / ULA)
               2 MiB cap · magic-byte sniff · sharp (SVG rasterised) → 256px WebP
               upload solana/<mint>.webp (Cache-Control: public, max-age=86400)
               upsert mint_logos (source_url, logo_source_hash, logo_cdn_url, logo_synced_at, …)
