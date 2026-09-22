@@ -1,22 +1,22 @@
 {
-  "uid": "tokens-data-provider-error-rate-high",
-  "title": "Data-feed provider error rate > 30% for 30m",
-  "ruleGroup": "tokens-external-providers",
+  "uid": "tokens-assets-logo-sync-failing",
+  "title": "tokens-assets: logo-sync runs failing outright",
+  "ruleGroup": "tokens-assets-availability",
   "folderUID": "tokens-xyz",
   "noDataState": "OK",
   "execErrState": "OK",
-  "for": "30m",
+  "for": "5m",
   "data": [
     {
       "refId": "A",
       "datasourceUid": "grafanacloud-logs",
       "queryType": "range",
       "relativeTimeRange": {
-        "from": 1800,
+        "from": 3600,
         "to": 0
       },
       "model": {
-        "expr": "(sum by(provider) (rate({service=~\"tokens-.+\"} | json | event=\"external_call\" | provider!~\"birdeye|coingecko|jupiter|logo_.*\" | ok=\"false\" [5m])) / sum by(provider) (rate({service=~\"tokens-.+\"} | json | event=\"external_call\" | provider!~\"birdeye|coingecko|jupiter|logo_.*\" [5m]))) and (sum by(provider) (rate({service=~\"tokens-.+\"} | json | event=\"external_call\" | provider!~\"birdeye|coingecko|jupiter|logo_.*\" [5m])) > 0.05)",
+        "expr": "sum(count_over_time({service=\"tokens-assets-jobs-prd-us\"} | json | httpRequest_requestUrl=~\".*/jobs/logo-sync$\" | httpRequest_status >= 500 [1h])) or on() vector(0)",
         "queryType": "range",
         "refId": "A"
       }
@@ -57,7 +57,7 @@
             "evaluator": {
               "type": "gt",
               "params": [
-                0.3
+                1
               ]
             },
             "operator": {
@@ -80,14 +80,14 @@
   ],
   "condition": "C",
   "labels": {
-    "scope": "external",
+    "service": "tokens-assets",
     "severity": "warning",
     "pagerduty": "false",
     "slack": "true"
   },
   "annotations": {
-    "summary": "Data-feed provider {{ $labels.provider }} error rate above 30%",
-    "description": "Provider {{ $labels.provider }} returned errors on >30% of calls for 30m (min 0.05 calls/sec floor). This rule catches everything outside the critical tier (birdeye/coingecko/jupiter) and outside the logo-sync probes (provider=logo_*, which fetch arbitrary third-party artwork URLs where 404s, redirects and blocked gateways are expected outcomes — see tokens-assets-logo-sync-failing for that job's health), so user-facing impact depends on which provider fired — open the External providers dashboard and the runbook before assuming low urgency. No page; Slack only.",
-    "runbook_url": "https://example.com/runbooks/external-data-provider-error-rate-high"
+    "summary": "tokens-assets: logo-sync returned 5xx on ≥2 runs in the last hour",
+    "description": "POST /jobs/logo-sync on the assets worker answers 5xx only when every attempted mint failed (ok:false) or the handler threw — per-mint fetch failures never fail the batch. Two or more in an hour (Scheduler retries once) means the job cannot publish anything: check GCS_LOGO_BUCKET / bucket IAM, the mint_logos table (migration 0023/0024), and the worker logs for the {\"event\":\"logo_sync\"} summary. Per-URL fetch noise (404s, redirects, blocked IPFS gateways) is expected and deliberately excluded from the provider error-rate rules.",
+    "runbook_url": "https://github.com/solana-foundation/tokens/blob/main/docs/operations/logo-sync.md"
   }
 }

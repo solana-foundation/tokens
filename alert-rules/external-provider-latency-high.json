@@ -16,7 +16,7 @@
         "to": 0
       },
       "model": {
-        "expr": "avg(quantile_over_time(0.95, {service=~\"tokens-.+\"} | json | event=\"external_call\" | unwrap duration_ms [5m]))",
+        "expr": "avg(quantile_over_time(0.95, {service=~\"tokens-.+\"} | json | event=\"external_call\" | provider!~\"logo_.*\" | unwrap duration_ms [5m]))",
         "queryType": "range",
         "refId": "A"
       }
@@ -87,7 +87,7 @@
   },
   "annotations": {
     "summary": "External provider p95 latency above 5s",
-    "description": "At least one external provider's p95 latency exceeded 5000ms continuously for the last 10 minutes (rule fires after for=10m sustained). Check the External providers dashboard to identify which provider is slow.",
+    "description": "At least one external provider's p95 latency exceeded 5000ms continuously for the last 10 minutes (rule fires after for=10m sustained). Check the External providers dashboard to identify which provider is slow. Excludes logo-sync probes (provider=logo_*), whose 10s per-attempt timeouts against dead artwork URLs are expected.",
     "runbook_url": "https://example.com/runbooks/external-provider-latency-high"
   }
 }
