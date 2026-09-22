@@ -36,6 +36,13 @@ import type { OhlcvCandleRow, OhlcvReadsRepo, TimeInterval } from './handlers/oh
 import type { PrestocksPriceRow, PrestocksReadsRepo } from './handlers/prestocksReads';
 import type { PrestocksRepo } from './handlers/crons.prestocks';
 import type { LaunchpadJobsRepo, LaunchpadTokenUpsert } from './handlers/crons.launchpad';
+import type {
+    ListLogoSyncCandidatesArgs,
+    LogoSyncCandidate,
+    LogoSyncFailure,
+    LogoSyncRepo,
+    LogoSyncSuccess,
+} from './handlers/crons.logoSync';
 import type { LaunchpadReadsRepo, LaunchpadTokenRow } from './handlers/launchpadReads';
 import type { TokenUpsertFromBirdeye } from './handlers/crons.misc';
 import type {
@@ -2487,7 +2494,8 @@ export function makePostgresSanctumLstsRepo(sql: Sql): SanctumLstsRepo {
             const rows = await sql<SanctumLstRow[]>`
                 SELECT mint, symbol, symbol_lower, name, logo_uri, website_url,
                        tvl_usd, apy, source_rank, is_active,
-                       last_seen_at, last_synced_at, created_at, updated_at
+                       last_seen_at, last_synced_at, created_at, updated_at,
+                       ${sql.unsafe(logoCdnColumn('sanctum_lsts_latest.mint'))}
                 FROM sanctum_lsts_latest
                 WHERE is_active = true
                 ORDER BY source_rank ASC
@@ -2509,7 +2517,8 @@ export function makePostgresSanctumLstsRepo(sql: Sql): SanctumLstsRepo {
             const rows = await sql<SanctumLstRow[]>`
                 SELECT mint, symbol, symbol_lower, name, logo_uri, website_url,
                        tvl_usd, apy, source_rank, is_active,
-                       last_seen_at, last_synced_at, created_at, updated_at
+                       last_seen_at, last_synced_at, created_at, updated_at,
+                       ${sql.unsafe(logoCdnColumn('sanctum_lsts_latest.mint'))}
                 FROM sanctum_lsts_latest
                 WHERE mint = ${mint}
                 LIMIT 1
@@ -2532,7 +2541,8 @@ export function makePostgresSanctumLstsRepo(sql: Sql): SanctumLstsRepo {
             const rows = await sql<SanctumLstRow[]>`
                 SELECT mint, symbol, symbol_lower, name, logo_uri, website_url,
                        tvl_usd, apy, source_rank, is_active,
-                       last_seen_at, last_synced_at, created_at, updated_at
+                       last_seen_at, last_synced_at, created_at, updated_at,
+                       ${sql.unsafe(logoCdnColumn('sanctum_lsts_latest.mint'))}
                 FROM sanctum_lsts_latest
                 WHERE symbol_lower = ${symbolLower}
                   AND is_active = true
@@ -2745,7 +2755,8 @@ export function makePostgresAssetsApiRepo(sql: Sql): AssetsApiRepo {
                        price_change_24h_percent, price_change_1h_percent,
                        holder, total_supply, circulating_supply,
                        last_trade_human_time, extensions,
-                       as_of, last_trade_at, last_fetched_at, overview_last_fetched_at
+                       as_of, last_trade_at, last_fetched_at, overview_last_fetched_at,
+                       ${sql.unsafe(logoCdnColumn('variant_markets_latest.mint'))}
                 FROM variant_markets_latest
                 WHERE mint = ${mint}
                 LIMIT 1
@@ -2767,7 +2778,8 @@ export function makePostgresAssetsApiRepo(sql: Sql): AssetsApiRepo {
                        price_change_24h_percent, price_change_1h_percent,
                        holder, total_supply, circulating_supply,
                        last_trade_human_time, extensions,
-                       as_of, last_trade_at, last_fetched_at, overview_last_fetched_at
+                       as_of, last_trade_at, last_fetched_at, overview_last_fetched_at,
+                       ${sql.unsafe(logoCdnColumn('variant_markets_latest.mint'))}
                 FROM variant_markets_latest
                 WHERE mint IN ${sql(mints)}
             `;
@@ -2867,6 +2879,16 @@ function normalizeAssetVariantRow(row: AssetVariantDocRow): AssetVariantDocRow {
 
 function sqlFragmentColumns(cols: readonly string[]): string {
     return cols.join(', ');
+}
+
+/**
+ * First-party logo copy for a row (migration 0023). A correlated PK lookup
+ * rather than a JOIN so the bare-column fragments above stay unambiguous
+ * (`WHERE mint IN ...` would otherwise collide with `mint_logos.mint`).
+ * Handlers prefer it via `resolveLogoUri` (handlers/logoUrl.ts).
+ */
+function logoCdnColumn(keyExpr: string): string {
+    return `(SELECT ml.logo_cdn_url FROM mint_logos ml WHERE ml.mint = ${keyExpr}) AS logo_cdn_url`;
 }
 
 export function makePostgresCoingeckoReadsRepo(sql: Sql): CoingeckoReadsRepo {
@@ -3024,6 +3046,7 @@ const VARIANT_MARKET_COLUMNS = sqlFragmentColumns([
     'last_trade_at',
     'last_fetched_at',
     'overview_last_fetched_at',
+    logoCdnColumn('variant_markets_latest.mint'),
 ]);
 
 export function makePostgresStockReadsRepo(sql: Sql): StockReadsRepo {
@@ -3190,6 +3213,7 @@ const TOKEN_COLUMNS = sqlFragmentColumns([
     'market_cap',
     'last_fetched_at',
     'created_at',
+    logoCdnColumn('tokens.address'),
 ]);
 
 const TRENDING_MARKET_COLUMNS = sqlFragmentColumns([
@@ -3225,6 +3249,7 @@ const TRENDING_MARKET_COLUMNS = sqlFragmentColumns([
     'last_trade_at',
     'as_of',
     'last_computed_at',
+    logoCdnColumn('trending_markets.mint'),
 ]);
 
 const FRESH_TRENDING_MARKET_COLUMNS = sqlFragmentColumns([
@@ -3263,6 +3288,7 @@ const FRESH_TRENDING_MARKET_COLUMNS = sqlFragmentColumns([
     'rank',
     'category_rank',
     'last_computed_at',
+    logoCdnColumn('fresh_trending_markets.mint'),
 ]);
 
 const FILL_QUALITY_COLUMNS = sqlFragmentColumns([
@@ -3641,6 +3667,7 @@ export function makePostgresTokenListsReadsRepo(sql: Sql): TokenListsReadsRepo {
                        m.symbol,
                        m.name,
                        m.logo_uri,
+                       ml.logo_cdn_url,
                        m.decimals,
                        EXISTS (
                            SELECT 1
@@ -3653,6 +3680,7 @@ export function makePostgresTokenListsReadsRepo(sql: Sql): TokenListsReadsRepo {
                        ) AS verified
                 FROM token_list_members m
                 JOIN token_lists tl ON tl.id = m.list_id
+                LEFT JOIN mint_logos ml ON ml.mint = m.mint
                 WHERE tl.slug = ${slug}
                 ORDER BY m.rank ASC, m.mint ASC
                 LIMIT ${limit} OFFSET ${offset}
@@ -5273,11 +5301,13 @@ export function makePostgresLaunchpadReadsRepo(sql: Sql): LaunchpadReadsRepo {
                 // admin approval row (see migration 0022).
                 const rows = await sql<LaunchpadTokenRow[]>`
                     SELECT l.launchpad, l.mint, l.quote_mint, l.quote_symbol, l.symbol, l.name, l.logo_uri,
+                           ml.logo_cdn_url,
                            l.pool, l.status, l.mode,
                            l.price_usd, l.market_cap_usd, l.fdv_usd, l.liquidity_usd, l.volume_24h_usd,
                            l.price_change_24h, l.launched_at, l.graduated_at, l.source_rank, l.last_synced_at
                     FROM launchpad_tokens_latest l
                     JOIN launchpad_mint_approvals a ON a.launchpad = l.launchpad AND a.mint = l.mint
+                    LEFT JOIN mint_logos ml ON ml.mint = l.mint
                     WHERE l.is_active = true
                       AND l.quote_mint IN ${sql([...part])}
                     ORDER BY l.volume_24h_usd DESC NULLS LAST, l.source_rank ASC
@@ -5288,6 +5318,184 @@ export function makePostgresLaunchpadReadsRepo(sql: Sql): LaunchpadReadsRepo {
             if (quoteMints.length <= 500) return out;
             out.sort((a, b) => (b.volume_24h_usd ?? -1) - (a.volume_24h_usd ?? -1) || a.source_rank - b.source_rank);
             return out.slice(0, limit);
+        },
+    };
+}
+
+/** Ranked in the same order the sync tries them; lower wins in DISTINCT ON. */
+const LOGO_SOURCE_TABLES_SQL = `
+    SELECT mint, logo_uri AS source_url, 1 AS src_rank, 'variant_markets_latest' AS source_table, last_fetched_at
+      FROM variant_markets_latest
+     WHERE logo_uri IS NOT NULL AND logo_uri <> ''
+    UNION ALL
+    SELECT address, logo_uri, 2, 'tokens', last_fetched_at
+      FROM tokens
+     WHERE logo_uri IS NOT NULL AND logo_uri <> ''
+    UNION ALL
+    SELECT mint, logo_uri, 3, 'sanctum_lsts_latest', last_synced_at
+      FROM sanctum_lsts_latest
+     WHERE is_active = true AND logo_uri IS NOT NULL AND logo_uri <> ''
+    UNION ALL
+    SELECT mint, logo_uri, 4, 'launchpad_tokens_latest', last_synced_at
+      FROM launchpad_tokens_latest
+     WHERE is_active = true AND logo_uri IS NOT NULL AND logo_uri <> ''
+    UNION ALL
+    SELECT m.mint, m.logo_uri, 5, 'token_list_members', m.added_at
+      FROM token_list_members m
+      JOIN token_lists tl ON tl.id = m.list_id AND tl.status = 'published'
+     WHERE m.logo_uri IS NOT NULL AND m.logo_uri <> ''
+`;
+
+function timestamptzToMs(value: unknown): number | null {
+    if (value === null || value === undefined) return null;
+    if (value instanceof Date) return value.getTime();
+    if (typeof value === 'number') return value;
+    const parsed = new Date(String(value)).getTime();
+    return Number.isFinite(parsed) ? parsed : null;
+}
+
+export function makePostgresLogoSyncRepo(sql: Sql): LogoSyncRepo {
+    return {
+        async listCandidates(args: ListLogoSyncCandidatesArgs) {
+            const curated = [...args.curatedMints];
+            const explicit = args.mints && args.mints.length > 0 ? [...args.mints] : null;
+            const publicPrefix = `${args.publicBaseUrl.replace(/\/$/, '')}%`;
+            const rows = await sql<
+                {
+                    mint: string;
+                    source_url: string;
+                    source_table: string | null;
+                    logo_source_hash: string | null;
+                    logo_cdn_url: string | null;
+                    source_kind: string | null;
+                    logo_synced_at: unknown;
+                    attempts: number | null;
+                }[]
+            >`
+                WITH curated AS (
+                    SELECT c.mint, c.ord
+                    FROM unnest(${sql.array(curated)}::text[]) WITH ORDINALITY AS c(mint, ord)
+                ),
+                sources AS (${sql.unsafe(LOGO_SOURCE_TABLES_SQL)}),
+                best AS (
+                    SELECT DISTINCT ON (s.mint) s.mint, s.source_url, s.source_table, s.src_rank
+                    FROM sources s
+                    WHERE (s.source_url ~* '^https?://' OR s.source_url ~* '^ipfs://')
+                      AND s.source_url NOT LIKE ${publicPrefix}
+                      AND s.source_url NOT LIKE 'https://storage.googleapis.com/tokens-asset-logos-%'
+                      AND s.source_url !~* '^https?://(www\\.)?tokens\\.xyz/'
+                      AND s.source_url !~* '^https?://api\\.tokens\\.xyz/'
+                      AND s.source_url !~* '^https?://token\\.solana\\.com/'
+                      AND (
+                          ${explicit ? sql`s.mint IN ${sql(explicit)}` : sql`true`}
+                      )
+                      AND (
+                          s.mint IN (SELECT mint FROM curated)
+                          OR ${explicit ? sql`true` : sql`false`}
+                          OR s.last_fetched_at >= ${args.tailSinceMs}
+                      )
+                    ORDER BY s.mint, s.src_rank
+                )
+                SELECT b.mint, b.source_url, b.source_table,
+                       ml.logo_source_hash, ml.logo_cdn_url, ml.source_kind, ml.logo_synced_at, ml.attempts
+                FROM best b
+                LEFT JOIN curated c ON c.mint = b.mint
+                LEFT JOIN mint_logos ml ON ml.mint = b.mint
+                -- Eligibility:
+                --   * never attempted;
+                --   * upstream URL differs from the published copy's source, unless that very URL
+                --     is the one currently failing (then it waits out the backoff like any failure);
+                --   * no copy yet, or the copy is older than resyncDays — except an IPFS ref whose
+                --     copy came from the CID itself (pinata/origin): content-addressed, immutable;
+                --   * and in every retry case the failure backoff (1..7 days × attempts) has elapsed.
+                WHERE ${args.force ? sql`true` : sql`false`}
+                   OR ml.mint IS NULL
+                   OR (
+                          ml.source_url IS DISTINCT FROM b.source_url
+                          AND (
+                              ml.failed_source_url IS DISTINCT FROM b.source_url
+                              OR ml.last_attempt_at <
+                                  to_timestamp(${args.nowMs} / 1000.0)
+                                  - make_interval(days => LEAST(GREATEST(ml.attempts, 1), 7))
+                          )
+                      )
+                   OR (
+                          (ml.logo_cdn_url IS NULL
+                           OR (ml.logo_synced_at < to_timestamp(${args.resyncBeforeMs} / 1000.0)
+                               AND NOT (
+                                   ml.source_kind IN ('pinata', 'origin')
+                                   AND (b.source_url ~* '^ipfs://'
+                                        OR b.source_url ~* '^https?://[^/]+/ipfs/'
+                                        OR b.source_url ~* '^https?://[a-z0-9]+\\.ipfs\\.')
+                               )))
+                          AND ml.last_attempt_at <
+                              to_timestamp(${args.nowMs} / 1000.0)
+                              - make_interval(days => LEAST(GREATEST(ml.attempts, 1), 7))
+                      )
+                ORDER BY (c.ord IS NULL) ASC, c.ord ASC NULLS LAST, (ml.mint IS NULL) DESC, b.src_rank ASC, b.mint ASC
+                LIMIT ${args.limit}
+            `;
+            return rows.map(
+                (row): LogoSyncCandidate => ({
+                    mint: row.mint,
+                    source_url: row.source_url,
+                    source_table: row.source_table,
+                    logo_source_hash: row.logo_source_hash,
+                    logo_cdn_url: row.logo_cdn_url,
+                    source_kind: row.source_kind,
+                    logo_synced_at: timestamptzToMs(row.logo_synced_at),
+                    attempts: Number(row.attempts ?? 0),
+                }),
+            );
+        },
+        async recordSuccess(row: LogoSyncSuccess) {
+            await sql`
+                INSERT INTO mint_logos (
+                    mint, source_url, source_table, source_kind, logo_source_hash, logo_cdn_url,
+                    content_type, logo_synced_at, last_attempt_at, attempts, last_error, updated_at
+                ) VALUES (
+                    ${row.mint}, ${row.sourceUrl}, ${row.sourceTable}, ${row.sourceKind}, ${row.sourceHash}, ${row.cdnUrl},
+                    ${row.contentType}, to_timestamp(${row.nowMs} / 1000.0), to_timestamp(${row.nowMs} / 1000.0), 0, NULL,
+                    to_timestamp(${row.nowMs} / 1000.0)
+                )
+                ON CONFLICT (mint) DO UPDATE SET
+                    source_url = EXCLUDED.source_url,
+                    source_table = EXCLUDED.source_table,
+                    source_kind = EXCLUDED.source_kind,
+                    logo_source_hash = EXCLUDED.logo_source_hash,
+                    logo_cdn_url = EXCLUDED.logo_cdn_url,
+                    content_type = EXCLUDED.content_type,
+                    logo_synced_at = EXCLUDED.logo_synced_at,
+                    last_attempt_at = EXCLUDED.last_attempt_at,
+                    attempts = 0,
+                    last_error = NULL,
+                    failed_source_url = NULL,
+                    updated_at = EXCLUDED.updated_at
+            `;
+        },
+        async recordFailure(row: LogoSyncFailure) {
+            // Never un-publishes a working copy, and never rewrites `source_url` while a copy
+            // exists (it is the source of the published bytes). The attempted URL goes to
+            // `failed_source_url`; attempts restart when a *different* URL starts failing.
+            await sql`
+                INSERT INTO mint_logos (
+                    mint, source_url, source_table, failed_source_url, last_attempt_at, attempts, last_error, updated_at
+                ) VALUES (
+                    ${row.mint}, ${row.sourceUrl}, ${row.sourceTable}, ${row.sourceUrl},
+                    to_timestamp(${row.nowMs} / 1000.0), 1, ${row.error}, to_timestamp(${row.nowMs} / 1000.0)
+                )
+                ON CONFLICT (mint) DO UPDATE SET
+                    source_url = CASE WHEN mint_logos.logo_cdn_url IS NULL THEN EXCLUDED.source_url ELSE mint_logos.source_url END,
+                    source_table = CASE WHEN mint_logos.logo_cdn_url IS NULL THEN EXCLUDED.source_table ELSE mint_logos.source_table END,
+                    failed_source_url = EXCLUDED.failed_source_url,
+                    last_attempt_at = EXCLUDED.last_attempt_at,
+                    attempts = CASE
+                        WHEN mint_logos.failed_source_url IS DISTINCT FROM EXCLUDED.failed_source_url THEN 1
+                        ELSE mint_logos.attempts + 1
+                    END,
+                    last_error = EXCLUDED.last_error,
+                    updated_at = EXCLUDED.updated_at
+            `;
         },
     };
 }

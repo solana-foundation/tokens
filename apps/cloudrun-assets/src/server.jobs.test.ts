@@ -513,6 +513,23 @@ describe('POST /jobs/:name', () => {
         expect(((await res.json()) as { error: string }).error).toBe('launchpad_jobs_disabled');
     });
 
+    it('returns 404 logo_sync_disabled for logo-sync when GCS deps are missing', async () => {
+        const app = createApp({
+            ...baseDeps,
+            repo: noopRepo,
+            authToken: 'tok',
+            cronDeps: emptyCronDeps(),
+            verifyOidc: allowOidc,
+        });
+        const res = await call(app, '/jobs/logo-sync', {
+            method: 'POST',
+            headers: { authorization: 'Bearer x' },
+            body: '{}',
+        });
+        expect(res.status).toBe(404);
+        expect(((await res.json()) as { error: string }).error).toBe('logo_sync_disabled');
+    });
+
     it('returns 404 jobs_disabled when cronDeps is missing', async () => {
         const app = createApp({ ...baseDeps, repo: noopRepo, authToken: 'tok' });
         const res = await call(app, '/jobs/sync-sanctum-lsts', {

@@ -101,6 +101,12 @@ module "env" {
   enable_crons         = true
   enable_load_balancer = true
   domain               = "api.tokens.xyz"
+
+  # Assets logo-sync (docs/operations/logo-sync.md). Set once the Pinata
+  # dedicated gateway exists and tokens-pinata-gateway-token-prd has a version;
+  # until then the job runs with its non-IPFS sources only.
+  # pinata_gateway_host = "tokens.mypinata.cloud"
+  # logo_public_base_url = "https://img.tokens.xyz"  # after the img host fronts the bucket
 }
 
 output "wif_provider" {

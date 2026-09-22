@@ -11,8 +11,10 @@ const DEFAULT_ALLOWED_HOSTS = new Set<string>([
     'avatars.githubusercontent.com',
     'cdn.ondo.finance',
     'arweave.net',
-    'ipfs.io',
-    'cf-ipfs.com',
+    // First-party logo copies (logo-sync job → public GCS bucket; img.tokens.xyz is the planned custom host).
+    // Public IPFS gateways are deliberately absent: they 429/403 everyone, so logos are re-hosted instead.
+    'storage.googleapis.com',
+    'img.tokens.xyz',
     'shdw-drive.genesysgo.net',
     '*.arweave.net',
 ]);

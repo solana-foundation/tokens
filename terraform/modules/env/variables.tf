@@ -201,3 +201,15 @@ variable "cloud_run_assets_min_instances" {
   type    = number
   default = 1
 }
+
+variable "pinata_gateway_host" {
+  type        = string
+  default     = ""
+  description = "Pinata dedicated gateway hostname (e.g. tokens.mypinata.cloud) the assets logo-sync job fetches IPFS artwork through. Empty disables the Pinata source; the job still runs with its other sources. Pair with a seeded tokens-pinata-gateway-token-<env> secret version."
+}
+
+variable "logo_public_base_url" {
+  type        = string
+  default     = ""
+  description = "Public base URL served as logoURI for first-party logo copies. Empty => https://storage.googleapis.com/tokens-asset-logos-<env>. Set to https://img.tokens.xyz once that host fronts the bucket (see docs/operations/logo-sync.md)."
+}

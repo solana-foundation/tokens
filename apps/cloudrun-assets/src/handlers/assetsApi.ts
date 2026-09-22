@@ -1,6 +1,7 @@
 import { normalizeLegacyTier } from '@tokens/asset-registry';
 
 import { InvalidArgsError } from './assets';
+import { resolveLogoUri } from './logoUrl';
 
 export type AssetCategory =
     | 'crypto'
@@ -90,6 +91,7 @@ export interface AssetsApiVariantMarketRow {
     name: string | null;
     decimals: number | null;
     logo_uri: string | null;
+    logo_cdn_url?: string | null;
     price: number | null;
     liquidity: number | null;
     volume_5m_usd: number | null;
@@ -468,8 +470,7 @@ function variantMarketRowToResult(row: AssetsApiVariantMarketRow): VariantMarket
     if (row.name !== null) out.name = row.name;
     if (row.decimals !== null) out.decimals = row.decimals;
 
-    const logoURITrimmed = typeof row.logo_uri === 'string' && row.logo_uri.trim() ? row.logo_uri : null;
-    const logoURI = logoURITrimmed ?? VARIANT_LOGO_FALLBACK_BY_MINT[row.mint];
+    const logoURI = resolveLogoUri(row) ?? VARIANT_LOGO_FALLBACK_BY_MINT[row.mint];
     if (logoURI !== undefined) out.logoURI = logoURI;
 
     if (row.price !== null) out.price = row.price;

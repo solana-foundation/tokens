@@ -2615,6 +2615,30 @@ describe('assetsApiLoadAssetBaseForApi', () => {
         expect(body.fillQuality).toEqual([{ mint: jupMint, fillQuality: null }]);
     });
 
+    it('prefers the first-party logo copy (logo_cdn_url) over the raw logo_uri', async () => {
+        const cdn = 'https://storage.googleapis.com/tokens-asset-logos-test/solana/' + jupMint + '.webp';
+        const market: AssetsApiVariantMarketRow = {
+            ...jupVariantMarketRow,
+            logo_uri: 'https://ipfs.io/ipfs/QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG',
+            logo_cdn_url: cdn,
+        };
+        const repo = makeAssetsApiRepo({
+            assetsByAssetId: { jup: jupAssetRow },
+            activeVariantsByAssetId: { jup: [jupVariantRow] },
+            variantMarketsByMint: { [jupMint]: market },
+        });
+        const app = createApp(deps({ repo: makeRepo(), assetsApiRepo: repo }));
+        const res = await call(
+            app,
+            '/query/assetsApiLoadAssetBaseForApi',
+            authed({ assetId: 'jup', includeVariants: true, includeVariantMarkets: true }),
+        );
+        const body = (await res.json()) as {
+            variantMarkets: Array<{ market: { logoURI?: string } | null }>;
+        };
+        expect(body.variantMarkets[0]!.market?.logoURI).toBe(cdn);
+    });
+
     it('applies the logoURI fallback when variant market has no logo_uri', async () => {
         const tbtcMint = '6DNSN2BJsaPFdFFc1zP37kkeNe4Usc1Sqkzr9C9vPWcU';
         const tbtcVariant: AssetsApiVariantRow = {
@@ -3626,6 +3650,21 @@ describe('tokensGetByAddress', () => {
         expect(body.logoUri).toBe('https://example.test/usdc.png');
         expect(body.price).toBe(1.0);
         expect(body.lastFetchedAt).toBe(1_700_000_000_000);
+    });
+
+    it('serves the first-party logo copy as logoUri when the row carries logo_cdn_url', async () => {
+        const cdn = 'https://storage.googleapis.com/tokens-asset-logos-test/solana/EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v.webp';
+        const row = sampleTokenRow({ logo_cdn_url: cdn });
+        const repo: TokensReadsRepo = {
+            ...emptyTokensReadsRepo(),
+            async findTokenByAddress(addr) {
+                return addr === row.address ? row : null;
+            },
+        };
+        const app = createApp(deps({ tokensReadsRepo: repo }));
+        const res = await call(app, '/query/tokensGetByAddress', authed({ address: row.address }));
+        const body = (await res.json()) as Record<string, unknown>;
+        expect(body.logoUri).toBe(cdn);
     });
 
     it('returns null when missing', async () => {

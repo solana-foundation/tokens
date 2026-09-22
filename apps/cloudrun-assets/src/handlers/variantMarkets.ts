@@ -1,4 +1,5 @@
 import { InvalidArgsError } from './assets';
+import { resolveLogoUri } from './logoUrl';
 import {
     selectMintMarketSnapshot,
     type MarketSource,
@@ -17,6 +18,7 @@ export interface VariantMarketRow {
     name: string | null;
     decimals: number | null;
     logo_uri: string | null;
+    logo_cdn_url?: string | null;
     price: number | null;
     liquidity: number | null;
     volume_1h_usd: number | null;
@@ -108,7 +110,7 @@ function rowToDocLike(row: VariantMarketRow): VariantMarketDocLike {
     if (name !== undefined) doc.name = name;
     const decimals = nullToUndef(row.decimals);
     if (decimals !== undefined) doc.decimals = decimals;
-    const logoURI = nullToUndef(row.logo_uri);
+    const logoURI = nullToUndef(resolveLogoUri(row));
     if (logoURI !== undefined) doc.logoURI = logoURI;
     const price = nullToUndef(row.price);
     if (price !== undefined) doc.price = price;
