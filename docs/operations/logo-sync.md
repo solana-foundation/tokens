@@ -23,15 +23,17 @@ Cloud Scheduler  →  POST /jobs/logo-sync   (cloudrun-assets worker, prd every 
   candidates: mint_logos-aware UNION over variant_markets_latest / tokens /
               sanctum_lsts_latest / launchpad_tokens_latest / token_list_members
               (curated universe first, then mints with a logo fetched in the last 30 days)
-  skip:       unchanged source hash + copy < resyncDays old; IPFS refs never re-fetched on age
-  backoff:    failed mints wait 1..7 days (× consecutive attempts) unless the source URL changed
+  skip:       unchanged source hash + copy < resyncDays old; IPFS copies fetched from the CID never age out
+  backoff:    a URL that failed waits 1..7 days (× consecutive attempts); a new upstream URL is tried at once
   per mint:   fetch plan in order
                 1. Pinata dedicated gateway  (IPFS refs only; needs PINATA_GATEWAY_HOST/_TOKEN)
                 2. original URL              (unless its host is a public IPFS gateway)
                 3. https://dd.dexscreener.com/ds-data/tokens/solana/<mint>.png
                 4. Jupiter token API lookup → `icon`, fetched through rules 1–2
               SSRF guard: hostname denylist + every hop's RESOLVED addresses must be public
-              (no loopback / RFC1918 / link-local incl. 169.254.169.254 / CGNAT / ULA)
+              (IPv4 + structurally parsed IPv6 incl. mapped/compatible/NAT64 forms; no loopback,
+              RFC1918, link-local incl. 169.254.169.254, CGNAT, ULA); caller headers such as the
+              Pinata token are dropped on any cross-origin redirect
               2 MiB cap · magic-byte sniff · sharp (SVG rasterised) → 256px WebP
               upload solana/<mint>.webp (Cache-Control: public, max-age=86400)
               upsert mint_logos (source_url, logo_source_hash, logo_cdn_url, logo_synced_at, …)
@@ -51,11 +53,19 @@ overrides, `api.tokens.xyz`, the bucket itself) are never re-hosted; the trendin
 route infers xStock symbols from `/logos/xstocks/<sym>.png`, so those must stay
 verbatim.
 
-State lives in `mint_logos` (migration `0023_mint_logos.sql`), one row per mint:
-`source_url` / `source_table` (which `logo_uri` won), `source_kind`
-(pinata|origin|dexscreener|jupiter), `logo_source_hash` (sha256 of the source
-URL), `logo_cdn_url`, `content_type`, `logo_synced_at`, `last_attempt_at`,
-`attempts`, `last_error`. A failure never clears a previously published copy.
+State lives in `mint_logos` (migrations `0023_mint_logos.sql` +
+`0024_mint_logos_failed_source.sql`), one row per mint: `source_url` /
+`source_table` (the `logo_uri` the **published copy** was made from),
+`source_kind` (pinata|origin|dexscreener|jupiter — which fetch path won),
+`logo_source_hash` (sha256 of that source URL), `logo_cdn_url`, `content_type`,
+`logo_synced_at`, then the failure side: `failed_source_url` (last URL that was
+attempted and failed), `last_attempt_at`, `attempts` (consecutive failures on
+that URL), `last_error`. A failure never clears a published copy and never
+rewrites its `source_url`; a *new* upstream URL is tried immediately and only
+enters backoff once it has itself failed. "IPFS is immutable" applies only when
+the copy came from the CID (`source_kind` pinata/origin); a copy that came from
+dexscreener/Jupiter for an IPFS mint ages out normally so it is refreshed or
+upgraded to the real artwork.
 
 ## Job args (`body_json`)
 
@@ -87,8 +97,8 @@ plus one `external_call` line per upstream request (`provider` = `logo_pinata`,
 
 ## Manual steps (in order)
 
-**Merge-order rule: apply migration 0023 to an environment's database before the
-image containing this change takes traffic there.** Every logo-bearing SELECT now
+**Merge-order rule: apply migrations 0023 and 0024 to an environment's database
+before the image containing this change takes traffic there.** Every logo-bearing SELECT now
 references `mint_logos`; without the table those queries fail and asset, search,
 lists, trending and launches reads break. Staging deploys straight to traffic on
 merge, so apply 0023 to stg first, then merge; prd builds a 0%-traffic candidate,
@@ -107,8 +117,9 @@ so apply 0023 to prd before promoting it.
    printf '%s' "$PINATA_GATEWAY_TOKEN" \
      | gcloud secrets versions add tokens-pinata-gateway-token-<env> --data-file=- --project tokens-498908
    ```
-4. **Apply migration 0023** via the one-off Cloud Run migration job (see the
-   prod DB migration runbook; `db/migrations/0023_mint_logos.sql`).
+4. **Apply migrations 0023 and 0024** via the one-off Cloud Run migration job
+   (see the prod DB migration runbook; `db/migrations/0023_mint_logos.sql`,
+   `0024_mint_logos_failed_source.sql`).
 5. **Push the env onto the live services.** Cloud Run env is under terraform's
    `lifecycle.ignore_changes`, so the new refs land manually:
    ```bash

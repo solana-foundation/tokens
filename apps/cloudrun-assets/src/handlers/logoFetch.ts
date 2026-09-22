@@ -56,26 +56,79 @@ function isBlockedIpv4(ip: [number, number, number, number]): boolean {
 }
 
 /**
+ * Expand an IPv6 literal into its eight 16-bit groups. Accepts `::` compression,
+ * a dotted-quad tail (`::ffff:169.254.169.254`, `64:ff9b::1.2.3.4`), brackets
+ * and a zone id. Returns null for anything that is not a well-formed IPv6.
+ */
+export function parseIpv6Groups(address: string): number[] | null {
+    let addr = address.trim().toLowerCase().replace(/^\[|\]$/g, '');
+    const zone = addr.indexOf('%');
+    if (zone !== -1) addr = addr.slice(0, zone);
+    if (!addr.includes(':')) return null;
+
+    // Dotted-quad tail → two hex groups.
+    const lastColon = addr.lastIndexOf(':');
+    const tail = addr.slice(lastColon + 1);
+    if (tail.includes('.')) {
+        const v4 = parseIpv4(tail);
+        if (!v4) return null;
+        addr = `${addr.slice(0, lastColon + 1)}${((v4[0] << 8) | v4[1]).toString(16)}:${((v4[2] << 8) | v4[3]).toString(16)}`;
+    }
+
+    const parts = addr.split('::');
+    if (parts.length > 2) return null;
+    const toGroups = (chunk: string): number[] | null => {
+        if (chunk === '') return [];
+        const out: number[] = [];
+        for (const piece of chunk.split(':')) {
+            if (!/^[0-9a-f]{1,4}$/.test(piece)) return null;
+            out.push(parseInt(piece, 16));
+        }
+        return out;
+    };
+    const head = toGroups(parts[0] ?? '');
+    const rest = parts.length === 2 ? toGroups(parts[1] ?? '') : [];
+    if (!head || !rest) return null;
+    if (parts.length === 2) {
+        const fill = 8 - head.length - rest.length;
+        if (fill < 1) return null;
+        return [...head, ...new Array<number>(fill).fill(0), ...rest];
+    }
+    return head.length === 8 ? head : null;
+}
+
+function groupsToIpv4(hi: number, lo: number): [number, number, number, number] {
+    return [hi >> 8, hi & 0xff, lo >> 8, lo & 0xff];
+}
+
+/**
  * A resolved address (IPv4 or IPv6 literal) the worker must never connect to:
- * loopback, RFC1918, link-local (GCE metadata), CGNAT, unique-local, and
- * IPv4-mapped IPv6 forms of the same.
+ * loopback, RFC1918, link-local (GCE metadata), CGNAT, unique-local, and every
+ * IPv6 encoding that wraps an IPv4 (mapped `::ffff:a.b.c.d` / `::ffff:a9fe:a9fe`,
+ * deprecated compatible `::a.b.c.d`, NAT64 `64:ff9b::/96`). Parsed structurally
+ * so the textual form cannot dodge the check.
  */
 export function isBlockedLogoAddress(address: string): boolean {
     const addr = address.trim().toLowerCase();
     if (!addr) return true;
     const v4 = parseIpv4(addr);
     if (v4) return isBlockedIpv4(v4);
-    if (!addr.includes(':')) return true; // neither an IPv4 nor an IPv6 literal
-    const mapped = addr.match(/^(?:0*:)*:?ffff:(\d+\.\d+\.\d+\.\d+)$/);
-    if (mapped?.[1]) {
-        const inner = parseIpv4(mapped[1]);
-        return inner ? isBlockedIpv4(inner) : true;
+    const g = parseIpv6Groups(addr);
+    if (!g) return true; // neither an IPv4 nor a well-formed IPv6 literal
+    const [g0, g1, g2, g3, g4, g5, g6, g7] = g as [number, number, number, number, number, number, number, number];
+    const leadingZero = g0 === 0 && g1 === 0 && g2 === 0 && g3 === 0 && g4 === 0;
+    if (leadingZero && g5 === 0xffff) return isBlockedIpv4(groupsToIpv4(g6, g7)); // IPv4-mapped
+    if (leadingZero && g5 === 0) {
+        if (g6 === 0 && g7 === 0) return true; // :: unspecified
+        if (g6 === 0 && g7 === 1) return true; // ::1 loopback
+        return isBlockedIpv4(groupsToIpv4(g6, g7)); // deprecated IPv4-compatible ::a.b.c.d
     }
-    const compact = addr.replace(/^\[|\]$/g, '');
-    if (compact === '::' || compact === '::1') return true; // unspecified, loopback
-    if (/^f[cd][0-9a-f]{2}:/.test(compact)) return true; // fc00::/7 unique-local
-    if (/^fe[89ab][0-9a-f]:/.test(compact)) return true; // fe80::/10 link-local
-    if (/^64:ff9b:/.test(compact)) return true; // NAT64 well-known prefix (wraps IPv4 we cannot see)
+    if (g0 === 0x64 && g1 === 0xff9b && g2 === 0 && g3 === 0 && g4 === 0 && g5 === 0) {
+        return isBlockedIpv4(groupsToIpv4(g6, g7)); // NAT64 well-known prefix
+    }
+    if ((g0 & 0xfe00) === 0xfc00) return true; // fc00::/7 unique-local
+    if ((g0 & 0xffc0) === 0xfe80) return true; // fe80::/10 link-local
+    if ((g0 & 0xff00) === 0xff00) return true; // ff00::/8 multicast
     return false;
 }
 
@@ -169,6 +222,9 @@ export async function fetchLogoBytes(url: string, opts: FetchLogoOptions): Promi
         clearTimeout(timer);
         return { ok: false, reason: 'network', message: 'invalid url' };
     }
+    // Caller headers (e.g. the Pinata gateway token) are credentials for the
+    // origin we were asked to fetch. A redirect elsewhere must not carry them.
+    const initialOrigin = current.origin;
 
     try {
         for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
@@ -194,7 +250,7 @@ export async function fetchLogoBytes(url: string, opts: FetchLogoOptions): Promi
                         headers: {
                             accept: 'image/*,*/*;q=0.8',
                             'user-agent': USER_AGENT,
-                            ...(opts.headers ?? {}),
+                            ...(current.origin === initialOrigin ? (opts.headers ?? {}) : {}),
                         },
                     }),
                 );

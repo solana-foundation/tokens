@@ -38,6 +38,8 @@ export interface LogoSyncCandidate {
     /** Stored state from `mint_logos` (null when the mint has never been attempted). */
     logo_source_hash: string | null;
     logo_cdn_url: string | null;
+    /** Which fetch path produced the published copy (pinata|origin|dexscreener|jupiter). */
+    source_kind: string | null;
     /** Unix ms. */
     logo_synced_at: number | null;
     attempts: number;
@@ -173,9 +175,14 @@ export function logoObjectKey(mint: string): string {
 
 const DAY_MS = 86_400_000;
 
+/** The copy's bytes came from the CID itself, so an IPFS source is content-addressed and immutable. */
+const IMMUTABLE_SOURCE_KINDS: ReadonlySet<string> = new Set(['pinata', 'origin']);
+
 /**
- * Unchanged source + recent copy => nothing to do. IPFS references are
- * content-addressed, so an existing copy is never re-fetched on age alone.
+ * Unchanged source + recent copy => nothing to do. An IPFS reference whose copy
+ * was fetched from the CID (pinata/origin) is never re-fetched on age alone; a
+ * copy that came from a mutable fallback (dexscreener/jupiter) ages out like
+ * any other so it can be refreshed or upgraded to the real artwork.
  */
 export function shouldSkipUnchanged(
     candidate: LogoSyncCandidate,
@@ -186,7 +193,13 @@ export function shouldSkipUnchanged(
     if (!candidate.logo_cdn_url || candidate.logo_source_hash !== sourceHash || candidate.logo_synced_at === null) {
         return false;
     }
-    if (isIpfsSourceUrl(candidate.source_url)) return true;
+    if (
+        isIpfsSourceUrl(candidate.source_url) &&
+        candidate.source_kind !== null &&
+        IMMUTABLE_SOURCE_KINDS.has(candidate.source_kind)
+    ) {
+        return true;
+    }
     return nowMs - candidate.logo_synced_at < resyncDays * DAY_MS;
 }
 

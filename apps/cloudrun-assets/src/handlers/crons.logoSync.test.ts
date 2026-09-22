@@ -50,6 +50,7 @@ function candidate(overrides: Partial<LogoSyncCandidate> = {}): LogoSyncCandidat
         source_table: 'variant_markets_latest',
         logo_source_hash: null,
         logo_cdn_url: null,
+        source_kind: null,
         logo_synced_at: null,
         attempts: 0,
         ...overrides,
@@ -159,7 +160,14 @@ describe('shouldSkipUnchanged', () => {
         const ipfsUrl = `https://ipfs.io/ipfs/${CID}`;
         const ipfsHash = await sha256Hex(ipfsUrl);
         const ipfsOld = candidate({ source_url: ipfsUrl, logo_source_hash: ipfsHash, logo_cdn_url: `${BASE}/y`, logo_synced_at: NOW - 400 * DAY });
-        expect(shouldSkipUnchanged(ipfsOld, ipfsHash, NOW, 7)).toBe(true);
+        // Copy came from the CID itself: content-addressed, never ages out.
+        expect(shouldSkipUnchanged({ ...ipfsOld, source_kind: 'pinata' }, ipfsHash, NOW, 7)).toBe(true);
+        expect(shouldSkipUnchanged({ ...ipfsOld, source_kind: 'origin' }, ipfsHash, NOW, 7)).toBe(true);
+        // Copy came from a mutable fallback: ages out like any other so it can be refreshed/upgraded.
+        expect(shouldSkipUnchanged({ ...ipfsOld, source_kind: 'dexscreener' }, ipfsHash, NOW, 7)).toBe(false);
+        expect(shouldSkipUnchanged({ ...ipfsOld, source_kind: 'jupiter' }, ipfsHash, NOW, 7)).toBe(false);
+        expect(shouldSkipUnchanged({ ...ipfsOld, source_kind: null }, ipfsHash, NOW, 7)).toBe(false);
+        expect(shouldSkipUnchanged({ ...ipfsOld, source_kind: 'dexscreener', logo_synced_at: NOW - DAY }, ipfsHash, NOW, 7)).toBe(true);
     });
 });
 
@@ -250,6 +258,18 @@ describe('syncLogos', () => {
         expect(out.synced).toBe(1);
         expect(h.calls).toEqual([url]);
         expect(h.successes[0]!.sourceKind).toBe('origin');
+    });
+
+    test('an IPFS mint whose copy came from dexscreener is re-fetched once stale, and upgrades to pinata when the CID is reachable', async () => {
+        const url = `https://ipfs.io/ipfs/${CID}`;
+        const h = makeHarness(
+            [candidate({ source_url: url, logo_source_hash: await sha256Hex(url), logo_cdn_url: `${BASE}/x`, source_kind: 'dexscreener', logo_synced_at: NOW - 8 * DAY })],
+            { 'https://tokens.mypinata.cloud/': png },
+        );
+        const out = await syncLogos(h.deps, fastArgs);
+        expect(out.skippedUnchanged).toBe(0);
+        expect(out.synced).toBe(1);
+        expect(h.successes[0]!.sourceKind).toBe('pinata');
     });
 
     test('changed hash re-syncs even when a recent copy exists', async () => {

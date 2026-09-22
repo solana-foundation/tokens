@@ -5367,6 +5367,7 @@ export function makePostgresLogoSyncRepo(sql: Sql): LogoSyncRepo {
                     source_table: string | null;
                     logo_source_hash: string | null;
                     logo_cdn_url: string | null;
+                    source_kind: string | null;
                     logo_synced_at: unknown;
                     attempts: number | null;
                 }[]
@@ -5396,19 +5397,37 @@ export function makePostgresLogoSyncRepo(sql: Sql): LogoSyncRepo {
                     ORDER BY s.mint, s.src_rank
                 )
                 SELECT b.mint, b.source_url, b.source_table,
-                       ml.logo_source_hash, ml.logo_cdn_url, ml.logo_synced_at, ml.attempts
+                       ml.logo_source_hash, ml.logo_cdn_url, ml.source_kind, ml.logo_synced_at, ml.attempts
                 FROM best b
                 LEFT JOIN curated c ON c.mint = b.mint
                 LEFT JOIN mint_logos ml ON ml.mint = b.mint
+                -- Eligibility:
+                --   * never attempted;
+                --   * upstream URL differs from the published copy's source, unless that very URL
+                --     is the one currently failing (then it waits out the backoff like any failure);
+                --   * no copy yet, or the copy is older than resyncDays — except an IPFS ref whose
+                --     copy came from the CID itself (pinata/origin): content-addressed, immutable;
+                --   * and in every retry case the failure backoff (1..7 days × attempts) has elapsed.
                 WHERE ${args.force ? sql`true` : sql`false`}
                    OR ml.mint IS NULL
-                   OR ml.source_url IS DISTINCT FROM b.source_url
+                   OR (
+                          ml.source_url IS DISTINCT FROM b.source_url
+                          AND (
+                              ml.failed_source_url IS DISTINCT FROM b.source_url
+                              OR ml.last_attempt_at <
+                                  to_timestamp(${args.nowMs} / 1000.0)
+                                  - make_interval(days => LEAST(GREATEST(ml.attempts, 1), 7))
+                          )
+                      )
                    OR (
                           (ml.logo_cdn_url IS NULL
                            OR (ml.logo_synced_at < to_timestamp(${args.resyncBeforeMs} / 1000.0)
-                               AND b.source_url !~* '^ipfs://'
-                               AND b.source_url !~* '^https?://[^/]+/ipfs/'
-                               AND b.source_url !~* '^https?://[a-z0-9]+\\.ipfs\\.'))
+                               AND NOT (
+                                   ml.source_kind IN ('pinata', 'origin')
+                                   AND (b.source_url ~* '^ipfs://'
+                                        OR b.source_url ~* '^https?://[^/]+/ipfs/'
+                                        OR b.source_url ~* '^https?://[a-z0-9]+\\.ipfs\\.')
+                               )))
                           AND ml.last_attempt_at <
                               to_timestamp(${args.nowMs} / 1000.0)
                               - make_interval(days => LEAST(GREATEST(ml.attempts, 1), 7))
@@ -5423,6 +5442,7 @@ export function makePostgresLogoSyncRepo(sql: Sql): LogoSyncRepo {
                     source_table: row.source_table,
                     logo_source_hash: row.logo_source_hash,
                     logo_cdn_url: row.logo_cdn_url,
+                    source_kind: row.source_kind,
                     logo_synced_at: timestamptzToMs(row.logo_synced_at),
                     attempts: Number(row.attempts ?? 0),
                 }),
@@ -5449,24 +5469,28 @@ export function makePostgresLogoSyncRepo(sql: Sql): LogoSyncRepo {
                     last_attempt_at = EXCLUDED.last_attempt_at,
                     attempts = 0,
                     last_error = NULL,
+                    failed_source_url = NULL,
                     updated_at = EXCLUDED.updated_at
             `;
         },
         async recordFailure(row: LogoSyncFailure) {
-            // Keeps any previous logo_cdn_url: a transient fetch failure must never un-publish a working copy.
+            // Never un-publishes a working copy, and never rewrites `source_url` while a copy
+            // exists (it is the source of the published bytes). The attempted URL goes to
+            // `failed_source_url`; attempts restart when a *different* URL starts failing.
             await sql`
                 INSERT INTO mint_logos (
-                    mint, source_url, source_table, last_attempt_at, attempts, last_error, updated_at
+                    mint, source_url, source_table, failed_source_url, last_attempt_at, attempts, last_error, updated_at
                 ) VALUES (
-                    ${row.mint}, ${row.sourceUrl}, ${row.sourceTable}, to_timestamp(${row.nowMs} / 1000.0), 1, ${row.error},
-                    to_timestamp(${row.nowMs} / 1000.0)
+                    ${row.mint}, ${row.sourceUrl}, ${row.sourceTable}, ${row.sourceUrl},
+                    to_timestamp(${row.nowMs} / 1000.0), 1, ${row.error}, to_timestamp(${row.nowMs} / 1000.0)
                 )
                 ON CONFLICT (mint) DO UPDATE SET
-                    source_url = EXCLUDED.source_url,
-                    source_table = EXCLUDED.source_table,
+                    source_url = CASE WHEN mint_logos.logo_cdn_url IS NULL THEN EXCLUDED.source_url ELSE mint_logos.source_url END,
+                    source_table = CASE WHEN mint_logos.logo_cdn_url IS NULL THEN EXCLUDED.source_table ELSE mint_logos.source_table END,
+                    failed_source_url = EXCLUDED.failed_source_url,
                     last_attempt_at = EXCLUDED.last_attempt_at,
                     attempts = CASE
-                        WHEN mint_logos.source_url IS DISTINCT FROM EXCLUDED.source_url THEN 1
+                        WHEN mint_logos.failed_source_url IS DISTINCT FROM EXCLUDED.failed_source_url THEN 1
                         ELSE mint_logos.attempts + 1
                     END,
                     last_error = EXCLUDED.last_error,

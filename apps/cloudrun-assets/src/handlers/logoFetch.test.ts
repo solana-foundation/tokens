@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 
-import { assertResolvesPublic, fetchLogoBytes, isBlockedLogoAddress, isBlockedLogoHost } from './logoFetch';
+import { assertResolvesPublic, fetchLogoBytes, isBlockedLogoAddress, isBlockedLogoHost, parseIpv6Groups } from './logoFetch';
 
 const PNG = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 1]);
 
@@ -23,14 +23,46 @@ describe('isBlockedLogoAddress', () => {
             expect(isBlockedLogoAddress(ip)).toBe(true);
         }
     });
+    test('blocks hexadecimal IPv4-mapped, IPv4-compatible and NAT64 encodings of private ranges', () => {
+        for (const ip of [
+            '::ffff:a9fe:a9fe', // 169.254.169.254
+            '::ffff:7f00:1', // 127.0.0.1
+            '::FFFF:0A00:0001', // 10.0.0.1, upper-case
+            '0:0:0:0:0:ffff:c0a8:101', // 192.168.1.1, uncompressed
+            '::a9fe:a9fe', // deprecated IPv4-compatible 169.254.169.254
+            '::169.254.169.254',
+            '64:ff9b::a9fe:a9fe', // NAT64 wrapping the metadata IP
+            '64:ff9b::10.0.0.1',
+            '[::ffff:7f00:1]',
+            'fe80::1%eth0',
+            'ff02::1',
+        ]) {
+            expect(isBlockedLogoAddress(ip)).toBe(true);
+        }
+    });
+
     test('allows public addresses', () => {
-        for (const ip of ['93.184.216.34', '8.8.8.8', '172.32.0.1', '172.15.0.1', '100.128.0.1', '2606:4700::6810:84e5', '::ffff:93.184.216.34']) {
+        for (const ip of ['93.184.216.34', '8.8.8.8', '172.32.0.1', '172.15.0.1', '100.128.0.1', '2606:4700::6810:84e5', '::ffff:93.184.216.34', '::ffff:5db8:d822', '64:ff9b::5db8:d822']) {
             expect(isBlockedLogoAddress(ip)).toBe(false);
         }
     });
     test('rejects garbage', () => {
         expect(isBlockedLogoAddress('')).toBe(true);
         expect(isBlockedLogoAddress('not-an-ip')).toBe(true);
+    });
+});
+
+describe('parseIpv6Groups', () => {
+    test('expands compression and dotted tails; rejects malformed input', () => {
+        expect(parseIpv6Groups('::1')).toEqual([0, 0, 0, 0, 0, 0, 0, 1]);
+        expect(parseIpv6Groups('::ffff:169.254.169.254')).toEqual([0, 0, 0, 0, 0, 0xffff, 0xa9fe, 0xa9fe]);
+        expect(parseIpv6Groups('2606:4700::6810:84e5')).toEqual([0x2606, 0x4700, 0, 0, 0, 0, 0x6810, 0x84e5]);
+        expect(parseIpv6Groups('1:2:3:4:5:6:7:8')).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
+        expect(parseIpv6Groups('1:2:3:4:5:6:7')).toBeNull();
+        expect(parseIpv6Groups('1::2::3')).toBeNull();
+        expect(parseIpv6Groups('::ffff:999.1.1.1')).toBeNull();
+        expect(parseIpv6Groups('::gggg')).toBeNull();
+        expect(parseIpv6Groups('1.2.3.4')).toBeNull();
     });
 });
 
@@ -94,6 +126,38 @@ describe('fetchLogoBytes host validation', () => {
         expect(out.ok).toBe(false);
         if (!out.ok) expect(out.reason).toBe('blocked_host');
         expect(calls).toEqual(['https://public.example/a.png']);
+    });
+
+    test('drops caller headers (Pinata token) on a cross-origin redirect but keeps them same-origin', async () => {
+        const seen: Array<{ url: string; token: string | null }> = [];
+        const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
+            const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+            const headers = new Headers((init?.headers ?? {}) as Record<string, string>);
+            seen.push({ url, token: headers.get('x-pinata-gateway-token') });
+            if (url === 'https://tokens.mypinata.cloud/ipfs/Qm1') {
+                return new Response(null, { status: 302, headers: { location: '/ipfs/Qm1/actual.png' } });
+            }
+            if (url === 'https://tokens.mypinata.cloud/ipfs/Qm1/actual.png') {
+                return new Response(null, { status: 302, headers: { location: 'https://collector.example/steal' } });
+            }
+            return new Response(PNG, { status: 200, headers: { 'content-type': 'image/png' } });
+        }) as unknown as typeof fetch;
+        const out = await fetchLogoBytes('https://tokens.mypinata.cloud/ipfs/Qm1', {
+            provider: 'test',
+            timeoutMs: 1000,
+            headers: { 'x-pinata-gateway-token': 'secret' },
+            fetchImpl,
+            resolveHost: async () => ['93.184.216.34'],
+        });
+        expect(out.ok).toBe(true);
+        expect(seen.map(s => s.url)).toEqual([
+            'https://tokens.mypinata.cloud/ipfs/Qm1',
+            'https://tokens.mypinata.cloud/ipfs/Qm1/actual.png',
+            'https://collector.example/steal',
+        ]);
+        expect(seen[0]!.token).toBe('secret');
+        expect(seen[1]!.token).toBe('secret'); // same origin: still authenticated
+        expect(seen[2]!.token).toBeNull(); // cross origin: credential stripped
     });
 
     test('dns failure is a network failure, not a block', async () => {
