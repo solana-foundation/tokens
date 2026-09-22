@@ -221,7 +221,11 @@ export async function getLatestByMints(
         const metricsSource = optionalMarketSource(selected.metricsSource);
         const symbol = optionalString(selected.symbol);
         const name = optionalString(selected.name);
-        const logoURI = optionalString(selected.logoURI) ?? VARIANT_LOGO_FALLBACK_BY_MINT[mint];
+        // The first-party copy (mint_logos) outranks whatever logo the winning
+        // provider blob carries: selectMintMarketSnapshot picks identity strings
+        // from birdeye/rwa/clickhouse metrics, which hold the raw registry URL.
+        const logoURI =
+            optionalString(row.logo_cdn_url) ?? optionalString(selected.logoURI) ?? VARIANT_LOGO_FALLBACK_BY_MINT[mint];
         const decimals = optionalFiniteNumber(selected.decimals);
         const price = optionalFiniteNumber(selected.price);
         const liquidity = optionalFiniteNumber(selected.liquidity);

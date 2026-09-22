@@ -1899,6 +1899,45 @@ describe('variantMarketsGetLatestByMints', () => {
         expect(body[1]!.market).toBeNull();
     });
 
+    it('prefers the first-party logo copy over the logo carried by the winning provider metrics blob', async () => {
+        const cdn = 'https://storage.googleapis.com/tokens-asset-logos-test/solana/m1.webp';
+        const raw = 'https://ipfs.io/ipfs/QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG';
+        const row = sampleVariantMarketRow({
+            logo_uri: raw,
+            logo_cdn_url: cdn,
+            birdeye_metrics: {
+                source: 'birdeye',
+                symbol: 'BONK',
+                logoURI: raw,
+                price: 1.11,
+                liquidity: 9_999,
+                volume24hUSD: 1_000,
+                lastFetchedAt: 1_000_000,
+            },
+        });
+        const repo: VariantMarketsRepo = {
+            async findLatestByMints() {
+                return [row];
+            },
+        };
+        const app = createApp(deps({ variantMarketsRepo: repo }));
+        const res = await call(app, '/query/variantMarketsGetLatestByMints', authed({ mints: ['m1'] }));
+        const body = (await res.json()) as Array<{ market: { logoURI?: string } | null }>;
+        expect(body[0]!.market?.logoURI).toBe(cdn);
+
+        // Without a copy, the provider's logo still flows through unchanged.
+        const rawOnly = sampleVariantMarketRow({ logo_uri: raw, birdeye_metrics: { ...row.birdeye_metrics as object } });
+        const repoRaw: VariantMarketsRepo = {
+            async findLatestByMints() {
+                return [rawOnly];
+            },
+        };
+        const appRaw = createApp(deps({ variantMarketsRepo: repoRaw }));
+        const resRaw = await call(appRaw, '/query/variantMarketsGetLatestByMints', authed({ mints: ['m1'] }));
+        const bodyRaw = (await resRaw.json()) as Array<{ market: { logoURI?: string } | null }>;
+        expect(bodyRaw[0]!.market?.logoURI).toBe(raw);
+    });
+
     it('serves fresh clickhouse metrics over a stale birdeye snapshot', async () => {
         const now = 1_780_000_000_000;
         const row = sampleVariantMarketRow({
