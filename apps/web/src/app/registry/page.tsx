@@ -10,12 +10,13 @@ import { RegistryTable } from './registry-table';
 export const metadata: Metadata = {
     title: 'Asset Registry | Tokens',
     description: 'Canonical registry of Solana assets with internal, RWA.xyz, and Allium classifications.',
+    robots: { index: false, follow: false },
 };
 
 export default function RegistryPage() {
     return (
         <main className="min-h-dvh bg-white relative overflow-x-hidden">
-            <div className="absolute inset-x-0 top-0 h-[600px] bg-gradient-to-b from-gray-1400/5 to-transparent pointer-events-none" />
+            <div className="absolute inset-x-0 top-0 h-[600px] bg-linear-to-b from-gray-1400/5 to-transparent pointer-events-none" />
             <section className="relative mx-auto max-w-7xl px-6 pt-28 mt-12 pb-10">
                 <div className="mx-auto max-w-4xl text-center text-pretty">
                     <h1 className="text-balance text-[44px] leading-[1.02] md:text-[54px] font-medium text-text-extra-high">
