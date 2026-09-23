@@ -13,16 +13,18 @@ import {
     type PaginationState,
     type SortingState,
 } from '@tanstack/react-table';
-import { ArrowUpRight, ChevronDown, ChevronUp, ChevronsUpDown } from 'lucide-react';
+import { ArrowUpRight, ChevronDown, ChevronUp, ChevronsUpDown, Download } from 'lucide-react';
 import { parseAsString, useQueryState } from 'nuqs';
 
 import { cn, truncateAddress } from '@tokens/ui/cn';
+import { Button } from '@tokens/ui/button';
 import { Input } from '@tokens/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@tokens/ui/select';
 import { MarketsPagination } from '@/app/_components/markets/markets-pagination';
 import { formatLargeNumber } from '@/lib/format';
 import { cleanTokenName } from '@/lib/logo-overrides';
 import { normalizeLogoSrc } from '@/lib/normalize-logo-src';
+import { downloadTextFile, registryCsvFilename, registryRowsToCsv } from './lib/csv';
 import type { RegistryData, RegistryRow } from './lib/types';
 
 const searchParser = parseAsString.withDefault('').withOptions({ history: 'replace', scroll: false });
@@ -258,6 +260,14 @@ export function RegistryTable({ data }: { data: RegistryData }) {
     });
 
     const visibleRows = table.getRowModel().rows;
+    const exportableCount = filteredRows.length;
+
+    // Exports everything that matches the current search/filters, in the current sort order, across all pages.
+    const handleExportCsv = () => {
+        const rows = table.getPrePaginationRowModel().rows.map(row => row.original);
+        downloadTextFile(registryRowsToCsv(rows), registryCsvFilename(data.generatedAt));
+    };
+
     const generatedAtLabel = Number.isNaN(Date.parse(data.generatedAt))
         ? null
         : `${generatedAtFormatter.format(new Date(data.generatedAt))} UTC`;
@@ -295,11 +305,28 @@ export function RegistryTable({ data }: { data: RegistryData }) {
                         />
                     </div>
                 </div>
-                <p className="text-[12px] text-text-low tabular-nums lg:text-right">
-                    {generatedAtLabel ? `Updated ${generatedAtLabel} · ` : ''}
-                    {data.rows.length.toLocaleString()} assets
-                    {data.truncated ? ' · partial dataset' : ''}
-                </p>
+                <div className="flex flex-col gap-3 sm:flex-row sm:items-center lg:justify-end">
+                    <p className="text-[12px] text-text-low tabular-nums lg:text-right">
+                        {generatedAtLabel ? `Updated ${generatedAtLabel} · ` : ''}
+                        {data.rows.length.toLocaleString()} assets
+                        {data.truncated ? ' · partial dataset' : ''}
+                    </p>
+                    <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        className="h-10 rounded-full border-border-medium bg-white px-4 font-sans text-[13px] text-text-extra-high shadow-none hover:bg-gray-50/60 sm:w-auto"
+                        onClick={handleExportCsv}
+                        disabled={exportableCount === 0}
+                        aria-label={`Export ${exportableCount.toLocaleString()} assets as CSV`}
+                    >
+                        <Download className="h-4 w-4" />
+                        Export CSV
+                        {exportableCount !== data.rows.length ? (
+                            <span className="text-text-low tabular-nums">({exportableCount.toLocaleString()})</span>
+                        ) : null}
+                    </Button>
+                </div>
             </div>
 
             <div className="bg-white rounded-[24px] border border-border-medium shadow-[0_8px_40px_rgba(0,0,0,0.03)] overflow-hidden">
@@ -329,7 +356,8 @@ export function RegistryTable({ data }: { data: RegistryData }) {
                                                     type="button"
                                                     className={cn(
                                                         'inline-flex text-nowrap items-center gap-1',
-                                                        canSort && 'cursor-pointer hover:text-text-extra-high select-none',
+                                                        canSort &&
+                                                            'cursor-pointer hover:text-text-extra-high select-none',
                                                         alignRight && 'justify-end w-full',
                                                     )}
                                                     onClick={header.column.getToggleSortingHandler()}
@@ -358,7 +386,9 @@ export function RegistryTable({ data }: { data: RegistryData }) {
                             {visibleRows.length === 0 ? (
                                 <tr>
                                     <td colSpan={columns.length} className="px-6 py-12 text-center">
-                                        <p className="text-text-low text-[14px] md:text-[16px]">No assets match your search</p>
+                                        <p className="text-text-low text-[14px] md:text-[16px]">
+                                            No assets match your search
+                                        </p>
                                         <p className="text-text-extra-low text-[12px] md:text-[14px] mt-2">
                                             Try a different symbol, name, or mint address
                                         </p>
