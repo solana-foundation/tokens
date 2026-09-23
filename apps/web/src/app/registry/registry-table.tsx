@@ -54,7 +54,7 @@ function RegistryTokenLogo({ row }: { row: RegistryRow }) {
 
     if (!src || hasError) {
         return (
-            <div className="size-[26px] rounded-full bg-gray-1400 flex items-center justify-center flex-shrink-0">
+            <div className="size-[26px] rounded-full bg-gray-1400 flex items-center justify-center shrink-0">
                 <span className="text-[10px] font-bold text-white">{initials}</span>
             </div>
         );
@@ -66,7 +66,7 @@ function RegistryTokenLogo({ row }: { row: RegistryRow }) {
             alt={symbol}
             width={26}
             height={26}
-            className="size-[26px] rounded-full bg-gray-50 object-cover flex-shrink-0"
+            className="size-[26px] rounded-full bg-gray-50 object-cover shrink-0"
             loading="lazy"
             decoding="async"
             onError={() => setHasError(true)}
