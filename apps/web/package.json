@@ -10,7 +10,7 @@
     "start": "next start",
     "lint": "eslint .",
     "postinstall": "node ../../scripts/patch-liveline.mjs",
-    "test": "bun test src/app/status/lib/*.test.ts src/app/api/*.test.ts src/app/api/**/*.test.ts src/components/floating-market-feed-utils.test.ts src/lib/*.test.ts",
+    "test": "bun test src/app/status/lib/*.test.ts src/app/api/*.test.ts src/app/api/**/*.test.ts src/components/floating-market-feed-utils.test.ts src/lib/*.test.ts src/app/registry/lib/*.test.ts",
     "typecheck": "tsc --noEmit",
     "doctor": "bunx react-doctor@latest"
   },
