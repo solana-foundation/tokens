@@ -1,5 +1,10 @@
 import type { RegistryRow } from './types';
 
+/**
+ * Export deliberately omits every Allium / RWA.xyz derived column (classes,
+ * values, and the coalesced ranking value): those are licensed provider data
+ * that may be viewed on the page but not redistributed as a dataset.
+ */
 export const REGISTRY_CSV_COLUMNS: ReadonlyArray<{
     header: string;
     value: (row: RegistryRow) => string | number | null;
@@ -8,12 +13,7 @@ export const REGISTRY_CSV_COLUMNS: ReadonlyArray<{
     { header: 'name', value: row => row.name },
     { header: 'mint_address', value: row => row.mintAddress },
     { header: 'solana_asset_class', value: row => row.solanaClass },
-    { header: 'rwa_asset_class', value: row => row.rwaClass },
-    { header: 'rwa_asset_value_usd', value: row => row.rwaValueUsd },
-    { header: 'allium_asset_class', value: row => row.alliumClass },
-    { header: 'allium_asset_value_usd', value: row => row.alliumValueUsd },
     { header: 'coingecko_market_cap_usd', value: row => row.marketCapUsd },
-    { header: 'value_usd', value: row => row.valueUsd },
     {
         header: 'token_page_url',
         value: row => (row.hasTokenPage ? `https://tokens.xyz/token/${row.mintAddress}` : null),
