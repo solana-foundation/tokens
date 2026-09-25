@@ -46,6 +46,11 @@ function renderableLogoSrc(src: string | undefined): string | undefined {
     return normalized.startsWith('/') || normalized.startsWith('https://') ? normalized : undefined;
 }
 
+// Logos already served by our image proxy are CDN-cached there; skip the optimizer's extra hop.
+function isProxiedLogo(src: string): boolean {
+    return src.startsWith('/api/image-proxy?');
+}
+
 function RegistryTokenLogo({ row }: { row: RegistryRow }) {
     const [hasError, setHasError] = useState(false);
     const symbol = row.symbol || row.name || '??';
@@ -71,6 +76,7 @@ function RegistryTokenLogo({ row }: { row: RegistryRow }) {
             decoding="async"
             onError={() => setHasError(true)}
             referrerPolicy="no-referrer"
+            unoptimized={isProxiedLogo(src)}
         />
     );
 }

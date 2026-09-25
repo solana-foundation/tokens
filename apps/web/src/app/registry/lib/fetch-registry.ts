@@ -4,6 +4,7 @@ import { cacheLife } from 'next/cache';
 
 import { fetchApiAppJsonOrNull } from '@/lib/api-app';
 import { looksLikeSolanaMintAddress } from '@/lib/solana-address';
+import { fetchBirdeyeTokenMetadata, normalizeLogoURI, type BirdeyeTokenMetadata } from './birdeye-metadata';
 import type {
     AssetRegistryApiResponse,
     AssetRegistryApiRow,
@@ -52,8 +53,30 @@ export async function fetchRegistry(): Promise<RegistryData> {
         fetchCuratedMints(),
     ]);
 
+    // Mints the platform does not index yet: fill logo + name straight from Birdeye.
+    const unindexed = rows
+        .map(row => row.mint_address)
+        .filter(mint => looksLikeSolanaMintAddress(mint) && !hasLogo(snapshots.get(mint), curated.get(mint)));
+    const birdeye = await fetchBirdeyeTokenMetadata(unindexed);
+
     const normalized = rows.map(row =>
-        normalizeRow(row, snapshots.get(row.mint_address), curated.get(row.mint_address)),
+        normalizeRow(
+            row,
+            snapshots.get(row.mint_address),
+            curated.get(row.mint_address),
+            birdeye.get(row.mint_address),
+        ),
+    );
+
+    console.info(
+        JSON.stringify({
+            event: 'asset_registry_loaded',
+            rows: normalized.length,
+            withLogo: normalized.filter(row => row.logoURI).length,
+            withName: normalized.filter(row => row.name).length,
+            birdeyeLookups: unindexed.length,
+            birdeyeHits: birdeye.size,
+        }),
     );
 
     return {
@@ -123,10 +146,15 @@ async function fetchMarketSnapshots(mints: string[]): Promise<Map<string, Market
     return byMint;
 }
 
+function hasLogo(snapshot: MarketSnapshotEntry | undefined, curated: CuratedMintEntry | undefined): boolean {
+    return Boolean(snapshot?.token?.logoURI || curated?.primaryVariant?.market?.logoURI);
+}
+
 function normalizeRow(
     row: AssetRegistryApiRow,
     snapshot: MarketSnapshotEntry | undefined,
     curated: CuratedMintEntry | undefined,
+    provider: BirdeyeTokenMetadata | undefined,
 ): RegistryRow {
     const token = snapshot?.token ?? null;
     const variant = curated?.primaryVariant ?? null;
@@ -136,8 +164,8 @@ function normalizeRow(
     return {
         symbol: row.token,
         mintAddress: row.mint_address,
-        name: token?.name?.trim() || variant?.name?.trim() || null,
-        logoURI: token?.logoURI || variant?.market?.logoURI || null,
+        name: token?.name?.trim() || variant?.name?.trim() || provider?.name || null,
+        logoURI: normalizeLogoURI(token?.logoURI || variant?.market?.logoURI || null) || provider?.logoURI || null,
         hasTokenPage: token != null || variant != null,
         solanaClass: row.solana_asset_class,
         rwaClass: row.rwa_asset_class,
