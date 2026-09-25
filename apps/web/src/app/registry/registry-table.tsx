@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import Image from 'next/image';
 import Link from 'next/link';
 import {
@@ -13,21 +13,20 @@ import {
     type PaginationState,
     type SortingState,
 } from '@tanstack/react-table';
-import { ArrowUpRight, ChevronDown, ChevronUp, ChevronsUpDown, Download } from 'lucide-react';
-import { parseAsString, useQueryState } from 'nuqs';
+import { ArrowUpRight, ChevronDown, ChevronUp, ChevronsUpDown } from 'lucide-react';
 
 import { cn, truncateAddress } from '@tokens/ui/cn';
 import { Button } from '@tokens/ui/button';
-import { Input } from '@tokens/ui/input';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@tokens/ui/select';
 import { MarketsPagination } from '@/app/_components/markets/markets-pagination';
 import { formatLargeNumber } from '@/lib/format';
 import { cleanTokenName } from '@/lib/logo-overrides';
 import { normalizeLogoSrc } from '@/lib/normalize-logo-src';
 import { downloadTextFile, registryCsvFilename, registryRowsToCsv } from './lib/csv';
+import { SORTABLE_COLUMN_IDS, applyFilters, type SortableColumnId } from './lib/filters';
 import type { RegistryData, RegistryRow } from './lib/types';
-
-const searchParser = parseAsString.withDefault('').withOptions({ history: 'replace', scroll: false });
+import type { CategoryOptions } from './registry-filter-editor';
+import { RegistryToolbar } from './registry-toolbar';
+import { useRegistryUrlState } from './use-registry-url-state';
 
 const columnHelper = createColumnHelper<RegistryRow>();
 
@@ -193,72 +192,47 @@ function distinctSorted(values: Array<string | null>): string[] {
     return [...new Set(values.filter((value): value is string => !!value))].sort((a, b) => a.localeCompare(b));
 }
 
-interface ClassFilterProps {
-    label: string;
-    value: string;
-    options: string[];
-    onChange: (value: string) => void;
-}
-
-function ClassFilter({ label, value, options, onChange }: ClassFilterProps) {
-    return (
-        <Select value={value} onValueChange={onChange}>
-            <SelectTrigger
-                aria-label={label}
-                className="h-10 w-full rounded-full border-border-medium bg-white px-4 font-sans text-[13px] text-text-extra-high shadow-none focus:ring-border-medium sm:w-[190px]"
-            >
-                <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-                <SelectItem value="all" className="font-sans text-[13px]">
-                    All {label}
-                </SelectItem>
-                {options.map(option => (
-                    <SelectItem key={option} value={option} className="font-sans text-[13px]">
-                        {option}
-                    </SelectItem>
-                ))}
-            </SelectContent>
-        </Select>
-    );
+function isSortableColumnId(id: string): id is SortableColumnId {
+    return (SORTABLE_COLUMN_IDS as readonly string[]).includes(id);
 }
 
 export function RegistryTable({ data }: { data: RegistryData }) {
-    const [search, setSearch] = useQueryState('q', searchParser);
-    const [solanaClassFilter, setSolanaClassFilter] = useState('all');
-    const [rwaClassFilter, setRwaClassFilter] = useState('all');
-    const [alliumClassFilter, setAlliumClassFilter] = useState('all');
-    const [sorting, setSorting] = useState<SortingState>([]);
+    const urlState = useRegistryUrlState();
+    const { q, filters, sort, setSort, clearAll } = urlState;
     const [pagination, setPagination] = useState<PaginationState>({ pageIndex: 0, pageSize: 50 });
 
-    const solanaClasses = useMemo(() => distinctSorted(data.rows.map(row => row.solanaClass)), [data.rows]);
-    const rwaClasses = useMemo(() => distinctSorted(data.rows.map(row => row.rwaClass)), [data.rows]);
-    const alliumClasses = useMemo(() => distinctSorted(data.rows.map(row => row.alliumClass)), [data.rows]);
+    const options = useMemo<CategoryOptions>(
+        () => ({
+            solanaClass: distinctSorted(data.rows.map(row => row.solanaClass)),
+            rwaClass: distinctSorted(data.rows.map(row => row.rwaClass)),
+            alliumClass: distinctSorted(data.rows.map(row => row.alliumClass)),
+            hasTokenPage: ['yes', 'no'],
+        }),
+        [data.rows],
+    );
 
-    const filteredRows = useMemo(() => {
-        const q = search.toLowerCase().trim();
-        return data.rows.filter(row => {
-            if (solanaClassFilter !== 'all' && row.solanaClass !== solanaClassFilter) return false;
-            if (rwaClassFilter !== 'all' && row.rwaClass !== rwaClassFilter) return false;
-            if (alliumClassFilter !== 'all' && row.alliumClass !== alliumClassFilter) return false;
-            if (!q) return true;
-            return (
-                row.symbol.toLowerCase().includes(q) ||
-                row.mintAddress.toLowerCase().includes(q) ||
-                (row.name?.toLowerCase().includes(q) ?? false)
-            );
-        });
-    }, [data.rows, search, solanaClassFilter, rwaClassFilter, alliumClassFilter]);
+    const filteredRows = useMemo(() => applyFilters(data.rows, { q, filters }), [data.rows, q, filters]);
 
     useEffect(() => {
         setPagination(current => ({ ...current, pageIndex: 0 }));
-    }, [search, solanaClassFilter, rwaClassFilter, alliumClassFilter]);
+    }, [q, filters]);
+
+    // Sorting lives in the URL; an empty state keeps the server's canonical coalesced order.
+    const sorting = useMemo<SortingState>(() => (sort ? [{ id: sort.id, desc: sort.desc }] : []), [sort]);
+    const handleSortingChange = useCallback(
+        (updater: SortingState | ((current: SortingState) => SortingState)) => {
+            const next = typeof updater === 'function' ? updater(sorting) : updater;
+            const first = next[0];
+            setSort(first && isSortableColumnId(first.id) ? { id: first.id, desc: first.desc } : null);
+        },
+        [sorting, setSort],
+    );
 
     const table = useReactTable({
         data: filteredRows,
         columns,
         state: { sorting, pagination },
-        onSortingChange: setSorting,
+        onSortingChange: handleSortingChange,
         onPaginationChange: setPagination,
         getCoreRowModel: getCoreRowModel(),
         getSortedRowModel: getSortedRowModel(),
@@ -266,7 +240,6 @@ export function RegistryTable({ data }: { data: RegistryData }) {
     });
 
     const visibleRows = table.getRowModel().rows;
-    const exportableCount = filteredRows.length;
 
     // Exports everything that matches the current search/filters, in the current sort order, across all pages.
     const handleExportCsv = () => {
@@ -280,60 +253,15 @@ export function RegistryTable({ data }: { data: RegistryData }) {
 
     return (
         <div className="flex flex-col gap-4">
-            <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-                <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
-                    <Input
-                        type="search"
-                        value={search}
-                        onChange={event => setSearch(event.target.value)}
-                        placeholder="Search by name, symbol, or mint"
-                        aria-label="Search registry"
-                        className="h-10 rounded-full border-border-medium bg-white px-4 font-sans text-[13px] text-text-extra-high shadow-none placeholder:text-text-low focus-visible:ring-border-medium sm:w-[300px]"
-                    />
-                    <div className="flex flex-col gap-3 sm:flex-row">
-                        <ClassFilter
-                            label="asset classes"
-                            value={solanaClassFilter}
-                            options={solanaClasses}
-                            onChange={setSolanaClassFilter}
-                        />
-                        <ClassFilter
-                            label="RWA.xyz classes"
-                            value={rwaClassFilter}
-                            options={rwaClasses}
-                            onChange={setRwaClassFilter}
-                        />
-                        <ClassFilter
-                            label="Allium classes"
-                            value={alliumClassFilter}
-                            options={alliumClasses}
-                            onChange={setAlliumClassFilter}
-                        />
-                    </div>
-                </div>
-                <div className="flex flex-col gap-3 sm:flex-row sm:items-center lg:justify-end">
-                    <p className="text-[12px] text-text-low tabular-nums lg:text-right">
-                        {generatedAtLabel ? `Updated ${generatedAtLabel} · ` : ''}
-                        {data.rows.length.toLocaleString()} assets
-                        {data.truncated ? ' · partial dataset' : ''}
-                    </p>
-                    <Button
-                        type="button"
-                        variant="outline"
-                        size="sm"
-                        className="h-10 rounded-full border-border-medium bg-white px-4 font-sans text-[13px] text-text-extra-high shadow-none hover:bg-gray-50/60 sm:w-auto"
-                        onClick={handleExportCsv}
-                        disabled={exportableCount === 0}
-                        aria-label={`Export ${exportableCount.toLocaleString()} assets as CSV`}
-                    >
-                        <Download className="h-4 w-4" />
-                        Export CSV
-                        {exportableCount !== data.rows.length ? (
-                            <span className="text-text-low tabular-nums">({exportableCount.toLocaleString()})</span>
-                        ) : null}
-                    </Button>
-                </div>
-            </div>
+            <RegistryToolbar
+                state={urlState}
+                options={options}
+                generatedAtLabel={generatedAtLabel}
+                totalCount={data.rows.length}
+                matchedCount={filteredRows.length}
+                truncated={data.truncated}
+                onExportCsv={handleExportCsv}
+            />
 
             <div className="bg-white rounded-[24px] border border-border-medium shadow-[0_8px_40px_rgba(0,0,0,0.03)] overflow-hidden">
                 <div className="overflow-x-auto">
@@ -393,11 +321,20 @@ export function RegistryTable({ data }: { data: RegistryData }) {
                                 <tr>
                                     <td colSpan={columns.length} className="px-6 py-12 text-center">
                                         <p className="text-text-low text-[14px] md:text-[16px]">
-                                            No assets match your search
+                                            No assets match your filters
                                         </p>
                                         <p className="text-text-extra-low text-[12px] md:text-[14px] mt-2">
-                                            Try a different symbol, name, or mint address
+                                            Try a different symbol, name, or mint address, or loosen a filter
                                         </p>
+                                        <Button
+                                            type="button"
+                                            variant="outline"
+                                            size="sm"
+                                            className="mt-4 h-9 rounded-full border-border-medium bg-white px-4 font-sans text-[13px] text-text-extra-high shadow-none hover:bg-gray-50/60"
+                                            onClick={clearAll}
+                                        >
+                                            Clear filters
+                                        </Button>
                                     </td>
                                 </tr>
                             ) : (
