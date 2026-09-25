@@ -57,8 +57,8 @@ export function RegistryToolbar({
                     />
                     <RegistryFilterChips state={state} options={options} />
                     {hasActive ? (
-                        <span className="text-[11px] uppercase tracking-wide text-text-low">
-                            press <Kbd className="w-7">esc</Kbd> to clear
+                        <span className="ml-1 text-[10px] uppercase text-muted-foreground">
+                            press <Kbd className="w-8 font-bold">esc</Kbd> to clear
                         </span>
                     ) : null}
                 </div>

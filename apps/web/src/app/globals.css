@@ -15,11 +15,11 @@
  * close to Inter's x-height so layout doesn't shift if the swap does happen.
  */
 @font-face {
-  font-family: 'Inter Variable';
-  font-style: normal;
-  font-weight: 100 900;
-  font-display: optional;
-  src: url('/fonts/InterVariable.woff2') format('woff2-variations');
+    font-family: 'Inter Variable';
+    font-style: normal;
+    font-weight: 100 900;
+    font-display: optional;
+    src: url('/fonts/InterVariable.woff2') format('woff2-variations');
 }
 
 @import '@solana/design-system/styles';
@@ -29,27 +29,27 @@
 
 /* Disable faux bold/italic synthesis so a missing variable-axis match never renders heavier than spec. */
 html {
-  font-synthesis-weight: none;
-  font-synthesis-style: none;
-  text-rendering: optimizeLegibility;
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
-  font-optical-sizing: auto;
-  font-size-adjust: 0.52;
+    font-synthesis-weight: none;
+    font-synthesis-style: none;
+    text-rendering: optimizeLegibility;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    font-optical-sizing: auto;
+    font-size-adjust: 0.52;
 }
 
 :root {
-  --font-sans: "Inter Variable", Inter, system-ui, sans-serif;
-  --font-berkeley-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
-  /* ABC Diatype isn't bundled in this app; fall the DS .font-diatype-* utilities through to Inter so the page doesn't render system-ui. */
-  --font-abc-diatype: var(--font-sans);
+    --font-sans: 'Inter Variable', Inter, system-ui, sans-serif;
+    --font-berkeley-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', monospace;
+    /* ABC Diatype isn't bundled in this app; fall the DS .font-diatype-* utilities through to Inter so the page doesn't render system-ui. */
+    --font-abc-diatype: var(--font-sans);
 }
 
 code,
 kbd,
 pre,
 samp {
-  font-family: var(--font-sans);
+    font-family: var(--font-sans);
 }
 
 /*
@@ -60,77 +60,156 @@ samp {
  * they re-resolve against the dark-mode --text-* / --border-* values.
  */
 .dark {
-  --color-text-extra-high: var(--text-extra-high);
-  --color-text-high: var(--text-high);
-  --color-text-medium: var(--text-medium);
-  --color-text-low: var(--text-low);
-  --color-text-extra-low: var(--text-extra-low);
-  --color-border-strongest: var(--border-strongest);
-  --color-border-strong: var(--border-strong);
-  --color-border-medium: var(--border-medium);
-  --color-border-light: var(--border-light);
-  --color-border-extra-light: var(--border-extra-light);
+    --color-text-extra-high: var(--text-extra-high);
+    --color-text-high: var(--text-high);
+    --color-text-medium: var(--text-medium);
+    --color-text-low: var(--text-low);
+    --color-text-extra-low: var(--text-extra-low);
+    --color-border-strongest: var(--border-strongest);
+    --color-border-strong: var(--border-strong);
+    --color-border-medium: var(--border-medium);
+    --color-border-light: var(--border-light);
+    --color-border-extra-light: var(--border-extra-light);
 }
 
 @utility scrollbar-hide {
-  scrollbar-width: none;
-  &::-webkit-scrollbar {
-    display: none;
-  }
+    scrollbar-width: none;
+    &::-webkit-scrollbar {
+        display: none;
+    }
 }
 
 @keyframes market-feed-ticker {
-  from {
-    transform: translateX(0);
-  }
+    from {
+        transform: translateX(0);
+    }
 
-  to {
-    transform: translateX(calc(-50% - 0.25rem));
-  }
+    to {
+        transform: translateX(calc(-50% - 0.25rem));
+    }
 }
 
 .market-feed-ticker {
-  animation: market-feed-ticker 22s linear infinite;
+    animation: market-feed-ticker 22s linear infinite;
 }
 
 .market-feed-ticker-viewport:hover .market-feed-ticker,
 .market-feed-ticker-viewport:focus-within .market-feed-ticker {
-  animation-play-state: paused;
+    animation-play-state: paused;
 }
 
 @supports (animation-timeline: scroll(self)) {
-  .market-feed-news-scroll {
-    animation: market-feed-mask-up linear both;
-    animation-timeline: scroll(self);
-    animation-range: 0 1rem;
-    mask-image: linear-gradient(to bottom, #000, transparent), linear-gradient(#000 0 0);
-    mask-position: top, top;
-    mask-repeat: no-repeat;
-    mask-size: 100% 0, 100% 100%;
-    mask-composite: exclude;
-    -webkit-mask-image: linear-gradient(to bottom, #000, transparent), linear-gradient(#000 0 0);
-    -webkit-mask-position: top, top;
-    -webkit-mask-repeat: no-repeat;
-    -webkit-mask-size: 100% 0, 100% 100%;
-    -webkit-mask-composite: xor;
-  }
+    .market-feed-news-scroll {
+        animation: market-feed-mask-up linear both;
+        animation-timeline: scroll(self);
+        animation-range: 0 1rem;
+        mask-image: linear-gradient(to bottom, #000, transparent), linear-gradient(#000 0 0);
+        mask-position: top, top;
+        mask-repeat: no-repeat;
+        mask-size:
+            100% 0,
+            100% 100%;
+        mask-composite: exclude;
+        -webkit-mask-image: linear-gradient(to bottom, #000, transparent), linear-gradient(#000 0 0);
+        -webkit-mask-position: top, top;
+        -webkit-mask-repeat: no-repeat;
+        -webkit-mask-size:
+            100% 0,
+            100% 100%;
+        -webkit-mask-composite: xor;
+    }
 }
 
 @keyframes market-feed-mask-up {
-  to {
-    mask-size: 100% 36px, 100% 100%;
-    -webkit-mask-size: 100% 36px, 100% 100%;
-  }
+    to {
+        mask-size:
+            100% 36px,
+            100% 100%;
+        -webkit-mask-size:
+            100% 36px,
+            100% 100%;
+    }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .market-feed-ticker {
-    animation: none;
-  }
+    .market-feed-ticker {
+        animation: none;
+    }
 
-  .market-feed-news-scroll {
-    animation: none;
-    mask-image: none;
-    -webkit-mask-image: none;
-  }
+    .market-feed-news-scroll {
+        animation: none;
+        mask-image: none;
+        -webkit-mask-image: none;
+    }
+}
+
+/* Screener-style filter palette — scroll-driven edge fade on BOTH edges: the
+   top fade grows in as you scroll down, the bottom fade melts away as you
+   reach the end. Registered properties make the fade lengths animatable by
+   the scroll timeline; unsupported browsers just get no fade. Ported from the
+   svela screener (`.screener-filter-scroll`). */
+@property --screener-fade-top {
+    syntax: '<length>';
+    inherits: false;
+    initial-value: 0px;
+}
+
+@property --screener-fade-bottom {
+    syntax: '<length>';
+    inherits: false;
+    initial-value: 0px;
+}
+
+@supports (animation-timeline: scroll(self)) {
+    .screener-filter-scroll {
+        animation:
+            screener-fade-top linear both,
+            screener-fade-bottom linear both;
+        animation-timeline: scroll(self), scroll(self);
+        animation-range:
+            0 1.5rem,
+            calc(100% - 1.5rem) 100%;
+        mask-image: linear-gradient(
+            to bottom,
+            transparent 0,
+            #000 var(--screener-fade-top),
+            #000 calc(100% - var(--screener-fade-bottom)),
+            transparent 100%
+        );
+        -webkit-mask-image: linear-gradient(
+            to bottom,
+            transparent 0,
+            #000 var(--screener-fade-top),
+            #000 calc(100% - var(--screener-fade-bottom)),
+            transparent 100%
+        );
+    }
+}
+
+@keyframes screener-fade-top {
+    from {
+        --screener-fade-top: 0px;
+    }
+
+    to {
+        --screener-fade-top: 28px;
+    }
+}
+
+@keyframes screener-fade-bottom {
+    from {
+        --screener-fade-bottom: 28px;
+    }
+
+    to {
+        --screener-fade-bottom: 0px;
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .screener-filter-scroll {
+        animation: none;
+        mask-image: none;
+        -webkit-mask-image: none;
+    }
 }
