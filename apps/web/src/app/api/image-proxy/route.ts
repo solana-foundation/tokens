@@ -3,6 +3,7 @@ import { extractIpfsRef } from '@/lib/ipfs-ref';
 import { buildAllowedRemoteHosts, fetchWithValidatedRedirects, isAllowedRemoteHost } from '../_remote-asset-fetch';
 
 const MAX_IMAGE_BYTES = 2 * 1024 * 1024; // 2MB (logos only)
+const UPSTREAM_ACCEPT_HEADERS: Readonly<Record<string, string>> = { Accept: 'image/*,*/*;q=0.8' };
 
 function sniffImageContentType(bytes: Uint8Array): string | null {
     if (bytes.length < 12) return null;
@@ -85,7 +86,7 @@ export async function GET(request: Request): Promise<Response> {
     }
 
     const allowedHosts = buildAllowedRemoteHosts();
-    const upstreamHeaders: Record<string, string> = { Accept: 'image/*,*/*;q=0.8' };
+    let upstreamHeaders: Record<string, string> = UPSTREAM_ACCEPT_HEADERS;
 
     let target: URL;
     if (/^ipfs:\/\//i.test(src)) {
@@ -96,7 +97,7 @@ export async function GET(request: Request): Promise<Response> {
             return NextResponse.json({ error: 'IPFS gateway not configured' }, { status: 404 });
         }
         target = resolved.url;
-        Object.assign(upstreamHeaders, resolved.headers);
+        upstreamHeaders = { ...UPSTREAM_ACCEPT_HEADERS, ...resolved.headers };
         allowedHosts.add(target.hostname);
     } else {
         try {

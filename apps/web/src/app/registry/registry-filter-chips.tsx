@@ -179,10 +179,16 @@ export function RegistryFilterChips({ state, options }: { state: RegistryUrlStat
         chips.push(<ChipShell key="q" label="Search" value={state.q.trim()} onRemove={() => state.setQ('')} />);
     }
 
+    // Filters have no id: key on their content, disambiguating exact duplicates by occurrence so keys stay
+    // stable when other chips are added/removed/reordered.
+    const seen = new Map<string, number>();
     state.filters.forEach((filter, index) => {
+        const base = `${filter.field}-${filter.op}-${String(filter.value)}`;
+        const occurrence = seen.get(base) ?? 0;
+        seen.set(base, occurrence + 1);
         chips.push(
             <FilterChip
-                key={`${filter.field}-${filter.op}-${String(filter.value)}-${index}`}
+                key={occurrence === 0 ? base : `${base}#${occurrence}`}
                 filter={filter}
                 index={index}
                 options={options}
