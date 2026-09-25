@@ -67,14 +67,7 @@ export function RegistryToolbar({
                         </span>
                     ) : null}
                 </div>
-                <div className="flex shrink-0 flex-col gap-3 sm:flex-row sm:items-center lg:justify-end">
-                    <p className="text-[12px] text-text-low tabular-nums lg:text-right">
-                        {generatedAtLabel ? `Updated ${generatedAtLabel} · ` : ''}
-                        {isFiltered
-                            ? `${matchedCount.toLocaleString()} of ${totalCount.toLocaleString()} assets`
-                            : `${totalCount.toLocaleString()} assets`}
-                        {truncated ? ' · partial dataset' : ''}
-                    </p>
+                <div className="flex shrink-0 flex-col gap-2 lg:items-end">
                     <Button
                         type="button"
                         variant="outline"
@@ -90,6 +83,13 @@ export function RegistryToolbar({
                             <span className="text-text-low tabular-nums">({matchedCount.toLocaleString()})</span>
                         ) : null}
                     </Button>
+                    <p className="text-[12px] text-text-low tabular-nums lg:text-right">
+                        {generatedAtLabel ? `Updated ${generatedAtLabel} · ` : ''}
+                        {isFiltered
+                            ? `${matchedCount.toLocaleString()} of ${totalCount.toLocaleString()} assets`
+                            : `${totalCount.toLocaleString()} assets`}
+                        {truncated ? ' · partial dataset' : ''}
+                    </p>
                 </div>
             </div>
         </div>
