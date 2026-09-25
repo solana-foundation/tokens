@@ -11,24 +11,21 @@ import { hasOpenOverlay, isTypingContext } from './registry-shortcuts';
 import type { RegistryUrlState } from './use-registry-url-state';
 
 /**
- * Search box + editable filter chips + honest count caption + CSV export.
+ * Search box + editable filter chips + CSV export.
  * Esc clears everything unless a chip editor popover is open (Esc closes it).
  */
 export function RegistryToolbar({
     state,
     options,
-    generatedAtLabel,
-    totalCount,
+    isFiltered,
     matchedCount,
-    truncated,
     onExportCsv,
 }: {
     state: RegistryUrlState;
     options: CategoryOptions;
-    generatedAtLabel: string | null;
-    totalCount: number;
+    /** True when search/filters exclude some rows; the export button then shows the matched count. */
+    isFiltered: boolean;
     matchedCount: number;
-    truncated: boolean;
     onExportCsv: () => void;
 }) {
     const { hasActive, clearAll } = state;
@@ -45,8 +42,6 @@ export function RegistryToolbar({
         document.addEventListener('keydown', handleKeyDown);
         return () => document.removeEventListener('keydown', handleKeyDown);
     }, [hasActive, clearAll]);
-
-    const isFiltered = matchedCount !== totalCount;
 
     return (
         <div className="flex flex-col gap-3">
@@ -67,7 +62,7 @@ export function RegistryToolbar({
                         </span>
                     ) : null}
                 </div>
-                <div className="flex shrink-0 flex-col gap-2 lg:items-end">
+                <div className="flex shrink-0 lg:justify-end">
                     <Button
                         type="button"
                         variant="outline"
@@ -83,13 +78,6 @@ export function RegistryToolbar({
                             <span className="text-text-low tabular-nums">({matchedCount.toLocaleString()})</span>
                         ) : null}
                     </Button>
-                    <p className="text-[12px] text-text-low tabular-nums lg:text-right">
-                        {generatedAtLabel ? `Updated ${generatedAtLabel} · ` : ''}
-                        {isFiltered
-                            ? `${matchedCount.toLocaleString()} of ${totalCount.toLocaleString()} assets`
-                            : `${totalCount.toLocaleString()} assets`}
-                        {truncated ? ' · partial dataset' : ''}
-                    </p>
                 </div>
             </div>
         </div>

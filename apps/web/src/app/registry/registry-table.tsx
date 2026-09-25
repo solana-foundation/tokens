@@ -32,12 +32,6 @@ const columnHelper = createColumnHelper<RegistryRow>();
 
 const RIGHT_ALIGNED_COLUMNS = new Set(['rwaValueUsd', 'alliumValueUsd', 'marketCapUsd']);
 
-const generatedAtFormatter = new Intl.DateTimeFormat('en-US', {
-    dateStyle: 'medium',
-    timeStyle: 'short',
-    timeZone: 'UTC',
-});
-
 // next/image only accepts https remote patterns; drop anything else rather than crash the row.
 function renderableLogoSrc(src: string | undefined): string | undefined {
     const normalized = normalizeLogoSrc(src);
@@ -247,19 +241,13 @@ export function RegistryTable({ data }: { data: RegistryData }) {
         downloadTextFile(registryRowsToCsv(rows), registryCsvFilename(data.generatedAt));
     };
 
-    const generatedAtLabel = Number.isNaN(Date.parse(data.generatedAt))
-        ? null
-        : `${generatedAtFormatter.format(new Date(data.generatedAt))} UTC`;
-
     return (
         <div className="flex flex-col gap-4">
             <RegistryToolbar
                 state={urlState}
                 options={options}
-                generatedAtLabel={generatedAtLabel}
-                totalCount={data.rows.length}
+                isFiltered={filteredRows.length !== data.rows.length}
                 matchedCount={filteredRows.length}
-                truncated={data.truncated}
                 onExportCsv={handleExportCsv}
             />
 
