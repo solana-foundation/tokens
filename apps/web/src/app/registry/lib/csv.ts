@@ -13,6 +13,7 @@ export const REGISTRY_CSV_COLUMNS: ReadonlyArray<{
     { header: 'allium_asset_class', value: row => row.alliumClass },
     { header: 'allium_asset_value_usd', value: row => row.alliumValueUsd },
     { header: 'coingecko_market_cap_usd', value: row => row.marketCapUsd },
+    { header: 'value_usd', value: row => row.valueUsd },
     {
         header: 'token_page_url',
         value: row => (row.hasTokenPage ? `https://tokens.xyz/token/${row.mintAddress}` : null),

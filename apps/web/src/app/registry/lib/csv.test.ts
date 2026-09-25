@@ -15,6 +15,7 @@ const baseRow: RegistryRow = {
     rwaValueUsd: 1234.5,
     alliumValueUsd: null,
     marketCapUsd: 60_000_000_000,
+    valueUsd: 1234.5,
 };
 
 describe('escapeCsvField', () => {
@@ -44,12 +45,12 @@ describe('registryRowsToCsv', () => {
         const lines = csv.split('\r\n');
         expect(lines.at(-1)).toBe('');
         expect(lines[0]).toBe(
-            'symbol,name,mint_address,solana_asset_class,rwa_asset_class,rwa_asset_value_usd,allium_asset_class,allium_asset_value_usd,coingecko_market_cap_usd,token_page_url',
+            'symbol,name,mint_address,solana_asset_class,rwa_asset_class,rwa_asset_value_usd,allium_asset_class,allium_asset_value_usd,coingecko_market_cap_usd,value_usd,token_page_url',
         );
         expect(lines[1]).toBe(
-            `USDC,USD Coin,${baseRow.mintAddress},Stablecoin,Fiat-backed,1234.5,,,60000000000,https://tokens.xyz/token/${baseRow.mintAddress}`,
+            `USDC,USD Coin,${baseRow.mintAddress},Stablecoin,Fiat-backed,1234.5,,,60000000000,1234.5,https://tokens.xyz/token/${baseRow.mintAddress}`,
         );
-        expect(lines[2]).toBe(`"X,Y",,${baseRow.mintAddress},Stablecoin,Fiat-backed,1234.5,,,60000000000,`);
+        expect(lines[2]).toBe(`"X,Y",,${baseRow.mintAddress},Stablecoin,Fiat-backed,1234.5,,,60000000000,1234.5,`);
         expect(lines).toHaveLength(4);
     });
 
