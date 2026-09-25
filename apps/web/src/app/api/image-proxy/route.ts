@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server';
+import { extractIpfsRef } from '@/lib/ipfs-ref';
 import { buildAllowedRemoteHosts, fetchWithValidatedRedirects, isAllowedRemoteHost } from '../_remote-asset-fetch';
 
 const MAX_IMAGE_BYTES = 2 * 1024 * 1024; // 2MB (logos only)
@@ -61,6 +62,19 @@ function sniffImageContentType(bytes: Uint8Array): string | null {
     return null;
 }
 
+function resolveIpfsTarget(src: string): { url: URL; headers: Record<string, string> } | null {
+    const ref = extractIpfsRef(src);
+    const host = process.env.PINATA_GATEWAY_HOST?.trim()
+        .replace(/^https?:\/\//, '')
+        .replace(/\/+$/, '');
+    if (!ref || !host) return null;
+    const token = process.env.PINATA_GATEWAY_TOKEN?.trim();
+    return {
+        url: new URL(`https://${host}/ipfs/${ref.cid}${ref.path}`),
+        headers: token ? { 'x-pinata-gateway-token': token } : {},
+    };
+}
+
 export async function GET(request: Request): Promise<Response> {
     const { searchParams } = new URL(request.url);
     const src = (searchParams.get('src') ?? '').trim();
@@ -70,29 +84,41 @@ export async function GET(request: Request): Promise<Response> {
         return NextResponse.json({ error: 'Missing src parameter' }, { status: 400 });
     }
 
-    let target: URL;
-    try {
-        target = new URL(src);
-    } catch {
-        return NextResponse.json({ error: 'Invalid src URL' }, { status: 400 });
-    }
-
-    if (target.protocol !== 'http:' && target.protocol !== 'https:') {
-        return NextResponse.json({ error: 'Unsupported protocol' }, { status: 400 });
-    }
-
     const allowedHosts = buildAllowedRemoteHosts();
-    if (!isAllowedRemoteHost(target.hostname, allowedHosts)) {
-        return NextResponse.json({ error: 'Host not allowed' }, { status: 403 });
+    const upstreamHeaders: Record<string, string> = { Accept: 'image/*,*/*;q=0.8' };
+
+    let target: URL;
+    if (/^ipfs:\/\//i.test(src)) {
+        // `ipfs://<cid>[/path]` is served through our dedicated Pinata gateway; public gateways
+        // 429/403 everyone. The gateway token stays server-side.
+        const resolved = resolveIpfsTarget(src);
+        if (!resolved) {
+            return NextResponse.json({ error: 'IPFS gateway not configured' }, { status: 404 });
+        }
+        target = resolved.url;
+        Object.assign(upstreamHeaders, resolved.headers);
+        allowedHosts.add(target.hostname);
+    } else {
+        try {
+            target = new URL(src);
+        } catch {
+            return NextResponse.json({ error: 'Invalid src URL' }, { status: 400 });
+        }
+
+        if (target.protocol !== 'http:' && target.protocol !== 'https:') {
+            return NextResponse.json({ error: 'Unsupported protocol' }, { status: 400 });
+        }
+
+        if (!isAllowedRemoteHost(target.hostname, allowedHosts)) {
+            return NextResponse.json({ error: 'Host not allowed' }, { status: 403 });
+        }
     }
 
     try {
         const upstream = await fetchWithValidatedRedirects(
             target,
             {
-                headers: {
-                    Accept: 'image/*,*/*;q=0.8',
-                },
+                headers: upstreamHeaders,
                 cache: fresh ? 'no-store' : 'force-cache',
             },
             allowedHosts,

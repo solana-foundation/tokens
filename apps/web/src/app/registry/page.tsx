@@ -72,7 +72,9 @@ function RegistryUnavailable() {
         <section className="relative mx-auto max-w-7xl px-4 md:px-6 pb-12 md:pb-24">
             <div className="bg-white rounded-[24px] md:rounded-[32px] border border-border-light shadow-[0_8px_40px_rgba(0,0,0,0.03)] p-6 md:p-12 text-center">
                 <p className="text-text-low text-[14px] md:text-[16px]">Registry data is temporarily unavailable</p>
-                <p className="text-text-extra-low text-[12px] md:text-[14px] mt-2">Please try again in a few minutes.</p>
+                <p className="text-text-extra-low text-[12px] md:text-[14px] mt-2">
+                    Please try again in a few minutes.
+                </p>
             </div>
         </section>
     );

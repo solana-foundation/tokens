@@ -43,9 +43,9 @@ export interface CuratedMintEntry {
 export interface RegistryRow {
     symbol: string;
     mintAddress: string;
-    /** Display name from the Tokens platform API; null when the mint is unknown to it. */
+    /** Display name from the Tokens platform API, else Birdeye metadata; null when unknown to both. */
     name: string | null;
-    /** Per-mint logo as indexed by the platform (Birdeye / issuer metadata), never a symbol-level override. */
+    /** Per-mint logo: platform index first, then Birdeye token metadata; never a symbol-level override. */
     logoURI: string | null;
     /** True when the Tokens API knows this mint, so `/token/<mint>` resolves. */
     hasTokenPage: boolean;
