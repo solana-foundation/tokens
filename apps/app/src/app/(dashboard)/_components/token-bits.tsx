@@ -16,6 +16,8 @@ export interface V2Advisory {
     reason: string;
     url: string | null;
     since: number;
+    /** `admin` (human) or `webacy_depeg` (automated stablecoin depeg caution); absent on older API builds. */
+    source?: 'admin' | 'webacy_depeg';
 }
 
 export interface V2ListToken {

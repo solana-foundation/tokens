@@ -4,7 +4,14 @@
  * `bun test` can all share them.
  */
 
-import type { AdvisoryStatus, VariantAdvisoryEventRow } from './admin-types';
+import {
+    WEBACY_DEPEG_ACTOR,
+    type AdvisorySource,
+    type AdvisoryStatus,
+    type PegTier,
+    type StructuralGrade,
+    type VariantAdvisoryEventRow,
+} from './admin-types';
 
 export const ADVISORY_STATUSES: readonly AdvisoryStatus[] = ['caution', 'compromised', 'blocked'];
 
@@ -96,11 +103,89 @@ export function describeAdvisoryEvent(event: Pick<VariantAdvisoryEventRow, 'acti
     return event.status ? `Set ${event.status}` : 'Set advisory';
 }
 
-/** Prefer the actor's email; fall back to a shortened Clerk user id. */
+const SYSTEM_ACTOR_PREFIX = 'system:';
+
+const SYSTEM_ACTOR_LABELS: Record<string, string> = {
+    [WEBACY_DEPEG_ACTOR]: 'Webacy depeg monitor (automated)',
+};
+
+/** True for events written by an automated actor rather than an admin. */
+export function isSystemActor(event: Pick<VariantAdvisoryEventRow, 'actorClerkUserId'>): boolean {
+    return event.actorClerkUserId.startsWith(SYSTEM_ACTOR_PREFIX);
+}
+
+/** Prefer the actor's email; name automated actors; fall back to a shortened Clerk user id. */
 export function advisoryActorLabel(event: Pick<VariantAdvisoryEventRow, 'actorClerkUserId' | 'actorEmail'>): string {
-    if (event.actorEmail) return event.actorEmail;
     const id = event.actorClerkUserId;
+    if (isSystemActor(event)) return SYSTEM_ACTOR_LABELS[id] ?? `Automated (${id.slice(SYSTEM_ACTOR_PREFIX.length)})`;
+    if (event.actorEmail) return event.actorEmail;
     return id.length > 14 ? `${id.slice(0, 10)}…${id.slice(-4)}` : id;
+}
+
+/** Short provenance label for badges/tooltips; a missing source is a human write from before 0019. */
+export function advisorySourceLabel(source: AdvisorySource | undefined): string {
+    return source === 'webacy_depeg' ? 'Auto · Webacy depeg monitor' : 'Manual';
+}
+
+export function isSystemManagedAdvisory(advisory: { source?: AdvisorySource } | null | undefined): boolean {
+    return advisory?.source !== undefined && advisory.source !== 'admin';
+}
+
+export const SYSTEM_ADVISORY_EDIT_WARNING =
+    'This advisory is managed automatically by the Webacy depeg monitor. Saving will detach it from automatic management: it will no longer be updated or cleared when the peg recovers.';
+
+export const SYSTEM_ADVISORY_CLEAR_WARNING =
+    'This caution was set automatically by the Webacy depeg monitor. Clearing it suppresses re-flagging until the peg recovers and breaks again.';
+
+export function pegTierLabel(tier: PegTier): string {
+    switch (tier) {
+        case 'ok':
+            return 'On peg';
+        case 'watch':
+            return 'Watch';
+        case 'warning':
+            return 'Warning';
+        case 'critical':
+            return 'Critical';
+        case 'premium':
+            return 'Above peg';
+    }
+}
+
+/** Design-system Badge tone per depeg tier. */
+export function pegTierBadgeVariant(tier: PegTier): 'success' | 'info' | 'warning' | 'danger' {
+    switch (tier) {
+        case 'ok':
+            return 'success';
+        case 'watch':
+        case 'premium':
+            return 'info';
+        case 'warning':
+            return 'warning';
+        case 'critical':
+            return 'danger';
+    }
+}
+
+/** Design-system Badge tone per structural grade band (A good … D/F bad). */
+export function structuralGradeBadgeVariant(grade: StructuralGrade): 'success' | 'info' | 'warning' | 'danger' {
+    switch (grade.charAt(0)) {
+        case 'A':
+            return 'success';
+        case 'B':
+            return 'info';
+        case 'C':
+            return 'warning';
+        default:
+            return 'danger';
+    }
+}
+
+/** Signed deviation for tooltips, e.g. "-2.40%"; null when the monitor has no price. */
+export function formatPegDeviation(deviationPct: number | null): string {
+    if (deviationPct === null || !Number.isFinite(deviationPct)) return 'n/a';
+    const sign = deviationPct > 0 ? '+' : '';
+    return `${sign}${deviationPct.toFixed(2)}%`;
 }
 
 /** Coarse relative time for audit rows; callers should put the absolute time in `title`. */

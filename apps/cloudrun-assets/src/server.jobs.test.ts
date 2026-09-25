@@ -3,6 +3,7 @@ import { describe, expect, it } from 'bun:test';
 import type { AssetsRepo } from './handlers/assets';
 import type { AssetDeletionTombstonesRepo } from './handlers/assetDeletionTombstones';
 import type { AssetAdvisoriesRepo } from './handlers/assetAdvisoriesReads';
+import type { StablecoinHealthReadsRepo } from './handlers/stablecoinHealthReads';
 import type { SanctumLstsRepo } from './handlers/sanctumLsts';
 import type { AssetMarketsRepo } from './handlers/assetMarkets';
 import type { VariantMarketsRepo } from './handlers/variantMarkets';
@@ -31,6 +32,9 @@ const noopDeletionTombstonesRepo: AssetDeletionTombstonesRepo = {
 };
 const noopAssetAdvisoriesRepo: AssetAdvisoriesRepo = {
     listAll: async () => [],
+};
+const noopStablecoinHealthReadsRepo: StablecoinHealthReadsRepo = {
+    findLatestByMints: async () => [],
 };
 const noopSanctumLstsRepo: SanctumLstsRepo = {
     async listActive() {
@@ -305,6 +309,7 @@ const baseDeps = {
     assetsApiRepo: noopAssetsApiRepo,
     deletionTombstonesRepo: noopDeletionTombstonesRepo,
     assetAdvisoriesRepo: noopAssetAdvisoriesRepo,
+    stablecoinHealthReadsRepo: noopStablecoinHealthReadsRepo,
     sanctumLstsRepo: noopSanctumLstsRepo,
     assetMarketsRepo: noopAssetMarketsRepo,
     variantMarketsRepo: noopVariantMarketsRepo,

@@ -7,10 +7,17 @@ import {
     advisoryActorLabel,
     advisoryBadgeVariant,
     advisorySetToastMessage,
+    advisorySourceLabel,
     advisoryStatusLabel,
     describeAdvisoryEvent,
+    formatPegDeviation,
     formatRelativeTime,
     isAdvisoryStatus,
+    isSystemActor,
+    isSystemManagedAdvisory,
+    pegTierBadgeVariant,
+    pegTierLabel,
+    structuralGradeBadgeVariant,
     validateAdvisoryReason,
     validateAdvisoryUrl,
 } from './advisory-labels';
@@ -101,6 +108,50 @@ describe('event and toast copy', () => {
             'user_2abcd…stuv',
         );
         expect(advisoryActorLabel({ actorClerkUserId: 'user_short', actorEmail: null })).toBe('user_short');
+    });
+
+    it('names automated actors instead of truncating the sentinel', () => {
+        expect(advisoryActorLabel({ actorClerkUserId: 'system:webacy_depeg', actorEmail: null })).toBe(
+            'Webacy depeg monitor (automated)',
+        );
+        expect(advisoryActorLabel({ actorClerkUserId: 'system:other_bot', actorEmail: null })).toBe(
+            'Automated (other_bot)',
+        );
+        expect(isSystemActor({ actorClerkUserId: 'system:webacy_depeg' })).toBe(true);
+        expect(isSystemActor({ actorClerkUserId: 'user_2abc' })).toBe(false);
+    });
+});
+
+describe('advisory provenance and stablecoin health labels', () => {
+    it('labels sources and treats a missing source as manual', () => {
+        expect(advisorySourceLabel(undefined)).toBe('Manual');
+        expect(advisorySourceLabel('admin')).toBe('Manual');
+        expect(advisorySourceLabel('webacy_depeg')).toBe('Auto · Webacy depeg monitor');
+        expect(isSystemManagedAdvisory({ source: 'webacy_depeg' })).toBe(true);
+        expect(isSystemManagedAdvisory({ source: 'admin' })).toBe(false);
+        expect(isSystemManagedAdvisory({})).toBe(false);
+        expect(isSystemManagedAdvisory(null)).toBe(false);
+    });
+
+    it('maps peg tiers and grades to badge tones', () => {
+        expect(pegTierBadgeVariant('ok')).toBe('success');
+        expect(pegTierBadgeVariant('watch')).toBe('info');
+        expect(pegTierBadgeVariant('premium')).toBe('info');
+        expect(pegTierBadgeVariant('warning')).toBe('warning');
+        expect(pegTierBadgeVariant('critical')).toBe('danger');
+        expect(pegTierLabel('premium')).toBe('Above peg');
+        expect(structuralGradeBadgeVariant('A-')).toBe('success');
+        expect(structuralGradeBadgeVariant('B+')).toBe('info');
+        expect(structuralGradeBadgeVariant('C')).toBe('warning');
+        expect(structuralGradeBadgeVariant('D+')).toBe('danger');
+        expect(structuralGradeBadgeVariant('F')).toBe('danger');
+    });
+
+    it('formats signed deviation', () => {
+        expect(formatPegDeviation(-2.4)).toBe('-2.40%');
+        expect(formatPegDeviation(0.351)).toBe('+0.35%');
+        expect(formatPegDeviation(0)).toBe('0.00%');
+        expect(formatPegDeviation(null)).toBe('n/a');
     });
 });
 

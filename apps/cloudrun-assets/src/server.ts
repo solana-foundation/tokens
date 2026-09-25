@@ -23,6 +23,7 @@ import { assetsApiSearchPrefetchForApi } from './handlers/assetsApiSearchPrefetc
 import { setAssetDescriptionByAssetId } from './handlers/assetsMutations';
 import { listDeletedRefs, type AssetDeletionTombstonesRepo } from './handlers/assetDeletionTombstones';
 import { listAdvisories, type AssetAdvisoriesRepo } from './handlers/assetAdvisoriesReads';
+import { stablecoinHealthGetByMints, type StablecoinHealthReadsRepo } from './handlers/stablecoinHealthReads';
 import {
     listActive as sanctumListActive,
     resolveRef as sanctumResolveRef,
@@ -185,6 +186,7 @@ export interface ServerDeps {
     assetsApiRepo: AssetsApiRepo;
     deletionTombstonesRepo: AssetDeletionTombstonesRepo;
     assetAdvisoriesRepo: AssetAdvisoriesRepo;
+    stablecoinHealthReadsRepo: StablecoinHealthReadsRepo;
     sanctumLstsRepo: SanctumLstsRepo;
     assetMarketsRepo: AssetMarketsRepo;
     variantMarketsRepo: VariantMarketsRepo;
@@ -263,6 +265,7 @@ const ATOMIC_RETRY_QUERY_NAMES = new Set([
     'listByCategory',
     'listDeletedRefs',
     'assetAdvisoriesList',
+    'stablecoinHealthGetByMints',
     'sanctumListActive',
     'assetMarketsGetLatestByAssetId',
     'assetMarketsGetLatestByAssetIds',
@@ -439,6 +442,7 @@ export function createApp(deps: ServerDeps) {
         );
     queries.listDeletedRefs = args => listDeletedRefs(deps.deletionTombstonesRepo, args);
     queries.assetAdvisoriesList = () => listAdvisories(deps.assetAdvisoriesRepo);
+    queries.stablecoinHealthGetByMints = args => stablecoinHealthGetByMints(deps.stablecoinHealthReadsRepo, args);
     queries.sanctumListActive = args => sanctumListActive(deps.sanctumLstsRepo, args);
     queries.sanctumResolveRef = args => sanctumResolveRef(deps.sanctumLstsRepo, args);
     queries.assetMarketsGetLatestByAssetId = args => assetMarketsGetLatestByAssetId(deps.assetMarketsRepo, args);

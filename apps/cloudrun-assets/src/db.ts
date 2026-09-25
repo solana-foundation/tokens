@@ -27,6 +27,7 @@ import type { ActiveStockMapping, ClickhouseRepo } from './handlers/crons.clickh
 import type { MiscJobsRepo } from './handlers/crons.misc';
 import type { AssetDeletionTombstonesRepo } from './handlers/assetDeletionTombstones';
 import type { AssetAdvisoriesRepo, AssetAdvisoryRow } from './handlers/assetAdvisoriesReads';
+import type { StablecoinHealthReadsRepo, StablecoinHealthRow } from './handlers/stablecoinHealthReads';
 import type { SanctumLstRow, SanctumLstsRepo } from './handlers/sanctumLsts';
 import type { AssetMarketRow, AssetMarketsRepo } from './handlers/assetMarkets';
 import type { VariantMarketRow, VariantMarketsRepo } from './handlers/variantMarkets';
@@ -2479,9 +2480,41 @@ export function makePostgresAssetAdvisoriesRepo(sql: Sql): AssetAdvisoriesRepo {
     return {
         async listAll() {
             const rows = await sql<AssetAdvisoryRow[]>`
-                SELECT mint, status, reason, url, set_at, updated_at
+                SELECT mint, status, reason, url, set_at, updated_at, source
                 FROM asset_variant_advisories
                 ORDER BY mint
+            `;
+            return rows;
+        },
+    };
+}
+
+export function makePostgresStablecoinHealthReadsRepo(sql: Sql): StablecoinHealthReadsRepo {
+    return {
+        async findLatestByMints(mints) {
+            if (mints.length === 0) return [];
+            // Webacy's depeg/structural tables key Solana rows by chain = 'solana'
+            // (unlike the older webacy_*_latest caches, which use 'sol').
+            const rows = await sql<StablecoinHealthRow[]>`
+                SELECT v.mint,
+                       d.ok               AS depeg_ok,
+                       d.tier             AS depeg_tier,
+                       d.overall_risk     AS depeg_overall_risk,
+                       d.deviation_pct    AS depeg_deviation_pct,
+                       d.price_usd        AS depeg_price_usd,
+                       d.peg_usd          AS depeg_peg_usd,
+                       d.tier_since_at    AS depeg_tier_since_at,
+                       d.last_fetched_at  AS depeg_last_fetched_at,
+                       d.error_message    AS depeg_error_message,
+                       s.ok               AS sh_ok,
+                       s.composite_grade  AS sh_composite_grade,
+                       s.composite_score  AS sh_composite_score,
+                       s.category_scores  AS sh_category_scores,
+                       s.last_fetched_at  AS sh_last_fetched_at
+                FROM unnest(${sql.array([...mints])}::text[]) AS v(mint)
+                LEFT JOIN webacy_depeg_latest d ON d.chain = 'solana' AND d.address = v.mint
+                LEFT JOIN webacy_structural_health_latest s ON s.chain = 'solana' AND s.address = v.mint
+                WHERE d.address IS NOT NULL OR s.address IS NOT NULL
             `;
             return rows;
         },
