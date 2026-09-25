@@ -55,6 +55,8 @@ export interface RegistryRow {
     rwaValueUsd: number | null;
     alliumValueUsd: number | null;
     marketCapUsd: number | null;
+    /** Ranking value: Allium > RWA.xyz > CoinGecko mcap (data-team ordering). */
+    valueUsd: number | null;
 }
 
 export interface RegistryData {

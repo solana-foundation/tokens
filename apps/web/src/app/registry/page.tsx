@@ -43,7 +43,7 @@ export default function RegistryPage() {
 
 /**
  * `connection()` keeps the registry fetch out of the build-time prerender so
- * the static shell never depends on ASSET_REGISTRY_API_URL or the upstream
+ * the static shell never depends on SOLANA_DATA_API_KEY or the upstream
  * being reachable; the hourly `use cache` inside fetchRegistry still applies
  * across requests.
  */

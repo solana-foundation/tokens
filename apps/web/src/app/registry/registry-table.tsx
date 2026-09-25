@@ -222,7 +222,7 @@ export function RegistryTable({ data }: { data: RegistryData }) {
     const [solanaClassFilter, setSolanaClassFilter] = useState('all');
     const [rwaClassFilter, setRwaClassFilter] = useState('all');
     const [alliumClassFilter, setAlliumClassFilter] = useState('all');
-    const [sorting, setSorting] = useState<SortingState>([{ id: 'marketCapUsd', desc: true }]);
+    const [sorting, setSorting] = useState<SortingState>([]);
     const [pagination, setPagination] = useState<PaginationState>({ pageIndex: 0, pageSize: 50 });
 
     const solanaClasses = useMemo(() => distinctSorted(data.rows.map(row => row.solanaClass)), [data.rows]);

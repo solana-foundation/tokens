@@ -13,6 +13,7 @@ import type {
     RegistryRow,
 } from './types';
 
+const DEFAULT_REGISTRY_URL = 'https://data.solana.com/v1/assets';
 const FETCH_TIMEOUT_MS = 15_000;
 // Server-side cap on /api/v1/assets/market-snapshots.
 const SNAPSHOT_BATCH_SIZE = 250;
@@ -26,13 +27,14 @@ export async function fetchRegistry(): Promise<RegistryData> {
     'use cache';
     cacheLife('hours');
 
-    const url = process.env.ASSET_REGISTRY_API_URL;
-    if (!url) {
-        throw new Error('ASSET_REGISTRY_API_URL is not configured');
+    const apiKey = process.env.SOLANA_DATA_API_KEY?.trim();
+    if (!apiKey) {
+        throw new Error('SOLANA_DATA_API_KEY is not configured');
     }
+    const url = process.env.ASSET_REGISTRY_API_URL?.trim() || DEFAULT_REGISTRY_URL;
 
     const response = await fetch(url, {
-        headers: { accept: 'application/json' },
+        headers: { accept: 'application/json', 'x-api-key': apiKey },
         signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
     });
     if (!response.ok) {
@@ -50,11 +52,28 @@ export async function fetchRegistry(): Promise<RegistryData> {
         fetchCuratedMints(),
     ]);
 
+    const normalized = rows.map(row =>
+        normalizeRow(row, snapshots.get(row.mint_address), curated.get(row.mint_address)),
+    );
+
     return {
         generatedAt: payload.data.generatedAt,
         truncated: payload.data.truncated === true,
-        rows: rows.map(row => normalizeRow(row, snapshots.get(row.mint_address), curated.get(row.mint_address))),
+        rows: sortByValueDesc(normalized),
     };
+}
+
+/**
+ * Canonical ordering agreed with the data team: coalesced value descending,
+ * rows without any value last. `Array.prototype.sort` is stable, so ties keep
+ * the upstream order.
+ */
+function sortByValueDesc(rows: RegistryRow[]): RegistryRow[] {
+    return [...rows].sort((a, b) => {
+        if (a.valueUsd == null) return b.valueUsd == null ? 0 : 1;
+        if (b.valueUsd == null) return -1;
+        return b.valueUsd - a.valueUsd;
+    });
 }
 
 /**
@@ -111,6 +130,9 @@ function normalizeRow(
 ): RegistryRow {
     const token = snapshot?.token ?? null;
     const variant = curated?.primaryVariant ?? null;
+    const rwaValueUsd = parseUsd(row.rwa_asset_value_usd);
+    const alliumValueUsd = parseUsd(row.allium_asset_value_usd);
+    const marketCapUsd = parseUsd(row.coingecko_market_cap);
     return {
         symbol: row.token,
         mintAddress: row.mint_address,
@@ -120,9 +142,10 @@ function normalizeRow(
         solanaClass: row.solana_asset_class,
         rwaClass: row.rwa_asset_class,
         alliumClass: row.allium_asset_class,
-        rwaValueUsd: parseUsd(row.rwa_asset_value_usd),
-        alliumValueUsd: parseUsd(row.allium_asset_value_usd),
-        marketCapUsd: parseUsd(row.coingecko_market_cap),
+        rwaValueUsd,
+        alliumValueUsd,
+        marketCapUsd,
+        valueUsd: alliumValueUsd ?? rwaValueUsd ?? marketCapUsd,
     };
 }
 
