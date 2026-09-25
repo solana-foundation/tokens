@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from 'react';
 
 import { Button } from '@tokens/ui/button';
+import { cn } from '@tokens/ui/cn';
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from '@tokens/ui/command';
 import { Input } from '@tokens/ui/input';
 import {
@@ -24,11 +25,19 @@ export type CategoryOptions = Readonly<Record<CategoryFieldId, readonly string[]
 
 type Stage = 'field' | 'op' | 'value';
 
+// Styling ported 1:1 from the svela screener (screener-filter-editor.tsx).
+/** Visible hover/selection against the white popover surface. No transitions — selection needs to snap. */
 const ITEM_CLASS =
-    'cursor-pointer rounded-lg px-2 py-1.5 text-[13px] text-text-high hover:bg-gray-100 aria-selected:bg-gray-100 aria-selected:text-text-extra-high';
-const INPUT_CLASS = 'h-8 rounded-lg border-border-medium bg-white px-2 font-sans text-[13px] shadow-none';
-const CRUMB_CLASS =
-    'rounded-md bg-gray-100 px-1.5 py-0.5 text-[12px] font-medium text-text-high hover:bg-gray-200 transition-colors';
+    'cursor-pointer rounded-lg text-xs hover:bg-gray-100 hover:text-gray-900 aria-selected:bg-gray-100 aria-selected:text-gray-900';
+/** Our shared CommandInput adds a search icon + bordered wrapper; the screener palette is a bare input. */
+const COMMAND_CLASS =
+    'rounded-lg bg-transparent [&_[cmdk-input-wrapper]]:border-0 [&_[cmdk-input-wrapper]]:px-0 [&_[cmdk-input-wrapper]]:py-0 [&_[cmdk-input-wrapper]_svg]:hidden';
+const COMMAND_INPUT_CLASS = 'h-8 pl-2 text-xs';
+const COMMAND_LIST_CLASS = 'screener-filter-scroll max-h-56 scrollbar-hide p-0';
+const COMMAND_EMPTY_CLASS = 'py-4 text-xs text-muted-foreground';
+const INPUT_CLASS = 'h-8 rounded-lg text-xs';
+const CRUMB_CLASS = 'rounded-md bg-primary/10 px-1.5 py-0.5 text-xs font-medium text-primary/80 hover:bg-primary/15';
+const REMOVE_BUTTON_CLASS = 'h-7 px-2 text-xs text-rose-400 hover:text-rose-300';
 
 const FIELD_GROUPS = [
     { label: 'Classification', fields: FILTER_FIELDS.filter(field => field.kind === 'category') },
@@ -104,7 +113,7 @@ export function RegistryFilterEditor({
             : [];
 
     return (
-        <div className="flex w-[240px] flex-col gap-2">
+        <div className="flex w-[200px] flex-col gap-2">
             {field ? (
                 <div className="flex flex-wrap items-center gap-1">
                     <button type="button" onClick={() => goTo('field')} className={CRUMB_CLASS}>
@@ -114,7 +123,7 @@ export function RegistryFilterEditor({
                         <button
                             type="button"
                             onClick={() => (field.kind === 'usd' ? goTo('op') : undefined)}
-                            className={`${CRUMB_CLASS} tabular-nums`}
+                            className={cn(CRUMB_CLASS, 'tabular-nums')}
                         >
                             {opSymbol(op)}
                         </button>
@@ -123,18 +132,16 @@ export function RegistryFilterEditor({
             ) : null}
 
             {stage === 'field' ? (
-                <Command className="rounded-lg bg-transparent" loop>
+                <Command className={COMMAND_CLASS} loop>
                     <CommandInput
                         autoFocus
                         value={search}
                         onValueChange={setSearch}
                         placeholder="Type a filter…"
-                        className="h-8 text-[13px]"
+                        className={COMMAND_INPUT_CLASS}
                     />
-                    <CommandList className="max-h-64 p-1">
-                        <CommandEmpty className="py-4 text-center text-[13px] text-text-low">
-                            No matching filter.
-                        </CommandEmpty>
+                    <CommandList className={COMMAND_LIST_CLASS}>
+                        <CommandEmpty className={COMMAND_EMPTY_CLASS}>No matching filter.</CommandEmpty>
                         {FIELD_GROUPS.map(group => (
                             <CommandGroup key={group.label} heading={group.label}>
                                 {group.fields.map(candidate => (
@@ -154,13 +161,13 @@ export function RegistryFilterEditor({
             ) : null}
 
             {stage === 'op' && field?.kind === 'usd' ? (
-                <Command className="rounded-lg bg-transparent" loop>
+                <Command className={COMMAND_CLASS} loop>
                     <CommandInput
                         autoFocus
                         value={search}
                         onValueChange={setSearch}
                         placeholder="Condition… (try > < =)"
-                        className="h-8 text-[13px]"
+                        className={COMMAND_INPUT_CLASS}
                         onKeyDown={event => {
                             if (event.key === 'Backspace' && search === '') {
                                 event.preventDefault();
@@ -175,10 +182,8 @@ export function RegistryFilterEditor({
                             }
                         }}
                     />
-                    <CommandList className="max-h-64 p-1">
-                        <CommandEmpty className="py-4 text-center text-[13px] text-text-low">
-                            No matching condition.
-                        </CommandEmpty>
+                    <CommandList className={COMMAND_LIST_CLASS}>
+                        <CommandEmpty className={COMMAND_EMPTY_CLASS}>No matching condition.</CommandEmpty>
                         <CommandGroup heading="Condition">
                             {USD_OPS.map(candidate => (
                                 <CommandItem
@@ -190,7 +195,7 @@ export function RegistryFilterEditor({
                                     }}
                                     className={ITEM_CLASS}
                                 >
-                                    <span className="w-5 tabular-nums text-text-low">{candidate.symbol}</span>
+                                    <span className="w-5 tabular-nums text-muted-foreground">{candidate.symbol}</span>
                                     {candidate.label}
                                 </CommandItem>
                             ))}
@@ -200,13 +205,13 @@ export function RegistryFilterEditor({
             ) : null}
 
             {stage === 'value' && field?.kind === 'category' ? (
-                <Command className="rounded-lg bg-transparent" loop>
+                <Command className={COMMAND_CLASS} loop>
                     <CommandInput
                         autoFocus
                         value={search}
                         onValueChange={setSearch}
                         placeholder={`${field.label}…`}
-                        className="h-8 text-[13px]"
+                        className={COMMAND_INPUT_CLASS}
                         onKeyDown={event => {
                             if (event.key === 'Backspace' && search === '') {
                                 event.preventDefault();
@@ -214,10 +219,8 @@ export function RegistryFilterEditor({
                             }
                         }}
                     />
-                    <CommandList className="max-h-64 p-1">
-                        <CommandEmpty className="py-4 text-center text-[13px] text-text-low">
-                            No matching value.
-                        </CommandEmpty>
+                    <CommandList className={COMMAND_LIST_CLASS}>
+                        <CommandEmpty className={COMMAND_EMPTY_CLASS}>No matching value.</CommandEmpty>
                         <CommandGroup
                             heading={
                                 <span className="flex items-center gap-2">
@@ -228,8 +231,8 @@ export function RegistryFilterEditor({
                                             onClick={() => setOp(candidate.value)}
                                             className={
                                                 op === candidate.value
-                                                    ? 'rounded-md bg-gray-1400 px-1.5 py-0.5 text-[11px] text-white'
-                                                    : 'rounded-md px-1.5 py-0.5 text-[11px] text-text-low hover:text-text-high'
+                                                    ? 'rounded-md bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium text-primary/80'
+                                                    : 'rounded-md px-1.5 py-0.5 text-[10px] text-muted-foreground hover:text-primary/80'
                                             }
                                         >
                                             {candidate.label}
@@ -250,14 +253,14 @@ export function RegistryFilterEditor({
                             ))}
                         </CommandGroup>
                     </CommandList>
-                    {error ? <p className="px-1 text-[12px] text-rose-500">{error}</p> : null}
+                    {error ? <p className="px-1 text-xs text-rose-400">{error}</p> : null}
                     {onRemove ? (
                         <div className="flex justify-end px-1 pt-1">
                             <Button
                                 type="button"
                                 variant="ghost"
                                 size="sm"
-                                className="h-7 px-2 text-[12px] text-rose-500 hover:text-rose-600"
+                                className={REMOVE_BUTTON_CLASS}
                                 onClick={onRemove}
                             >
                                 Remove
@@ -289,27 +292,24 @@ export function RegistryFilterEditor({
                         className={INPUT_CLASS}
                         aria-label="Value"
                     />
-                    {error ? <p className="text-[12px] text-rose-500">{error}</p> : null}
+                    {error ? <p className="text-xs text-rose-400">{error}</p> : null}
                     <div className="flex items-center justify-between gap-2 pt-1">
                         {onRemove ? (
                             <Button
                                 type="button"
                                 variant="ghost"
                                 size="sm"
-                                className="h-7 px-2 text-[12px] text-rose-500 hover:text-rose-600"
+                                className={REMOVE_BUTTON_CLASS}
                                 onClick={onRemove}
                             >
                                 Remove
                             </Button>
                         ) : (
-                            <span className="text-[11px] text-text-low">Enter to apply · Backspace to go back</span>
+                            <span className="text-[10px] text-muted-foreground">
+                                Enter to apply · Backspace to go back
+                            </span>
                         )}
-                        <Button
-                            type="button"
-                            size="sm"
-                            className="h-7 rounded-full px-3 text-[12px]"
-                            onClick={() => apply(rawValue)}
-                        >
+                        <Button type="button" size="sm" className="h-7 px-3 text-xs" onClick={() => apply(rawValue)}>
                             Apply
                         </Button>
                     </div>

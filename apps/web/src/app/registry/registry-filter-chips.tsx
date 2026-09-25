@@ -3,22 +3,25 @@
 import { useEffect, useState, type ReactNode } from 'react';
 import { Plus, X } from 'lucide-react';
 
+import { Badge } from '@tokens/ui/badge';
+import { Button } from '@tokens/ui/button';
 import { cn } from '@tokens/ui/cn';
 import { Popover, PopoverContent, PopoverTrigger } from '@tokens/ui/popover';
 import { RegistryFilterEditor, type CategoryOptions } from './registry-filter-editor';
 import { isTypingContext } from './registry-shortcuts';
-import { SORT_COLUMN_LABELS, formatFilterValue, getFilterField, opSymbol, type RegistryFilter } from './lib/filters';
+import { SORT_COLUMN_LABELS, formatFilter, getFilterField, type RegistryFilter } from './lib/filters';
 import type { RegistryUrlState } from './use-registry-url-state';
 
+// Chip + popover styling ported 1:1 from the svela screener (screener-filter-chips.tsx).
 const CHIP_CLASS =
-    'group inline-flex h-9 shrink-0 items-center gap-1.5 rounded-full border border-border-medium bg-white pl-3 pr-1.5 text-[13px] text-text-extra-high shadow-none transition-colors hover:bg-gray-50/60';
-const POPOVER_CLASS = 'w-auto rounded-2xl border-border-medium bg-white p-2 shadow-[0_8px_40px_rgba(0,0,0,0.08)]';
+    'group h-6 gap-1 rounded-md pr-1 py-0 bg-primary/5 text-primary/50 hover:text-primary border-border border-dashed flex-shrink-0';
+const POPOVER_CLASS = 'w-auto rounded-xl bg-white p-3';
 
 export function Kbd({ children, className }: { children: ReactNode; className?: string }) {
     return (
         <kbd
             className={cn(
-                'inline-flex h-4 min-w-4 items-center justify-center rounded border border-border-medium bg-gray-50 px-1 font-sans text-[10px] font-medium text-text-low',
+                'inline-flex size-5 items-center justify-center gap-1 rounded-sm border border-border bg-primary/5 p-0 font-sans text-[10px] font-bold text-primary/50',
                 className,
             )}
         >
@@ -27,31 +30,26 @@ export function Kbd({ children, className }: { children: ReactNode; className?: 
     );
 }
 
-function RemoveButton({ label, onClick }: { label: string; onClick: () => void }) {
-    return (
-        <button
-            type="button"
-            aria-label={label}
-            className="ml-0.5 inline-flex size-5 items-center justify-center rounded-full text-text-low transition-colors hover:bg-gray-1400 hover:text-white"
-            onClick={event => {
-                event.stopPropagation();
-                onClick();
-            }}
-        >
-            <X className="h-3 w-3" />
-        </button>
-    );
-}
-
 /** A read-only chip: label · value · ×. */
 export function ChipShell({ label, value, onRemove }: { label: string; value: string; onRemove: () => void }) {
     return (
-        <span className={CHIP_CLASS}>
-            <span className="text-text-low">{label}</span>
-            <span className="h-4 w-px bg-border-medium" />
-            <span className="tabular-nums">{value}</span>
-            <RemoveButton label={`Remove ${label} filter`} onClick={onRemove} />
-        </span>
+        <Badge variant="secondary" className={cn(CHIP_CLASS, 'cursor-crosshair')}>
+            <span className="text-xs font-medium opacity-50">{label}</span>
+            <div className="mx-1 h-[24px] w-[1px] bg-border" />
+            <span className="text-xs tabular-nums">{value}</span>
+            <Button
+                variant="ghost"
+                size="sm"
+                className="ml-1 h-4 w-4 rounded-md p-0 group-hover:bg-blue-500 group-hover:text-white"
+                aria-label={`Remove ${label} filter`}
+                onClick={event => {
+                    event.stopPropagation();
+                    onRemove();
+                }}
+            >
+                <X className="h-3 w-3" />
+            </Button>
+        </Badge>
     );
 }
 
@@ -73,22 +71,32 @@ function FilterChip({
 
     return (
         <Popover open={open} onOpenChange={setOpen}>
-            {/* The chip wrapper is non-interactive; the edit trigger and remove control are sibling buttons. */}
-            <span className={cn(CHIP_CLASS, 'cursor-pointer')}>
+            {/* The Badge wrapper is non-interactive; the edit trigger and remove control are sibling <button>s. */}
+            <Badge variant="secondary" className={cn(CHIP_CLASS, 'cursor-pointer')}>
                 <PopoverTrigger asChild>
-                    <button
-                        type="button"
-                        className="flex min-w-0 items-center gap-1.5"
-                        aria-label={`Edit ${label} filter`}
-                    >
-                        <span className="text-text-low">{label}</span>
-                        <span className="text-text-low tabular-nums">{opSymbol(filter.op)}</span>
-                        <span className="tabular-nums">{formatFilterValue(filter)}</span>
+                    <button type="button" className="flex min-w-0 items-center" aria-label={`Edit ${label} filter`}>
+                        <span className="text-xs tabular-nums">{formatFilter(filter)}</span>
                     </button>
                 </PopoverTrigger>
-                <RemoveButton label={`Remove ${label} filter`} onClick={() => onRemove(index)} />
-            </span>
-            <PopoverContent align="start" sideOffset={-36} alignOffset={-4} className={POPOVER_CLASS}>
+                <button
+                    type="button"
+                    aria-label="Remove filter"
+                    className="ml-1 inline-flex h-4 w-4 items-center justify-center rounded-md p-0 group-hover:bg-blue-500 group-hover:text-white"
+                    onClick={event => {
+                        event.stopPropagation();
+                        onRemove(index);
+                    }}
+                >
+                    <X className="h-3 w-3" />
+                </button>
+            </Badge>
+            <PopoverContent
+                align="start"
+                // Cover the chip instead of dropping below it (see AddFilterChip).
+                sideOffset={-26}
+                alignOffset={-4}
+                className={POPOVER_CLASS}
+            >
                 {/* Remount the editor per open so stale stage/value state never leaks between edits. */}
                 {open ? (
                     <RegistryFilterEditor
@@ -109,6 +117,7 @@ function FilterChip({
     );
 }
 
+/** The dashed "Add filter" chip. */
 function AddFilterChip({ options, onAdd }: { options: CategoryOptions; onAdd: (filter: RegistryFilter) => void }) {
     const [open, setOpen] = useState(false);
 
@@ -126,17 +135,24 @@ function AddFilterChip({ options, onAdd }: { options: CategoryOptions; onAdd: (f
     return (
         <Popover open={open} onOpenChange={setOpen}>
             <PopoverTrigger asChild>
-                <button
+                <Button
                     type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="h-6 gap-1 rounded-md border border-dashed border-border px-2 pr-1 text-xs text-primary/50 hover:text-primary hover:ring-2 hover:ring-primary/10"
                     aria-label="Add filter"
-                    className="inline-flex h-9 shrink-0 items-center gap-1.5 rounded-full border border-dashed border-border-medium bg-white pl-3 pr-2 text-[13px] text-text-low transition-colors hover:border-gray-1400/40 hover:text-text-extra-high"
                 >
-                    <Plus className="h-3.5 w-3.5" />
+                    <Plus className="h-3 w-3" />
                     <span>Add filter</span>
-                    <Kbd className="ml-0.5">F</Kbd>
-                </button>
+                    <Kbd className="ml-0.5 h-4 px-1 text-[10px]">F</Kbd>
+                </Button>
             </PopoverTrigger>
-            <PopoverContent align="start" sideOffset={-36} alignOffset={-4} className={POPOVER_CLASS}>
+            <PopoverContent
+                align="start"
+                sideOffset={-40}
+                alignOffset={-0}
+                className="w-auto rounded-xl bg-white px-1.5 py-1.5"
+            >
                 {open ? (
                     <RegistryFilterEditor
                         filter={null}
