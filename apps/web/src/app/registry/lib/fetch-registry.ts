@@ -80,24 +80,14 @@ export async function fetchRegistry(): Promise<RegistryData> {
         }),
     );
 
+    // Row order is the data team's: their query sorts by coalesce(Allium value,
+    // RWA.xyz value) descending with empties last, then CoinGecko market cap.
+    // We keep it as delivered rather than re-deriving it here.
     return {
         generatedAt: payload.data.generatedAt,
         truncated: payload.data.truncated === true,
-        rows: sortByValueDesc(normalized),
+        rows: normalized,
     };
-}
-
-/**
- * Canonical ordering agreed with the data team: coalesced value descending,
- * rows without any value last. `Array.prototype.sort` is stable, so ties keep
- * the upstream order.
- */
-function sortByValueDesc(rows: RegistryRow[]): RegistryRow[] {
-    return [...rows].sort((a, b) => {
-        if (a.valueUsd == null) return b.valueUsd == null ? 0 : 1;
-        if (b.valueUsd == null) return -1;
-        return b.valueUsd - a.valueUsd;
-    });
 }
 
 /**
