@@ -136,11 +136,17 @@ describe('resolveXCashtagSymbols provider limits', () => {
         return `Fake${String(index).padStart(3, '0')}`.padEnd(44, 'x');
     }
 
-    it('splits Birdeye lookups into batches of 50', async () => {
+    it('splits Birdeye lookups into batches of 50 with at most two in flight', async () => {
         process.env.BIRDEYE_API_KEY = 'birdeye-key';
         const mints = Array.from({ length: 120 }, (_, index) => fakeMint(index));
         const batchSizes: number[] = [];
+        let inFlight = 0;
+        let maxInFlight = 0;
         globalThis.fetch = (async (input: string | URL | Request) => {
+            inFlight += 1;
+            maxInFlight = Math.max(maxInFlight, inFlight);
+            await new Promise(resolve => setTimeout(resolve, 10));
+            inFlight -= 1;
             const url = new URL(String(input));
             const requested = (url.searchParams.get('list_address') ?? '').split(',');
             batchSizes.push(requested.length);
@@ -155,6 +161,7 @@ describe('resolveXCashtagSymbols provider limits', () => {
         );
 
         expect(batchSizes.sort((a, b) => a - b)).toEqual([20, 50, 50]);
+        expect(maxInFlight).toBe(2);
         expect(symbols.size).toBe(120);
         expect(symbols.get(fakeMint(119))).toBe('S119');
     });

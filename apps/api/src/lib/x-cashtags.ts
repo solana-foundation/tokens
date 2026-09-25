@@ -23,6 +23,8 @@ const SOLANA_CHAIN = 'solana';
 const BIRDEYE_METADATA_BATCH_SIZE = 50;
 // Cashtag enrichment is cosmetic: never let a slow provider hold up the feed itself.
 const PROVIDER_LOOKUP_TIMEOUT = '2 seconds';
+// Keep the provider budget per feed request small; a feed rarely tags more than a handful of mints.
+const PROVIDER_LOOKUP_CONCURRENCY = 2;
 
 // `<chain>:<address>` where address is a base58 Solana mint or a 0x EVM address.
 // The lookarounds keep this from matching inside URLs, handles, or `$` cashtags.
@@ -109,7 +111,7 @@ function lookupProviderSymbols(mints: readonly string[]): Effect.Effect<Provider
                 tapErrorAndDefault('x.cashtags.birdeye', [] as ProviderTokenMetadata[], { mints: batch }),
             ),
         ),
-        { concurrency: 'unbounded' },
+        { concurrency: PROVIDER_LOOKUP_CONCURRENCY },
     ).pipe(Effect.map(batches => batches.flat()));
 }
 
