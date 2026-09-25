@@ -2,7 +2,7 @@ import { Effect } from 'effect';
 
 import { getVariantByMint } from '@tokens/asset-registry';
 import { tapErrorAndDefault } from '@tokens/effect';
-import { getProviderTokenMetadataByMints } from './birdeye-search';
+import { getProviderTokenMetadataByMints, type ProviderTokenMetadata } from './birdeye-search';
 
 /**
  * X's token-tagging feature shows `$SOL` on x.com, but the API `text` (and
@@ -19,6 +19,10 @@ export interface XTokenTag {
 }
 
 const SOLANA_CHAIN = 'solana';
+// Birdeye caps its multi-mint metadata endpoint at 50 addresses per call.
+const BIRDEYE_METADATA_BATCH_SIZE = 50;
+// Cashtag enrichment is cosmetic: never let a slow provider hold up the feed itself.
+const PROVIDER_LOOKUP_TIMEOUT = '2 seconds';
 
 // `<chain>:<address>` where address is a base58 Solana mint or a 0x EVM address.
 // The lookarounds keep this from matching inside URLs, handles, or `$` cashtags.
@@ -79,9 +83,7 @@ export function resolveXCashtagSymbols(tags: readonly XTokenTag[]): Effect.Effec
         }
 
         if (unresolvedSolanaMints.size > 0) {
-            const metadata = yield* getProviderTokenMetadataByMints([...unresolvedSolanaMints]).pipe(
-                tapErrorAndDefault('x.cashtags.birdeye', [], { mints: [...unresolvedSolanaMints] }),
-            );
+            const metadata = yield* lookupProviderSymbols([...unresolvedSolanaMints]);
             for (const item of metadata) {
                 const symbol = normalizeSymbol(item.symbol);
                 if (symbol && unresolvedSolanaMints.has(item.address)) symbolByAddress.set(item.address, symbol);
@@ -90,6 +92,25 @@ export function resolveXCashtagSymbols(tags: readonly XTokenTag[]): Effect.Effec
 
         return symbolByAddress;
     });
+}
+
+function chunk<T>(items: readonly T[], size: number): T[][] {
+    const chunks: T[][] = [];
+    for (let index = 0; index < items.length; index += size) chunks.push(items.slice(index, index + size));
+    return chunks;
+}
+
+/** Batched, time-bounded Birdeye lookup; a failed or slow batch just yields no symbols for its mints. */
+function lookupProviderSymbols(mints: readonly string[]): Effect.Effect<ProviderTokenMetadata[], never> {
+    return Effect.all(
+        chunk(mints, BIRDEYE_METADATA_BATCH_SIZE).map(batch =>
+            getProviderTokenMetadataByMints(batch).pipe(
+                Effect.timeout(PROVIDER_LOOKUP_TIMEOUT),
+                tapErrorAndDefault('x.cashtags.birdeye', [] as ProviderTokenMetadata[], { mints: batch }),
+            ),
+        ),
+        { concurrency: 'unbounded' },
+    ).pipe(Effect.map(batches => batches.flat()));
 }
 
 /** Restore `$SYMBOL` cashtags across a batch of post texts with a single resolution pass. */

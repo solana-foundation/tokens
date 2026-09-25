@@ -130,6 +130,56 @@ describe('resolveXCashtagSymbols', () => {
     });
 });
 
+describe('resolveXCashtagSymbols provider limits', () => {
+    function fakeMint(index: number): string {
+        // Distinct, base58-shaped 44-char strings the registry cannot know.
+        return `Fake${String(index).padStart(3, '0')}`.padEnd(44, 'x');
+    }
+
+    it('splits Birdeye lookups into batches of 50', async () => {
+        process.env.BIRDEYE_API_KEY = 'birdeye-key';
+        const mints = Array.from({ length: 120 }, (_, index) => fakeMint(index));
+        const batchSizes: number[] = [];
+        globalThis.fetch = (async (input: string | URL | Request) => {
+            const url = new URL(String(input));
+            const requested = (url.searchParams.get('list_address') ?? '').split(',');
+            batchSizes.push(requested.length);
+            const data = Object.fromEntries(
+                requested.map(mint => [mint, { address: mint, symbol: `S${mint.slice(4, 7)}`, name: mint, decimals: 0 }]),
+            );
+            return new Response(JSON.stringify({ success: true, data }), { status: 200 });
+        }) as typeof fetch;
+
+        const symbols = await Effect.runPromise(
+            resolveXCashtagSymbols(mints.map(address => ({ raw: `solana:${address}`, chain: 'solana', address }))),
+        );
+
+        expect(batchSizes.sort((a, b) => a - b)).toEqual([20, 50, 50]);
+        expect(symbols.size).toBe(120);
+        expect(symbols.get(fakeMint(119))).toBe('S119');
+    });
+
+    it('gives up on a slow provider instead of holding the feed', async () => {
+        process.env.BIRDEYE_API_KEY = 'birdeye-key';
+        globalThis.fetch = ((_input: string | URL | Request, init?: RequestInit) =>
+            new Promise<Response>((_resolve, reject) => {
+                init?.signal?.addEventListener('abort', () => reject(new Error('aborted')));
+            })) as typeof fetch;
+
+        const startedAt = Date.now();
+        const symbols = await Effect.runPromise(
+            resolveXCashtagSymbols([
+                { raw: `solana:${SOL_MINT}`, chain: 'solana', address: SOL_MINT },
+                { raw: `solana:${BONK_MINT}`, chain: 'solana', address: BONK_MINT },
+            ]),
+        );
+
+        expect(Date.now() - startedAt).toBeLessThan(4_000);
+        expect(symbols.get(SOL_MINT)).toBe('SOL');
+        expect(symbols.has(BONK_MINT)).toBe(false);
+    });
+});
+
 describe('restoreXCashtagsInTexts', () => {
     it('leaves texts without tags untouched and skips resolution', async () => {
         globalThis.fetch = (async () => {
