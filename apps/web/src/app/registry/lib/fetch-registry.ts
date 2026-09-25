@@ -54,9 +54,10 @@ export async function fetchRegistry(): Promise<RegistryData> {
     ]);
 
     // Mints the platform does not index yet: fill logo + name straight from Birdeye.
-    const unindexed = rows
-        .map(row => row.mint_address)
-        .filter(mint => looksLikeSolanaMintAddress(mint) && !hasLogo(snapshots.get(mint), curated.get(mint)));
+    const unindexed: string[] = [];
+    for (const { mint_address: mint } of rows) {
+        if (looksLikeSolanaMintAddress(mint) && !hasLogo(snapshots.get(mint), curated.get(mint))) unindexed.push(mint);
+    }
     const birdeye = await fetchBirdeyeTokenMetadata(unindexed);
 
     const normalized = rows.map(row =>
