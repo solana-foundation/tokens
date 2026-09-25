@@ -3,6 +3,7 @@ import { Effect } from 'effect';
 import { fetchJsonWithRetry, tapErrorAndDefault } from '@tokens/effect';
 import { route } from '@/effect/next-route';
 import { resolveXBearerToken, runXRequest } from '@/lib/x-auth';
+import { restoreXCashtagsInTexts } from '@/lib/x-cashtags';
 import { buildMediaByKey, getPostImage, type XMedia, type XPostMediaAttachment } from '@/lib/x-media';
 
 interface NewsFeedArticle {
@@ -130,10 +131,15 @@ export const GET = route(
             ).pipe(tapErrorAndDefault('x.tokensFeed.userPosts', {} as XUserPostsResponse));
             const mediaByKey = buildMediaByKey(postsResponse.includes?.media);
 
-            return (postsResponse.data ?? [])
-                .filter(post => post.id && post.text && post.created_at && !isReplyPost(post))
-                .map(post => ({
-                    title: cleanPostText(post.text),
+            const posts = (postsResponse.data ?? []).filter(
+                post => post.id && post.text && post.created_at && !isReplyPost(post),
+            );
+            // X's token tags arrive as `solana:<mint>` in the API text; restore them to `$SYMBOL`.
+            const titles = yield* restoreXCashtagsInTexts(posts.map(post => cleanPostText(post.text)));
+
+            return posts
+                .map((post, index) => ({
+                    title: titles[index] ?? cleanPostText(post.text),
                     url: buildXPostUrl(user.username, post.id),
                     image: getPostImage(post, mediaByKey, user.profile_image_url),
                     author: user.username,
