@@ -1,4 +1,4 @@
-import { Effect, Schema } from 'effect';
+import { Duration, Effect, Schema } from 'effect';
 import { fetchJsonWithRetry } from '@tokens/effect';
 import { decodeUpstreamOrWarn } from '@tokens/effect/schema';
 import { withExternalTiming } from './externalTiming';
@@ -857,6 +857,16 @@ interface MakeRwaXyzOptions {
     apiVersion?: string;
 }
 
+// rwa.xyz has repeatedly gone slow-then-500 in production (~15.7s per call).
+// The api tier invokes the CloudRun `assets.cacheWarmRequest` mutation with a
+// 15s budget; a single 30s upstream attempt is enough to blow that budget and
+// trigger `scheduleVariantWarm` fallbacks. Cap each attempt at 5s and allow one
+// retry so the worst case (2 attempts * 5s + exponential backoff <1s) stays
+// well under 15s and a slow rwa.xyz round degrades gracefully to "skip rwa.xyz
+// enrichment" (see tryShadowWriteFromRwaXyz in handlers/crons.ts).
+const RWAXYZ_TIMEOUT: Duration.Input = '5 seconds';
+const RWAXYZ_MAX_RETRIES = 1;
+
 interface RwaXyzListResponseShape<T> {
     results?: T[];
 }
@@ -1023,8 +1033,8 @@ export function makeRwaXyzClient(opts: MakeRwaXyzOptions): RwaXyzClient {
                 url,
                 service: 'rwaxyz',
                 init: { headers },
-                maxRetries: 2,
-                timeout: '30 seconds',
+                maxRetries: RWAXYZ_MAX_RETRIES,
+                timeout: RWAXYZ_TIMEOUT,
             }),
         );
     }

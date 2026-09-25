@@ -1,6 +1,9 @@
-import { describe, expect, test } from 'bun:test';
+import { afterEach, describe, expect, test } from 'bun:test';
 
-import { makeClickhouseClient } from './clients';
+import { makeClickhouseClient, makeRwaXyzClient } from './clients';
+
+const ORIGINAL_FETCH = globalThis.fetch;
+const ORIGINAL_LOG = console.log;
 
 const BASE_OPTS = {
     url: 'http://clickhouse.invalid',
@@ -81,4 +84,56 @@ describe('fetchSolanaMintSnapshots (clickhouse-api gateway)', () => {
             client.fetchSolanaMintSnapshots({ mints: ['M'], stableMints: ['USDC'] }),
         ).rejects.toThrow('clickhouse-api HTTP 502');
     });
+});
+
+describe('makeRwaXyzClient timeout', () => {
+    afterEach(() => {
+        globalThis.fetch = ORIGINAL_FETCH;
+        console.log = ORIGINAL_LOG;
+    });
+
+    // Prevents the shared 15s CloudRun `assets.cacheWarmRequest` budget from
+    // being blown by a single slow rwa.xyz call. Timeout is 5s per attempt with
+    // 1 retry, so worst case is ~10s + <1s backoff — well under 15s.
+    test('rejects with a timeout FetchFailedError when the upstream fetch hangs', async () => {
+        // Silence the JSON-lines telemetry `emitEvent` logs the test would otherwise emit.
+        console.log = () => {};
+
+        // A fetch that only resolves when the AbortSignal fires. Effect.timeout
+        // interrupts the fiber after 5s, which aborts the underlying fetch.
+        globalThis.fetch = ((_url: string, init?: RequestInit) => {
+            return new Promise<Response>((_resolve, reject) => {
+                const signal = init?.signal;
+                if (signal?.aborted) {
+                    reject(new DOMException('The operation was aborted.', 'AbortError'));
+                    return;
+                }
+                signal?.addEventListener('abort', () => {
+                    reject(new DOMException('The operation was aborted.', 'AbortError'));
+                });
+            });
+        }) as typeof fetch;
+
+        const client = makeRwaXyzClient({ apiKey: 'test-key' });
+
+        const started = Date.now();
+        let caught: unknown = null;
+        try {
+            await client.fetchSolanaTokenAndAssetByMint('SomeMint');
+        } catch (err) {
+            caught = err;
+        }
+        const elapsedMs = Date.now() - started;
+
+        expect(caught).not.toBeNull();
+        // Effect wraps FetchFailedError in FiberFailure; check message text.
+        const message = caught instanceof Error ? caught.message : String(caught);
+        expect(message).toContain('rwaxyz');
+        expect(message.toLowerCase()).toContain('timed out');
+
+        // 1 retry means up to 2 attempts * 5s + backoff (< 1s). Give generous
+        // slack for CI, but assert it did NOT wait the old 30s * 3 = 90s path.
+        expect(elapsedMs).toBeGreaterThanOrEqual(4_500);
+        expect(elapsedMs).toBeLessThan(15_000);
+    }, 20_000);
 });
