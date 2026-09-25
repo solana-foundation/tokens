@@ -93,11 +93,20 @@ describe('makeRwaXyzClient timeout', () => {
     });
 
     // Prevents the shared 15s CloudRun `assets.cacheWarmRequest` budget from
-    // being blown by a single slow rwa.xyz call. Timeout is 5s per attempt with
-    // 1 retry, so worst case is ~10s + <1s backoff — well under 15s.
+    // being blown by a slow rwa.xyz call. Timeout is 5s per attempt with 0
+    // retries. The `fetchSolanaTokenAndAssetByMint` client method issues two
+    // sequential HTTP calls, so the per-mint worst case is 5s + 5s = 10s
+    // (< 15s budget). This test exercises only the first call (which hangs and
+    // times out at ~5s), so expected elapsed is ~5s.
     test('rejects with a timeout FetchFailedError when the upstream fetch hangs', async () => {
         // Silence the JSON-lines telemetry `emitEvent` logs the test would otherwise emit.
         console.log = () => {};
+
+        // Prove Effect.timeout actually aborts the underlying fetch (not just
+        // discards the promise). If retries or the 30s timeout regress, the
+        // abort will still eventually fire — but the elapsed-time assertion
+        // below will fail first, catching the regression cleanly.
+        let abortObserved = false;
 
         // A fetch that only resolves when the AbortSignal fires. Effect.timeout
         // interrupts the fiber after 5s, which aborts the underlying fetch.
@@ -105,10 +114,12 @@ describe('makeRwaXyzClient timeout', () => {
             return new Promise<Response>((_resolve, reject) => {
                 const signal = init?.signal;
                 if (signal?.aborted) {
+                    abortObserved = true;
                     reject(new DOMException('The operation was aborted.', 'AbortError'));
                     return;
                 }
                 signal?.addEventListener('abort', () => {
+                    abortObserved = true;
                     reject(new DOMException('The operation was aborted.', 'AbortError'));
                 });
             });
@@ -131,9 +142,16 @@ describe('makeRwaXyzClient timeout', () => {
         expect(message).toContain('rwaxyz');
         expect(message.toLowerCase()).toContain('timed out');
 
-        // 1 retry means up to 2 attempts * 5s + backoff (< 1s). Give generous
-        // slack for CI, but assert it did NOT wait the old 30s * 3 = 90s path.
+        // Proves Effect.timeout aborts the underlying fetch (not just drops the
+        // promise on the floor). Without this, a regression that no longer
+        // wires the abort signal through would still time out but leak fetch
+        // handles in production.
+        expect(abortObserved).toBe(true);
+
+        // 0 retries + 5s per-attempt timeout => expected elapsed ~5s. Assert
+        // < 8s so a regression that reintroduces `maxRetries: 1` (worst case
+        // ~10s) or the old 30s timeout fails this test.
         expect(elapsedMs).toBeGreaterThanOrEqual(4_500);
-        expect(elapsedMs).toBeLessThan(15_000);
-    }, 20_000);
+        expect(elapsedMs).toBeLessThan(8_000);
+    }, 15_000);
 });
