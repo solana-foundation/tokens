@@ -857,17 +857,6 @@ interface MakeRwaXyzOptions {
     apiVersion?: string;
 }
 
-// rwa.xyz has repeatedly gone slow-then-500 in production (~15.7s per call).
-// The api tier invokes the CloudRun `assets.cacheWarmRequest` mutation with a
-// 15s budget; blowing that budget trips `assets.detail.scheduleVariantWarm`
-// fallbacks in tokens-api. `fetchSolanaTokenAndAssetByMint` below issues two
-// sequential HTTP calls (`/tokens` then `/assets/{id}`), so the per-mint
-// worst case is the sum of both. With no retries and a 5s timeout each, the
-// compound worst case is 5s + 5s = 10s (< 15s budget). Retries are set to 0
-// deliberately: rwa.xyz's failure mode is slow-then-500, so retrying just
-// re-hits the same slow backend and blows the budget. A slow rwa.xyz round
-// degrades gracefully to "skip rwa.xyz enrichment" (see
-// tryShadowWriteFromRwaXyz in handlers/crons.ts).
 const RWAXYZ_TIMEOUT: Duration.Input = '5 seconds';
 const RWAXYZ_MAX_RETRIES = 0;
 
