@@ -20,7 +20,7 @@ export type LogoFetchFailureReason =
     | 'empty';
 
 export type LogoFetchResult =
-    | { ok: true; bytes: Uint8Array; contentType: string | null; finalUrl: string }
+    | { ok: true; bytes: Uint8Array; contentType: string | null; finalUrl: string; status: number }
     | { ok: false; reason: LogoFetchFailureReason; status?: number; message?: string };
 
 export interface FetchLogoOptions {
@@ -211,6 +211,13 @@ async function readCapped(response: Response, maxBytes: number, abort: AbortCont
  * instead of a throw, so a job can walk its fallback plan.
  */
 export async function fetchLogoBytes(url: string, opts: FetchLogoOptions): Promise<LogoFetchResult> {
+    return withExternalTiming(opts.provider, url, () => fetchLogoBytesInner(url, opts), result => ({
+        ok: result.ok,
+        status: result.status ?? null,
+    }));
+}
+
+async function fetchLogoBytesInner(url: string, opts: FetchLogoOptions): Promise<LogoFetchResult> {
     const fetchImpl = opts.fetchImpl ?? fetch;
     const maxBytes = Math.min(opts.maxBytes ?? LOGO_MAX_BYTES, LOGO_MAX_BYTES);
     const controller = new AbortController();
@@ -242,18 +249,16 @@ export async function fetchLogoBytes(url: string, opts: FetchLogoOptions): Promi
             const target = current.toString();
             let response: Response;
             try {
-                response = await withExternalTiming(opts.provider, target, () =>
-                    fetchImpl(target, {
-                        method: 'GET',
-                        redirect: 'manual',
-                        signal: controller.signal,
-                        headers: {
-                            accept: 'image/*,*/*;q=0.8',
-                            'user-agent': USER_AGENT,
-                            ...(current.origin === initialOrigin ? (opts.headers ?? {}) : {}),
-                        },
-                    }),
-                );
+                response = await fetchImpl(target, {
+                    method: 'GET',
+                    redirect: 'manual',
+                    signal: controller.signal,
+                    headers: {
+                        accept: 'image/*,*/*;q=0.8',
+                        'user-agent': USER_AGENT,
+                        ...(current.origin === initialOrigin ? (opts.headers ?? {}) : {}),
+                    },
+                });
             } catch (err) {
                 if (controller.signal.aborted) return { ok: false, reason: 'timeout' };
                 return { ok: false, reason: 'network', message: err instanceof Error ? err.message : String(err) };
@@ -301,7 +306,7 @@ export async function fetchLogoBytes(url: string, opts: FetchLogoOptions): Promi
             if (bytes.byteLength === 0) return { ok: false, reason: 'empty', status: response.status };
 
             const contentType = response.headers.get('content-type')?.split(';', 1)[0]?.trim().toLowerCase() || null;
-            return { ok: true, bytes, contentType, finalUrl: target };
+            return { ok: true, bytes, contentType, finalUrl: target, status: response.status };
         }
         return { ok: false, reason: 'redirect', message: 'too many redirects' };
     } finally {

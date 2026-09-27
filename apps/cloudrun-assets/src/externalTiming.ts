@@ -1,7 +1,13 @@
+export interface ExternalCallOutcome {
+    ok: boolean;
+    status: number | null;
+}
+
 export async function withExternalTiming<T>(
     provider: string,
     url: string,
     fn: () => Promise<T>,
+    deriveOutcome?: (result: T) => ExternalCallOutcome,
 ): Promise<T> {
     const started = Date.now();
     let endpoint = url;
@@ -12,8 +18,12 @@ export async function withExternalTiming<T>(
     }
     try {
         const result = await fn();
-        const status = result instanceof Response ? result.status : null;
-        const ok = result instanceof Response ? result.ok || (result.status >= 300 && result.status < 400) : true;
+        const outcome = deriveOutcome
+            ? deriveOutcome(result)
+            : result instanceof Response
+              ? { ok: result.ok, status: result.status }
+              : { ok: true, status: null };
+        const { status, ok } = outcome;
         console.log(JSON.stringify({
             event: 'external_call',
             provider,
