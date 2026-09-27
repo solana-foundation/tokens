@@ -13,7 +13,7 @@ export async function withExternalTiming<T>(
     try {
         const result = await fn();
         const status = result instanceof Response ? result.status : null;
-        const ok = result instanceof Response ? result.ok : true;
+        const ok = result instanceof Response ? result.ok || (result.status >= 300 && result.status < 400) : true;
         console.log(JSON.stringify({
             event: 'external_call',
             provider,
