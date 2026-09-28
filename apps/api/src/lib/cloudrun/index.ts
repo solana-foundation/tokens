@@ -53,9 +53,11 @@ export { searchPrefetchForApi, type SearchPrefetchArgs, type SearchPrefetchResul
 
 export {
     authenticateApiKey,
+    ingestUsageAggregates,
     logApiRequest,
     type AuthenticateApiKeyResult,
     type LogApiRequestArgs,
+    type UsageAggregateBucket,
 } from './platformAuth';
 
 export { listDeletedRefs, type ListDeletedRefsArgs, type ListDeletedRefsResult } from './assetDeletionTombstones';

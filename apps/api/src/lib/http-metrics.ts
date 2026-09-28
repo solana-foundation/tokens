@@ -153,6 +153,28 @@ export function logUsageAggregationDegraded(params: {
     });
 }
 
+/**
+ * Emitted per usage drain (Redis aggregates → rollup tables). `failed` means
+ * dashboard usage is going stale; alert on sustained occurrences.
+ */
+export function logUsageDrain(params: {
+    requestId: string;
+    status: 'ok' | 'failed';
+    ingested?: number;
+    restored?: number;
+    reason?: string;
+}): void {
+    log({
+        event: 'usage_drain',
+        timestamp: new Date().toISOString(),
+        request_id: params.requestId,
+        status: params.status,
+        ...(params.ingested !== undefined ? { ingested: params.ingested } : {}),
+        ...(params.restored !== undefined ? { restored: params.restored } : {}),
+        ...(params.reason ? { reason: params.reason.slice(0, 500) } : {}),
+    });
+}
+
 export function logApiError(params: {
     requestId: string;
     method: string;

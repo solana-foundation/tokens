@@ -3,9 +3,9 @@
  *
  * Port of `convex/apiUsageRollups.ts:ingestUsageAggregates`. The production
  * apps/api path aggregates per-request usage into Upstash Redis hashes
- * (`usage:v1:day:*` / `usage:v1:endpoint:*`); a systemd timer drains them via
- * `scripts/drain-api-usage-aggregates.mjs` into the rollup tables. This
- * handler is the GCP target for that drain.
+ * (`usage:v1:day:*` / `usage:v1:endpoint:*`); the API drains them itself
+ * (`apps/api/src/effect/usage-drain.ts`) into the rollup tables. This handler
+ * is the target for that drain.
  *
  * Auth: the Convex original checked a `secret` arg; on Cloud Run the bearer
  * token on `/mutation/*` covers it, so a `secret` arg is accepted and ignored.

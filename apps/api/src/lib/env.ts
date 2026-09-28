@@ -27,6 +27,8 @@ export interface ApiEnv {
     usageRawSampleRate: number;
     authCacheTtlSeconds: number;
     usageAggregationTtlSeconds: number;
+    /** Min seconds between drains of the Redis usage aggregates into the rollup tables; 0 disables. */
+    usageDrainIntervalSeconds: number;
     /**
      * Default per-key rate limit / quota applied when a key has no explicit
      * per-project override. Tunable via env so real limits can be set before
@@ -134,6 +136,7 @@ export function loadEnv(): ApiEnv {
         usageAggregationTtlSeconds: Math.floor(
             readNumber('TOKENS_USAGE_AGGREGATION_TTL_SECONDS', 172_800, 60, 604_800),
         ),
+        usageDrainIntervalSeconds: Math.floor(readNumber('TOKENS_USAGE_DRAIN_INTERVAL_SECONDS', 60, 0, 3_600)),
         defaultRateLimit: {
             requests: Math.floor(readNumber('TOKENS_DEFAULT_RATE_LIMIT_REQUESTS', 400, 1, 10_000_000)),
             windowSeconds: Math.floor(readNumber('TOKENS_DEFAULT_RATE_LIMIT_WINDOW_SECONDS', 10, 1, 3_600)),

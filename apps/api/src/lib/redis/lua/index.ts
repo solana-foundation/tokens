@@ -80,6 +80,40 @@ const SLIDING_WINDOW_REMAINING_TOKENS_SCRIPT_SRC = `
   return {effectiveLimit - usedTokens, effectiveLimit}
 `;
 
+/**
+ * Usage-aggregate drain (see `src/effect/usage-drain.ts`). Every key a script
+ * touches is declared in KEYS so the scripts stay valid on clustered Redis.
+ */
+const USAGE_DRAIN_LIST_DIRTY_SCRIPT_SRC = `
+  local dirtyKey = KEYS[1]           -- hash used as a set of dirty usage keys
+  local limit    = tonumber(ARGV[1]) -- max dirty keys to return
+
+  local fields = redis.call("HKEYS", dirtyKey)
+  local out = {}
+  for i = 1, math.min(#fields, limit) do
+    out[i] = fields[i]
+  end
+  return out
+`;
+
+const USAGE_DRAIN_TAKE_SCRIPT_SRC = `
+  local dirtyKey = KEYS[1] -- hash used as a set of dirty usage keys
+
+  -- KEYS[2..n] are usage hashes: read + delete each atomically so increments
+  -- landing after the read start a fresh hash instead of being lost.
+  local out = {}
+  for i = 2, #KEYS do
+    out[i - 1] = redis.call("HGETALL", KEYS[i])
+    redis.call("DEL", KEYS[i])
+    redis.call("HDEL", dirtyKey, KEYS[i])
+  end
+  return out
+`;
+
+const USAGE_DRAIN_ENDPOINT_NAMES_SCRIPT_SRC = `
+  return redis.call("MGET", unpack(KEYS))
+`;
+
 function digest(script: string): string {
     return createHash('sha1').update(script, 'utf8').digest('hex');
 }
@@ -92,4 +126,19 @@ export const SLIDING_WINDOW_LIMIT_SCRIPT = {
 export const SLIDING_WINDOW_REMAINING_TOKENS_SCRIPT = {
     script: SLIDING_WINDOW_REMAINING_TOKENS_SCRIPT_SRC,
     sha1: digest(SLIDING_WINDOW_REMAINING_TOKENS_SCRIPT_SRC),
+};
+
+export const USAGE_DRAIN_LIST_DIRTY_SCRIPT = {
+    script: USAGE_DRAIN_LIST_DIRTY_SCRIPT_SRC,
+    sha1: digest(USAGE_DRAIN_LIST_DIRTY_SCRIPT_SRC),
+};
+
+export const USAGE_DRAIN_TAKE_SCRIPT = {
+    script: USAGE_DRAIN_TAKE_SCRIPT_SRC,
+    sha1: digest(USAGE_DRAIN_TAKE_SCRIPT_SRC),
+};
+
+export const USAGE_DRAIN_ENDPOINT_NAMES_SCRIPT = {
+    script: USAGE_DRAIN_ENDPOINT_NAMES_SCRIPT_SRC,
+    sha1: digest(USAGE_DRAIN_ENDPOINT_NAMES_SCRIPT_SRC),
 };
