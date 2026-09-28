@@ -6,8 +6,8 @@ import type { CloudRunError } from './errors';
 /**
  * Platform API-key auth + usage logging on the authenticated `/v1` hot path
  * (`src/effect/next-route.ts`). Routes to the `cloudrun-usage` service
- * (`apiKeysAuthenticate` / `logApiRequest`), which ports the previous Convex
- * semantics 1:1 against Cloud SQL.
+ * (`apiKeysAuthenticate` / `logApiRequest` / `ingestUsageAggregates`), which
+ * ports the previous Convex semantics 1:1 against Cloud SQL.
  */
 
 export interface AuthenticateApiKeyResult {
@@ -69,4 +69,20 @@ export type LimitsEnforceResult =
 
 export function limitsEnforce(args: LimitsEnforceArgs): Effect.Effect<LimitsEnforceResult, CloudRunError> {
     return cloudRunMutation<LimitsEnforceResult>('usage', 'limitsEnforce', { ...args }, { timeoutMs: 1500 });
+}
+
+/** A drained usage bucket: per-project daily, or per-endpoint when `endpoint` is set. */
+export interface UsageAggregateBucket {
+    projectId: string;
+    day: string;
+    endpoint?: string;
+    totalCalls: number;
+    assetCalls?: number;
+    successCalls: number;
+    sumLatencyMs: number;
+    latencyHistogram?: number[];
+}
+
+export function ingestUsageAggregates(buckets: UsageAggregateBucket[]): Effect.Effect<void, CloudRunError> {
+    return cloudRunMutation('usage', 'ingestUsageAggregates', { buckets }).pipe(Effect.asVoid);
 }

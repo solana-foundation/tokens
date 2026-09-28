@@ -5,16 +5,24 @@ import { NextResponse } from 'next/server';
 
 import { runAfterResponse } from './after-response';
 
-import { authenticateApiKey, limitsEnforce, logApiRequest } from '@/lib/cloudrun';
+import { authenticateApiKey, ingestUsageAggregates, limitsEnforce, logApiRequest } from '@/lib/cloudrun';
 import { loadEnv } from '@/lib/env';
 import { getRedisClient, type RedisClient } from '@/lib/redis';
 import { slidingWindowLimit } from './sliding-window-rate-limit';
+import {
+    maybeDrainUsageAggregates,
+    USAGE_DIRTY_KEY,
+    usageDayKey,
+    usageEndpointKey,
+    usageEndpointNameKey,
+} from './usage-drain';
 import { verifyPlaygroundProxyAuthHeader } from './playground-proxy-auth';
 import {
     logApiError,
     logHttpRequest,
     logRateLimitDegraded,
     logUsageAggregationDegraded,
+    logUsageDrain,
     normalizeEndpointPath,
 } from '@/lib/http-metrics';
 import {
@@ -415,9 +423,9 @@ function recordUsageAggregate(params: {
         const day = dateKeyUtc(params.ts);
         const endpointHash = yield* Effect.tryPromise(() => sha256Hex(endpoint));
         const ttl = env.usageAggregationTtlSeconds;
-        const dayKey = `usage:v1:day:${day}:${params.platformAuth.projectId}`;
-        const endpointKey = `usage:v1:endpoint:${day}:${params.platformAuth.projectId}:${endpointHash}`;
-        const endpointNameKey = `usage:v1:endpoint-name:${endpointHash}`;
+        const dayKey = usageDayKey(day, params.platformAuth.projectId);
+        const endpointKey = usageEndpointKey(day, params.platformAuth.projectId, endpointHash);
+        const endpointNameKey = usageEndpointNameKey(endpointHash);
         const assetCallDelta = isAssetEndpoint(endpoint) ? 1 : 0;
         const successDelta = params.status < 400 ? 1 : 0;
         const latencyMs = Math.max(0, Math.floor(params.latencyMs));
@@ -440,9 +448,37 @@ function recordUsageAggregate(params: {
                 .hincrby(endpointKey, histogramField, 1)
                 .expire(endpointKey, ttl)
                 .set(endpointNameKey, endpoint, { ex: ttl })
+                .hincrby(USAGE_DIRTY_KEY, dayKey, 1)
+                .hincrby(USAGE_DIRTY_KEY, endpointKey, 1)
+                .expire(USAGE_DIRTY_KEY, ttl)
                 .exec(),
         );
     });
+}
+
+async function tryDrainUsageAggregates(requestId: string): Promise<void> {
+    try {
+        const env = loadEnv();
+        const result = await Effect.runPromise(
+            Effect.gen(function* () {
+                const redis = yield* getRedisClientEffect();
+                return yield* maybeDrainUsageAggregates({
+                    redis,
+                    ingest: ingestUsageAggregates,
+                    ttlSeconds: env.usageAggregationTtlSeconds,
+                    intervalSeconds: env.usageDrainIntervalSeconds,
+                    lockValue: requestId,
+                });
+            }),
+        );
+        if (result) logUsageDrain({ requestId, status: 'ok', ...result });
+    } catch (error) {
+        logUsageDrain({
+            requestId,
+            status: 'failed',
+            reason: error instanceof Error ? error.message : String(error),
+        });
+    }
 }
 
 async function recordApiRequestUsage(params: {
@@ -469,6 +505,7 @@ async function recordApiRequestUsage(params: {
                 reason: error instanceof Error ? error.message : String(error),
             });
         }
+        await tryDrainUsageAggregates(params.requestId);
     }
 
     if (env.usageLogMode === 'raw' || shouldSampleRaw) {
