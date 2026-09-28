@@ -16,7 +16,7 @@
         "to": 0
       },
       "model": {
-        "expr": "(sum by(provider) (rate({service=~\"tokens-.+\"} | json | event=\"external_call\" | provider!~\"birdeye|coingecko|jupiter\" | ok=\"false\" [5m])) / sum by(provider) (rate({service=~\"tokens-.+\"} | json | event=\"external_call\" | provider!~\"birdeye|coingecko|jupiter\" [5m]))) and (sum by(provider) (rate({service=~\"tokens-.+\"} | json | event=\"external_call\" | provider!~\"birdeye|coingecko|jupiter\" [5m])) > 0.05)",
+        "expr": "(sum by(provider) (rate({service=~\"tokens-.+\"} | json | event=\"external_call\" | provider!~\"birdeye|coingecko|jupiter|logo_dexscreener\" | ok=\"false\" [5m])) / sum by(provider) (rate({service=~\"tokens-.+\"} | json | event=\"external_call\" | provider!~\"birdeye|coingecko|jupiter|logo_dexscreener\" [5m]))) and (sum by(provider) (rate({service=~\"tokens-.+\"} | json | event=\"external_call\" | provider!~\"birdeye|coingecko|jupiter|logo_dexscreener\" [5m])) > 0.05)",
         "queryType": "range",
         "refId": "A"
       }
@@ -87,7 +87,7 @@
   },
   "annotations": {
     "summary": "Data-feed provider {{ $labels.provider }} error rate above 30%",
-    "description": "Provider {{ $labels.provider }} returned errors on >30% of calls for 30m (min 0.05 calls/sec floor). This rule catches everything outside the critical tier (birdeye/coingecko/jupiter), so user-facing impact depends on which provider fired \u2014 open the External providers dashboard and the runbook before assuming low urgency. No page; Slack only.",
+    "description": "Provider {{ $labels.provider }} returned errors on >30% of calls for 30m (min 0.05 calls/sec floor). This rule catches everything outside the critical tier (birdeye/coingecko/jupiter), so user-facing impact depends on which provider fired — open the External providers dashboard and the runbook before assuming low urgency. logo_dexscreener (the logo-sync dexscreener fallback) is excluded: its 3xx/404 outcomes are expected misses, not errors; other logo_* sources stay monitored. No page; Slack only.",
     "runbook_url": "https://example.com/runbooks/external-data-provider-error-rate-high"
   }
 }
