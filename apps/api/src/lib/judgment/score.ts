@@ -7,6 +7,7 @@
 import { computeMarketScore } from '@/lib/token-risk-helpers';
 
 import { claimCredibilityScore, buildAttestations, normalizeClaim } from './claims';
+import { marketScoreInputFromRiskMarket } from './risk';
 import type { CollisionVerdict } from './protected-symbols';
 import type { PolicyDocument } from './policies';
 import type { Attestation, EnrichedCandidate, QueryInterpretation, ScoreComponents } from './types';
@@ -61,17 +62,7 @@ function riskComponent(candidate: EnrichedCandidate): number {
         return Math.max(0, Math.min(100, candidate.risk.marketScore));
     }
 
-    const computed = computeMarketScore({
-        liquidityUsd: candidate.liquidityUsd,
-        marketCapUsd: candidate.marketCapUsd,
-        holderCount: candidate.holderCount,
-        top10HoldersPercent: candidate.top10HoldersPercent,
-        volume24hUsd: candidate.volume24hUsd,
-        volume7dUsd: null,
-        tokenMintTime: candidate.tokenMintTime,
-        tokenAddress: candidate.mint,
-        curatedListSlugs: candidate.curatedListIds,
-    });
+    const computed = computeMarketScore(marketScoreInputFromRiskMarket(candidate));
 
     // Unknown is neutral, not bad: candidates outside the risk-refresh rotation
     // shouldn't be punished for missing data (gates handle the dangerous cases).

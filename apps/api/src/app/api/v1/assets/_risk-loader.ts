@@ -5,7 +5,7 @@ import type { PlatformAuthContext } from '@/effect/next-route';
 import { getCuratedListSlugsForMint } from '@/lib/curated-membership';
 import { variantMarketsGetLatestByMints } from '@/lib/cloudrun';
 import { scheduleCacheWarm } from '@/lib/cloudrun/cacheWarm';
-import { computeMarketScore, type MarketScoreInput } from '@/lib/token-risk-helpers';
+import { computeMarketScore, estimate7dVolume, type MarketScoreInput } from '@/lib/token-risk-helpers';
 
 import type { LoadedAssetVariantContext } from './_asset-route-loader';
 import { loadLiveMarketFallback, needsLiveFallback } from './_risk-live-fallback';
@@ -66,7 +66,6 @@ export function marketScoreInputFromVariantMarket(
     }
 
     const volume24hUsd = market.volume24hUSD ?? null;
-    const volume7dUsd = volume24hUsd != null && volume24hUsd > 0 ? volume24hUsd * 7 : null;
 
     return {
         liquidityUsd: market.liquidity ?? null,
@@ -74,7 +73,7 @@ export function marketScoreInputFromVariantMarket(
         holderCount: market.holder ?? null,
         top10HoldersPercent: null,
         volume24hUsd,
-        volume7dUsd,
+        volume7dUsd: estimate7dVolume(volume24hUsd),
         tokenMintTime: null,
         tokenAddress: mint,
     };

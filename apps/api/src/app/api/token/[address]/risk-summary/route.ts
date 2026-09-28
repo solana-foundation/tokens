@@ -2,17 +2,11 @@ import { Effect } from 'effect';
 
 import { getCuratedListSlugsForMint } from '@/lib/curated-membership';
 
-import { computeMarketScore, type MarketScoreInput } from '@/lib/token-risk-helpers';
+import { computeMarketScore, estimate7dVolume, type MarketScoreInput } from '@/lib/token-risk-helpers';
 import { route } from '@/effect/next-route';
 import { decodeUnknownOrBadRequest, SolanaAddress } from '@tokens/effect';
 import { scheduleCacheWarm } from '@/lib/cloudrun/cacheWarm';
 import { variantMarketsGetLatestByMints } from '@/lib/cloudrun';
-
-function estimate7dVolume(volume24h: number | null): number | null {
-    if (volume24h == null || volume24h <= 0) return null;
-    return volume24h * 7;
-}
-
 
 function scheduleVariantMarketWarm(mint: string): Effect.Effect<void, never> {
     return scheduleCacheWarm(null, {

@@ -6,7 +6,7 @@
  * the result off `EnrichedCandidate.risk`.
  */
 
-import { computeMarketScore } from '@/lib/token-risk-helpers';
+import { computeMarketScore, estimate7dVolume, type MarketScoreInput } from '@/lib/token-risk-helpers';
 import type { EnrichedCandidate } from './types';
 
 export interface RiskMarketInput {
@@ -21,22 +21,31 @@ export interface RiskMarketInput {
 }
 
 /**
- * `null` marketScore/grade when the helper reports insufficient data — the
- * score component treats unknown as neutral and the `minMarketScore` gate
- * only fires on a known score.
+ * Scorer input for a candidate. 7-day volume is estimated from 24h volume,
+ * exactly as v1 does — candidates only carry 24h, and without the estimate
+ * trading activity always scores zero (no candidate could reach grade A).
  */
-export function riskFromMarket(input: RiskMarketInput): NonNullable<EnrichedCandidate['risk']> {
-    const computed = computeMarketScore({
+export function marketScoreInputFromRiskMarket(input: RiskMarketInput): MarketScoreInput {
+    return {
         liquidityUsd: input.liquidityUsd,
         marketCapUsd: input.marketCapUsd,
         holderCount: input.holderCount,
         top10HoldersPercent: input.top10HoldersPercent,
         volume24hUsd: input.volume24hUsd,
-        volume7dUsd: null,
+        volume7dUsd: estimate7dVolume(input.volume24hUsd),
         tokenMintTime: input.tokenMintTime,
         tokenAddress: input.mint,
         curatedListSlugs: input.curatedListIds,
-    });
+    };
+}
+
+/**
+ * `null` marketScore/grade when the helper reports insufficient data — the
+ * score component treats unknown as neutral and the `minMarketScore` gate
+ * only fires on a known score.
+ */
+export function riskFromMarket(input: RiskMarketInput): NonNullable<EnrichedCandidate['risk']> {
+    const computed = computeMarketScore(marketScoreInputFromRiskMarket(input));
     if (computed.hasInsufficientData) {
         return { marketScore: null, grade: null, webacyTags: [] };
     }
