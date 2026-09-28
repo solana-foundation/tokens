@@ -1,12 +1,14 @@
 import { Effect } from 'effect';
 import type { VariantAdvisory } from '@tokens/asset-registry';
 
+import type { PlatformAuthContext } from '@/effect/next-route';
 import { getCuratedListSlugsForMint } from '@/lib/curated-membership';
 import { variantMarketsGetLatestByMints } from '@/lib/cloudrun';
 import { scheduleCacheWarm } from '@/lib/cloudrun/cacheWarm';
 import { computeMarketScore, type MarketScoreInput } from '@/lib/token-risk-helpers';
 
 import type { LoadedAssetVariantContext } from './_asset-route-loader';
+import { loadLiveMarketFallback, needsLiveFallback } from './_risk-live-fallback';
 
 export const SOL_MINT = 'So11111111111111111111111111111111111111112';
 
@@ -80,15 +82,23 @@ export function marketScoreInputFromVariantMarket(
 
 export function loadAssetRisk(
     context: LoadedAssetVariantContext,
-    options: { operation: 'summary' | 'details' },
+    options: { operation: 'summary' | 'details'; auth: PlatformAuthContext },
 ): Effect.Effect<AssetRiskPayload, unknown> {
     return Effect.gen(function* () {
         const mint = context.selectedMint;
         const rows = yield* variantMarketsGetLatestByMints({ mints: [mint] });
-        const market = rows[0]?.market ?? null;
+        const snapshot = rows[0]?.market ?? null;
 
-        const isStaleMarket = market ? Date.now() - market.lastFetchedAt > 60 * 60_000 : true;
-        if (!market || isStaleMarket) yield* scheduleVariantMarketWarm(mint, options.operation);
+        // A snapshot that can't feed the scorer is read live instead (which
+        // schedules its own, debounced, warm).
+        const useLive = mint !== SOL_MINT && needsLiveFallback(snapshot);
+        const live = useLive ? yield* loadLiveMarketFallback(options.auth, mint) : null;
+
+        const isStaleMarket = snapshot ? Date.now() - snapshot.lastFetchedAt > 60 * 60_000 : true;
+        if (!useLive && isStaleMarket) yield* scheduleVariantMarketWarm(mint, options.operation);
+
+        const market = live?.market ?? snapshot;
+        const lastUpdatedAt = live?.market ? live.fetchedAt : (snapshot?.lastFetchedAt ?? null);
 
         if (!market && mint !== SOL_MINT) {
             return {
@@ -111,7 +121,7 @@ export function loadAssetRisk(
                 marketScoreInput,
                 tags: [],
                 advisory: context.selectedVariant.advisory ?? context.advisoriesByMint.get(mint) ?? null,
-                lastUpdatedAt: market?.lastFetchedAt ?? null,
+                lastUpdatedAt,
             },
         };
     });

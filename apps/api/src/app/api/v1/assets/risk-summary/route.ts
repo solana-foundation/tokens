@@ -1,12 +1,13 @@
 import { Effect } from 'effect';
 
 import { BadRequestError, ForbiddenError } from '@tokens/effect';
-import { route } from '@/effect/next-route';
+import { route, type PlatformAuthContext } from '@/effect/next-route';
 import { decodeUnknownOrBadRequest, SolanaAddress } from '@tokens/effect';
 import { variantMarketsGetLatestByMints } from '@/lib/cloudrun';
 import { computeMarketScore, createInsufficientDataResult, type MarketScoreResult } from '@/lib/token-risk-helpers';
 import { getCuratedListSlugsForMint } from '@/lib/curated-membership';
 
+import { loadLiveMarketFallback, needsLiveFallback } from '../_risk-live-fallback';
 import { marketScoreInputFromVariantMarket, SOL_MINT } from '../_risk-loader';
 
 function hasAnyScope(granted: string[], requiredAny: readonly string[]): boolean {
@@ -34,7 +35,7 @@ function toRiskSummaryBody(marketScore: MarketScoreResult) {
 }
 
 export const GET = route(
-    (request: Request, ctx: { platformAuth: { scopes: string[] } }) =>
+    (request: Request, ctx: { platformAuth: PlatformAuthContext }) =>
         Effect.gen(function* () {
             const url = new URL(request.url);
             const rawMint = url.searchParams.get('mint') ?? url.searchParams.get('address') ?? '';
@@ -55,7 +56,15 @@ export const GET = route(
 
             // Native SOL is pinned by the scorer and needs no snapshot.
             const rows = address === SOL_MINT ? [] : yield* variantMarketsGetLatestByMints({ mints: [address] });
-            const market = rows[0]?.market ?? null;
+            const snapshot = rows[0]?.market ?? null;
+
+            // Mints outside the registry never get a snapshot: score them from
+            // a live provider read instead.
+            const live =
+                address !== SOL_MINT && needsLiveFallback(snapshot)
+                    ? yield* loadLiveMarketFallback(ctx.platformAuth, address)
+                    : null;
+            const market = live?.market ?? snapshot;
 
             // No data means "unscored", never a grade: return the insufficient
             // result directly instead of running the scorer on placeholders.
@@ -71,5 +80,5 @@ export const GET = route(
 
             return toRiskSummaryBody(marketScore);
         }),
-    { platform: {} },
+    { platform: {}, cache: { maxAge: 30 } },
 );
