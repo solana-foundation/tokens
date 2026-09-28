@@ -288,6 +288,10 @@ Return a market-based score derived from cached market snapshots.
 ### Notes
 
 - `risk-details` includes more inputs in the response (for debugging/scoring transparency).
+- A mint without a cached market snapshot is scored from a live market read. When neither is available the
+  response is `risk: { ok: false, reason: "not_found" }`.
+- When `risk.ok` is `true`, check `risk.marketScore.hasInsufficientData` before reading the grade — see
+  [`GET /v1/assets/risk-summary`](/docs/v1/endpoints/assets#get-v1assetsrisk-summary).
 
 ## Launches: `GET /v1/assets/:assetId/launches`
 

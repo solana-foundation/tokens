@@ -108,7 +108,9 @@ GET /v2/search?q=dog&policy=degen&limit=50
   see them ranked instead.
 - **`badges`** are free-form labels: `curated:<list>` for curated membership, `tier1|tier2|tier3`,
   `grade:A|B|C` (the same market grade v1 exposes, computed from the token's own liquidity, market
-  cap, holders, volume and age) and `advisory:<status>`.
+  cap, holders, volume and age) and `advisory:<status>`. A token with too little market data to
+  score carries no `grade:` badge. Since scoring version `v2-scoring-2026-09-27.1` trading activity
+  is scored from 24h volume, as in v1; earlier versions scored it as zero, which capped grades at B.
 - **`claims.attestations`** are the evidence behind claim credibility: `curated_list`,
   `registry_variant`, `market_dominance`, `deep_liquidity`, `sustained_activity`, `established_age`,
   `broad_holder_base`, each with a human-readable `detail`.

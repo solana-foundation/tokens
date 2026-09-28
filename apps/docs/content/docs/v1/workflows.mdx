@@ -115,4 +115,7 @@ curl -sS "$API_BASE_URL/v1/assets/risk-summary?mint=$MINT" \
 
 Notes:
 
-- If cached market data is missing, you’ll get an “Insufficient Data” style response.
+- Branch on `hasInsufficientData` first. When it is `true` the token is unscored and `grade` is a placeholder
+  — show “Insufficient Data”, not the grade.
+- Mints without a cached market snapshot are scored from a live market read. If that read is unavailable
+  you’ll get the same “Insufficient Data” response (a `200`, not an error).
