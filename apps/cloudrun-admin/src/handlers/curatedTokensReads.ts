@@ -14,7 +14,7 @@
  * `x-tokens-identity` caller (defense in depth on top of the Next.js proxy).
  */
 
-import { classifyLiquidityTier, getCanonicalFallbackLogoPath } from '@tokens/asset-registry';
+import { classifyLiquidityTier, getAsset as getRegistryAsset, getCanonicalFallbackLogoPath } from '@tokens/asset-registry';
 import type { AssetCategory, LiquidityTier, StockVariantTier, VariantAdvisory, VariantKind } from '@tokens/asset-registry';
 
 import {
@@ -93,6 +93,11 @@ export interface AdminReadsRepo {
     listCustomAliases(): Promise<Array<{ assetId: string; alias: string }>>;
     /** Custom-kind aliases for one asset (creation order). */
     listCustomAliasesByAssetId(assetId: string): Promise<string[]>;
+    /**
+     * Normalized `assetId`-kind aliases for one asset: its own id plus any
+     * former ids left behind by a rename.
+     */
+    listAssetIdAliasesByAssetId(assetId: string): Promise<string[]>;
     /** Collection memberships for the given slugs as {slug, assetId}. */
     listCollectionMembers(
         slugs: readonly CuratedCategorySlug[],
@@ -350,6 +355,12 @@ export interface CanonicalEditorResult {
         fallbackImageUrl?: string;
         fallbackLogoSource: LogoSource;
         isActive: boolean;
+        /**
+         * Set when the asset is defined in the static registry, under this id
+         * (its current id, or a former one if it was renamed). Renaming such
+         * an asset needs a follow-up registry data change.
+         */
+        registryAssetId?: string;
     };
     aliases: string[];
     collections: CuratedCategorySlug[];
@@ -368,11 +379,13 @@ export async function getCanonicalEditor(
     const asset = await deps.repo.getAssetByAssetId(assetId);
     if (!asset) return null;
 
-    const [aliases, members, variantRows] = await Promise.all([
+    const [aliases, members, variantRows, assetIdAliases] = await Promise.all([
         deps.repo.listCustomAliasesByAssetId(assetId),
         deps.repo.listCollectionMembers(CURATED_CATEGORY_SLUGS),
         deps.repo.listVariantsWithMarketsByAssetIds([assetId]),
+        deps.repo.listAssetIdAliasesByAssetId(assetId),
     ]);
+    const registryAssetId = [asset.assetId, ...assetIdAliases].find(id => getRegistryAsset(id) !== null);
     const collections = CURATED_CATEGORY_SLUGS.filter(slug =>
         members.some(member => member.slug === slug && member.assetId === assetId),
     );
@@ -402,6 +415,7 @@ export async function getCanonicalEditor(
             ...(fallbackImageUrl ? { fallbackImageUrl } : {}),
             fallbackLogoSource,
             isActive: asset.isActive,
+            ...(registryAssetId ? { registryAssetId } : {}),
         },
         aliases,
         collections,

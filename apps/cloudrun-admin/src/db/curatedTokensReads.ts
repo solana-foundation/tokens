@@ -208,6 +208,16 @@ export function makePostgresAdminReadsRepo(sql: Sql): AdminReadsRepo {
             return rows.map(row => row.alias);
         },
 
+        async listAssetIdAliasesByAssetId(assetId) {
+            const rows = await sql<Array<{ normalized: string }>>`
+                SELECT normalized
+                FROM asset_aliases
+                WHERE asset_id = ${assetId} AND kind = 'assetId'
+                ORDER BY created_at ASC, id ASC
+            `;
+            return rows.map(row => row.normalized);
+        },
+
         async listCollectionMembers(slugs) {
             if (slugs.length === 0) return [];
             const rows = await sql<Array<{ collection_slug: CuratedCategorySlug; asset_id: string }>>`

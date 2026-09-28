@@ -473,6 +473,9 @@ function makeSeedDeps(state: FakeState): SeedCronDeps {
             async deleteCollectionCascade() {
                 return 0;
             },
+            async listAssetIdRenames() {
+                return [];
+            },
             async listTombstonedRefs() {
                 return [];
             },

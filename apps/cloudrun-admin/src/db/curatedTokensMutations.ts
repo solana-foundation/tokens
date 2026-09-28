@@ -94,6 +94,95 @@ export async function syncCollections(
     }
 }
 
+export type RenameAssetIdOutcome = 'renamed' | 'asset_id_exists' | 'asset_id_reserved';
+
+/**
+ * Rename an asset id inside the caller's transaction. `asset_id` is a bare
+ * text column with no foreign keys, so every table carrying a copy is rewritten
+ * here (same table set as `db/hardDelete.ts`, minus the mint-keyed caches).
+ *
+ * The rename is recorded by the alias rows themselves: the asset's existing
+ * `kind = 'assetId'` alias for `from` moves with it, so it now points at `to`.
+ * An `assetId`-kind alias whose `normalized` differs from `lower(asset_id)` is
+ * the "renamed from" marker that keeps the old id resolving and that the
+ * registry seed / public API use to follow the rename.
+ *
+ * The caller must already hold the `assets` row for `from` (`FOR UPDATE`).
+ * Exported for tests (recording fake `tx`).
+ */
+export async function renameAssetId(
+    tx: Tx,
+    args: { from: string; to: string; nowMs: number },
+): Promise<RenameAssetIdOutcome> {
+    const { from, to } = args;
+    const normalizedTo = to.toLowerCase();
+    const now = new Date(args.nowMs);
+
+    const existingAsset = await tx`SELECT 1 FROM assets WHERE asset_id = ${to} LIMIT 1`;
+    if (existingAsset.length > 0) return 'asset_id_exists';
+    // Variants without an asset row would be silently merged into this asset.
+    const existingVariants = await tx`SELECT 1 FROM asset_variants WHERE asset_id = ${to} LIMIT 1`;
+    if (existingVariants.length > 0) return 'asset_id_exists';
+    // `to` is another asset's former id: that alias must keep resolving there.
+    const reserved = await tx`
+        SELECT 1 FROM asset_aliases
+        WHERE kind = 'assetId' AND normalized = ${normalizedTo}
+          AND asset_id <> ${from} AND asset_id <> ${to}
+        LIMIT 1
+    `;
+    if (reserved.length > 0) return 'asset_id_reserved';
+
+    // No asset owns `to` (checked above), so rows already keyed by it are
+    // leftovers of a deleted asset. Clear them first: most of these tables have
+    // a unique index on asset_id and the UPDATEs below would otherwise collide.
+    await tx`DELETE FROM asset_aliases WHERE asset_id = ${to}`;
+    await tx`DELETE FROM asset_collection_members WHERE asset_id = ${to}`;
+    await tx`DELETE FROM asset_markets_latest WHERE asset_id = ${to}`;
+    await tx`DELETE FROM asset_risk_latest WHERE asset_id = ${to}`;
+    await tx`DELETE FROM stock_instruments_latest WHERE asset_id = ${to}`;
+    await tx`DELETE FROM stock_prices_latest WHERE asset_id = ${to}`;
+    await tx`DELETE FROM stock_ohlcv_candles WHERE asset_id = ${to}`;
+    // A reused id must not stay hidden by the tombstones of the asset that
+    // previously owned it (public reads filter on tombstone asset_id).
+    await tx`DELETE FROM asset_deletion_tombstones WHERE asset_id = ${to} OR normalized_ref = ${normalizedTo}`;
+
+    await tx`
+        UPDATE assets
+        SET asset_id = ${to}, updated_at = ${now}, admin_edited_at = ${args.nowMs}
+        WHERE asset_id = ${from}
+    `;
+    await tx`UPDATE asset_aliases SET asset_id = ${to}, updated_at = ${now} WHERE asset_id = ${from}`;
+    await tx`UPDATE asset_variants SET asset_id = ${to}, updated_at = ${now} WHERE asset_id = ${from}`;
+    await tx`UPDATE asset_collection_members SET asset_id = ${to} WHERE asset_id = ${from}`;
+    await tx`UPDATE asset_markets_latest SET asset_id = ${to} WHERE asset_id = ${from}`;
+    await tx`UPDATE asset_risk_latest SET asset_id = ${to} WHERE asset_id = ${from}`;
+    await tx`UPDATE stock_instruments_latest SET asset_id = ${to} WHERE asset_id = ${from}`;
+    await tx`UPDATE stock_prices_latest SET asset_id = ${to} WHERE asset_id = ${from}`;
+    await tx`UPDATE stock_ohlcv_candles SET asset_id = ${to} WHERE asset_id = ${from}`;
+    await tx`UPDATE trending_markets SET asset_id = ${to} WHERE asset_id = ${from}`;
+    await tx`UPDATE fresh_trending_markets SET asset_id = ${to} WHERE asset_id = ${from}`;
+
+    await tx`
+        INSERT INTO asset_aliases (id, normalized, alias, asset_id, kind, priority, created_at, updated_at)
+        VALUES (
+            ${randomId('aal')}, ${normalizedTo}, ${to}, ${to},
+            'assetId', ${ALIAS_PRIORITIES.assetId}, ${now}, ${now}
+        )
+        ON CONFLICT (asset_id, normalized, kind) DO NOTHING
+    `;
+    // Assets created through the admin have no `assetId` alias for their own
+    // id, so write the old id explicitly: it is what keeps `from` resolving.
+    await tx`
+        INSERT INTO asset_aliases (id, normalized, alias, asset_id, kind, priority, created_at, updated_at)
+        VALUES (
+            ${randomId('aal')}, ${from.toLowerCase()}, ${from}, ${to},
+            'assetId', ${ALIAS_PRIORITIES.assetId}, ${now}, ${now}
+        )
+        ON CONFLICT (asset_id, normalized, kind) DO NOTHING
+    `;
+    return 'renamed';
+}
+
 interface CurrentAssetRow {
     category: string;
     name: string | null;
@@ -179,6 +268,19 @@ export function makePostgresAdminMutationsRepo(sql: Sql): AdminMutationsRepo {
                 const current = rows[0];
                 if (!current) return 'not_found' as const;
 
+                // Rename first; everything below then targets the new id. A
+                // refused rename returns before any write, so nothing is saved.
+                let assetId = args.assetId;
+                if (args.newAssetId !== undefined && args.newAssetId !== args.assetId) {
+                    const renamed = await renameAssetId(tx, {
+                        from: args.assetId,
+                        to: args.newAssetId,
+                        nowMs: args.nowMs,
+                    });
+                    if (renamed !== 'renamed') return renamed;
+                    assetId = args.newAssetId;
+                }
+
                 const nextCategory = args.category !== undefined ? args.category : current.category;
                 const nextName = args.name !== undefined ? args.name : current.name;
                 const nextSymbol = args.symbol !== undefined ? args.symbol : current.symbol;
@@ -202,12 +304,12 @@ export function makePostgresAdminMutationsRepo(sql: Sql): AdminMutationsRepo {
                         is_active = ${nextIsActive},
                         updated_at = ${new Date(args.nowMs)},
                         admin_edited_at = ${args.nowMs}
-                    WHERE asset_id = ${args.assetId}
+                    WHERE asset_id = ${assetId}
                 `;
 
                 if (args.name !== undefined) {
                     await replaceAliasesForKind(tx, {
-                        assetId: args.assetId,
+                        assetId,
                         kind: 'name',
                         alias: args.name,
                         nowMs: args.nowMs,
@@ -215,7 +317,7 @@ export function makePostgresAdminMutationsRepo(sql: Sql): AdminMutationsRepo {
                 }
                 if (args.symbol !== undefined) {
                     await replaceAliasesForKind(tx, {
-                        assetId: args.assetId,
+                        assetId,
                         kind: 'symbol',
                         alias: args.symbol,
                         nowMs: args.nowMs,
@@ -223,7 +325,7 @@ export function makePostgresAdminMutationsRepo(sql: Sql): AdminMutationsRepo {
                 }
                 if (args.coingeckoId !== undefined) {
                     await replaceAliasesForKind(tx, {
-                        assetId: args.assetId,
+                        assetId,
                         kind: 'coingeckoId',
                         alias: args.coingeckoId,
                         nowMs: args.nowMs,
@@ -231,14 +333,14 @@ export function makePostgresAdminMutationsRepo(sql: Sql): AdminMutationsRepo {
                 }
                 if (args.aliases !== undefined) {
                     await replaceCustomAliases(tx, {
-                        assetId: args.assetId,
+                        assetId,
                         aliases: args.aliases,
                         nowMs: args.nowMs,
                     });
                 }
                 if (args.collections !== undefined) {
                     await syncCollections(tx, {
-                        assetId: args.assetId,
+                        assetId,
                         collections: args.collections,
                         nowMs: args.nowMs,
                     });

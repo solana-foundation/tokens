@@ -72,6 +72,8 @@ interface MockRepoData {
     assetsSymbolFuzzy?: Record<string, AssetRow[]>;
     variantsByMint?: Record<string, AssetVariantRow>;
     deletedRefs?: ReadonlySet<string>;
+    /** Admin renames: former id (lowercased) -> current id. */
+    renames?: Record<string, string>;
     byCategory?: {
         category: string;
         includeInactive: boolean;
@@ -119,6 +121,11 @@ function makeRepo(data: MockRepoData = {}): AssetsRepo {
         },
         async isDeletedRef(normalizedRef) {
             return data.deletedRefs?.has(normalizedRef) ?? false;
+        },
+        async listAssetIdRenames(normalizedAssetIds) {
+            return Object.entries(data.renames ?? {})
+                .filter(([from]) => normalizedAssetIds === undefined || normalizedAssetIds.includes(from))
+                .map(([from, to]) => ({ from, to }));
         },
         async listByCategory(category, includeInactive, limit) {
             const match = data.byCategory?.find(e => e.category === category && e.includeInactive === includeInactive);
@@ -623,6 +630,49 @@ describe('getByAssetId', () => {
         expect(body.isActive).toBe(false);
     });
 
+    it('serves the renamed asset when asked for its former id', async () => {
+        const app = createApp(
+            deps({
+                repo: makeRepo({
+                    byAssetId: { 'jupiter-dao': sampleRow({ asset_id: 'jupiter-dao' }) },
+                    renames: { jup: 'jupiter-dao' },
+                }),
+            }),
+        );
+        for (const assetId of ['jup', 'JUP', 'jupiter-dao']) {
+            const res = await call(app, '/query/getByAssetId', authed({ assetId }));
+            expect(res.status).toBe(200);
+            expect(((await res.json()) as { assetId: string }).assetId).toBe('jupiter-dao');
+        }
+    });
+
+    it('does not treat ordinary aliases as a former id', async () => {
+        const app = createApp(
+            deps({
+                repo: makeRepo({
+                    byAssetId: { jup: sampleRow() },
+                    aliasesByNormalized: {
+                        jupiter: [{ alias: 'Jupiter', normalized: 'jupiter', asset_id: 'jup', priority: 900 }],
+                    },
+                }),
+            }),
+        );
+        const res = await call(app, '/query/getByAssetId', authed({ assetId: 'jupiter' }));
+        expect(await res.json()).toBeNull();
+    });
+
+    it('keeps a renamed asset hidden while inactive, under either id', async () => {
+        const app = createApp(
+            deps({
+                repo: makeRepo({
+                    byAssetId: { 'jupiter-dao': sampleRow({ asset_id: 'jupiter-dao', is_active: false }) },
+                    renames: { jup: 'jupiter-dao' },
+                }),
+            }),
+        );
+        expect(await (await call(app, '/query/getByAssetId', authed({ assetId: 'jup' }))).json()).toBeNull();
+    });
+
     it('returns null for whitespace-trimmed-to-empty input', async () => {
         const app = createApp(deps({ repo: makeRepo({ byAssetId: { jup: sampleRow() } }) }));
         const res = await call(app, '/query/getByAssetId', authed({ assetId: '   ' }));
@@ -655,6 +705,24 @@ describe('getByAssetId', () => {
             const payload = (await res.json()) as { error: string };
             expect(payload.error).toBe('invalid_args');
         }
+    });
+});
+
+describe('listAssetIdRenames', () => {
+    it('lists every rename as former id -> current id', async () => {
+        const app = createApp(deps({ repo: makeRepo({ renames: { jup: 'jupiter-dao', bitcoin: 'btc' } }) }));
+        const res = await call(app, '/query/listAssetIdRenames', authed({}));
+        expect(res.status).toBe(200);
+        expect(await res.json()).toEqual([
+            { from: 'jup', to: 'jupiter-dao' },
+            { from: 'bitcoin', to: 'btc' },
+        ]);
+    });
+
+    it('returns an empty list when nothing was renamed', async () => {
+        const app = createApp(deps());
+        const res = await call(app, '/query/listAssetIdRenames', authed({}));
+        expect(await res.json()).toEqual([]);
     });
 });
 
