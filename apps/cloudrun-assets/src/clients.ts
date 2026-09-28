@@ -1,4 +1,4 @@
-import { Effect, Schema } from 'effect';
+import { Duration, Effect, Schema } from 'effect';
 import { fetchJsonWithRetry } from '@tokens/effect';
 import { decodeUpstreamOrWarn } from '@tokens/effect/schema';
 import { withExternalTiming } from './externalTiming';
@@ -857,6 +857,9 @@ interface MakeRwaXyzOptions {
     apiVersion?: string;
 }
 
+const RWAXYZ_TIMEOUT: Duration.Input = '5 seconds';
+const RWAXYZ_MAX_RETRIES = 0;
+
 interface RwaXyzListResponseShape<T> {
     results?: T[];
 }
@@ -1023,8 +1026,8 @@ export function makeRwaXyzClient(opts: MakeRwaXyzOptions): RwaXyzClient {
                 url,
                 service: 'rwaxyz',
                 init: { headers },
-                maxRetries: 2,
-                timeout: '30 seconds',
+                maxRetries: RWAXYZ_MAX_RETRIES,
+                timeout: RWAXYZ_TIMEOUT,
             }),
         );
     }

@@ -1,6 +1,9 @@
-import { describe, expect, test } from 'bun:test';
+import { afterEach, describe, expect, test } from 'bun:test';
 
-import { makeClickhouseClient } from './clients';
+import { makeClickhouseClient, makeRwaXyzClient } from './clients';
+
+const ORIGINAL_FETCH = globalThis.fetch;
+const ORIGINAL_LOG = console.log;
 
 const BASE_OPTS = {
     url: 'http://clickhouse.invalid',
@@ -81,4 +84,53 @@ describe('fetchSolanaMintSnapshots (clickhouse-api gateway)', () => {
             client.fetchSolanaMintSnapshots({ mints: ['M'], stableMints: ['USDC'] }),
         ).rejects.toThrow('clickhouse-api HTTP 502');
     });
+});
+
+describe('makeRwaXyzClient timeout', () => {
+    afterEach(() => {
+        globalThis.fetch = ORIGINAL_FETCH;
+        console.log = ORIGINAL_LOG;
+    });
+
+    test('rejects with a timeout FetchFailedError when the upstream fetch hangs', async () => {
+        console.log = () => {};
+
+        let abortObserved = false;
+
+        globalThis.fetch = ((_url: string, init?: RequestInit) => {
+            return new Promise<Response>((_resolve, reject) => {
+                const signal = init?.signal;
+                if (signal?.aborted) {
+                    abortObserved = true;
+                    reject(new DOMException('The operation was aborted.', 'AbortError'));
+                    return;
+                }
+                signal?.addEventListener('abort', () => {
+                    abortObserved = true;
+                    reject(new DOMException('The operation was aborted.', 'AbortError'));
+                });
+            });
+        }) as typeof fetch;
+
+        const client = makeRwaXyzClient({ apiKey: 'test-key' });
+
+        const started = Date.now();
+        let caught: unknown = null;
+        try {
+            await client.fetchSolanaTokenAndAssetByMint('SomeMint');
+        } catch (err) {
+            caught = err;
+        }
+        const elapsedMs = Date.now() - started;
+
+        expect(caught).not.toBeNull();
+        const message = caught instanceof Error ? caught.message : String(caught);
+        expect(message).toContain('rwaxyz');
+        expect(message.toLowerCase()).toContain('timed out');
+
+        expect(abortObserved).toBe(true);
+
+        expect(elapsedMs).toBeGreaterThanOrEqual(4_500);
+        expect(elapsedMs).toBeLessThan(8_000);
+    }, 15_000);
 });
