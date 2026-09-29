@@ -20,12 +20,6 @@ function ExportCountBadge({ count }: { count: number | null }) {
 
     const closing = count === null && shown !== null;
 
-    // With reduced motion there is no exit animation, so no animationend: drop the badge directly.
-    useEffect(() => {
-        if (!closing) return;
-        if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) setShown(null);
-    }, [closing]);
-
     if (shown === null) return null;
 
     return (
@@ -62,7 +56,7 @@ function ExportIcon({ className }: { className?: string }) {
                 strokeLinejoin="round"
             />
             <path
-                d="M5 14.5L5 16.75C5 17.9926 6.00736 19 7.25 19L16.75 19C17.9926 19 19 17.9926 19 16.75L19 14.5"
+                d="M5 14.5L5 16.75C5 17.99 6.01 19 7.25 19L16.75 19C17.99 19 19 17.99 19 16.75L19 14.5"
                 stroke="currentColor"
                 strokeWidth="1.75"
                 strokeLinecap="round"

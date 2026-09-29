@@ -296,9 +296,9 @@ samp {
     animation: registry-badge-out 0.18s cubic-bezier(0.4, 0, 1, 1) both;
 }
 
+/* Keep a near-instant exit animation so `animationend` still fires and the badge unmounts. */
 @media (prefers-reduced-motion: reduce) {
     .registry-export-badge[data-state='closed'] {
-        animation: none;
-        opacity: 0;
+        animation: registry-badge-out 0.01ms linear both;
     }
 }
