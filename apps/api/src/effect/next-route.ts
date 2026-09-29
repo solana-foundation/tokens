@@ -11,6 +11,7 @@ import { getRedisClient, type RedisClient } from '@/lib/redis';
 import { slidingWindowLimit } from './sliding-window-rate-limit';
 import {
     maybeDrainUsageAggregates,
+    newUsageDirtyMark,
     USAGE_DIRTY_KEY,
     usageDayKey,
     usageEndpointKey,
@@ -394,6 +395,7 @@ function recordUsageAggregate(params: {
         const latencyMs = Math.max(0, Math.floor(params.latencyMs));
         const statusField = statusClassField(params.status);
         const histogramField = `hist:${binLatencyMs(latencyMs)}`;
+        const dirtyMark = newUsageDirtyMark();
 
         yield* Effect.tryPromise(() =>
             redis
@@ -411,8 +413,8 @@ function recordUsageAggregate(params: {
                 .hincrby(endpointKey, histogramField, 1)
                 .expire(endpointKey, ttl)
                 .set(endpointNameKey, endpoint, { ex: ttl })
-                .hincrby(USAGE_DIRTY_KEY, dayKey, 1)
-                .hincrby(USAGE_DIRTY_KEY, endpointKey, 1)
+                .hset(USAGE_DIRTY_KEY, dayKey, dirtyMark)
+                .hset(USAGE_DIRTY_KEY, endpointKey, dirtyMark)
                 .expire(USAGE_DIRTY_KEY, ttl)
                 .exec(),
         );

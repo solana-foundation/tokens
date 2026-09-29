@@ -14,6 +14,7 @@ import {
     __resetUsageDrainForTesting,
     drainUsageAggregates,
     maybeDrainUsageAggregates,
+    newUsageDirtyMark,
     parseUsageKey,
     USAGE_DIRTY_KEY,
     USAGE_DRAIN_LOCK_KEY,
@@ -29,19 +30,26 @@ const HASH_B = 'b'.repeat(64);
 const SEARCH = '/api/v1/assets/search';
 
 /** In-memory Redis that executes the drain scripts' semantics. */
-function makeFakeRedis(options: { numericReplies?: boolean; onRead?: () => void } = {}) {
-    const hashes = new Map<string, Map<string, number>>();
+function makeFakeRedis(options: { numericReplies?: boolean; onRead?: () => void; onSync?: () => void } = {}) {
+    const hashes = new Map<string, Map<string, number | string>>();
     const strings = new Map<string, string>();
     const reply = (value: number) => (options.numericReplies ? value : String(value));
 
     const hincrby = (key: string, field: string, delta: number) => {
-        const hash = hashes.get(key) ?? new Map<string, number>();
-        hash.set(field, (hash.get(field) ?? 0) + delta);
+        const hash = hashes.get(key) ?? new Map<string, number | string>();
+        hash.set(field, Number(hash.get(field) ?? 0) + delta);
+        hashes.set(key, hash);
+    };
+    const hset = (key: string, field: string, value: string) => {
+        const hash = hashes.get(key) ?? new Map<string, number | string>();
+        hash.set(field, value);
         hashes.set(key, hash);
     };
     const hgetall = (key: string) => {
         const flat: Array<string | number> = [];
-        for (const [field, value] of hashes.get(key) ?? []) flat.push(field, reply(value));
+        for (const [field, value] of hashes.get(key) ?? []) {
+            flat.push(field, typeof value === 'number' ? reply(value) : value);
+        }
         return flat;
     };
 
@@ -106,8 +114,9 @@ function makeFakeRedis(options: { numericReplies?: boolean; onRead?: () => void 
         hincrby(endpointKey, 'status2xx', 1);
         hincrby(endpointKey, `hist:${latencyBin}`, 1);
         strings.set(usageEndpointNameKey(endpointHash), endpoint);
-        hincrby(USAGE_DIRTY_KEY, dayKey, 1);
-        hincrby(USAGE_DIRTY_KEY, endpointKey, 1);
+        const mark = newUsageDirtyMark();
+        hset(USAGE_DIRTY_KEY, dayKey, mark);
+        hset(USAGE_DIRTY_KEY, endpointKey, mark);
     };
 
     const dirtyKeys = () => [...(hashes.get(USAGE_DIRTY_KEY)?.keys() ?? [])];
@@ -153,6 +162,24 @@ describe('parseUsageKey', () => {
         expect(parseUsageKey(`usage:v1:day:${DAY}:`)).toBeNull();
         expect(parseUsageKey(`usage:v1:endpoint:${DAY}:${PROJECT}:nothex`)).toBeNull();
         expect(parseUsageKey(usageEndpointNameKey(HASH_A))).toBeNull();
+    });
+});
+
+describe('newUsageDirtyMark', () => {
+    it('never repeats and cannot be parsed as JSON or a number', () => {
+        const marks = new Set(Array.from({ length: 1_000 }, newUsageDirtyMark));
+        expect(marks.size).toBe(1_000);
+        for (const mark of marks) {
+            expect(Number.isNaN(Number(mark))).toBe(true);
+            let parsed = false;
+            try {
+                JSON.parse(mark);
+                parsed = true;
+            } catch {
+                // expected: a mark is not JSON
+            }
+            expect(parsed).toBe(false);
+        }
     });
 });
 
@@ -277,6 +304,33 @@ describe('drainUsageAggregates', () => {
         const second = await Effect.runPromise(drainUsageAggregates({ redis: fake.redis, sync }));
         expect(second).toEqual({ synced: 2, pending: 0 });
         expect(daily(calls[1])!.totalCalls).toBe(2);
+    });
+
+    it('a concurrent drain cannot clear a mark written after its own read', async () => {
+        const fake = makeFakeRedis();
+        fake.record(HASH_A, SEARCH, 1);
+        const { sync } = makeSync();
+        // Drain B lists and reads, then stalls in its sync call. Meanwhile
+        // drain A finishes and a request re-dirties the keys.
+        const slow = makeSync();
+        const stalledSync = (buckets: UsageAggregateBucket[]) =>
+            Effect.gen(function* () {
+                yield* Effect.promise(() => Effect.runPromise(drainUsageAggregates({ redis: fake.redis, sync })));
+                fake.record(HASH_A, SEARCH, 1);
+                yield* slow.sync(buckets);
+            });
+
+        const drainB = await Effect.runPromise(drainUsageAggregates({ redis: fake.redis, sync: stalledSync }));
+
+        // B synced its older snapshot but must leave the newer write dirty.
+        expect(daily(slow.calls[0])!.totalCalls).toBe(1);
+        expect(drainB.pending).toBe(2);
+        expect(fake.dirtyKeys().length).toBe(2);
+
+        const after = makeSync();
+        await Effect.runPromise(drainUsageAggregates({ redis: fake.redis, sync: after.sync }));
+        expect(daily(after.calls[0])!.totalCalls).toBe(2);
+        expect(fake.dirtyKeys()).toEqual([]);
     });
 
     it('holds back an endpoint bucket whose name is missing', async () => {
