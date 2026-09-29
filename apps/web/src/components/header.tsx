@@ -9,6 +9,14 @@ import { TokenSearch } from './token-search';
 import { Logo } from './logo';
 import { useSearchVisibility } from './search-visibility-provider';
 
+const NAV_LINK_CLASS =
+    'inline-flex h-10 items-center px-2 text-[length:var(--text-button-lg)] font-semibold leading-none text-text-low transition-colors duration-150 hover:text-text-extra-high focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-text-extra-high/30 focus-visible:ring-offset-2 focus-visible:ring-offset-background';
+
+/** Pages with their own primary search; the global token search would compete with it. */
+function shouldHideHeaderSearch(pathname: string): boolean {
+    return pathname === '/registry';
+}
+
 function getHasScrolled(): boolean {
     return window.scrollY > 0;
 }
@@ -52,8 +60,9 @@ export function Header() {
                     : 'bg-transparent border-transparent',
             )}
         >
-            <div className="mx-auto flex items-center justify-between gap-4 px-6 py-4">
-                <div className="flex items-center">
+            {/* Three-column grid with equal side tracks keeps the search centered regardless of link widths. */}
+            <div className="mx-auto grid grid-cols-[1fr_auto_1fr] items-center gap-4 px-6 py-4">
+                <div className="flex min-w-0 items-center gap-6 lg:gap-8">
                     <Link
                         href="/"
                         className="flex items-center justify-center group gap-2"
@@ -68,9 +77,39 @@ export function Header() {
                         <Logo width={24} height={24} className="" />
                         <span className="text-text-extra-high font-semibold text-2xl">Tokens</span>
                     </Link>
+                    <nav aria-label="Browse" className="hidden items-center gap-2 lg:flex lg:gap-4">
+                        <Link
+                            href="/"
+                            className={cn(NAV_LINK_CLASS, pathname === '/' && 'text-text-extra-high')}
+                            aria-current={pathname === '/' ? 'page' : undefined}
+                            onClick={() =>
+                                trackEvent('nav_link_clicked', {
+                                    destination: 'explore',
+                                    link_url: '/',
+                                    source: 'header',
+                                })
+                            }
+                        >
+                            Explore
+                        </Link>
+                        <Link
+                            href="/registry"
+                            className={cn(NAV_LINK_CLASS, pathname === '/registry' && 'text-text-extra-high')}
+                            aria-current={pathname === '/registry' ? 'page' : undefined}
+                            onClick={() =>
+                                trackEvent('nav_link_clicked', {
+                                    destination: 'registry',
+                                    link_url: '/registry',
+                                    source: 'header',
+                                })
+                            }
+                        >
+                            Assets Registry
+                        </Link>
+                    </nav>
                 </div>
 
-                <div className="flex items-center">
+                <div className="flex items-center justify-center">
                     <div
                         className={`transition-[opacity,transform] duration-200 ease-out ${
                             isHeroSearchVisible
@@ -78,16 +117,19 @@ export function Header() {
                                 : 'opacity-100 pointer-events-auto translate-y-0'
                         }`}
                     >
-                        <TokenSearch />
+                        {pathname && shouldHideHeaderSearch(pathname) ? null : <TokenSearch />}
                     </div>
                 </div>
 
-                <nav aria-label="Main navigation" className="hidden items-center gap-6 sm:flex sm:gap-8">
+                <nav
+                    aria-label="Main navigation"
+                    className="hidden items-center justify-end gap-6 justify-self-end sm:flex sm:gap-8"
+                >
                     <a
                         href="https://docs.tokens.xyz"
                         target="_blank"
                         rel="noopener noreferrer"
-                        className="inline-flex h-10 items-center px-2 text-[length:var(--text-button-lg)] font-semibold leading-none text-text-medium transition-colors duration-150 hover:text-text-extra-high focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-text-extra-high/30 focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+                        className={NAV_LINK_CLASS}
                         onClick={() =>
                             trackEvent('external_link_clicked', {
                                 link_type: 'docs',
