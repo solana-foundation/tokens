@@ -268,6 +268,9 @@ export function encodeFilters(filters: readonly RegistryFilter[]): string {
     return JSON.stringify(filters.map(filter => [filter.field, filter.op, filter.value]));
 }
 
+/** Field ids from links shared before the Group / Category / Class migration. */
+const LEGACY_FIELD_ALIASES: Readonly<Record<string, FilterFieldId>> = { solanaClass: 'assetClass' };
+
 /** Fail-closed: garbage → [], unknown fields/ops/values are dropped individually. */
 export function decodeFilters(raw: string): RegistryFilter[] {
     let parsed: unknown;
@@ -284,7 +287,7 @@ export function decodeFilters(raw: string): RegistryFilter[] {
         const [field, op, value] = tuple as unknown[];
         if (typeof field !== 'string' || typeof op !== 'string') continue;
         if (typeof value !== 'string' && typeof value !== 'number') continue;
-        const built = buildFilter({ field, op, value });
+        const built = buildFilter({ field: LEGACY_FIELD_ALIASES[field] ?? field, op, value });
         if ('filter' in built) filters.push(built.filter);
     }
     return filters;

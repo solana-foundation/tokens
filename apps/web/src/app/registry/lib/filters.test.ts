@@ -181,8 +181,9 @@ describe('filter url codec', () => {
         expect(decodeFilters(encodeFilters(filters))).toEqual([...filters]);
     });
 
-    test('drops the legacy solanaClass field from pre-migration links', () => {
+    test('maps the legacy solanaClass field from pre-migration links onto assetClass', () => {
         expect(decodeFilters('[["solanaClass","is","Stocks"],["group","is","RWA"]]')).toEqual([
+            { field: 'assetClass', op: 'is', value: 'Stocks' },
             { field: 'group', op: 'is', value: 'RWA' },
         ]);
     });
