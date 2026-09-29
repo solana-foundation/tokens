@@ -77,7 +77,8 @@ export function Header() {
                         <Logo width={24} height={24} className="" />
                         <span className="text-text-extra-high font-semibold text-2xl">Tokens</span>
                     </Link>
-                    <nav aria-label="Browse" className="hidden items-center gap-2 lg:flex lg:gap-4">
+                    {/* Shown only once the left track can hold logo + both links beside the centered 320px search. */}
+                    <nav aria-label="Browse" className="hidden shrink-0 items-center gap-4 min-[1120px]:flex">
                         <Link
                             href="/"
                             className={cn(NAV_LINK_CLASS, pathname === '/' && 'text-text-extra-high')}
