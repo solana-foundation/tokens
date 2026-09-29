@@ -25,13 +25,25 @@ import {
  * keeps the larger of stored and incoming. Replaying a batch (lost response,
  * timeout, two instances draining at once) therefore cannot double-count, and
  * a failed sync loses nothing: the hash and its dirty mark are still there.
+ * Drains need no mutual exclusion for correctness; the lock below only keeps
+ * instances from all draining at once.
+ *
+ * Two invariants this relies on, both enforced in `lib/env.ts`:
+ * - the hash TTL outlasts a day, so a day's totals never restart from zero;
+ * - raw sampling is off in aggregated mode, so the event rollup never adds to
+ *   rows this sync owns.
  */
 
 const DAY_KEY_PREFIX = 'usage:v1:day:';
 const ENDPOINT_KEY_PREFIX = 'usage:v1:endpoint:';
 const ENDPOINT_NAME_KEY_PREFIX = 'usage:v1:endpoint-name:';
 
-/** Hash: usage hash key -> number of writes since it was last synced. */
+/**
+ * Hash: usage hash key -> mark of the last write to it. Marks are unique per
+ * write (never a counter): a drain clears a mark only if it is still the one
+ * it listed, and a value that can repeat would let a second, concurrent drain
+ * clear a mark written after its own read.
+ */
 export const USAGE_DIRTY_KEY = 'usage:v1:dirty';
 export const USAGE_DRAIN_LOCK_KEY = 'usage:v1:drain-lock';
 
@@ -43,6 +55,11 @@ const HISTOGRAM_BUCKETS = 14;
 
 const DEFAULT_MAX_KEYS = 200;
 const MAX_BATCHES_PER_DRAIN = 5;
+
+/** A fresh dirty mark. Prefixed so no Redis client mistakes it for JSON or a number. */
+export function newUsageDirtyMark(): string {
+    return `m_${crypto.randomUUID()}`;
+}
 
 export function usageDayKey(day: string, projectId: string): string {
     return `${DAY_KEY_PREFIX}${day}:${projectId}`;

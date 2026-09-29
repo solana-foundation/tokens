@@ -7,6 +7,7 @@ const ENV_KEYS = [
     'VERCEL_ENV',
     'TOKENS_USAGE_LOG_MODE',
     'TOKENS_USAGE_RAW_SAMPLE_RATE',
+    'TOKENS_USAGE_AGGREGATION_TTL_SECONDS',
     'TOKENS_CLOUDRUN_AUTH_TOKEN',
     'TOKENS_CLOUDRUN_ASSETS_URL',
     'TOKENS_CLOUDRUN_PRICES_URL',
@@ -125,6 +126,52 @@ describe('loadEnv invalid numeric values', () => {
                 expect(loadEnv().usageRawSampleRate).toBe(0.5);
                 expect(warnings.length).toBe(0);
             });
+        });
+    });
+});
+
+describe('loadEnv usage aggregation guards', () => {
+    it('forces raw sampling off in aggregated mode and says so', () => {
+        withEnv({ TOKENS_USAGE_LOG_MODE: 'aggregated', TOKENS_USAGE_RAW_SAMPLE_RATE: '0.5' }, () => {
+            withCapturedWarnings(warnings => {
+                expect(loadEnv().usageRawSampleRate).toBe(0);
+                const events = warnings.map(line => JSON.parse(line) as Record<string, unknown>);
+                expect(events.length).toBe(1);
+                expect(events[0]!.event).toBe('env_ignored_value');
+                expect(events[0]!.name).toBe('TOKENS_USAGE_RAW_SAMPLE_RATE');
+            });
+        });
+    });
+
+    it('keeps raw sampling in the other modes', () => {
+        for (const mode of ['raw', 'off']) {
+            withEnv({ TOKENS_USAGE_LOG_MODE: mode, TOKENS_USAGE_RAW_SAMPLE_RATE: '0.5' }, () => {
+                withCapturedWarnings(warnings => {
+                    expect(loadEnv().usageRawSampleRate).toBe(0.5);
+                    expect(warnings.length).toBe(0);
+                });
+            });
+        }
+    });
+
+    it('stays silent in aggregated mode when sampling is not configured', () => {
+        withEnv({ TOKENS_USAGE_LOG_MODE: 'aggregated' }, () => {
+            withCapturedWarnings(warnings => {
+                expect(loadEnv().usageRawSampleRate).toBe(0);
+                expect(warnings.length).toBe(0);
+            });
+        });
+    });
+
+    it('never lets the usage hash TTL drop to a day or less', () => {
+        withEnv({ TOKENS_USAGE_AGGREGATION_TTL_SECONDS: '60' }, () => {
+            withCapturedWarnings(warnings => {
+                expect(loadEnv().usageAggregationTtlSeconds).toBeGreaterThan(86_400);
+                expect(warnings.length).toBe(1);
+            });
+        });
+        withEnv({}, () => {
+            expect(loadEnv().usageAggregationTtlSeconds).toBe(172_800);
         });
     });
 });

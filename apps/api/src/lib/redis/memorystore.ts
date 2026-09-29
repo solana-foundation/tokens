@@ -33,6 +33,11 @@ class MemorystorePipeline implements RedisPipeline {
         return this;
     }
 
+    hset(key: string, field: string, value: string): this {
+        this.chain.hset(key, field, value);
+        return this;
+    }
+
     set(key: string, value: string | number, options?: RedisSetOptions): this {
         const stringValue = typeof value === 'number' ? String(value) : value;
         if (!options) {

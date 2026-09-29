@@ -87,7 +87,7 @@ const SLIDING_WINDOW_REMAINING_TOKENS_SCRIPT_SRC = `
  * their own TTL.
  */
 const USAGE_DRAIN_LIST_DIRTY_SCRIPT_SRC = `
-  local dirtyKey = KEYS[1]           -- hash: usage key -> writes since last sync
+  local dirtyKey = KEYS[1]           -- hash: usage key -> mark of its last write
   local limit    = tonumber(ARGV[1]) -- max dirty keys to return
 
   local entries = redis.call("HGETALL", dirtyKey) -- flat {field, value, ...}
@@ -111,11 +111,13 @@ const USAGE_DRAIN_ENDPOINT_NAMES_SCRIPT_SRC = `
 `;
 
 const USAGE_DRAIN_CLEAR_DIRTY_SCRIPT_SRC = `
-  local dirtyKey = KEYS[1] -- hash: usage key -> writes since last sync
+  local dirtyKey = KEYS[1] -- hash: usage key -> mark of its last write
 
-  -- ARGV is {field, mark, field, mark, ...}. A mark that moved since it was
-  -- listed means a request wrote after the read: keep it dirty for the next
-  -- drain instead of dropping that write.
+  -- ARGV is {field, mark, field, mark, ...}. Every write sets a fresh unique
+  -- mark, so a mark that differs from the one listed means a request wrote
+  -- after the read: keep it dirty for the next drain instead of dropping
+  -- that write. Unique marks also keep concurrent drains from clearing a
+  -- mark one of them did not read.
   local cleared = 0
   for i = 1, #ARGV, 2 do
     if redis.call("HGET", dirtyKey, ARGV[i]) == ARGV[i + 1] then
