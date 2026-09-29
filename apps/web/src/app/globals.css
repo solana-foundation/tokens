@@ -213,3 +213,92 @@ samp {
         -webkit-mask-image: none;
     }
 }
+
+/* Registry export button: the arrow dips into the tray and settles while the button is hovered/focused. */
+@keyframes registry-export-bounce {
+    0%,
+    100% {
+        transform: translateY(0);
+    }
+
+    35% {
+        transform: translateY(2.5px);
+    }
+
+    60% {
+        transform: translateY(-1.5px);
+    }
+
+    80% {
+        transform: translateY(1px);
+    }
+}
+
+.registry-export-arrow {
+    transform-box: fill-box;
+    transform-origin: center;
+}
+
+.group\/export:hover:not(:disabled) .registry-export-arrow,
+.group\/export:focus-visible .registry-export-arrow {
+    animation: registry-export-bounce 0.7s cubic-bezier(0.22, 1, 0.36, 1) infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .group\/export:hover:not(:disabled) .registry-export-arrow,
+    .group\/export:focus-visible .registry-export-arrow {
+        animation: none;
+    }
+}
+
+/* Registry export button: matched-count badge pops in from nothing at the button's top-right corner. */
+@keyframes registry-badge-in {
+    from {
+        opacity: 0;
+        transform: scale(0);
+    }
+
+    70% {
+        opacity: 1;
+        transform: scale(1.08);
+    }
+
+    to {
+        opacity: 1;
+        transform: scale(1);
+    }
+}
+
+.registry-export-badge {
+    transform-origin: center;
+    animation: registry-badge-in 0.28s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .registry-export-badge {
+        animation: none;
+    }
+}
+
+@keyframes registry-badge-out {
+    from {
+        opacity: 1;
+        transform: scale(1);
+    }
+
+    to {
+        opacity: 0;
+        transform: scale(0);
+    }
+}
+
+.registry-export-badge[data-state='closed'] {
+    animation: registry-badge-out 0.18s cubic-bezier(0.4, 0, 1, 1) both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .registry-export-badge[data-state='closed'] {
+        animation: none;
+        opacity: 0;
+    }
+}

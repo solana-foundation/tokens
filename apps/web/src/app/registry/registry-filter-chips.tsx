@@ -14,7 +14,7 @@ import type { RegistryUrlState } from './use-registry-url-state';
 
 // Chip + popover styling ported 1:1 from the svela screener (screener-filter-chips.tsx).
 const CHIP_CLASS =
-    'group h-6 gap-1 rounded-md pr-1 py-0 bg-primary/5 text-primary/50 hover:text-primary border-border border-dashed flex-shrink-0';
+    'group h-7 gap-1 rounded-md pr-1 py-0 bg-primary/5 text-primary/50 hover:text-primary border-border border-dashed flex-shrink-0';
 const POPOVER_CLASS = 'w-auto rounded-xl bg-white p-3';
 
 export function Kbd({ children, className }: { children: ReactNode; className?: string }) {
@@ -35,7 +35,7 @@ export function ChipShell({ label, value, onRemove }: { label: string; value: st
     return (
         <Badge variant="secondary" className={cn(CHIP_CLASS, 'cursor-crosshair')}>
             <span className="text-xs font-medium opacity-50">{label}</span>
-            <div className="mx-1 h-[24px] w-[1px] bg-border" />
+            <div className="mx-1 h-[28px] w-[1px] bg-border" />
             <span className="text-xs tabular-nums">{value}</span>
             <Button
                 variant="ghost"
@@ -93,7 +93,7 @@ function FilterChip({
             <PopoverContent
                 align="start"
                 // Cover the chip instead of dropping below it (see AddFilterChip).
-                sideOffset={-26}
+                sideOffset={-28}
                 alignOffset={-4}
                 className={POPOVER_CLASS}
             >
@@ -139,12 +139,12 @@ function AddFilterChip({ options, onAdd }: { options: CategoryOptions; onAdd: (f
                     type="button"
                     variant="ghost"
                     size="sm"
-                    className="h-6 gap-1 rounded-md border border-dashed border-border px-2 pr-1 text-xs text-primary/50 hover:text-primary hover:ring-2 hover:ring-primary/10"
+                    className="h-7 gap-1.5 rounded-md border border-dashed border-border px-2 pr-1 text-xs text-primary/50 hover:text-primary hover:ring-2 hover:ring-primary/10"
                     aria-label="Add filter"
                 >
                     <Plus className="h-3 w-3" />
                     <span>Add filter</span>
-                    <Kbd className="ml-0.5 h-4 px-1 text-[10px]">F</Kbd>
+                    <Kbd className="ml-0.5">F</Kbd>
                 </Button>
             </PopoverTrigger>
             <PopoverContent
