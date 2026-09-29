@@ -121,17 +121,7 @@ function makeClickhouse(opts: MockClickhouseOpts = {}): ClickhouseClient {
             }
             return out;
         },
-        async query() { return []; },
         async queryPreset() { return []; },
-        tables() {
-            return {
-                database: 'default',
-                stockTradesTable: null,
-                stockInstrumentsTable: null,
-                solanaTradesTable: null,
-                priceScale: 1,
-            };
-        },
     };
 }
 
