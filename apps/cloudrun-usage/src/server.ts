@@ -5,7 +5,9 @@ import type { IdentityRepo } from './handlers/clerkIdentity';
 import * as dashboard from './handlers/dashboard';
 import type { DashboardRepo } from './handlers/dashboard';
 import { dispatchErrorResponse } from '@tokens/cloudrun-shutdown/http-errors';
+import { limitsEnforce } from './handlers/limits';
 import { authenticateApiKey, logApiRequest, type PlatformAuthRepo } from './handlers/platformAuth';
+import type { LimitsRedis } from './redis';
 import * as usageDashboard from './handlers/usageDashboard';
 import type { UsageDashboardRepo } from './handlers/usageDashboard';
 import { ingestUsageAggregates, type UsageIngestRepo } from './handlers/usageIngest';
@@ -25,6 +27,7 @@ export interface ServerDeps {
     identity: IdentityRepo;
     /** Required for key reset/reveal; those handlers throw if absent. */
     apiKeyEncryptionSecret?: string;
+    limitsRedis?: LimitsRedis;
     /** Vercel log-drain + Clerk webhook ingest (app-level auth, not bearer). */
     hooks?: HookDeps;
     authToken: string;
@@ -107,6 +110,11 @@ export function createApp(deps: ServerDeps) {
 
     const mutations: Record<string, Handler> = Object.create(null);
     mutations.logApiRequest = args => logApiRequest(deps.platformAuth, args);
+    mutations.limitsEnforce = args => {
+        const redis = deps.limitsRedis;
+        if (!redis) throw new Error('limitsEnforce: TOKENS_REDIS_HOST not configured');
+        return limitsEnforce({ redis }, args);
+    };
     mutations.ingestUsageAggregates = args => ingestUsageAggregates(deps.usageIngest, args);
     // Dashboard writes (identity-scoped).
     mutations.usersUpsertMe = (args, identity) => dashboard.usersUpsertMe(dashDeps, args, identity);
