@@ -152,11 +152,16 @@ export interface AdminMutationsRepo {
     /**
      * `asset_id_exists`: the rename target is already an asset.
      * `asset_id_reserved`: the rename target is another asset's former id.
-     * Either way nothing is written.
+     * `asset_id_aliased`: the rename target is another asset's name, symbol,
+     * coingecko id or custom alias.
+     * `asset_id_deleted`: the rename target belongs to a hard-deleted asset.
+     * In every case nothing is written.
      */
     updateCanonicalAsset(
         args: UpdateCanonicalAssetWrite,
-    ): Promise<'updated' | 'not_found' | 'asset_id_exists' | 'asset_id_reserved'>;
+    ): Promise<
+        'updated' | 'not_found' | 'asset_id_exists' | 'asset_id_reserved' | 'asset_id_aliased' | 'asset_id_deleted'
+    >;
     deleteCanonicalAsset(args: { assetId: string }): Promise<'deleted' | 'not_found' | 'has_variants'>;
     createVariant(args: CreateVariantWrite): Promise<CreateVariantOutcome>;
     updateVariant(args: UpdateVariantWrite): Promise<'updated' | 'not_found' | 'variant_id_collision'>;
@@ -273,6 +278,12 @@ export async function updateCanonicalAsset(
     if (outcome === 'asset_id_exists') throw new InvalidArgsError('An asset with that id already exists');
     if (outcome === 'asset_id_reserved') {
         throw new InvalidArgsError('That id is the former id of another asset and still resolves to it');
+    }
+    if (outcome === 'asset_id_aliased') {
+        throw new InvalidArgsError('That id is already a name, symbol or alias of another asset and resolves to it');
+    }
+    if (outcome === 'asset_id_deleted') {
+        throw new InvalidArgsError('That id belongs to a hard-deleted asset and cannot be reused');
     }
     return { assetId: newAssetId ?? assetId, updated: true };
 }

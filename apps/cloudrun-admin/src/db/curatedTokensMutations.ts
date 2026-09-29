@@ -94,7 +94,12 @@ export async function syncCollections(
     }
 }
 
-export type RenameAssetIdOutcome = 'renamed' | 'asset_id_exists' | 'asset_id_reserved';
+export type RenameAssetIdOutcome =
+    | 'renamed'
+    | 'asset_id_exists'
+    | 'asset_id_reserved'
+    | 'asset_id_aliased'
+    | 'asset_id_deleted';
 
 /**
  * Rename an asset id inside the caller's transaction. `asset_id` is a bare
@@ -123,18 +128,32 @@ export async function renameAssetId(
     // Variants without an asset row would be silently merged into this asset.
     const existingVariants = await tx`SELECT 1 FROM asset_variants WHERE asset_id = ${to} LIMIT 1`;
     if (existingVariants.length > 0) return 'asset_id_exists';
-    // `to` is another asset's former id: that alias must keep resolving there.
-    const reserved = await tx`
-        SELECT 1 FROM asset_aliases
-        WHERE kind = 'assetId' AND normalized = ${normalizedTo}
+    // `to` already resolves to another asset, as its former id (`assetId`
+    // kind) or its name, symbol, coingecko id or custom alias. An asset id
+    // outranks every alias, so taking it would redirect that reference here.
+    const aliased = await tx<Array<{ kind: string }>>`
+        SELECT kind FROM asset_aliases
+        WHERE normalized = ${normalizedTo}
           AND asset_id <> ${from} AND asset_id <> ${to}
+        ORDER BY priority DESC
         LIMIT 1
     `;
-    if (reserved.length > 0) return 'asset_id_reserved';
+    if (aliased.length > 0) return aliased[0]!.kind === 'assetId' ? 'asset_id_reserved' : 'asset_id_aliased';
+    // `to` belongs to a hard-deleted asset. Its tombstones (id, name, symbol,
+    // mints, aliases) are what stop the nightly seed from re-creating it, and
+    // public reads hide any asset whose id carries one: the id cannot be
+    // reused without either resurrecting the deleted asset or hiding this one.
+    const tombstoned = await tx`
+        SELECT 1 FROM asset_deletion_tombstones
+        WHERE asset_id = ${to} OR normalized_ref = ${normalizedTo}
+        LIMIT 1
+    `;
+    if (tombstoned.length > 0) return 'asset_id_deleted';
 
-    // No asset owns `to` (checked above), so rows already keyed by it are
-    // leftovers of a deleted asset. Clear them first: most of these tables have
-    // a unique index on asset_id and the UPDATEs below would otherwise collide.
+    // No asset owns `to` and it was never hard-deleted (checked above), so rows
+    // already keyed by it are orphans. Clear them first: most of these tables
+    // have a unique index on asset_id and the UPDATEs below would otherwise
+    // collide.
     await tx`DELETE FROM asset_aliases WHERE asset_id = ${to}`;
     await tx`DELETE FROM asset_collection_members WHERE asset_id = ${to}`;
     await tx`DELETE FROM asset_markets_latest WHERE asset_id = ${to}`;
@@ -142,9 +161,6 @@ export async function renameAssetId(
     await tx`DELETE FROM stock_instruments_latest WHERE asset_id = ${to}`;
     await tx`DELETE FROM stock_prices_latest WHERE asset_id = ${to}`;
     await tx`DELETE FROM stock_ohlcv_candles WHERE asset_id = ${to}`;
-    // A reused id must not stay hidden by the tombstones of the asset that
-    // previously owned it (public reads filter on tombstone asset_id).
-    await tx`DELETE FROM asset_deletion_tombstones WHERE asset_id = ${to} OR normalized_ref = ${normalizedTo}`;
 
     await tx`
         UPDATE assets

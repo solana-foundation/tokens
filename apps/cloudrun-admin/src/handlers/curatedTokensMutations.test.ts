@@ -26,7 +26,13 @@ const MINT = 'So11111111111111111111111111111111111111112';
 
 interface RepoState {
     createAsset?: 'created' | 'exists';
-    updateAsset?: 'updated' | 'not_found' | 'asset_id_exists' | 'asset_id_reserved';
+    updateAsset?:
+        | 'updated'
+        | 'not_found'
+        | 'asset_id_exists'
+        | 'asset_id_reserved'
+        | 'asset_id_aliased'
+        | 'asset_id_deleted';
     deleteAsset?: 'deleted' | 'not_found' | 'has_variants';
     createVariant?: CreateVariantOutcome;
     updateVariant?: 'updated' | 'not_found' | 'variant_id_collision';
@@ -247,6 +253,14 @@ describe('updateCanonicalAsset', () => {
         await expect(
             updateCanonicalAsset(reserved.deps, { assetId: 'bitcoin', newAssetId: 'xbt' }, ADMIN),
         ).rejects.toThrow('former id of another asset');
+        const aliased = makeDeps({ updateAsset: 'asset_id_aliased' });
+        await expect(
+            updateCanonicalAsset(aliased.deps, { assetId: 'wrapped-bitcoin', newAssetId: 'btc' }, ADMIN),
+        ).rejects.toThrow('name, symbol or alias of another asset');
+        const deleted = makeDeps({ updateAsset: 'asset_id_deleted' });
+        await expect(
+            updateCanonicalAsset(deleted.deps, { assetId: 'bitcoin', newAssetId: 'gone' }, ADMIN),
+        ).rejects.toThrow('hard-deleted asset');
     });
 });
 

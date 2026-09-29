@@ -177,7 +177,7 @@ describe('renameAssetId', () => {
         ]);
     });
 
-    it('clears leftovers and tombstones keyed by the new id before moving rows onto it', async () => {
+    it('clears orphaned rows keyed by the new id before moving rows onto it, never tombstones', async () => {
         const { tx, queries } = makeFakeTx();
         await renameAssetId(tx, { from: 'bitcoin', to: 'btc', nowMs: NOW });
 
@@ -190,9 +190,8 @@ describe('renameAssetId', () => {
             expect(del.params[0]).toBe('btc'); // never the asset being renamed
             expect(del.params).not.toContain('bitcoin');
         }
-        const tombstones = deletes.find(q => q.text.includes('asset_deletion_tombstones'));
-        expect(tombstones?.text).toContain('normalized_ref');
-        expect(tombstones?.params).toEqual(['btc', 'btc']);
+        // Tombstones keep a hard-deleted asset dead; a rename must never remove them.
+        expect(all.some(q => q.text.includes('asset_deletion_tombstones'))).toBe(false);
         // asset_variants is never cleared: existing variants refuse the rename instead.
         expect(deletes.some(q => q.text.includes('asset_variants'))).toBe(false);
     });
@@ -210,11 +209,36 @@ describe('renameAssetId', () => {
     });
 
     it("refuses without writing when the new id is another asset's former id", async () => {
-        const { tx, queries } = makeFakeTx(text => (text.includes('FROM asset_aliases') ? [{ '?column?': 1 }] : []));
+        const { tx, queries } = makeFakeTx(text => (text.includes('FROM asset_aliases') ? [{ kind: 'assetId' }] : []));
         expect(await renameAssetId(tx, { from: 'bitcoin', to: 'btc', nowMs: NOW })).toBe('asset_id_reserved');
         expect(writes(queries)).toEqual([]);
         const check = queries.find(q => q.text.includes('FROM asset_aliases'));
         // normalized target, then excludes rows owned by either side of this rename.
         expect(check?.params).toEqual(['btc', 'bitcoin', 'btc']);
+    });
+
+    it("refuses without writing when the new id is another asset's name, symbol or alias", async () => {
+        for (const kind of ['name', 'symbol', 'coingeckoId', 'custom']) {
+            const { tx, queries } = makeFakeTx(text => (text.includes('FROM asset_aliases') ? [{ kind }] : []));
+            expect(await renameAssetId(tx, { from: 'wrapped-bitcoin', to: 'btc', nowMs: NOW })).toBe(
+                'asset_id_aliased',
+            );
+            expect(writes(queries)).toEqual([]);
+            // Every alias kind is checked, not only former ids.
+            const check = queries.find(q => q.text.includes('FROM asset_aliases'));
+            expect(check?.text).not.toContain("kind = 'assetId'");
+        }
+    });
+
+    it('refuses without writing when the new id belongs to a hard-deleted asset', async () => {
+        const { tx, queries } = makeFakeTx(text =>
+            text.includes('FROM asset_deletion_tombstones') ? [{ '?column?': 1 }] : [],
+        );
+        expect(await renameAssetId(tx, { from: 'bitcoin', to: 'btc', nowMs: NOW })).toBe('asset_id_deleted');
+        expect(writes(queries)).toEqual([]);
+        const check = queries.find(q => q.text.includes('FROM asset_deletion_tombstones'));
+        // Matches the deleted asset's own id and any tombstoned ref equal to the target.
+        expect(check?.text).toContain('normalized_ref');
+        expect(check?.params).toEqual(['btc', 'btc']);
     });
 });
