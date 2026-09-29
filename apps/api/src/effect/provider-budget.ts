@@ -7,19 +7,20 @@ import { getRedisClientEffect } from './next-route';
 import { slidingWindowLimit } from './sliding-window-rate-limit';
 
 /**
- * Per-key window budget for the two endpoints that can burn provider (Birdeye)
- * lookups: list-member batch adds and curator search. The platform rate limits
- * bound requests/second but not provider cost over time — a key sending
- * batches of unknown mints at the allowed rate could sustain hundreds of
- * provider calls per second. Each *call* is charged (not each lookup — the API
- * cannot know how many mints will miss the local registry), so the worst-case
- * provider spend per key per window is `calls × per-call lookup cap`.
+ * Per-key window budget for the endpoints that can burn provider (Birdeye)
+ * lookups: list-member batch adds, curator search and live risk reads. The
+ * platform rate limits bound requests/second but not provider cost over time
+ * — a key sending batches of unknown mints at the allowed rate could sustain
+ * hundreds of provider calls per second. Each *call* is charged (not each
+ * lookup — the API cannot know how many mints will miss the local registry),
+ * so the worst-case provider spend per key per window is
+ * `calls × per-call lookup cap`.
  *
  * Fail-open on Redis trouble: only an actual over-budget verdict blocks, so a
  * cache outage degrades to the per-call caps rather than a hard 500/429.
  */
 
-export type ProviderBudgetKind = 'batch' | 'search';
+export type ProviderBudgetKind = 'batch' | 'search' | 'risk';
 
 function envInt(name: string, fallback: number): number {
     const value = Number(process.env[name]);
@@ -31,6 +32,15 @@ const DEFAULT_CALLS: Record<ProviderBudgetKind, number> = {
     batch: 30,
     // Searches spend ~1 provider lookup each when uncached.
     search: 120,
+    // Live risk reads (snapshot misses) spend 1 provider lookup each. Its own
+    // kind so risk lookups and search can't starve each other on a shared key.
+    risk: 60,
+};
+
+const CALLS_ENV: Record<ProviderBudgetKind, string> = {
+    batch: 'TOKEN_LIST_PROVIDER_BATCH_CALLS_PER_WINDOW',
+    search: 'TOKEN_LIST_PROVIDER_SEARCH_CALLS_PER_WINDOW',
+    risk: 'TOKEN_RISK_PROVIDER_CALLS_PER_WINDOW',
 };
 
 export function enforceProviderBudget(
@@ -38,10 +48,7 @@ export function enforceProviderBudget(
     kind: ProviderBudgetKind,
 ): Effect.Effect<void, RateLimitedError> {
     return Effect.gen(function* () {
-        const calls =
-            kind === 'batch'
-                ? envInt('TOKEN_LIST_PROVIDER_BATCH_CALLS_PER_WINDOW', DEFAULT_CALLS.batch)
-                : envInt('TOKEN_LIST_PROVIDER_SEARCH_CALLS_PER_WINDOW', DEFAULT_CALLS.search);
+        const calls = envInt(CALLS_ENV[kind], DEFAULT_CALLS[kind]);
         const windowSeconds = envInt('TOKEN_LIST_PROVIDER_BUDGET_WINDOW_SECONDS', 600);
 
         const redis = yield* getRedisClientEffect();

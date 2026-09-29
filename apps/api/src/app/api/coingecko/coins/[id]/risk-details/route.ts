@@ -3,15 +3,10 @@ import { Effect } from 'effect';
 import { getCuratedListSlugsForMint } from '@/lib/curated-membership';
 
 import { coingeckoGetCoinById } from '@/lib/cloudrun';
-import type { MarketScoreInput } from '@/lib/token-risk-helpers';
+import { estimate7dVolume, type MarketScoreInput } from '@/lib/token-risk-helpers';
 import type { WebacyTokenResponse, WebacyTradingLiteResponse } from '@/lib/webacy';
 import { BadRequestError, NotFoundError } from '@tokens/effect';
 import { route } from '@/effect/next-route';
-
-function estimate7dVolume(volume24hUsd: number | null): number | null {
-    if (volume24hUsd == null || volume24hUsd <= 0) return null;
-    return volume24hUsd * 7;
-}
 
 function pickAnyPlatformAddress(platforms: Record<string, string> | undefined): string | null {
     if (!platforms) return null;

@@ -1,18 +1,14 @@
 import { Effect } from 'effect';
 
 import { BadRequestError, ForbiddenError } from '@tokens/effect';
-import { route } from '@/effect/next-route';
+import { route, type PlatformAuthContext } from '@/effect/next-route';
 import { decodeUnknownOrBadRequest, SolanaAddress } from '@tokens/effect';
 import { variantMarketsGetLatestByMints } from '@/lib/cloudrun';
-import { computeMarketScore, type MarketScoreInput } from '@/lib/token-risk-helpers';
+import { computeMarketScore, createInsufficientDataResult, type MarketScoreResult } from '@/lib/token-risk-helpers';
 import { getCuratedListSlugsForMint } from '@/lib/curated-membership';
 
-const SOL_MINT = 'So11111111111111111111111111111111111111112';
-
-function estimate7dVolume(volume24h: number | null): number | null {
-    if (volume24h == null || volume24h <= 0) return null;
-    return volume24h * 7;
-}
+import { loadLiveMarketFallback, needsLiveFallback } from '../_risk-live-fallback';
+import { marketScoreInputFromVariantMarket, SOL_MINT } from '../_risk-loader';
 
 function hasAnyScope(granted: string[], requiredAny: readonly string[]): boolean {
     if (requiredAny.length === 0) return true;
@@ -23,38 +19,9 @@ function hasAnyScope(granted: string[], requiredAny: readonly string[]): boolean
 
 const REQUIRED_ANY_SCOPES = ['assets:read', 'assets:risk:read'] as const;
 
-function buildMarketScoreInput(
-    address: string,
-    market?: {
-        liquidity?: number | null;
-        marketCap?: number | null;
-        holder?: number | null;
-        volume24hUSD?: number | null;
-    } | null,
-): MarketScoreInput {
-    const volume24hUsd = market?.volume24hUSD ?? null;
-    return {
-        liquidityUsd: market?.liquidity ?? null,
-        marketCapUsd: market?.marketCap ?? null,
-        holderCount: market?.holder ?? null,
-        top10HoldersPercent: null,
-        volume24hUsd,
-        volume7dUsd: estimate7dVolume(volume24hUsd),
-        tokenMintTime: null,
-        tokenAddress: address,
-    };
-}
+const NO_SNAPSHOT_REASON = 'Market snapshot not available in cache';
 
-function insufficient(reason: string) {
-    const marketScore = computeMarketScore(
-        buildMarketScoreInput(SOL_MINT, {
-            liquidity: null,
-            marketCap: null,
-            holder: null,
-            volume24hUSD: null,
-        }),
-    );
-
+function toRiskSummaryBody(marketScore: MarketScoreResult) {
     return {
         score: marketScore.score,
         grade: marketScore.grade,
@@ -63,12 +30,12 @@ function insufficient(reason: string) {
         isTrustedLaunch: marketScore.isTrustedLaunch,
         caps: marketScore.caps,
         hasInsufficientData: marketScore.hasInsufficientData,
-        insufficientDataReason: reason,
+        insufficientDataReason: marketScore.insufficientDataReason,
     };
 }
 
 export const GET = route(
-    (request: Request, ctx: { platformAuth: { scopes: string[] } }) =>
+    (request: Request, ctx: { platformAuth: PlatformAuthContext }) =>
         Effect.gen(function* () {
             const url = new URL(request.url);
             const rawMint = url.searchParams.get('mint') ?? url.searchParams.get('address') ?? '';
@@ -87,48 +54,31 @@ export const GET = route(
 
             const address = yield* decodeUnknownOrBadRequest(SolanaAddress, mintInput, 'Invalid mint');
 
-            if (address === SOL_MINT) {
-                const solSlugs = yield* Effect.promise(() => getCuratedListSlugsForMint(address));
-                const marketScore = computeMarketScore({
-                    ...buildMarketScoreInput(address),
-                    curatedListSlugs: solSlugs,
-                });
+            // Native SOL is pinned by the scorer and needs no snapshot.
+            const rows = address === SOL_MINT ? [] : yield* variantMarketsGetLatestByMints({ mints: [address] });
+            const snapshot = rows[0]?.market ?? null;
 
-                return {
-                    score: marketScore.score,
-                    grade: marketScore.grade,
-                    label: marketScore.label,
-                    tone: marketScore.tone,
-                    isTrustedLaunch: marketScore.isTrustedLaunch,
-                    caps: marketScore.caps,
-                    hasInsufficientData: marketScore.hasInsufficientData,
-                    insufficientDataReason: marketScore.insufficientDataReason,
-                };
+            // Mints outside the registry never get a snapshot: score them from
+            // a live provider read instead.
+            const live =
+                address !== SOL_MINT && needsLiveFallback(snapshot)
+                    ? yield* loadLiveMarketFallback(ctx.platformAuth, address)
+                    : null;
+            const market = live?.market ?? snapshot;
+
+            // No data means "unscored", never a grade: return the insufficient
+            // result directly instead of running the scorer on placeholders.
+            if (!market && address !== SOL_MINT) {
+                return toRiskSummaryBody(createInsufficientDataResult(NO_SNAPSHOT_REASON));
             }
-
-            const rows = yield* variantMarketsGetLatestByMints({
-                    mints: [address],
-                });
-
-            const market = rows[0]?.market ?? null;
-            if (!market) return insufficient('Market snapshot not available in cache');
 
             const curatedListSlugs = yield* Effect.promise(() => getCuratedListSlugsForMint(address));
             const marketScore = computeMarketScore({
-                ...buildMarketScoreInput(address, market),
+                ...marketScoreInputFromVariantMarket(address, market),
                 curatedListSlugs,
             });
 
-            return {
-                score: marketScore.score,
-                grade: marketScore.grade,
-                label: marketScore.label,
-                tone: marketScore.tone,
-                isTrustedLaunch: marketScore.isTrustedLaunch,
-                caps: marketScore.caps,
-                hasInsufficientData: marketScore.hasInsufficientData,
-                insufficientDataReason: marketScore.insufficientDataReason,
-            };
+            return toRiskSummaryBody(marketScore);
         }),
-    { platform: {} },
+    { platform: {}, cache: { maxAge: 30 } },
 );

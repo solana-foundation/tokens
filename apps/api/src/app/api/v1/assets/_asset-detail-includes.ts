@@ -7,7 +7,7 @@ import type { OHLCVData, TimeInterval } from '@/lib/birdeye';
 import type { GlobalTokenStats, TokenLinks } from '@/lib/coingecko';
 import { buildXProfileUrl } from '@/lib/social-links';
 import { getCuratedListSlugsForMint } from '@/lib/curated-membership';
-import { computeMarketScore, type MarketScoreInput } from '@/lib/token-risk-helpers';
+import { computeMarketScore, estimate7dVolume, type MarketScoreInput } from '@/lib/token-risk-helpers';
 
 import type { TokenMarketSnapshot } from './_asset-helpers';
 import {
@@ -31,11 +31,6 @@ export function includeOk<T>(data: T): AssetIncludeOk<T> {
 
 export function includeError(reason: AssetIncludeError['reason'], message: string): AssetIncludeError {
     return { ok: false, reason, message };
-}
-
-function estimate7dVolume(volume24h: number | null): number | null {
-    if (volume24h == null || volume24h <= 0) return null;
-    return volume24h * 7;
 }
 
 function intervalToSeconds(interval: TimeInterval): number {
