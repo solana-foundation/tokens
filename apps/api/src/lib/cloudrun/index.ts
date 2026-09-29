@@ -53,8 +53,8 @@ export { searchPrefetchForApi, type SearchPrefetchArgs, type SearchPrefetchResul
 
 export {
     authenticateApiKey,
-    ingestUsageAggregates,
     logApiRequest,
+    syncUsageAggregates,
     type AuthenticateApiKeyResult,
     type LogApiRequestArgs,
     type UsageAggregateBucket,

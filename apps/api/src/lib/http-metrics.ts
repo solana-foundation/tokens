@@ -159,18 +159,21 @@ export function logUsageAggregationDegraded(params: {
  */
 export function logUsageDrain(params: {
     requestId: string;
+    /** `request`: after an API response; `schedule`: the cron-driven drain route. */
+    trigger: 'request' | 'schedule';
     status: 'ok' | 'failed';
-    ingested?: number;
-    restored?: number;
+    synced?: number;
+    pending?: number;
     reason?: string;
 }): void {
     log({
         event: 'usage_drain',
         timestamp: new Date().toISOString(),
         request_id: params.requestId,
+        trigger: params.trigger,
         status: params.status,
-        ...(params.ingested !== undefined ? { ingested: params.ingested } : {}),
-        ...(params.restored !== undefined ? { restored: params.restored } : {}),
+        ...(params.synced !== undefined ? { synced: params.synced } : {}),
+        ...(params.pending !== undefined ? { pending: params.pending } : {}),
         ...(params.reason ? { reason: params.reason.slice(0, 500) } : {}),
     });
 }

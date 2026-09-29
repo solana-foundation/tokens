@@ -6,7 +6,7 @@ import type { CloudRunError } from './errors';
 /**
  * Platform API-key auth + usage logging on the authenticated `/v1` hot path
  * (`src/effect/next-route.ts`). Routes to the `cloudrun-usage` service
- * (`apiKeysAuthenticate` / `logApiRequest` / `ingestUsageAggregates`), which
+ * (`apiKeysAuthenticate` / `logApiRequest` / `syncUsageAggregates`), which
  * ports the previous Convex semantics 1:1 against Cloud SQL.
  */
 
@@ -48,7 +48,11 @@ export function logApiRequest(args: LogApiRequestArgs): Effect.Effect<void, Clou
     return cloudRunMutation('usage', 'logApiRequest', { ...args }).pipe(Effect.asVoid);
 }
 
-/** A drained usage bucket: per-project daily, or per-endpoint when `endpoint` is set. */
+/**
+ * Running totals for a (project, day), or a (project, day, endpoint) when
+ * `endpoint` is set. Totals, not deltas: the usage service keeps the larger of
+ * the stored and the incoming value, so sending a bucket twice is harmless.
+ */
 export interface UsageAggregateBucket {
     projectId: string;
     day: string;
@@ -60,6 +64,6 @@ export interface UsageAggregateBucket {
     latencyHistogram?: number[];
 }
 
-export function ingestUsageAggregates(buckets: UsageAggregateBucket[]): Effect.Effect<void, CloudRunError> {
-    return cloudRunMutation('usage', 'ingestUsageAggregates', { buckets }).pipe(Effect.asVoid);
+export function syncUsageAggregates(buckets: UsageAggregateBucket[]): Effect.Effect<void, CloudRunError> {
+    return cloudRunMutation('usage', 'syncUsageAggregates', { buckets }).pipe(Effect.asVoid);
 }

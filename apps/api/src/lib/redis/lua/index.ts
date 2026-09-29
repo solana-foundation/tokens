@@ -83,35 +83,47 @@ const SLIDING_WINDOW_REMAINING_TOKENS_SCRIPT_SRC = `
 /**
  * Usage-aggregate drain (see `src/effect/usage-drain.ts`). Every key a script
  * touches is declared in KEYS so the scripts stay valid on clustered Redis.
+ * Nothing here deletes usage: the hashes hold running totals and expire on
+ * their own TTL.
  */
 const USAGE_DRAIN_LIST_DIRTY_SCRIPT_SRC = `
-  local dirtyKey = KEYS[1]           -- hash used as a set of dirty usage keys
+  local dirtyKey = KEYS[1]           -- hash: usage key -> writes since last sync
   local limit    = tonumber(ARGV[1]) -- max dirty keys to return
 
-  local fields = redis.call("HKEYS", dirtyKey)
+  local entries = redis.call("HGETALL", dirtyKey) -- flat {field, value, ...}
   local out = {}
-  for i = 1, math.min(#fields, limit) do
-    out[i] = fields[i]
+  for i = 1, math.min(#entries, limit * 2) do
+    out[i] = entries[i]
   end
   return out
 `;
 
-const USAGE_DRAIN_TAKE_SCRIPT_SRC = `
-  local dirtyKey = KEYS[1] -- hash used as a set of dirty usage keys
-
-  -- KEYS[2..n] are usage hashes: read + delete each atomically so increments
-  -- landing after the read start a fresh hash instead of being lost.
+const USAGE_DRAIN_READ_SCRIPT_SRC = `
   local out = {}
-  for i = 2, #KEYS do
-    out[i - 1] = redis.call("HGETALL", KEYS[i])
-    redis.call("DEL", KEYS[i])
-    redis.call("HDEL", dirtyKey, KEYS[i])
+  for i = 1, #KEYS do
+    out[i] = redis.call("HGETALL", KEYS[i])
   end
   return out
 `;
 
 const USAGE_DRAIN_ENDPOINT_NAMES_SCRIPT_SRC = `
   return redis.call("MGET", unpack(KEYS))
+`;
+
+const USAGE_DRAIN_CLEAR_DIRTY_SCRIPT_SRC = `
+  local dirtyKey = KEYS[1] -- hash: usage key -> writes since last sync
+
+  -- ARGV is {field, mark, field, mark, ...}. A mark that moved since it was
+  -- listed means a request wrote after the read: keep it dirty for the next
+  -- drain instead of dropping that write.
+  local cleared = 0
+  for i = 1, #ARGV, 2 do
+    if redis.call("HGET", dirtyKey, ARGV[i]) == ARGV[i + 1] then
+      redis.call("HDEL", dirtyKey, ARGV[i])
+      cleared = cleared + 1
+    end
+  end
+  return cleared
 `;
 
 function digest(script: string): string {
@@ -133,9 +145,14 @@ export const USAGE_DRAIN_LIST_DIRTY_SCRIPT = {
     sha1: digest(USAGE_DRAIN_LIST_DIRTY_SCRIPT_SRC),
 };
 
-export const USAGE_DRAIN_TAKE_SCRIPT = {
-    script: USAGE_DRAIN_TAKE_SCRIPT_SRC,
-    sha1: digest(USAGE_DRAIN_TAKE_SCRIPT_SRC),
+export const USAGE_DRAIN_READ_SCRIPT = {
+    script: USAGE_DRAIN_READ_SCRIPT_SRC,
+    sha1: digest(USAGE_DRAIN_READ_SCRIPT_SRC),
+};
+
+export const USAGE_DRAIN_CLEAR_DIRTY_SCRIPT = {
+    script: USAGE_DRAIN_CLEAR_DIRTY_SCRIPT_SRC,
+    sha1: digest(USAGE_DRAIN_CLEAR_DIRTY_SCRIPT_SRC),
 };
 
 export const USAGE_DRAIN_ENDPOINT_NAMES_SCRIPT = {

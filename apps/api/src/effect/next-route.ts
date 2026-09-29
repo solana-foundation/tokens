@@ -5,7 +5,7 @@ import { NextResponse } from 'next/server';
 
 import { runAfterResponse } from './after-response';
 
-import { authenticateApiKey, ingestUsageAggregates, logApiRequest } from '@/lib/cloudrun';
+import { authenticateApiKey, logApiRequest, syncUsageAggregates } from '@/lib/cloudrun';
 import { loadEnv } from '@/lib/env';
 import { getRedisClient, type RedisClient } from '@/lib/redis';
 import { slidingWindowLimit } from './sliding-window-rate-limit';
@@ -427,17 +427,17 @@ async function tryDrainUsageAggregates(requestId: string): Promise<void> {
                 const redis = yield* getRedisClientEffect();
                 return yield* maybeDrainUsageAggregates({
                     redis,
-                    ingest: ingestUsageAggregates,
-                    ttlSeconds: env.usageAggregationTtlSeconds,
+                    sync: syncUsageAggregates,
                     intervalSeconds: env.usageDrainIntervalSeconds,
                     lockValue: requestId,
                 });
             }),
         );
-        if (result) logUsageDrain({ requestId, status: 'ok', ...result });
+        if (result) logUsageDrain({ requestId, trigger: 'request', status: 'ok', ...result });
     } catch (error) {
         logUsageDrain({
             requestId,
+            trigger: 'request',
             status: 'failed',
             reason: error instanceof Error ? error.message : String(error),
         });

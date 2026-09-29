@@ -87,6 +87,66 @@ export function makePostgresUsageIngestRepo(sql: Sql): UsageIngestRepo {
                 }
             });
         },
+
+        async applySyncBuckets({ daily, endpoint, updatedAtMs }) {
+            await sql.begin(async tx => {
+                for (const total of daily) {
+                    await tx`
+                        INSERT INTO api_request_daily_rollups (
+                            id, project_id, day, total_calls, asset_calls, success_calls, sum_latency_ms, updated_at
+                        )
+                        VALUES (
+                            ${randomId('ard')}, ${total.projectId}, ${total.day}::date,
+                            ${total.totalCalls}, ${total.assetCalls}, ${total.successCalls}, ${total.sumLatencyMs},
+                            to_timestamp(${updatedAtMs} / 1000.0)
+                        )
+                        ON CONFLICT (project_id, day) DO UPDATE SET
+                            total_calls = GREATEST(api_request_daily_rollups.total_calls, EXCLUDED.total_calls),
+                            asset_calls = GREATEST(api_request_daily_rollups.asset_calls, EXCLUDED.asset_calls),
+                            success_calls = GREATEST(api_request_daily_rollups.success_calls, EXCLUDED.success_calls),
+                            sum_latency_ms = GREATEST(api_request_daily_rollups.sum_latency_ms, EXCLUDED.sum_latency_ms),
+                            updated_at = EXCLUDED.updated_at
+                    `;
+                }
+                for (const total of endpoint) {
+                    // Same element-wise walk as the additive merge above, taking
+                    // the larger bucket count instead of the sum.
+                    await tx`
+                        INSERT INTO api_request_endpoint_daily_rollups (
+                            id, project_id, day, endpoint, calls, success_calls, sum_latency_ms, latency_histogram, updated_at
+                        )
+                        VALUES (
+                            ${randomId('are')}, ${total.projectId}, ${total.day}::date, ${total.endpoint},
+                            ${total.calls}, ${total.successCalls}, ${total.sumLatencyMs},
+                            ${tx.json(total.latencyHistogram as never)},
+                            to_timestamp(${updatedAtMs} / 1000.0)
+                        )
+                        ON CONFLICT (project_id, day, endpoint) DO UPDATE SET
+                            calls = GREATEST(api_request_endpoint_daily_rollups.calls, EXCLUDED.calls),
+                            success_calls = GREATEST(api_request_endpoint_daily_rollups.success_calls, EXCLUDED.success_calls),
+                            sum_latency_ms = GREATEST(api_request_endpoint_daily_rollups.sum_latency_ms, EXCLUDED.sum_latency_ms),
+                            latency_histogram = (
+                                SELECT to_jsonb(
+                                    array(
+                                        SELECT GREATEST(
+                                            COALESCE((api_request_endpoint_daily_rollups.latency_histogram->>i)::bigint, 0),
+                                            COALESCE((EXCLUDED.latency_histogram->>i)::bigint, 0)
+                                        )
+                                        FROM generate_series(
+                                            0,
+                                            GREATEST(
+                                                jsonb_array_length(api_request_endpoint_daily_rollups.latency_histogram),
+                                                jsonb_array_length(EXCLUDED.latency_histogram)
+                                            ) - 1
+                                        ) AS i
+                                    )
+                                )
+                            ),
+                            updated_at = EXCLUDED.updated_at
+                    `;
+                }
+            });
+        },
     };
 }
 
