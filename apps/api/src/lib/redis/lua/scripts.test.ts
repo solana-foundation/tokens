@@ -4,9 +4,10 @@ import { describe, expect, it } from 'bun:test';
 import {
     SLIDING_WINDOW_LIMIT_SCRIPT,
     SLIDING_WINDOW_REMAINING_TOKENS_SCRIPT,
+    USAGE_DRAIN_CLEAR_DIRTY_SCRIPT,
     USAGE_DRAIN_ENDPOINT_NAMES_SCRIPT,
     USAGE_DRAIN_LIST_DIRTY_SCRIPT,
-    USAGE_DRAIN_TAKE_SCRIPT,
+    USAGE_DRAIN_READ_SCRIPT,
 } from './index';
 
 function sha1(value: string): string {
@@ -45,19 +46,29 @@ describe('sliding window Lua scripts', () => {
 });
 
 describe('usage drain Lua scripts', () => {
-    it('only the take script mutates state', () => {
-        expect(/"(DEL|HDEL|SET|HSET|HINCRBY)"/.test(USAGE_DRAIN_LIST_DIRTY_SCRIPT.script)).toBe(false);
-        expect(/"(DEL|HDEL|SET|HSET|HINCRBY)"/.test(USAGE_DRAIN_ENDPOINT_NAMES_SCRIPT.script)).toBe(false);
-        expect(USAGE_DRAIN_TAKE_SCRIPT.script.includes('redis.call("DEL", KEYS[i])')).toBe(true);
+    it('never delete or rewrite usage hashes', () => {
+        for (const { script } of [
+            USAGE_DRAIN_LIST_DIRTY_SCRIPT,
+            USAGE_DRAIN_READ_SCRIPT,
+            USAGE_DRAIN_ENDPOINT_NAMES_SCRIPT,
+            USAGE_DRAIN_CLEAR_DIRTY_SCRIPT,
+        ]) {
+            expect(/"(DEL|SET|HSET|HINCRBY|EXPIRE)"/.test(script)).toBe(false);
+        }
     });
 
-    it('take script reads each hash before deleting it and clearing its dirty mark', () => {
-        const s = USAGE_DRAIN_TAKE_SCRIPT.script;
-        const read = s.indexOf('redis.call("HGETALL", KEYS[i])');
-        const del = s.indexOf('redis.call("DEL", KEYS[i])');
-        const clear = s.indexOf('redis.call("HDEL", dirtyKey, KEYS[i])');
-        expect(read).toBeGreaterThan(-1);
-        expect(del).toBeGreaterThan(read);
-        expect(clear).toBeGreaterThan(del);
+    it('only the clear script mutates, and only the dirty index behind a mark comparison', () => {
+        for (const { script } of [
+            USAGE_DRAIN_LIST_DIRTY_SCRIPT,
+            USAGE_DRAIN_READ_SCRIPT,
+            USAGE_DRAIN_ENDPOINT_NAMES_SCRIPT,
+        ]) {
+            expect(script.includes('"HDEL"')).toBe(false);
+        }
+        const s = USAGE_DRAIN_CLEAR_DIRTY_SCRIPT.script;
+        const compare = s.indexOf('redis.call("HGET", dirtyKey, ARGV[i]) == ARGV[i + 1]');
+        const clear = s.indexOf('redis.call("HDEL", dirtyKey, ARGV[i])');
+        expect(compare).toBeGreaterThan(-1);
+        expect(clear).toBeGreaterThan(compare);
     });
 });

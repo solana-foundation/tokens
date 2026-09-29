@@ -3,9 +3,10 @@ import { Effect } from 'effect';
 import type { UsageAggregateBucket } from '@/lib/cloudrun/platformAuth';
 import type { RedisClient } from '@/lib/redis';
 import {
+    USAGE_DRAIN_CLEAR_DIRTY_SCRIPT,
     USAGE_DRAIN_ENDPOINT_NAMES_SCRIPT,
     USAGE_DRAIN_LIST_DIRTY_SCRIPT,
-    USAGE_DRAIN_TAKE_SCRIPT,
+    USAGE_DRAIN_READ_SCRIPT,
 } from '@/lib/redis/lua';
 
 /**
@@ -13,21 +14,24 @@ import {
  *
  * In `aggregated` usage mode every request increments Redis hashes
  * (`usage:v1:day:*` / `usage:v1:endpoint:*`) instead of writing a row. Those
- * hashes only reach the dashboard once something moves them into the rollup
- * tables via the usage service's `ingestUsageAggregates`. That used to be an
- * external timer, which was retired — so the API drains itself: a request
- * that wins the drain lock flushes the dirty hashes after its response.
+ * hashes only reach the dashboard once something copies them into the rollup
+ * tables. That used to be an external timer, which was retired — so the API
+ * drains itself: a request that wins the drain lock syncs the dirty hashes
+ * after its response, and a scheduled call to the drain route covers the
+ * buckets no later request would flush.
  *
- * Delivery is at-most-once with best-effort restore: hashes are read and
- * deleted atomically, then ingested; if the ingest fails the counts are
- * added back so the next drain retries them.
+ * The sync is state-based. A hash holds the running totals for its day and is
+ * never deleted here; the drain sends those totals and the usage service
+ * keeps the larger of stored and incoming. Replaying a batch (lost response,
+ * timeout, two instances draining at once) therefore cannot double-count, and
+ * a failed sync loses nothing: the hash and its dirty mark are still there.
  */
 
 const DAY_KEY_PREFIX = 'usage:v1:day:';
 const ENDPOINT_KEY_PREFIX = 'usage:v1:endpoint:';
 const ENDPOINT_NAME_KEY_PREFIX = 'usage:v1:endpoint-name:';
 
-/** Hash used as a set: field = usage hash key with undrained increments. */
+/** Hash: usage hash key -> number of writes since it was last synced. */
 export const USAGE_DIRTY_KEY = 'usage:v1:dirty';
 export const USAGE_DRAIN_LOCK_KEY = 'usage:v1:drain-lock';
 
@@ -85,16 +89,22 @@ function toCount(value: unknown): number {
  * an object, with values as strings or already-deserialized numbers
  * depending on the client.
  */
+function flatPairs(reply: unknown): Array<[string, unknown]> {
+    if (Array.isArray(reply)) {
+        const pairs: Array<[string, unknown]> = [];
+        for (let i = 0; i + 1 < reply.length; i += 2) pairs.push([String(reply[i]), reply[i + 1]]);
+        return pairs;
+    }
+    if (reply && typeof reply === 'object') return Object.entries(reply);
+    return [];
+}
+
 function parseHashReply(reply: unknown): Map<string, number> {
     const fields = new Map<string, number>();
-    if (Array.isArray(reply)) {
-        for (let i = 0; i + 1 < reply.length; i += 2) {
-            fields.set(String(reply[i]), toCount(reply[i + 1]));
-        }
-    } else if (reply && typeof reply === 'object') {
-        for (const [field, value] of Object.entries(reply)) fields.set(field, toCount(value));
+    for (const [field, value] of flatPairs(reply)) {
+        const count = toCount(value);
+        if (count > 0) fields.set(field, count);
     }
-    for (const [field, value] of fields) if (value <= 0) fields.delete(field);
     return fields;
 }
 
@@ -115,63 +125,45 @@ function toBucket(parsed: ParsedUsageKey, fields: Map<string, number>, endpoint:
     return { ...base, endpoint: endpoint ?? '', totalCalls: fields.get('calls') ?? 0, latencyHistogram };
 }
 
-interface TakenHash {
-    key: string;
-    fields: Map<string, number>;
-}
-
-/** Add taken counts back so the next drain retries them. */
-function restoreTaken(redis: RedisClient, taken: ReadonlyArray<TakenHash>, ttlSeconds: number) {
-    return Effect.tryPromise(() => {
-        const pipeline = redis.pipeline();
-        for (const { key, fields } of taken) {
-            for (const [field, value] of fields) pipeline.hincrby(key, field, value);
-            pipeline.expire(key, ttlSeconds);
-            pipeline.hincrby(USAGE_DIRTY_KEY, key, 1);
-        }
-        pipeline.expire(USAGE_DIRTY_KEY, ttlSeconds);
-        return pipeline.exec();
-    });
+/** Keeps the Redis error itself as the failure, so drain logs name the real cause. */
+function tryRedis<T>(run: () => Promise<T>): Effect.Effect<T, unknown> {
+    return Effect.tryPromise({ try: run, catch: error => error });
 }
 
 export interface UsageDrainDeps {
     redis: RedisClient;
-    ingest: (buckets: UsageAggregateBucket[]) => Effect.Effect<void, unknown>;
-    /** TTL re-applied to hashes restored after a failed ingest. */
-    ttlSeconds: number;
+    sync: (buckets: UsageAggregateBucket[]) => Effect.Effect<void, unknown>;
     maxKeys?: number;
 }
 
 export interface UsageDrainResult {
-    /** Buckets handed to the usage service. */
-    ingested: number;
-    /** Hashes put back after a failed ingest or a missing endpoint name. */
-    restored: number;
+    /** Buckets sent to the usage service. */
+    synced: number;
+    /** Dirty keys left for the next drain: written to mid-drain, or not yet attributable. */
+    pending: number;
 }
 
 function drainBatch(deps: UsageDrainDeps, maxKeys: number) {
     return Effect.gen(function* () {
         const { redis } = deps;
 
-        const dirty = yield* Effect.tryPromise(() =>
-            redis.eval<unknown[]>(USAGE_DRAIN_LIST_DIRTY_SCRIPT.script, [USAGE_DIRTY_KEY], [maxKeys]),
+        const dirty = yield* tryRedis(() =>
+            redis.eval<unknown>(USAGE_DRAIN_LIST_DIRTY_SCRIPT.script, [USAGE_DIRTY_KEY], [maxKeys]),
         );
-        const entries: Array<{ key: string; parsed: ParsedUsageKey }> = [];
-        for (const raw of Array.isArray(dirty) ? dirty : []) {
-            const key = String(raw);
+        const listed = flatPairs(dirty);
+        const entries: Array<{ key: string; mark: string; parsed: ParsedUsageKey }> = [];
+        for (const [key, mark] of listed) {
             const parsed = parseUsageKey(key);
-            if (parsed) entries.push({ key, parsed });
+            if (parsed) entries.push({ key, mark: String(mark), parsed });
         }
-        if (entries.length === 0) return { ingested: 0, restored: 0, listed: 0 };
+        if (entries.length === 0) return { synced: 0, cleared: 0, listed: 0 };
 
-        // Resolve endpoint names before taking anything, so a failed lookup
-        // leaves the hashes untouched.
         const endpointHashes = [
             ...new Set(entries.flatMap(e => (e.parsed.kind === 'endpoint' ? [e.parsed.endpointHash] : []))),
         ];
         const endpointNames = new Map<string, string>();
         if (endpointHashes.length > 0) {
-            const names = yield* Effect.tryPromise(() =>
+            const names = yield* tryRedis(() =>
                 redis.eval<unknown[]>(
                     USAGE_DRAIN_ENDPOINT_NAMES_SCRIPT.script,
                     endpointHashes.map(usageEndpointNameKey),
@@ -184,57 +176,58 @@ function drainBatch(deps: UsageDrainDeps, maxKeys: number) {
             });
         }
 
-        const replies = yield* Effect.tryPromise(() =>
+        const replies = yield* tryRedis(() =>
             redis.eval<unknown[]>(
-                USAGE_DRAIN_TAKE_SCRIPT.script,
-                [USAGE_DIRTY_KEY, ...entries.map(e => e.key)],
+                USAGE_DRAIN_READ_SCRIPT.script,
+                entries.map(e => e.key),
                 [],
             ),
         );
 
-        const ready: Array<TakenHash & { bucket: UsageAggregateBucket }> = [];
-        const unnamed: TakenHash[] = [];
-        entries.forEach(({ key, parsed }, i) => {
+        const buckets: UsageAggregateBucket[] = [];
+        const done: Array<{ key: string; mark: string }> = [];
+        entries.forEach(({ key, mark, parsed }, i) => {
             const fields = parseHashReply(Array.isArray(replies) ? replies[i] : null);
-            // Empty = already drained or expired; the dirty mark was stale.
-            if (fields.size === 0) return;
-            const endpoint = parsed.kind === 'endpoint' ? (endpointNames.get(parsed.endpointHash) ?? null) : null;
-            if (parsed.kind === 'endpoint' && endpoint === null) {
-                unnamed.push({ key, fields });
-                return;
+            // Empty = the hash expired; only the stale mark is left to clear.
+            if (fields.size > 0) {
+                const endpoint = parsed.kind === 'endpoint' ? (endpointNames.get(parsed.endpointHash) ?? null) : null;
+                // No name yet: leave it dirty rather than sync an unattributable bucket.
+                if (parsed.kind === 'endpoint' && endpoint === null) return;
+                buckets.push(toBucket(parsed, fields, endpoint));
             }
-            ready.push({ key, fields, bucket: toBucket(parsed, fields, endpoint) });
+            done.push({ key, mark });
         });
 
-        if (unnamed.length > 0) yield* restoreTaken(redis, unnamed, deps.ttlSeconds);
-        if (ready.length === 0) return { ingested: 0, restored: unnamed.length, listed: entries.length };
+        if (buckets.length > 0) yield* deps.sync(buckets);
 
-        yield* deps.ingest(ready.map(r => r.bucket)).pipe(
-            Effect.catch(error =>
-                restoreTaken(redis, ready, deps.ttlSeconds).pipe(
-                    Effect.catch(() => Effect.void),
-                    Effect.andThen(Effect.fail(error)),
-                ),
-            ),
-        );
+        const cleared =
+            done.length > 0
+                ? yield* tryRedis(() =>
+                      redis.eval<unknown>(
+                          USAGE_DRAIN_CLEAR_DIRTY_SCRIPT.script,
+                          [USAGE_DIRTY_KEY],
+                          done.flatMap(d => [d.key, d.mark]),
+                      ),
+                  )
+                : 0;
 
-        return { ingested: ready.length, restored: unnamed.length, listed: entries.length };
+        return { synced: buckets.length, cleared: toCount(cleared), listed: entries.length };
     });
 }
 
-/** Flush dirty usage hashes into the rollup tables. */
+/** Sync dirty usage hashes into the rollup tables. */
 export function drainUsageAggregates(deps: UsageDrainDeps): Effect.Effect<UsageDrainResult, unknown> {
     return Effect.gen(function* () {
         const maxKeys = Math.max(1, Math.floor(deps.maxKeys ?? DEFAULT_MAX_KEYS));
-        const total: UsageDrainResult = { ingested: 0, restored: 0 };
+        const total: UsageDrainResult = { synced: 0, pending: 0 };
 
         for (let batch = 0; batch < MAX_BATCHES_PER_DRAIN; batch++) {
             const result = yield* drainBatch(deps, maxKeys);
-            total.ingested += result.ingested;
-            total.restored += result.restored;
-            // A short page means the dirty set is empty; restored hashes are
-            // dirty again, so stop rather than spin on them.
-            if (result.listed < maxKeys || result.restored > 0) break;
+            total.synced += result.synced;
+            total.pending = result.listed - result.cleared;
+            // A short page means the index is drained. A page that cleared
+            // nothing would be listed again unchanged, so stop on it too.
+            if (result.listed < maxKeys || result.cleared === 0) break;
         }
 
         return total;
@@ -259,7 +252,7 @@ export function maybeDrainUsageAggregates(
         if (now - lastDrainAttemptMs < intervalSeconds * 1000) return null;
         lastDrainAttemptMs = now;
 
-        const acquired = yield* Effect.tryPromise(() =>
+        const acquired = yield* tryRedis(() =>
             deps.redis.set(USAGE_DRAIN_LOCK_KEY, deps.lockValue, { nx: true, ex: intervalSeconds }),
         );
         if (acquired !== 'OK') return null;

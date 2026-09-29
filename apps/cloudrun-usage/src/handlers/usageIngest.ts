@@ -1,11 +1,17 @@
 /**
  * Redis usage-aggregate ingest.
  *
- * Port of `convex/apiUsageRollups.ts:ingestUsageAggregates`. The production
- * apps/api path aggregates per-request usage into Upstash Redis hashes
- * (`usage:v1:day:*` / `usage:v1:endpoint:*`); the API drains them itself
- * (`apps/api/src/effect/usage-drain.ts`) into the rollup tables. This handler
- * is the target for that drain.
+ * The production apps/api path aggregates per-request usage into Redis hashes
+ * (`usage:v1:day:*` / `usage:v1:endpoint:*`) and drains them itself
+ * (`apps/api/src/effect/usage-drain.ts`) into the rollup tables.
+ *
+ * - `syncUsageAggregates` is that drain's target. Buckets carry the running
+ *   totals for a (project, day[, endpoint]) and each column is raised to the
+ *   larger of the stored and the incoming value, so replaying a batch whose
+ *   response was lost cannot count usage twice.
+ * - `ingestUsageAggregates` is the port of
+ *   `convex/apiUsageRollups.ts:ingestUsageAggregates`: buckets are deltas and
+ *   are added. Kept for callers that send deltas; it is not replay-safe.
  *
  * Auth: the Convex original checked a `secret` arg; on Cloud Run the bearer
  * token on `/mutation/*` covers it, so a `secret` arg is accepted and ignored.
@@ -42,6 +48,15 @@ export interface UsageIngestRepo {
         endpoint: EndpointIngestDelta[];
         updatedAtMs: number;
     }): Promise<void>;
+    /**
+     * Raise each stored column to the incoming running total (never lower it)
+     * in a single transaction. Idempotent.
+     */
+    applySyncBuckets(args: {
+        daily: DailyIngestDelta[];
+        endpoint: EndpointIngestDelta[];
+        updatedAtMs: number;
+    }): Promise<void>;
 }
 
 export interface IngestUsageAggregatesResult {
@@ -63,11 +78,7 @@ function sanitizeCount(value: unknown): number {
     return Math.max(0, Math.floor(value));
 }
 
-export async function ingestUsageAggregates(
-    repo: UsageIngestRepo,
-    args: unknown,
-    nowMs: number = Date.now(),
-): Promise<IngestUsageAggregatesResult> {
+function parseUsageBuckets(args: unknown, nowMs: number): { daily: DailyIngestDelta[]; endpoint: EndpointIngestDelta[] } {
     if (typeof args !== 'object' || args === null) {
         throw new InvalidArgsError('args must be an object');
     }
@@ -115,8 +126,36 @@ export async function ingestUsageAggregates(
         daily.push({ projectId, day, totalCalls, assetCalls, successCalls, sumLatencyMs });
     }
 
+    return { daily, endpoint };
+}
+
+export async function ingestUsageAggregates(
+    repo: UsageIngestRepo,
+    args: unknown,
+    nowMs: number = Date.now(),
+): Promise<IngestUsageAggregatesResult> {
+    const { daily, endpoint } = parseUsageBuckets(args, nowMs);
+
     if (daily.length > 0 || endpoint.length > 0) {
         await repo.applyIngestBuckets({ daily, endpoint, updatedAtMs: nowMs });
+    }
+
+    return {
+        ingested: daily.length + endpoint.length,
+        dailyBuckets: daily.length,
+        endpointBuckets: endpoint.length,
+    };
+}
+
+export async function syncUsageAggregates(
+    repo: UsageIngestRepo,
+    args: unknown,
+    nowMs: number = Date.now(),
+): Promise<IngestUsageAggregatesResult> {
+    const { daily, endpoint } = parseUsageBuckets(args, nowMs);
+
+    if (daily.length > 0 || endpoint.length > 0) {
+        await repo.applySyncBuckets({ daily, endpoint, updatedAtMs: nowMs });
     }
 
     return {

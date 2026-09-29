@@ -53,9 +53,9 @@ export { searchPrefetchForApi, type SearchPrefetchArgs, type SearchPrefetchResul
 
 export {
     authenticateApiKey,
-    ingestUsageAggregates,
     limitsEnforce,
     logApiRequest,
+    syncUsageAggregates,
     type AuthenticateApiKeyResult,
     type LimitsEnforceArgs,
     type LimitsEnforceResult,

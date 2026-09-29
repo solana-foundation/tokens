@@ -22,6 +22,8 @@ export interface ApiEnv {
     ddApiKey: string | null;
     cacheWarmSecret: string | null;
     usageIngestSecret: string | null;
+    /** Sent by Vercel Cron as a bearer token; guards the scheduled usage drain. */
+    cronSecret: string | null;
     playgroundProxySecret: string | null;
     usageLogMode: 'aggregated' | 'raw' | 'off';
     usageRawSampleRate: number;
@@ -129,6 +131,7 @@ export function loadEnv(): ApiEnv {
         ddApiKey: readTrimmed('DD_API_KEY'),
         cacheWarmSecret: readTrimmed('TOKENS_CACHE_WARM_SECRET'),
         usageIngestSecret: readTrimmed('TOKENS_USAGE_INGEST_SECRET'),
+        cronSecret: readTrimmed('CRON_SECRET'),
         playgroundProxySecret: readTrimmed('TOKENS_PLAYGROUND_PROXY_SECRET'),
         usageLogMode: readUsageLogMode(),
         usageRawSampleRate: readNumber('TOKENS_USAGE_RAW_SAMPLE_RATE', 0, 0, 1),
