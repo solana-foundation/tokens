@@ -32,6 +32,13 @@ const columnHelper = createColumnHelper<RegistryRow>();
 
 const RIGHT_ALIGNED_COLUMNS = new Set(['rwaValueUsd', 'alliumValueUsd', 'marketCapUsd']);
 
+// The Token column stays pinned while the table scrolls sideways. Sticky cells need an opaque
+// background (the row/header tints are translucent), so mix the same tint over white.
+const PINNED_CELL_CLASS =
+    'sticky left-0 z-10 shadow-[inset_-1px_0_0_var(--color-border-light)] bg-white group-hover/row:bg-[color-mix(in_srgb,var(--color-gray-50)_50%,white)]';
+const PINNED_HEADER_CLASS =
+    'sticky left-0 z-20 shadow-[inset_-1px_0_0_var(--color-border-light)] bg-[color-mix(in_srgb,var(--color-gray-50)_80%,white)]';
+
 // next/image only accepts https remote patterns; drop anything else rather than crash the row.
 function renderableLogoSrc(src: string | undefined): string | undefined {
     const normalized = normalizeLogoSrc(src);
@@ -91,13 +98,13 @@ function TokenCell({ row }: { row: RegistryRow }) {
     );
 
     if (!row.hasTokenPage) {
-        return <div className="flex items-center gap-[8px]">{content}</div>;
+        return <div className="flex max-w-[220px] items-center gap-[8px] md:max-w-[280px]">{content}</div>;
     }
     return (
         <Link
             href={`/token/${row.mintAddress}`}
             prefetch={false}
-            className="flex items-center gap-[8px] hover:opacity-80 transition-opacity"
+            className="flex max-w-[220px] items-center gap-[8px] hover:opacity-80 transition-opacity md:max-w-[280px]"
         >
             {content}
         </Link>
@@ -109,7 +116,7 @@ function EmptyValue({ align = 'left' }: { align?: 'left' | 'right' }) {
 }
 
 function TextCell({ value }: { value: string | null }) {
-    return value ? <span className="text-[14px] text-text-high">{value}</span> : <EmptyValue />;
+    return value ? <span className="whitespace-nowrap text-[14px] text-text-high">{value}</span> : <EmptyValue />;
 }
 
 function UsdCell({ value }: { value: number | null }) {
@@ -123,22 +130,6 @@ function UsdCell({ value }: { value: number | null }) {
 }
 
 const columns = [
-    columnHelper.accessor('group', {
-        header: 'Group',
-        enableSorting: false,
-        cell: info => <TextCell value={info.getValue()} />,
-    }),
-    columnHelper.accessor('category', {
-        header: 'Category',
-        enableSorting: false,
-        cell: info => <TextCell value={info.getValue()} />,
-    }),
-    columnHelper.accessor(row => row.marketCapUsd ?? undefined, {
-        id: 'marketCapUsd',
-        header: 'Market Cap',
-        sortUndefined: 'last',
-        cell: info => <UsdCell value={info.row.original.marketCapUsd} />,
-    }),
     columnHelper.accessor('symbol', {
         id: 'token',
         header: 'Token',
@@ -162,6 +153,22 @@ const columns = [
                 </a>
             );
         },
+    }),
+    columnHelper.accessor('group', {
+        header: 'Group',
+        enableSorting: false,
+        cell: info => <TextCell value={info.getValue()} />,
+    }),
+    columnHelper.accessor('category', {
+        header: 'Category',
+        enableSorting: false,
+        cell: info => <TextCell value={info.getValue()} />,
+    }),
+    columnHelper.accessor(row => row.marketCapUsd ?? undefined, {
+        id: 'marketCapUsd',
+        header: 'Market Cap',
+        sortUndefined: 'last',
+        cell: info => <UsdCell value={info.row.original.marketCapUsd} />,
     }),
     columnHelper.accessor('assetClass', {
         header: 'Class',
@@ -281,6 +288,7 @@ export function RegistryTable({ data }: { data: RegistryData }) {
                                                 className={cn(
                                                     'py-3 text-[12px] md:text-[14px] font-medium text-text-high bg-gray-50/80 border-b border-border-light',
                                                     index === 0 && 'pl-4 pr-3 md:pl-6 md:pr-4',
+                                                    index === 0 && PINNED_HEADER_CLASS,
                                                     index !== 0 && !isLast && 'px-3 md:px-5',
                                                     isLast && 'pl-3 md:pl-5 pr-4 md:pr-8',
                                                     alignRight && 'text-right',
@@ -339,7 +347,7 @@ export function RegistryTable({ data }: { data: RegistryData }) {
                                 </tr>
                             ) : (
                                 visibleRows.map(row => (
-                                    <tr key={row.id} className="hover:bg-gray-50/50 transition-colors">
+                                    <tr key={row.id} className="group/row hover:bg-gray-50/50 transition-colors">
                                         {row.getVisibleCells().map((cell, index) => {
                                             const isLast = index === row.getVisibleCells().length - 1;
                                             return (
@@ -348,6 +356,7 @@ export function RegistryTable({ data }: { data: RegistryData }) {
                                                     className={cn(
                                                         'py-3.5',
                                                         index === 0 && 'pl-4 pr-3 md:pl-6 md:pr-4',
+                                                        index === 0 && PINNED_CELL_CLASS,
                                                         index !== 0 && !isLast && 'px-3 md:px-5',
                                                         isLast && 'pl-3 md:pl-5 pr-4 md:pr-8',
                                                     )}
