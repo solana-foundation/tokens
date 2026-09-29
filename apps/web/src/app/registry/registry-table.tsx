@@ -123,6 +123,22 @@ function UsdCell({ value }: { value: number | null }) {
 }
 
 const columns = [
+    columnHelper.accessor('group', {
+        header: 'Group',
+        enableSorting: false,
+        cell: info => <TextCell value={info.getValue()} />,
+    }),
+    columnHelper.accessor('category', {
+        header: 'Category',
+        enableSorting: false,
+        cell: info => <TextCell value={info.getValue()} />,
+    }),
+    columnHelper.accessor(row => row.marketCapUsd ?? undefined, {
+        id: 'marketCapUsd',
+        header: 'Market Cap',
+        sortUndefined: 'last',
+        cell: info => <UsdCell value={info.row.original.marketCapUsd} />,
+    }),
     columnHelper.accessor('symbol', {
         id: 'token',
         header: 'Token',
@@ -147,21 +163,10 @@ const columns = [
             );
         },
     }),
-    columnHelper.accessor('solanaClass', {
-        header: 'Asset Class',
+    columnHelper.accessor('assetClass', {
+        header: 'Class',
         enableSorting: false,
         cell: info => <TextCell value={info.getValue()} />,
-    }),
-    columnHelper.accessor('rwaClass', {
-        header: 'RWA.xyz Class',
-        enableSorting: false,
-        cell: info => <TextCell value={info.getValue()} />,
-    }),
-    columnHelper.accessor(row => row.rwaValueUsd ?? undefined, {
-        id: 'rwaValueUsd',
-        header: 'RWA Value',
-        sortUndefined: 'last',
-        cell: info => <UsdCell value={info.row.original.rwaValueUsd} />,
     }),
     columnHelper.accessor('alliumClass', {
         header: 'Allium Class',
@@ -174,11 +179,16 @@ const columns = [
         sortUndefined: 'last',
         cell: info => <UsdCell value={info.row.original.alliumValueUsd} />,
     }),
-    columnHelper.accessor(row => row.marketCapUsd ?? undefined, {
-        id: 'marketCapUsd',
-        header: 'Market Cap',
+    columnHelper.accessor('rwaClass', {
+        header: 'RWA.xyz Class',
+        enableSorting: false,
+        cell: info => <TextCell value={info.getValue()} />,
+    }),
+    columnHelper.accessor(row => row.rwaValueUsd ?? undefined, {
+        id: 'rwaValueUsd',
+        header: 'RWA.xyz Value',
         sortUndefined: 'last',
-        cell: info => <UsdCell value={info.row.original.marketCapUsd} />,
+        cell: info => <UsdCell value={info.row.original.rwaValueUsd} />,
     }),
 ];
 
@@ -197,7 +207,9 @@ export function RegistryTable({ data }: { data: RegistryData }) {
 
     const options = useMemo<CategoryOptions>(
         () => ({
-            solanaClass: distinctSorted(data.rows.map(row => row.solanaClass)),
+            group: distinctSorted(data.rows.map(row => row.group)),
+            category: distinctSorted(data.rows.map(row => row.category)),
+            assetClass: distinctSorted(data.rows.map(row => row.assetClass)),
             rwaClass: distinctSorted(data.rows.map(row => row.rwaClass)),
             alliumClass: distinctSorted(data.rows.map(row => row.alliumClass)),
             hasTokenPage: ['yes', 'no'],
@@ -253,7 +265,7 @@ export function RegistryTable({ data }: { data: RegistryData }) {
 
             <div className="bg-white rounded-[24px] border border-border-medium shadow-[0_8px_40px_rgba(0,0,0,0.03)] overflow-hidden">
                 <div className="overflow-x-auto">
-                    <table className="w-full min-w-[1100px] text-left border-collapse">
+                    <table className="w-full min-w-[1400px] text-left border-collapse">
                         <thead>
                             {table.getHeaderGroups().map(headerGroup => (
                                 <tr key={headerGroup.id} className="border-b border-border-extra-light bg-gray-50/80">

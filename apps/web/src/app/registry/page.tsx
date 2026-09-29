@@ -9,7 +9,8 @@ import { RegistryTable } from './registry-table';
 
 export const metadata: Metadata = {
     title: 'Asset Registry | Tokens',
-    description: 'Canonical registry of Solana assets with internal, RWA.xyz, and Allium classifications.',
+    description:
+        'Canonical registry of Solana assets by group, category, and class, with RWA.xyz and Allium classifications.',
     robots: { index: false, follow: false },
 };
 

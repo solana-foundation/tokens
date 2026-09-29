@@ -19,7 +19,9 @@ function row(overrides: Partial<RegistryRow>): RegistryRow {
         name: null,
         logoURI: null,
         hasTokenPage: false,
-        solanaClass: 'Stocks',
+        group: 'RWA',
+        category: 'Equities',
+        assetClass: 'Stocks',
         rwaClass: null,
         alliumClass: null,
         rwaValueUsd: null,
@@ -55,7 +57,7 @@ describe('buildFilter', () => {
         });
         expect('error' in buildFilter({ field: 'alliumValueUsd', op: 'gt', value: 'nope' })).toBe(true);
         expect('error' in buildFilter({ field: 'alliumValueUsd', op: 'is', value: '5m' })).toBe(true);
-        expect('error' in buildFilter({ field: 'solanaClass', op: 'is', value: ' ' })).toBe(true);
+        expect('error' in buildFilter({ field: 'assetClass', op: 'is', value: ' ' })).toBe(true);
         expect('error' in buildFilter({ field: 'bogus', op: 'is', value: 'x' })).toBe(true);
     });
 });
@@ -64,7 +66,7 @@ describe('formatFilter', () => {
     test('renders labels, symbols and compact usd', () => {
         expect(formatFilter({ field: 'alliumValueUsd', op: 'gt', value: 5_000_000 })).toBe('Allium value > $5M');
         expect(formatFilter({ field: 'marketCapUsd', op: 'lte', value: 1_250_000_000 })).toBe('Market cap ≤ $1.25B');
-        expect(formatFilter({ field: 'solanaClass', op: 'is', value: 'Stocks' })).toBe('Asset class is Stocks');
+        expect(formatFilter({ field: 'assetClass', op: 'is', value: 'Stocks' })).toBe('Class is Stocks');
         expect(formatFilter({ field: 'rwaClass', op: 'is_not', value: 'Stablecoins' })).toBe(
             'RWA.xyz class is not Stablecoins',
         );
@@ -73,9 +75,17 @@ describe('formatFilter', () => {
 
 describe('applyFilters', () => {
     const rows = [
-        row({ symbol: 'USDC', name: 'USD Coin', solanaClass: 'USD Stablecoins', alliumValueUsd: 7e9, valueUsd: 7e9 }),
-        row({ symbol: 'TSLAX', solanaClass: 'Stocks', marketCapUsd: 4e6, valueUsd: 4e6, hasTokenPage: true }),
-        row({ symbol: 'NOVAL', solanaClass: 'Stocks' }),
+        row({
+            symbol: 'USDC',
+            name: 'USD Coin',
+            group: 'Stablecoins',
+            category: 'Fiat-Backed',
+            assetClass: 'USD Stablecoins',
+            alliumValueUsd: 7e9,
+            valueUsd: 7e9,
+        }),
+        row({ symbol: 'TSLAX', assetClass: 'Stocks', marketCapUsd: 4e6, valueUsd: 4e6, hasTokenPage: true }),
+        row({ symbol: 'NOVAL', assetClass: 'Stocks' }),
     ];
 
     test('search matches symbol, name or mint', () => {
@@ -85,12 +95,12 @@ describe('applyFilters', () => {
 
     test('category is / is_not', () => {
         expect(
-            applyFilters(rows, { q: '', filters: [{ field: 'solanaClass', op: 'is', value: 'Stocks' }] }).map(
+            applyFilters(rows, { q: '', filters: [{ field: 'assetClass', op: 'is', value: 'Stocks' }] }).map(
                 r => r.symbol,
             ),
         ).toEqual(['TSLAX', 'NOVAL']);
         expect(
-            applyFilters(rows, { q: '', filters: [{ field: 'solanaClass', op: 'is_not', value: 'Stocks' }] }).map(
+            applyFilters(rows, { q: '', filters: [{ field: 'assetClass', op: 'is_not', value: 'Stocks' }] }).map(
                 r => r.symbol,
             ),
         ).toEqual(['USDC']);
@@ -99,6 +109,36 @@ describe('applyFilters', () => {
                 r => r.symbol,
             ),
         ).toEqual(['TSLAX']);
+    });
+
+    test('group and category tiers filter independently of class', () => {
+        expect(
+            applyFilters(rows, { q: '', filters: [{ field: 'group', op: 'is', value: 'RWA' }] }).map(r => r.symbol),
+        ).toEqual(['TSLAX', 'NOVAL']);
+        expect(
+            applyFilters(rows, { q: '', filters: [{ field: 'category', op: 'is', value: 'Fiat-Backed' }] }).map(
+                r => r.symbol,
+            ),
+        ).toEqual(['USDC']);
+        expect(
+            applyFilters(rows, {
+                q: '',
+                filters: [
+                    { field: 'group', op: 'is', value: 'RWA' },
+                    { field: 'category', op: 'is_not', value: 'Equities' },
+                ],
+            }),
+        ).toHaveLength(0);
+    });
+
+    test('a missing classification never matches "is" but always matches "is not"', () => {
+        const unclassified = [row({ symbol: 'NOCLASS', group: null, category: null, assetClass: null })];
+        expect(
+            applyFilters(unclassified, { q: '', filters: [{ field: 'group', op: 'is', value: 'RWA' }] }),
+        ).toHaveLength(0);
+        expect(
+            applyFilters(unclassified, { q: '', filters: [{ field: 'group', op: 'is_not', value: 'RWA' }] }),
+        ).toHaveLength(1);
     });
 
     test('usd comparisons never match null values', () => {
@@ -124,7 +164,7 @@ describe('applyFilters', () => {
             applyFilters(rows, {
                 q: 'tsla',
                 filters: [
-                    { field: 'solanaClass', op: 'is', value: 'Stocks' },
+                    { field: 'assetClass', op: 'is', value: 'Stocks' },
                     { field: 'valueUsd', op: 'gte', value: 4e6 },
                 ],
             }).map(r => r.symbol),
@@ -136,16 +176,22 @@ describe('filter url codec', () => {
     test('round-trips', () => {
         const filters = [
             { field: 'alliumValueUsd', op: 'gt', value: 5_000_000 },
-            { field: 'solanaClass', op: 'is', value: 'Stocks' },
+            { field: 'assetClass', op: 'is', value: 'Stocks' },
         ] as const;
         expect(decodeFilters(encodeFilters(filters))).toEqual([...filters]);
+    });
+
+    test('drops the legacy solanaClass field from pre-migration links', () => {
+        expect(decodeFilters('[["solanaClass","is","Stocks"],["group","is","RWA"]]')).toEqual([
+            { field: 'group', op: 'is', value: 'RWA' },
+        ]);
     });
 
     test('fails closed on garbage and drops unknown entries', () => {
         expect(decodeFilters('not json')).toEqual([]);
         expect(decodeFilters('{"a":1}')).toEqual([]);
-        expect(decodeFilters('[["bogus","is","x"],["solanaClass","is","Stocks"],["valueUsd","gt","abc"]]')).toEqual([
-            { field: 'solanaClass', op: 'is', value: 'Stocks' },
+        expect(decodeFilters('[["bogus","is","x"],["assetClass","is","Stocks"],["valueUsd","gt","abc"]]')).toEqual([
+            { field: 'assetClass', op: 'is', value: 'Stocks' },
         ]);
     });
 });

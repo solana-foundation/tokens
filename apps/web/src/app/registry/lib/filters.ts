@@ -7,7 +7,7 @@ import type { RegistryRow } from './types';
  * every branch is unit-testable.
  */
 
-export type CategoryFieldId = 'solanaClass' | 'rwaClass' | 'alliumClass' | 'hasTokenPage';
+export type CategoryFieldId = 'group' | 'category' | 'assetClass' | 'rwaClass' | 'alliumClass' | 'hasTokenPage';
 export type UsdFieldId = 'valueUsd' | 'alliumValueUsd' | 'rwaValueUsd' | 'marketCapUsd';
 export type FilterFieldId = CategoryFieldId | UsdFieldId;
 
@@ -45,11 +45,25 @@ export type FilterField = CategoryField | UsdField;
 
 export const FILTER_FIELDS: readonly FilterField[] = [
     {
-        id: 'solanaClass',
+        id: 'group',
         kind: 'category',
-        label: 'Asset class',
-        synonyms: ['internal', 'category', 'type', 'solana'],
-        read: row => row.solanaClass,
+        label: 'Group',
+        synonyms: ['tier 1', 'top level', 'type'],
+        read: row => row.group,
+    },
+    {
+        id: 'category',
+        kind: 'category',
+        label: 'Category',
+        synonyms: ['tier 2', 'sector'],
+        read: row => row.category,
+    },
+    {
+        id: 'assetClass',
+        kind: 'category',
+        label: 'Class',
+        synonyms: ['tier 3', 'asset class', 'solana class'],
+        read: row => row.assetClass,
     },
     {
         id: 'rwaClass',
@@ -89,7 +103,7 @@ export const FILTER_FIELDS: readonly FilterField[] = [
     {
         id: 'rwaValueUsd',
         kind: 'usd',
-        label: 'RWA value',
+        label: 'RWA.xyz value',
         synonyms: ['rwa', 'real world', 'rwa.xyz'],
         read: row => row.rwaValueUsd,
     },
@@ -283,7 +297,7 @@ export type SortableColumnId = (typeof SORTABLE_COLUMN_IDS)[number];
 
 export const SORT_COLUMN_LABELS: Readonly<Record<SortableColumnId, string>> = {
     token: 'Token',
-    rwaValueUsd: 'RWA value',
+    rwaValueUsd: 'RWA.xyz value',
     alliumValueUsd: 'Allium value',
     marketCapUsd: 'Market cap',
 };

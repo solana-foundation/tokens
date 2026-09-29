@@ -4,6 +4,7 @@ import type { RegistryRow } from './types';
  * Export deliberately omits every Allium / RWA.xyz derived column (classes,
  * values, and the coalesced ranking value): those are licensed provider data
  * that may be viewed on the page but not redistributed as a dataset.
+ * Group / category / class are the Foundation's own taxonomy and are exported.
  */
 export const REGISTRY_CSV_COLUMNS: ReadonlyArray<{
     header: string;
@@ -12,7 +13,9 @@ export const REGISTRY_CSV_COLUMNS: ReadonlyArray<{
     { header: 'symbol', value: row => row.symbol },
     { header: 'name', value: row => row.name },
     { header: 'mint_address', value: row => row.mintAddress },
-    { header: 'solana_asset_class', value: row => row.solanaClass },
+    { header: 'group', value: row => row.group },
+    { header: 'category', value: row => row.category },
+    { header: 'class', value: row => row.assetClass },
     { header: 'coingecko_market_cap_usd', value: row => row.marketCapUsd },
     {
         header: 'token_page_url',
