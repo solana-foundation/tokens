@@ -102,10 +102,11 @@ module "env" {
   enable_load_balancer = true
   domain               = "api.tokens.xyz"
 
-  # Assets logo-sync (docs/operations/logo-sync.md). Set once the Pinata
-  # dedicated gateway exists and tokens-pinata-gateway-token-prd has a version;
-  # until then the job runs with its non-IPFS sources only.
-  # pinata_gateway_host = "tokens.mypinata.cloud"
+  # Assets logo-sync (docs/operations/logo-sync.md). Pinata dedicated gateway
+  # for IPFS-hosted artwork; tokens-pinata-gateway-token-prd version seeded
+  # 2026-09-22. Cloud Run env is ignore_changes, so the live value is pushed
+  # with gcloud (see the runbook) — this records the desired state.
+  pinata_gateway_host = "yellow-key-catshark-460.mypinata.cloud"
   # logo_public_base_url = "https://img.tokens.xyz"  # after the img host fronts the bucket
 }
 
