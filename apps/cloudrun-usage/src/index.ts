@@ -18,10 +18,10 @@ if (!apiKeyEncryptionSecret) {
 
 const port = Number(process.env.PORT) || 8080;
 const sql = getSql();
-const redisHost = process.env.TOKENS_REDIS_HOST?.trim();
-const redisPort = Number(process.env.TOKENS_REDIS_PORT?.trim() || 6379);
+const redisHost = process.env.REDIS_HOST?.trim();
+const redisPort = Number(process.env.REDIS_PORT?.trim() || 6379);
 if (!redisHost) {
-    console.warn('TOKENS_REDIS_HOST is not set — limitsEnforce will be unavailable (API falls open)');
+    console.warn('REDIS_HOST is not set — limitsEnforce will be unavailable (API falls open)');
 }
 const app = createApp({
     platformAuth: makePostgresPlatformAuthRepo(sql),

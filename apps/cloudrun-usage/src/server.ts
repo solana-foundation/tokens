@@ -112,7 +112,7 @@ export function createApp(deps: ServerDeps) {
     mutations.logApiRequest = args => logApiRequest(deps.platformAuth, args);
     mutations.limitsEnforce = args => {
         const redis = deps.limitsRedis;
-        if (!redis) throw new Error('limitsEnforce: TOKENS_REDIS_HOST not configured');
+        if (!redis) throw new Error('limitsEnforce: REDIS_HOST not configured');
         return limitsEnforce({ redis }, args);
     };
     mutations.ingestUsageAggregates = args => ingestUsageAggregates(deps.usageIngest, args);
