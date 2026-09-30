@@ -1,0 +1,8 @@
+{
+    "crons": [
+        {
+            "path": "/api/internal/usage-drain",
+            "schedule": "*/5 * * * *"
+        }
+    ]
+}

@@ -8,7 +8,7 @@ import { dispatchErrorResponse } from '@tokens/cloudrun-shutdown/http-errors';
 import { authenticateApiKey, logApiRequest, type PlatformAuthRepo } from './handlers/platformAuth';
 import * as usageDashboard from './handlers/usageDashboard';
 import type { UsageDashboardRepo } from './handlers/usageDashboard';
-import { ingestUsageAggregates, type UsageIngestRepo } from './handlers/usageIngest';
+import { ingestUsageAggregates, syncUsageAggregates, type UsageIngestRepo } from './handlers/usageIngest';
 import { registerHookRoutes, type HookDeps } from './hooks';
 
 export interface CallerIdentity {
@@ -108,6 +108,7 @@ export function createApp(deps: ServerDeps) {
     const mutations: Record<string, Handler> = Object.create(null);
     mutations.logApiRequest = args => logApiRequest(deps.platformAuth, args);
     mutations.ingestUsageAggregates = args => ingestUsageAggregates(deps.usageIngest, args);
+    mutations.syncUsageAggregates = args => syncUsageAggregates(deps.usageIngest, args);
     // Dashboard writes (identity-scoped).
     mutations.usersUpsertMe = (args, identity) => dashboard.usersUpsertMe(dashDeps, args, identity);
     mutations.usersCreateProjectWithApiKey = (args, identity) =>

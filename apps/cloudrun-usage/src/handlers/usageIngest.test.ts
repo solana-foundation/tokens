@@ -2,18 +2,22 @@ import { describe, expect, it } from 'bun:test';
 
 import { InvalidArgsError } from './errors';
 import { emptyLatencyHistogram } from './histogram';
-import { ingestUsageAggregates, type UsageIngestRepo } from './usageIngest';
+import { ingestUsageAggregates, syncUsageAggregates, type UsageIngestRepo } from './usageIngest';
 
 const NOW = 1_750_000_000_000; // deterministic "now"
 
 function makeRepo() {
     const applied: Array<{ daily: unknown[]; endpoint: unknown[]; updatedAtMs: number }> = [];
+    const synced: Array<{ daily: unknown[]; endpoint: unknown[]; updatedAtMs: number }> = [];
     const repo: UsageIngestRepo = {
         applyIngestBuckets: async args => {
             applied.push(args as never);
         },
+        applySyncBuckets: async args => {
+            synced.push(args as never);
+        },
     };
-    return { repo, applied };
+    return { repo, applied, synced };
 }
 
 const DAY_BUCKET = {
@@ -105,5 +109,32 @@ describe('ingestUsageAggregates', () => {
         await expect(
             ingestUsageAggregates(repo, { buckets: [{ ...DAY_BUCKET, endpoint: 42 }] }, NOW),
         ).rejects.toBeInstanceOf(InvalidArgsError);
+    });
+});
+
+describe('syncUsageAggregates', () => {
+    it('sends running totals to the replay-safe write, never the additive one', async () => {
+        const { repo, applied, synced } = makeRepo();
+        const result = await syncUsageAggregates(
+            repo,
+            { buckets: [DAY_BUCKET, { ...DAY_BUCKET, endpoint: '/api/v1/whoami', latencyHistogram: [5] }] },
+            NOW,
+        );
+        expect(result).toEqual({ ingested: 2, dailyBuckets: 1, endpointBuckets: 1 });
+        expect(applied).toHaveLength(0);
+        expect(synced).toHaveLength(1);
+        expect(synced[0]?.daily).toEqual([DAY_BUCKET]);
+        expect(synced[0]?.updatedAtMs).toBe(NOW);
+    });
+
+    it('validates like the additive ingest and writes nothing for empty input', async () => {
+        const { repo, synced } = makeRepo();
+        await expect(syncUsageAggregates(repo, { buckets: 'nope' }, NOW)).rejects.toBeInstanceOf(InvalidArgsError);
+        expect(await syncUsageAggregates(repo, { buckets: [{ ...DAY_BUCKET, totalCalls: 0 }] }, NOW)).toEqual({
+            ingested: 0,
+            dailyBuckets: 0,
+            endpointBuckets: 0,
+        });
+        expect(synced).toHaveLength(0);
     });
 });

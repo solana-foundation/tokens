@@ -23,6 +23,8 @@ export const PUBLIC_ROUTE_PATTERNS = [
     '/api/tokens/by-addresses',
     '/api/tokens/market-snapshots',
     '/api/tokens/descriptions/by-address',
+    // Scheduler-only; the handler checks a shared secret (CRON_SECRET).
+    '/api/internal/usage-drain',
 ];
 
 const isPublicRoute = createRouteMatcher(PUBLIC_ROUTE_PATTERNS);
