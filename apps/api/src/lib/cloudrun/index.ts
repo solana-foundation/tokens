@@ -53,8 +53,11 @@ export { searchPrefetchForApi, type SearchPrefetchArgs, type SearchPrefetchResul
 
 export {
     authenticateApiKey,
+    limitsEnforce,
     logApiRequest,
     type AuthenticateApiKeyResult,
+    type LimitsEnforceArgs,
+    type LimitsEnforceResult,
     type LogApiRequestArgs,
 } from './platformAuth';
 

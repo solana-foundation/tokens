@@ -1,33 +1,34 @@
 {
-  "name": "@tokens/cloudrun-usage",
-  "version": "0.0.0",
-  "private": true,
-  "license": "MIT",
-  "type": "module",
-  "scripts": {
-    "dev": "bun run src/index.ts",
-    "start": "bun run src/index.ts",
-    "lint": "eslint .",
-    "typecheck": "tsc --noEmit",
-    "test": "bun test src"
-  },
-  "engines": {
-    "node": ">=20"
-  },
-  "dependencies": {
-    "@tokens/cloudrun-shutdown": "workspace:*",
-    "hono": "^4.13.5",
-    "jose": "^5.9.6",
-    "postgres": "^3.4.5"
-  },
-  "devDependencies": {
-    "@eslint/js": "^9.16.0",
-    "@tokens/eslint-config": "workspace:*",
-    "@tokens/typescript-config": "workspace:*",
-    "@types/bun": "^1.1.14",
-    "@types/node": "^22.10.1",
-    "eslint": "^9.16.0",
-    "typescript": "^5.9.3",
-    "typescript-eslint": "^8.18.2"
-  }
+    "name": "@tokens/cloudrun-usage",
+    "version": "0.0.0",
+    "private": true,
+    "license": "MIT",
+    "type": "module",
+    "scripts": {
+        "dev": "bun run src/index.ts",
+        "start": "bun run src/index.ts",
+        "lint": "eslint .",
+        "typecheck": "tsc --noEmit",
+        "test": "bun test src"
+    },
+    "engines": {
+        "node": ">=20"
+    },
+    "dependencies": {
+        "@tokens/cloudrun-shutdown": "workspace:*",
+        "hono": "^4.13.5",
+        "ioredis": "^5.4.1",
+        "jose": "^5.9.6",
+        "postgres": "^3.4.5"
+    },
+    "devDependencies": {
+        "@eslint/js": "^9.16.0",
+        "@tokens/eslint-config": "workspace:*",
+        "@tokens/typescript-config": "workspace:*",
+        "@types/bun": "^1.1.14",
+        "@types/node": "^22.10.1",
+        "eslint": "^9.16.0",
+        "typescript": "^5.9.3",
+        "typescript-eslint": "^8.18.2"
+    }
 }

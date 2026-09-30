@@ -47,3 +47,26 @@ export interface LogApiRequestArgs {
 export function logApiRequest(args: LogApiRequestArgs): Effect.Effect<void, CloudRunError> {
     return cloudRunMutation('usage', 'logApiRequest', { ...args }).pipe(Effect.asVoid);
 }
+
+export interface LimitsEnforceArgs {
+    apiKeyId: string;
+    rateLimit: { requests: number; windowSeconds: number };
+    sustainedRateLimit: { requests: number; windowSeconds: number };
+    quota: { requestsPerMonth: number };
+}
+
+export type LimitsEnforceResult =
+    | {
+          allowed: true;
+          rateLimit: { limit: number; remaining: number; resetMs: number };
+          quota: { limit: number; used: number; remaining: number; resetMs: number };
+      }
+    | {
+          allowed: false;
+          service: 'rateLimit' | 'sustainedRateLimit' | 'quota';
+          retryAfterMs: number;
+      };
+
+export function limitsEnforce(args: LimitsEnforceArgs): Effect.Effect<LimitsEnforceResult, CloudRunError> {
+    return cloudRunMutation<LimitsEnforceResult>('usage', 'limitsEnforce', { ...args }, { timeoutMs: 1500 });
+}
