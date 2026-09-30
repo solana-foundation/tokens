@@ -20,8 +20,6 @@ interface ClickhouseQueryCall {
 
 interface MakeClickhouseOptions {
     asOfMs?: number | null;
-    solanaTradesTable?: string | null;
-    stockTradesTable?: string | null;
     queryHandler?: (call: ClickhouseQueryCall) => unknown[];
     queryCalls?: ClickhouseQueryCall[];
     mintSnapshots?: (mints: readonly string[]) => ClickhouseMintSnapshot[];
@@ -39,27 +37,11 @@ function makeClickhouse(overrides: MakeClickhouseOptions = {}): ClickhouseClient
         async fetchSolanaMintSnapshots(params: { mints: readonly string[] }) {
             return overrides.mintSnapshots ? overrides.mintSnapshots(params.mints) : [];
         },
-        async query<T>(args: { sql: string; params?: Record<string, string | number> }): Promise<T[]> {
-            const call: ClickhouseQueryCall = { sql: args.sql };
-            if (args.params) call.params = args.params;
+        async queryPreset<T>(name: string, params: Record<string, unknown>): Promise<T[]> {
+            const call: ClickhouseQueryCall = { sql: `preset:${name}`, params: params as Record<string, string | number> };
             calls.push(call);
             if (!overrides.queryHandler) return [] as T[];
             return overrides.queryHandler(call) as T[];
-        },
-        async queryPreset<T>(name: string): Promise<T[]> {
-            const call: ClickhouseQueryCall = { sql: `preset:${name}` };
-            calls.push(call);
-            if (!overrides.queryHandler) return [] as T[];
-            return overrides.queryHandler(call) as T[];
-        },
-        tables() {
-            return {
-                database: 'default',
-                stockTradesTable: overrides.stockTradesTable ?? null,
-                stockInstrumentsTable: null,
-                solanaTradesTable: overrides.solanaTradesTable ?? null,
-                priceScale: 1,
-            };
         },
     };
 }
@@ -157,8 +139,6 @@ function makeRepo(overrides: MakeRepoOptions = {}): ClickhouseExtrasRepo {
 }
 
 interface MakeDepsOptions {
-    solanaTradesTable?: string | null;
-    stockTradesTable?: string | null;
     curated?: readonly string[];
     repo?: ClickhouseExtrasRepo;
     clickhouse?: ClickhouseClient;
@@ -166,12 +146,7 @@ interface MakeDepsOptions {
 
 function makeDeps(env: NodeJS.ProcessEnv = {}, overrides: MakeDepsOptions = {}): ClickhouseExtrasCronDeps {
     return {
-        clickhouse:
-            overrides.clickhouse ??
-            makeClickhouse({
-                solanaTradesTable: overrides.solanaTradesTable ?? null,
-                stockTradesTable: overrides.stockTradesTable ?? null,
-            }),
+        clickhouse: overrides.clickhouse ?? makeClickhouse(),
         repo: overrides.repo ?? makeRepo(),
         curated: { getAllCuratedMintsInOrder: () => [...(overrides.curated ?? [])] },
         now: () => 1_780_000_000_000,
@@ -188,19 +163,9 @@ describe('refreshSolanaClickhouseTrendingMarkets', () => {
         expect(res.disabled).toBe(true);
     });
 
-    it('reports clickhouse_solana_trades_table_not_configured when table is missing', async () => {
-        const res = await refreshSolanaClickhouseTrendingMarkets(
-            makeDeps({ CLICKHOUSE_SOLANA_TRADES_REFRESH_ENABLED: 'true' }),
-            {},
-        );
-        expect(res.skipped).toBe(true);
-        expect(res.reason).toBe('clickhouse_solana_trades_table_not_configured');
-    });
-
     it('reports skippedNoTrades when ClickHouse has no asOf row', async () => {
         const env = { CLICKHOUSE_SOLANA_TRADES_REFRESH_ENABLED: 'true' };
         const clickhouse = makeClickhouse({
-            solanaTradesTable: 'solana_trades',
             queryHandler: () => [],
         });
         const res = await refreshSolanaClickhouseTrendingMarkets(
@@ -219,7 +184,6 @@ describe('refreshSolanaClickhouseTrendingMarkets', () => {
         const asOfMs = 1_700_000_000_000;
         const clickhouse = makeClickhouse({
             asOfMs,
-            solanaTradesTable: 'solana_trades',
             queryHandler: () => {
                 return [
                     {
@@ -238,7 +202,7 @@ describe('refreshSolanaClickhouseTrendingMarkets', () => {
         }> = [];
         const repo = makeRepo({ replaceTrendingCalls, stableMints: [] });
         const res = await refreshSolanaClickhouseTrendingMarkets(
-            makeDeps(env, { clickhouse, repo, solanaTradesTable: 'solana_trades', curated: [SOL_MINT] }),
+            makeDeps(env, { clickhouse, repo, curated: [SOL_MINT] }),
             {},
         );
         expect(res.scored).toBe(0);
@@ -252,7 +216,6 @@ describe('refreshSolanaClickhouseTrendingMarkets', () => {
         const asOfSec = Math.floor(asOfMs / 1000);
         const clickhouse = makeClickhouse({
             asOfMs,
-            solanaTradesTable: 'solana_trades',
             queryHandler: () => {
                 return [
                     {
@@ -297,7 +260,7 @@ describe('refreshSolanaClickhouseTrendingMarkets', () => {
             ]),
         });
         const res = await refreshSolanaClickhouseTrendingMarkets(
-            makeDeps(env, { clickhouse, repo, solanaTradesTable: 'solana_trades', curated: [WETH, USDC] }),
+            makeDeps(env, { clickhouse, repo, curated: [WETH, USDC] }),
             {},
         );
         expect(res.disabled).toBe(false);
@@ -322,7 +285,6 @@ describe('refreshSolanaClickhouseTrendingMarkets', () => {
         const asOfMs = 1_700_000_000_000;
         const clickhouse = makeClickhouse({
             asOfMs,
-            solanaTradesTable: 'solana_trades',
             queryHandler: () => {
                 return [
                     {
@@ -344,7 +306,7 @@ describe('refreshSolanaClickhouseTrendingMarkets', () => {
             stableMints: [USDC],
         });
         const res = await refreshSolanaClickhouseTrendingMarkets(
-            makeDeps(env, { clickhouse, repo, solanaTradesTable: 'solana_trades' }),
+            makeDeps(env, { clickhouse, repo }),
             { mints: [WETH] },
         );
         expect(res.scored).toBe(1);
@@ -528,16 +490,6 @@ describe('refreshSolanaClickhouseOhlcv', () => {
         expect(res.interval).toBe('1H');
     });
 
-    it('reports skippedRun when solana trades table is missing', async () => {
-        const res = await refreshSolanaClickhouseOhlcv(
-            makeDeps({ CLICKHOUSE_SOLANA_TRADES_REFRESH_ENABLED: 'true' }),
-            { interval: '1H' },
-        );
-        expect(res.interval).toBe('1H');
-        expect(res.skippedRun).toBe(true);
-        expect(res.reason).toBe('clickhouse_solana_trades_table_not_configured');
-    });
-
     it('rejects unknown intervals', async () => {
         await expect(
             refreshSolanaClickhouseOhlcv(makeDeps({ CLICKHOUSE_SOLANA_TRADES_REFRESH_ENABLED: 'true' }), {
@@ -560,7 +512,6 @@ describe('refreshSolanaClickhouseOhlcv', () => {
         };
         const clickhouse = makeClickhouse({
             asOfMs,
-            solanaTradesTable: 'solana_trades',
             queryHandler: () => {
                 return [fakeCandle];
             },
@@ -577,7 +528,7 @@ describe('refreshSolanaClickhouseOhlcv', () => {
             solanaOhlcvBounds: () => ({ minTime: null, maxTime: null }),
         });
         const res = await refreshSolanaClickhouseOhlcv(
-            makeDeps(env, { clickhouse, repo, solanaTradesTable: 'solana_trades' }),
+            makeDeps(env, { clickhouse, repo }),
             { mints: [SOL], interval: '1H', concurrency: 1 },
         );
         expect(res.disabled).toBe(false);
@@ -599,7 +550,6 @@ describe('refreshSolanaClickhouseOhlcv', () => {
         const asOfSec = Math.floor(asOfMs / 1000);
         const clickhouse = makeClickhouse({
             asOfMs,
-            solanaTradesTable: 'solana_trades',
             queryHandler: () => {
                 return [];
             },
@@ -619,7 +569,7 @@ describe('refreshSolanaClickhouseOhlcv', () => {
             }),
         });
         const res = await refreshSolanaClickhouseOhlcv(
-            makeDeps(env, { clickhouse, repo, solanaTradesTable: 'solana_trades' }),
+            makeDeps(env, { clickhouse, repo }),
             { mints: [SOL], interval: '1H', days: 1, concurrency: 1 },
         );
         expect(res.refreshed).toBe(0);
@@ -634,19 +584,10 @@ describe('refreshPublicEquityStockOhlcv', () => {
         expect(res.disabled).toBe(true);
     });
 
-    it('reports skippedRun when stock trades table is missing', async () => {
-        const res = await refreshPublicEquityStockOhlcv(
-            makeDeps({ CLICKHOUSE_STOCK_REFRESH_ENABLED: 'true' }),
-            { interval: '1H' },
-        );
-        expect(res.skippedRun).toBe(true);
-        expect(res.reason).toBe('clickhouse_stock_trades_table_not_configured');
-    });
-
     it('rejects unknown intervals', async () => {
         await expect(
             refreshPublicEquityStockOhlcv(
-                makeDeps({ CLICKHOUSE_STOCK_REFRESH_ENABLED: 'true' }, { stockTradesTable: 'stock_trades' }),
+                makeDeps({ CLICKHOUSE_STOCK_REFRESH_ENABLED: 'true' }),
                 { interval: '2H' },
             ),
         ).rejects.toThrow(/interval must be one of/);
@@ -655,7 +596,7 @@ describe('refreshPublicEquityStockOhlcv', () => {
     it('returns processed=0 when there are no active mappings', async () => {
         const env = { CLICKHOUSE_STOCK_REFRESH_ENABLED: 'true' };
         const res = await refreshPublicEquityStockOhlcv(
-            makeDeps(env, { stockTradesTable: 'stock_trades' }),
+            makeDeps(env),
             { interval: '1H' },
         );
         expect(res.processed).toBe(0);
@@ -673,7 +614,6 @@ describe('refreshPublicEquityStockOhlcv', () => {
             volume: 100_000,
         };
         const clickhouse = makeClickhouse({
-            stockTradesTable: 'stock_trades',
             queryHandler: () => [candle],
         });
         const upsertCalls: Array<{
@@ -689,7 +629,7 @@ describe('refreshPublicEquityStockOhlcv', () => {
             stockOhlcvBounds: () => ({ minTime: null, maxTime: null }),
         });
         const res = await refreshPublicEquityStockOhlcv(
-            makeDeps(env, { clickhouse, repo, stockTradesTable: 'stock_trades' }),
+            makeDeps(env, { clickhouse, repo }),
             { interval: '4H', concurrency: 1 },
         );
         expect(res.disabled).toBe(false);
@@ -706,7 +646,6 @@ describe('refreshPublicEquityStockOhlcv', () => {
     it('skips assets whose bounds already cover the requested range', async () => {
         const env = { CLICKHOUSE_STOCK_REFRESH_ENABLED: 'true' };
         const clickhouse = makeClickhouse({
-            stockTradesTable: 'stock_trades',
             queryHandler: () => [],
         });
         const upsertCalls: Array<{
@@ -726,7 +665,7 @@ describe('refreshPublicEquityStockOhlcv', () => {
             }),
         });
         const res = await refreshPublicEquityStockOhlcv(
-            makeDeps(env, { clickhouse, repo, stockTradesTable: 'stock_trades' }),
+            makeDeps(env, { clickhouse, repo }),
             { interval: '1H', days: 1, concurrency: 1 },
         );
         expect(res.refreshed).toBe(0);
