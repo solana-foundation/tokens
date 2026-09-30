@@ -77,11 +77,19 @@ export function Header() {
                         <Logo width={24} height={24} className="" />
                         <span className="text-text-extra-high font-semibold text-2xl">Tokens</span>
                     </Link>
-                    {/* Shown only once the left track can hold logo + both links beside the centered 320px search. */}
-                    <nav aria-label="Browse" className="hidden shrink-0 items-center gap-4 min-[1120px]:flex">
+                    {/*
+                      Asset Registry shows from lg. Explore joins at 1120px, the first width where the left
+                      track holds logo + both links beside the centered 320px search; below that the logo
+                      already links home.
+                    */}
+                    <nav aria-label="Browse" className="hidden shrink-0 items-center gap-4 lg:flex">
                         <Link
                             href="/"
-                            className={cn(NAV_LINK_CLASS, pathname === '/' && 'text-text-extra-high')}
+                            className={cn(
+                                NAV_LINK_CLASS,
+                                'hidden min-[1120px]:inline-flex',
+                                pathname === '/' && 'text-text-extra-high',
+                            )}
                             aria-current={pathname === '/' ? 'page' : undefined}
                             onClick={() =>
                                 trackEvent('nav_link_clicked', {
