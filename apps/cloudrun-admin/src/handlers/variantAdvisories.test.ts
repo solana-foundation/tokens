@@ -56,6 +56,8 @@ function makeDeps(state: RepoState = {}): { deps: VariantAdvisoriesDeps; calls: 
 
 function advisoryRow(overrides: Partial<VariantAdvisoryRow> = {}): VariantAdvisoryRow {
     return {
+        source: 'admin',
+        managedBySystem: false,
         mint: MINT,
         status: 'compromised',
         reason: 'Treasury exploited',
@@ -265,6 +267,7 @@ describe('listVariantAdvisories', () => {
             actorClerkUserId: 'admin_1',
             actorEmail: null,
             createdAt: NOW - 1000,
+            source: 'admin',
         };
         const { deps, calls } = makeDeps({ active: rows, events: [event] });
         const result = await listVariantAdvisories(deps, { mint: ` ${MINT} ` }, ADMIN);

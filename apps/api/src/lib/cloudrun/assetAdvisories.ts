@@ -1,5 +1,5 @@
 import type { Effect } from 'effect';
-import type { AdvisoryStatus } from '@tokens/asset-registry';
+import type { AdvisorySource, AdvisoryStatus } from '@tokens/asset-registry';
 
 import { cloudRunQuery } from './client';
 import type { CloudRunError } from './errors';
@@ -12,6 +12,8 @@ export type AssetAdvisoryRow = {
     url: string | null;
     /** Unix ms when the current status was set. */
     since: number;
+    /** Absent from cloudrun-assets builds that predate 0019. */
+    source?: AdvisorySource;
 };
 
 export type AssetAdvisoriesListResult = {

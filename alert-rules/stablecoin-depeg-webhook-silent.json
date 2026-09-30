@@ -1,0 +1,88 @@
+{
+    "uid": "tokens-depeg-webhook-silent",
+    "title": "tokens-usage: no Webacy depeg webhook received in 7 days",
+    "ruleGroup": "tokens-stablecoin-depeg",
+    "folderUID": "tokens-xyz",
+    "noDataState": "Alerting",
+    "execErrState": "OK",
+    "for": "1h",
+    "data": [
+        {
+            "refId": "A",
+            "datasourceUid": "grafanacloud-logs",
+            "queryType": "range",
+            "relativeTimeRange": {
+                "from": 604800,
+                "to": 0
+            },
+            "model": {
+                "expr": "sum(count_over_time({service=\"tokens-usage-prd-us\"} |= \"depeg_webhook_received\" [7d]))",
+                "queryType": "range",
+                "refId": "A"
+            }
+        },
+        {
+            "refId": "B",
+            "datasourceUid": "__expr__",
+            "queryType": "",
+            "relativeTimeRange": {
+                "from": 0,
+                "to": 0
+            },
+            "model": {
+                "type": "reduce",
+                "refId": "B",
+                "expression": "A",
+                "reducer": "last",
+                "settings": {
+                    "mode": "replaceNN",
+                    "replaceWithValue": 0
+                }
+            }
+        },
+        {
+            "refId": "C",
+            "datasourceUid": "__expr__",
+            "queryType": "",
+            "relativeTimeRange": {
+                "from": 0,
+                "to": 0
+            },
+            "model": {
+                "type": "threshold",
+                "refId": "C",
+                "expression": "B",
+                "conditions": [
+                    {
+                        "evaluator": {
+                            "type": "lt",
+                            "params": [1]
+                        },
+                        "operator": {
+                            "type": "and"
+                        },
+                        "query": {
+                            "params": ["B"]
+                        },
+                        "reducer": {
+                            "type": "last",
+                            "params": []
+                        },
+                        "type": "query"
+                    }
+                ]
+            }
+        }
+    ],
+    "condition": "C",
+    "labels": {
+        "service": "tokens-usage",
+        "severity": "warning",
+        "slack": "true"
+    },
+    "annotations": {
+        "summary": "tokens-usage: the Webacy depeg webhook has been silent for 7 days",
+        "description": "POST /hooks/webacy on the usage service has logged no depeg_webhook_received event in the last 7 days. Webacy emits DEPEG_TIER_CHANGE across 600+ monitored tokens, so a week of silence means the subscription is gone, points at the wrong URL, or deliveries are failing before they reach us (check `bun scripts/webacy-webhook-subscribe.ts --list` and `--deliveries`). The 4-hourly sweep still reconciles advisories meanwhile, at sweep latency instead of seconds.",
+        "runbook_url": "https://github.com/solana-foundation/tokens/blob/main/docs/operations/asset-advisory-runbook.md#automated-depeg-advisories"
+    }
+}

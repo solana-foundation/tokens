@@ -1,0 +1,446 @@
+import {
+    STRUCTURAL_CATEGORY_KEYS,
+    STRUCTURAL_CATEGORY_LABELS,
+    isPegProvider,
+    isPegReferenceKind,
+    isPegTier,
+    isStructuralCategoryKey,
+    isStructuralCategoryStatus,
+    isStructuralGrade,
+    structuralGradeBand,
+    type CompactPegHealth,
+    type PegHealth,
+    type PegProvider,
+    type PegReferenceKind,
+    type PegTier,
+    type StructuralCategoryStatus,
+    type StructuralGrade,
+    type StructuralHealth,
+    type StructuralHealthCategory,
+} from '@tokens/asset-registry';
+
+import type { AssetAdvisory } from './asset-advisory';
+
+/**
+ * Stablecoin health helpers shared by the token header pill, the variants
+ * list, the Security section, and the advisory banner. Pure TS (no React) so
+ * it is usable from server components, client components, and bun:test.
+ *
+ * The API emits a compact `pegHealth` on stablecoin variants and the full
+ * `pegHealth` / `structuralHealth` blocks on risk payloads. Peg data comes
+ * from one of two observers per mint (`provider`): Webacy (branded dd.xyz)
+ * or the in-house tokens.xyz peg monitor (no external attribution).
+ * Structural grades are always Webacy's. Deploy order may briefly leave the
+ * fields absent, so every reader goes through a `normalize*` helper and
+ * degrades to "no data" instead of rendering a half-populated card.
+ */
+
+export type HealthTone = 'success' | 'neutral' | 'warning' | 'destructive' | 'info';
+
+export const WEBACY_ATTRIBUTION_URL = 'https://dd.xyz';
+export const WEBACY_PROVIDER_LABEL = 'Webacy';
+export const STABLECOIN_HEALTH_VIEWED_EVENT = 'stablecoin_health_viewed';
+
+export const PEG_PROVIDER_LABELS: Record<PegProvider, string> = {
+    webacy: WEBACY_PROVIDER_LABEL,
+    tokens: 'tokens.xyz peg monitor',
+};
+
+/** External attribution link per peg observer; the in-house monitor has none. */
+export function pegProviderAttributionUrl(provider: PegProvider): string | null {
+    return provider === 'webacy' ? WEBACY_ATTRIBUTION_URL : null;
+}
+
+export function pegProviderLabel(provider: PegProvider | undefined): string {
+    return PEG_PROVIDER_LABELS[provider ?? 'webacy'];
+}
+
+/** API builds that predate the peg guard omit `provider`; every such row is Webacy's. */
+function normalizePegProvider(value: unknown): PegProvider {
+    return isPegProvider(value) ? value : 'webacy';
+}
+
+/** API builds that predate peg guard phase 2 omit `referenceKind`; every such row was judged against a fixed 1.00. */
+function normalizePegReferenceKind(value: unknown): PegReferenceKind {
+    return isPegReferenceKind(value) ? value : 'fixed';
+}
+
+/** Upper-cased ISO 4217 code, or null. */
+function normalizePegCurrency(value: unknown): string | null {
+    if (typeof value !== 'string') return null;
+    const code = value.trim().toUpperCase();
+    return code.length > 0 ? code : null;
+}
+
+/** Deviations under this magnitude (in percent) are shown as "on peg" without a direction. */
+export const ON_PEG_DEVIATION_PCT = 0.05;
+
+export interface PegTierCopy {
+    label: string;
+    tone: HealthTone;
+    description: string;
+}
+
+export const PEG_TIER_COPY: Record<PegTier, PegTierCopy> = {
+    ok: {
+        label: 'On peg',
+        tone: 'success',
+        description: 'Trading within the normal band around its peg.',
+    },
+    watch: {
+        label: 'Watch',
+        tone: 'neutral',
+        description: 'Minor deviation from peg. No action needed, but worth monitoring.',
+    },
+    warning: {
+        label: 'Warning',
+        tone: 'warning',
+        description: 'Trading noticeably off its peg. Verify redemptions and liquidity before trading.',
+    },
+    critical: {
+        label: 'Critical',
+        tone: 'destructive',
+        description: 'Severe deviation from peg. Treat as a possible depeg until it recovers.',
+    },
+    premium: {
+        label: 'Above peg',
+        tone: 'info',
+        description: 'Trading above its peg with no depeg risk signals.',
+    },
+};
+
+/**
+ * Yield-bearing USD variants (`referenceKind: 'high_water'`) are judged against
+ * their own recent high rather than a peg, so a healthy row is "holding value"
+ * and a small slip is not a peg wobble. Tones match the fixed-peg tiers so the
+ * pill colours stay consistent across kinds.
+ */
+const HIGH_WATER_TIER_COPY: Partial<Record<PegTier, PegTierCopy>> = {
+    ok: {
+        label: 'Holding value',
+        tone: 'success',
+        description: 'Trading within 1% of its recent high.',
+    },
+    watch: {
+        label: 'Slipping',
+        tone: 'neutral',
+        description: '1 to 2% below its recent high.',
+    },
+};
+
+type PegReferenceSource = Partial<Pick<PegHealth, 'referenceKind' | 'pegCurrency'>> | null | undefined;
+
+/**
+ * Tier copy for one observation. `referenceKind` picks the vocabulary: fixed
+ * and fx pegs use `PEG_TIER_COPY`; high-water rows swap in the yield wording
+ * for `ok` and `watch` (warning/critical/premium read the same everywhere).
+ */
+export function pegTierCopy(tier: PegTier, referenceKind: PegReferenceKind | null | undefined = 'fixed'): PegTierCopy {
+    if (referenceKind === 'high_water') return HIGH_WATER_TIER_COPY[tier] ?? PEG_TIER_COPY[tier];
+    return PEG_TIER_COPY[tier];
+}
+
+/** "peg" / "its EUR peg" / "its recent high": the noun a deviation is measured against. */
+function pegReferenceNoun(source: PegReferenceSource): string {
+    const kind = source?.referenceKind ?? 'fixed';
+    if (kind === 'high_water') return 'its recent high';
+    if (kind === 'fx') {
+        const currency = normalizePegCurrency(source?.pegCurrency);
+        return currency ? `its ${currency} peg` : 'its peg';
+    }
+    return 'peg';
+}
+
+/**
+ * One-line explanation of what the observation is measured against, for the
+ * peg card subtitle. Null for fixed USD pegs, which need no qualifier.
+ */
+export function pegReferenceDescription(source: PegReferenceSource): string | null {
+    const kind = source?.referenceKind ?? 'fixed';
+    if (kind === 'high_water') return 'Yield-bearing token, measured against its own price history';
+    if (kind === 'fx') {
+        const currency = normalizePegCurrency(source?.pegCurrency);
+        return currency
+            ? `Pegged to ${currency}, judged against a CoinGecko-implied rate`
+            : 'Pegged to a fiat currency, judged against a CoinGecko-implied rate';
+    }
+    return null;
+}
+
+// ---------------------------------------------------------------------------
+// Decoding
+// ---------------------------------------------------------------------------
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+    return value as Record<string, unknown>;
+}
+
+function finiteNumberOrNull(value: unknown): number | null {
+    return typeof value === 'number' && Number.isFinite(value) ? value : null;
+}
+
+/** Unix ms; anything non-positive or non-finite degrades to 0 (renders as "no timestamp"). */
+function timestampOrZero(value: unknown): number {
+    const parsed = finiteNumberOrNull(value);
+    return parsed !== null && parsed > 0 ? parsed : 0;
+}
+
+function timestampOrNull(value: unknown): number | null {
+    const parsed = timestampOrZero(value);
+    return parsed > 0 ? parsed : null;
+}
+
+/** Defensive decode of the compact per-variant `pegHealth` on `GET /v1/assets/{id}`. */
+export function normalizeCompactPegHealth(value: unknown): CompactPegHealth | null {
+    const record = asRecord(value);
+    if (!record || !isPegTier(record.tier)) return null;
+
+    return {
+        provider: normalizePegProvider(record.provider),
+        referenceKind: normalizePegReferenceKind(record.referenceKind),
+        tier: record.tier,
+        deviationPct: finiteNumberOrNull(record.deviationPct),
+        updatedAt: timestampOrZero(record.updatedAt),
+        stale: record.stale === true,
+    };
+}
+
+/** Defensive decode of the full `risk.pegHealth` block on risk payloads. */
+export function normalizePegHealth(value: unknown): PegHealth | null {
+    const record = asRecord(value);
+    if (!record || !isPegTier(record.tier)) return null;
+
+    return {
+        provider: normalizePegProvider(record.provider),
+        pegCurrency: normalizePegCurrency(record.pegCurrency),
+        referenceKind: normalizePegReferenceKind(record.referenceKind),
+        tier: record.tier,
+        overallRisk: finiteNumberOrNull(record.overallRisk),
+        deviationPct: finiteNumberOrNull(record.deviationPct),
+        priceUsd: finiteNumberOrNull(record.priceUsd),
+        pegUsd: finiteNumberOrNull(record.pegUsd),
+        liquidityUsd: finiteNumberOrNull(record.liquidityUsd),
+        tierSince: timestampOrNull(record.tierSince),
+        updatedAt: timestampOrZero(record.updatedAt),
+        stale: record.stale === true,
+    };
+}
+
+function normalizeStructuralCategories(value: unknown): StructuralHealthCategory[] {
+    if (!Array.isArray(value)) return [];
+
+    const byKey = new Map<StructuralHealthCategory['key'], StructuralHealthCategory>();
+    for (const item of value) {
+        const record = asRecord(item);
+        if (!record || !isStructuralCategoryKey(record.key) || byKey.has(record.key)) continue;
+        const label = typeof record.label === 'string' ? record.label.trim() : '';
+        byKey.set(record.key, {
+            key: record.key,
+            label: label || STRUCTURAL_CATEGORY_LABELS[record.key],
+            score: finiteNumberOrNull(record.score),
+            weight: finiteNumberOrNull(record.weight),
+            status: isStructuralCategoryStatus(record.status) ? record.status : 'unknown',
+        });
+    }
+
+    // Canonical order so the five rows always render in the same sequence.
+    const ordered: StructuralHealthCategory[] = [];
+    for (const key of STRUCTURAL_CATEGORY_KEYS) {
+        const category = byKey.get(key);
+        if (category) ordered.push(category);
+    }
+    return ordered;
+}
+
+/** Defensive decode of the full `risk.structuralHealth` block on risk payloads. */
+export function normalizeStructuralHealth(value: unknown): StructuralHealth | null {
+    const record = asRecord(value);
+    if (!record || !isStructuralGrade(record.grade)) return null;
+
+    return {
+        provider: 'webacy',
+        grade: record.grade,
+        score: finiteNumberOrNull(record.score),
+        categories: normalizeStructuralCategories(record.categories),
+        updatedAt: timestampOrZero(record.updatedAt),
+        stale: record.stale === true,
+    };
+}
+
+// ---------------------------------------------------------------------------
+// Copy
+// ---------------------------------------------------------------------------
+
+type PegDeviationSource =
+    | (Pick<CompactPegHealth, 'deviationPct'> & Partial<Pick<PegHealth, 'referenceKind' | 'pegCurrency'>>)
+    | null
+    | undefined;
+
+/**
+ * "−2.40% below peg" / "+0.35% above peg" / "±0.01%" / "Deviation unavailable".
+ * fx rows say "below its EUR peg" and high-water rows "below its recent high"
+ * so the number is never read as a dollar-peg deviation.
+ */
+export function pegDeviationText(pegHealth: PegDeviationSource): string {
+    const deviation = pegHealth?.deviationPct;
+    if (typeof deviation !== 'number' || !Number.isFinite(deviation)) return 'Deviation unavailable';
+
+    const magnitude = Math.abs(deviation).toFixed(2);
+    if (Math.abs(deviation) < ON_PEG_DEVIATION_PCT) return `±${magnitude}%`;
+    const noun = pegReferenceNoun(pegHealth);
+    return deviation < 0 ? `−${magnitude}% below ${noun}` : `+${magnitude}% above ${noun}`;
+}
+
+type PegPriceSource =
+    | (Pick<PegHealth, 'priceUsd' | 'pegUsd'> & Partial<Pick<PegHealth, 'referenceKind' | 'pegCurrency'>>)
+    | null
+    | undefined;
+
+/**
+ * "$0.9760 vs $1.00 peg" for fixed pegs, "$1.1500 vs EUR peg ($1.1556)" for
+ * fx pegs, "$1.0500 vs $1.1400 recent high" for yield tokens; empty when the
+ * price is unknown. `pegUsd` is always the resolved reference the tier was
+ * judged against, so fx and high-water references print with four decimals.
+ */
+export function pegPriceText(pegHealth: PegPriceSource): string {
+    const price = pegHealth?.priceUsd;
+    if (typeof price !== 'number' || !Number.isFinite(price)) return '';
+
+    const priceText = `$${price.toFixed(4)}`;
+    const peg = pegHealth?.pegUsd;
+    if (typeof peg !== 'number' || !Number.isFinite(peg)) return priceText;
+
+    const kind = pegHealth?.referenceKind ?? 'fixed';
+    if (kind === 'high_water') return `${priceText} vs $${peg.toFixed(4)} recent high`;
+    if (kind === 'fx') {
+        const currency = normalizePegCurrency(pegHealth?.pegCurrency);
+        return currency
+            ? `${priceText} vs ${currency} peg ($${peg.toFixed(4)})`
+            : `${priceText} vs $${peg.toFixed(4)} peg`;
+    }
+    return `${priceText} vs $${peg.toFixed(2)} peg`;
+}
+
+const HEALTH_UPDATED_AT_FORMATTER = new Intl.DateTimeFormat('en-US', {
+    month: 'short',
+    day: 'numeric',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    hourCycle: 'h23',
+    timeZone: 'UTC',
+});
+
+/**
+ * "Sep 13, 2026 14:30 UTC". Always UTC so server and client render the same
+ * string (same reasoning as `formatAdvisorySince`). Empty for invalid input.
+ */
+export function formatHealthUpdatedAt(updatedAt: number | null | undefined): string {
+    if (typeof updatedAt !== 'number' || !Number.isFinite(updatedAt) || updatedAt <= 0) return '';
+
+    const parts = new Map<string, string>();
+    for (const part of HEALTH_UPDATED_AT_FORMATTER.formatToParts(new Date(updatedAt))) {
+        if (part.type !== 'literal') parts.set(part.type, part.value);
+    }
+    const month = parts.get('month');
+    const day = parts.get('day');
+    const year = parts.get('year');
+    const hour = parts.get('hour');
+    const minute = parts.get('minute');
+    if (!month || !day || !year || !hour || !minute) return '';
+    return `${month} ${day}, ${year} ${hour}:${minute} UTC`;
+}
+
+/**
+ * Accessible summary for the peg pill, e.g.
+ * "Peg status: Warning, −2.40% below peg. Updated Sep 13, 2026 14:30 UTC. Source: Webacy".
+ * The source names whichever observer produced the row; yield tokens read
+ * "Holding value, −0.50% below its recent high".
+ */
+export function pegStatusTitle(pegHealth: CompactPegHealth | PegHealth): string {
+    const copy = pegTierCopy(pegHealth.tier, pegHealth.referenceKind);
+    const updated = formatHealthUpdatedAt(pegHealth.updatedAt);
+    const sentences = [
+        `Peg status: ${copy.label}, ${pegDeviationText(pegHealth)}.`,
+        ...(updated ? [`Updated ${updated}.`] : []),
+        `Source: ${pegProviderLabel(pegHealth.provider)}`,
+    ];
+    return `${sentences.join(' ')}${pegHealth.stale ? ' (stale)' : ''}`;
+}
+
+export function pegTierTone(tier: PegTier): HealthTone {
+    return PEG_TIER_COPY[tier].tone;
+}
+
+export function structuralStatusTone(status: StructuralCategoryStatus): HealthTone {
+    switch (status) {
+        case 'pass':
+            return 'success';
+        case 'warn':
+            return 'warning';
+        case 'fail':
+            return 'destructive';
+        case 'unknown':
+            return 'neutral';
+    }
+}
+
+export const STRUCTURAL_STATUS_LABELS: Record<StructuralCategoryStatus, string> = {
+    pass: 'Pass',
+    warn: 'Warn',
+    fail: 'Fail',
+    unknown: 'Unknown',
+};
+
+/** A success, B neutral, C warning, D/F destructive (the +/- modifier does not change the tone). */
+export function structuralGradeTone(grade: StructuralGrade): HealthTone {
+    switch (structuralGradeBand(grade)) {
+        case 'A':
+            return 'success';
+        case 'B':
+            return 'neutral';
+        case 'C':
+            return 'warning';
+        case 'D':
+        case 'E':
+        case 'F':
+            return 'destructive';
+    }
+}
+
+/** "Weight 30% · pass" for the structural category tooltip. */
+export function structuralCategoryTooltip(category: Pick<StructuralHealthCategory, 'weight' | 'status'>): string {
+    const status = STRUCTURAL_STATUS_LABELS[category.status].toLowerCase();
+    const weight = category.weight;
+    if (typeof weight !== 'number' || !Number.isFinite(weight)) return `Weight unknown · ${status}`;
+    return `Weight ${Math.round(weight * 100)}% · ${status}`;
+}
+
+/** Only `stablecoin` assets carry peg health; everything else renders no pill. */
+export function isStablecoinCategory(category: unknown): boolean {
+    return category === 'stablecoin';
+}
+
+/** Footer line for advisories a depeg monitor set; empty for manual rows. */
+export function advisorySourceAttribution(advisory: Pick<AssetAdvisory, 'source'> | null | undefined): string {
+    switch (advisory?.source) {
+        case 'webacy_depeg':
+            return 'Set automatically by the Webacy depeg monitor';
+        case 'peg_guard':
+            return 'Set automatically by the tokens.xyz peg monitor';
+        default:
+            return '';
+    }
+}
+
+/** Analytics properties for `stablecoin_health_viewed` (nulls are omitted). */
+export function stablecoinHealthEventProps(
+    pegHealth: Pick<PegHealth, 'tier'> | null | undefined,
+    structuralHealth: Pick<StructuralHealth, 'grade'> | null | undefined,
+): Record<string, unknown> {
+    return {
+        ...(pegHealth ? { peg_tier: pegHealth.tier } : {}),
+        ...(structuralHealth ? { structural_grade: structuralHealth.grade } : {}),
+    };
+}

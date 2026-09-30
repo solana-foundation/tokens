@@ -5,6 +5,7 @@ import { BadRequestError, ForbiddenError, NotFoundError } from '@tokens/effect';
 import { decodeLimit, decodeOffset } from '@tokens/effect';
 import { tapErrorAndDefault } from '@tokens/effect';
 import { annotateAssetAdvisories, loadAdvisoriesOrEmpty, summarizeAssetAdvisories } from '@/lib/advisories';
+import { loadStablecoinHealthOrEmpty } from '@/lib/stablecoin-health';
 import { getByAssetId as cloudRunGetByAssetId } from '@/lib/cloudrun/assets';
 import {
     assetMarketsGetLatestByAssetId,
@@ -415,6 +416,14 @@ export const GET = route(
             asset = annotateAssetAdvisories(asset, yield* loadAdvisoriesOrEmpty());
             const advisories = summarizeAssetAdvisories(asset);
 
+            // Webacy depeg / structural health is a stablecoin-only surface this
+            // round (category, never `variant.kind`). Fail-open: an outage yields
+            // an empty map and `pegHealth: null` on every variant.
+            const stablecoinHealthByMint =
+                asset.category === 'stablecoin'
+                    ? yield* loadStablecoinHealthOrEmpty(asset.variants.map(v => v.mint))
+                    : undefined;
+
             const primaryVariant = pickPrimaryVariant(asset, mintRank, tokenByMint, fillQualityByMint, {
                 strategy: primaryVariantStrategy,
             });
@@ -638,7 +647,11 @@ export const GET = route(
                     Effect.succeed(includeMint).pipe(
                         Effect.flatMap(mint =>
                             mint
-                                ? loadRiskInclude({ primaryMint: mint, market: tokenByMint.get(mint) })
+                                ? loadRiskInclude({
+                                      primaryMint: mint,
+                                      market: tokenByMint.get(mint),
+                                      stablecoinHealth: stablecoinHealthByMint?.get(mint) ?? null,
+                                  })
                                 : Effect.succeed(includeError('not_available', 'No primary variant available')),
                         ),
                         Effect.map(value => ({ key: 'risk' as const, value })),
@@ -745,6 +758,7 @@ export const GET = route(
             return buildAssetDetailResponse({
                 asset,
                 advisories,
+                stablecoinHealthByMint,
                 assetDescription: optionalText(assetDoc?.description) ?? null,
                 primaryVariant,
                 token,

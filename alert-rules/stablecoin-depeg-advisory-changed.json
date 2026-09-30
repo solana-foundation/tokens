@@ -1,0 +1,88 @@
+{
+    "uid": "tokens-stablecoin-depeg-advisory-chg",
+    "title": "tokens-assets: depeg reconciler set / updated / cleared an advisory (or would have)",
+    "ruleGroup": "tokens-stablecoin-depeg",
+    "folderUID": "tokens-xyz",
+    "noDataState": "OK",
+    "execErrState": "OK",
+    "for": "0s",
+    "data": [
+        {
+            "refId": "A",
+            "datasourceUid": "grafanacloud-logs",
+            "queryType": "range",
+            "relativeTimeRange": {
+                "from": 900,
+                "to": 0
+            },
+            "model": {
+                "expr": "sum(count_over_time({service=~\"tokens-assets(-jobs)?-prd-us\"} | json | event=~\"depeg_advisory_(set|updated|cleared|would_set|would_update|would_clear)\" [15m]))",
+                "queryType": "range",
+                "refId": "A"
+            }
+        },
+        {
+            "refId": "B",
+            "datasourceUid": "__expr__",
+            "queryType": "",
+            "relativeTimeRange": {
+                "from": 0,
+                "to": 0
+            },
+            "model": {
+                "type": "reduce",
+                "refId": "B",
+                "expression": "A",
+                "reducer": "last",
+                "settings": {
+                    "mode": "replaceNN",
+                    "replaceWithValue": 0
+                }
+            }
+        },
+        {
+            "refId": "C",
+            "datasourceUid": "__expr__",
+            "queryType": "",
+            "relativeTimeRange": {
+                "from": 0,
+                "to": 0
+            },
+            "model": {
+                "type": "threshold",
+                "refId": "C",
+                "expression": "B",
+                "conditions": [
+                    {
+                        "evaluator": {
+                            "type": "gt",
+                            "params": [0]
+                        },
+                        "operator": {
+                            "type": "and"
+                        },
+                        "query": {
+                            "params": ["B"]
+                        },
+                        "reducer": {
+                            "type": "last",
+                            "params": []
+                        },
+                        "type": "query"
+                    }
+                ]
+            }
+        }
+    ],
+    "condition": "C",
+    "labels": {
+        "service": "tokens-assets",
+        "severity": "info",
+        "slack": "true"
+    },
+    "annotations": {
+        "summary": "Automated depeg advisory activity",
+        "description": "The reconcile-stablecoin-depeg job took (or, in dry-run, would have taken) an advisory action in the last 15 minutes. Events: depeg_advisory_set / depeg_advisory_updated / depeg_advisory_cleared when WEBACY_DEPEG_DRY_RUN=false, depeg_advisory_would_* while shadowing. Fields: mint, tier, why (enter_warning, enter_critical, tier_changed, recovered), reason. Live sets are user-visible within ~75 s as an amber caution banner with Webacy attribution; review the reason text and escalate to compromised in the admin app if backing is actually lost (that detaches the row from the automation).",
+        "runbook_url": "https://github.com/solana-foundation/tokens/blob/main/docs/operations/asset-advisory-runbook.md#automated-depeg-advisories"
+    }
+}

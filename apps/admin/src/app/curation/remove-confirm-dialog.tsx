@@ -17,17 +17,34 @@ interface RemoveConfirmDialogProps {
     assetSymbol: string;
     assetId: string;
     onConfirm: () => void;
+    /** Optional copy overrides for reuse as a generic destructive confirm; defaults keep the category-removal copy. */
+    title?: string;
+    description?: React.ReactNode;
+    confirmLabel?: string;
 }
 
-export function RemoveConfirmDialog({ open, onOpenChange, assetSymbol, assetId, onConfirm }: RemoveConfirmDialogProps) {
+export function RemoveConfirmDialog({
+    open,
+    onOpenChange,
+    assetSymbol,
+    assetId,
+    onConfirm,
+    title,
+    description,
+    confirmLabel,
+}: RemoveConfirmDialogProps) {
     return (
         <Dialog open={open} onOpenChange={onOpenChange}>
             <DialogContent>
                 <DialogHeader>
-                    <DialogTitle>Remove {assetSymbol}?</DialogTitle>
+                    <DialogTitle>{title ?? `Remove ${assetSymbol}?`}</DialogTitle>
                     <DialogDescription>
-                        This will remove <span className="font-mono text-xs">{assetId}</span> from the category. The
-                        asset and its market data will not be deleted.
+                        {description ?? (
+                            <>
+                                This will remove <span className="font-mono text-xs">{assetId}</span> from the category.
+                                The asset and its market data will not be deleted.
+                            </>
+                        )}
                     </DialogDescription>
                 </DialogHeader>
                 <DialogFooter>
@@ -41,7 +58,7 @@ export function RemoveConfirmDialog({ open, onOpenChange, assetSymbol, assetId, 
                             onOpenChange(false);
                         }}
                     >
-                        Remove
+                        {confirmLabel ?? 'Remove'}
                     </Button>
                 </DialogFooter>
             </DialogContent>

@@ -213,3 +213,33 @@ variable "logo_public_base_url" {
   default     = ""
   description = "Public base URL served as logoURI for first-party logo copies. Empty => https://storage.googleapis.com/tokens-asset-logos-<env>. Set to https://img.tokens.xyz once that host fronts the bucket (see docs/operations/logo-sync.md)."
 }
+
+variable "webacy_depeg_sweep_schedule" {
+  type        = string
+  default     = "17 */4 * * *"
+  description = "Cron schedule for the Webacy stablecoin depeg reconciliation sweep (reconcile-stablecoin-depeg). Webhooks are the primary trigger; the sweep only covers missed deliveries, cooldown clears and coverage gaps. Staging is pinned to every 12h in crons_webacy_depeg.tf."
+}
+
+variable "webacy_depeg_dry_run" {
+  type        = bool
+  default     = true
+  description = "When true the depeg sweep records observations and logs would_set/would_clear decisions but never writes an advisory. Flip to false together with WEBACY_DEPEG_DRY_RUN=false on the assets worker at go-live."
+}
+
+variable "webacy_depeg_max_pages" {
+  type        = number
+  default     = 4
+  description = "Maximum GET /rwa pages (200 items each) the depeg sweep fetches per run. Bounds Webacy CU spend; Webacy listed 572 Solana pegged tokens on 2026-09-14, so 4 pages leaves headroom."
+}
+
+variable "peg_guard_schedule" {
+  type        = string
+  default     = "2-57/5 * * * *"
+  description = "Cron schedule for the in-house stablecoin peg guard (refresh-peg-guard): one Birdeye multi_price call for every curated currencies mint per run. Minute offset 2 keeps it off the */5 market crons. Staging is pinned to every 15 minutes in crons_webacy_depeg.tf."
+}
+
+variable "peg_guard_dry_run" {
+  type        = bool
+  default     = true
+  description = "When true the peg guard records observations and logs would_set/would_clear decisions but never writes an advisory. Should track webacy_depeg_dry_run so one go-live flips both observers; set them apart only to stagger the peg guard behind Webacy."
+}

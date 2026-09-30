@@ -13,12 +13,13 @@ import { Drawer, DrawerClose, DrawerContent, DrawerHeader, DrawerTitle, DrawerTr
 import { SolanaLogo } from '@/components/icons';
 import { AssetAdvisoryBadge } from '@/components/asset-advisory-badge';
 import { CopyButton } from '@/components/copy-button';
+import { PegStatusPill } from '@/components/peg-status-pill';
 import { isTradeBlocked, type AssetAdvisory } from '@/lib/asset-advisory';
 import { trackEvent } from '@/lib/posthog-client';
 import { getTokenLogoURLForMintWithSecondarySymbol } from '@/lib/logo-overrides';
 import { normalizeLogoSrc } from '@/lib/normalize-logo-src';
 import { looksLikeSolanaMintAddress } from '@/lib/solana-address';
-import { getVariantHubById, getVariantHubByMint, type VariantHub } from '@tokens/asset-registry';
+import { getVariantHubById, getVariantHubByMint, type CompactPegHealth, type VariantHub } from '@tokens/asset-registry';
 import { TokenVariantsBadge } from './token-variants-badge';
 import { TokenRiskPopover } from './token-risk-popover';
 import { formatCompactAddress } from '../lib/format';
@@ -61,6 +62,12 @@ interface TokenHeaderProps {
      * action. The risk popover is untouched.
      */
     advisory?: AssetAdvisory | null;
+    /**
+     * Live peg status of the viewed stablecoin mint (Webacy depeg monitor).
+     * Only passed when the header describes a single mint; the canonical view
+     * of a multi-variant stablecoin shows per-mint pills in the variants list.
+     */
+    pegHealth?: CompactPegHealth | null;
 }
 
 function TokenLogo({
@@ -469,6 +476,7 @@ export function TokenHeader({
     variantLinkCoinId,
     showSingletonVariantBadge = false,
     advisory = null,
+    pegHealth = null,
 }: TokenHeaderProps) {
     const router = useRouter();
     const pathname = usePathname();
@@ -575,6 +583,7 @@ export function TokenHeader({
                             ) : null}
                         </Badge>
                         <AssetAdvisoryBadge advisory={advisory} />
+                        <PegStatusPill pegHealth={pegHealth} />
                         {hasVariants && variantsGroup ? (
                             <TokenVariantsBadge
                                 group={variantsGroup}
