@@ -745,7 +745,7 @@ export async function reconcileStablecoinDepeg(deps: DepegCronDeps, rawArgs: unk
         for (const action of decision.actions) {
             if (overBudget()) {
                 result.partial = true;
-                countSkip('max_actions_exceeded');
+                countSkip('budget_exhausted');
                 continue;
             }
             await applyAction(deps, action, dryRun, base, log, result);

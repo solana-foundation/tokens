@@ -78,7 +78,7 @@ export type PegGuardCircuit = 'mass_tier_flip' | 'price_fetch_failed' | 'mass_ac
 export interface PegGuardFxRatesSummary {
     /** CoinGecko answered this run (stored rates were refreshed). */
     fetched: boolean;
-    /** Currencies with a usable rate (fresh or stored). */
+    /** Currencies with a rate that has succeeded at least once (fresh or stored). */
     currencies: number;
     /** Of those, rates older than `fxStaleMs` (their mints read `stale_fx`). */
     stale: number;
@@ -103,9 +103,13 @@ export interface PegGuardRefreshResult extends CronResult, AdvisoryActionCounter
     fxRates: PegGuardFxRatesSummary;
     tierCounts: Record<PegTier | 'null', number>;
     tierChanges: number;
-    /** Tracked mints a fresh Webacy row covers (left to the Webacy job). */
+    /** Tracked mints a fresh Webacy row covers and this run left to the Webacy job. */
     ownedByWebacy: number;
-    /** Tracked mints this run handed to the reconciler. */
+    /**
+     * Tracked mints this run handed to the reconciler, including a covered mint
+     * whose advisory the peg guard set. `ownedByWebacy + reconciled` is the
+     * number of tracked mints considered.
+     */
     reconciled: number;
     skipped: Partial<Record<ReconcilerSkipReason, number>>;
     circuit: PegGuardCircuit | null;
@@ -488,8 +492,13 @@ export async function refreshPegGuard(deps: DepegCronDeps, rawArgs: unknown): Pr
 
     const now = deps.now();
     result.fxRates.fetched = fx.fetched;
-    result.fxRates.currencies = fx.rates.size;
-    for (const rate of fx.rates.values()) if (now - rate.lastOkAt > args.fxStaleMs) result.fxRates.stale += 1;
+    // A stored row that never succeeded (`lastOkAt` 0) is not a usable rate, so
+    // it is neither a currency we have nor a stale one.
+    for (const rate of fx.rates.values()) {
+        if (rate.lastOkAt <= 0) continue;
+        result.fxRates.currencies += 1;
+        if (now - rate.lastOkAt > args.fxStaleMs) result.fxRates.stale += 1;
+    }
 
     const nextRows: PegGuardLatestRow[] = [];
     const events: PegGuardTierEventRow[] = [];
@@ -681,7 +690,6 @@ export async function refreshPegGuard(deps: DepegCronDeps, rawArgs: unknown): Pr
             const row = rowByAddress.get(mint)!;
             const webacyRow = webacyByAddress.get(mint);
             const covered = webacyCoversMint(webacyRow, now, args.webacyCoverageMs);
-            if (covered) result.ownedByWebacy += 1;
             // Two observers with a tier each, disagreeing on healthy vs bad:
             // worth a look either way (feed skew, or one of them is early).
             if (
@@ -706,6 +714,7 @@ export async function refreshPegGuard(deps: DepegCronDeps, rawArgs: unknown): Pr
             // row it set itself (during a Webacy outage) so it can be cleared.
             const ownsAdvisory = advisoryByMint.get(mint)?.source === 'peg_guard';
             if (!covered || ownsAdvisory) observations.push(toObservation(row, inRegistryByMint.get(mint) ?? false));
+            else result.ownedByWebacy += 1;
         }
         result.reconciled = observations.length;
 
@@ -748,7 +757,7 @@ export async function refreshPegGuard(deps: DepegCronDeps, rawArgs: unknown): Pr
             for (const action of decision.actions) {
                 if (overBudget()) {
                     result.partial = true;
-                    countSkip('max_actions_exceeded');
+                    countSkip('budget_exhausted');
                     continue;
                 }
                 await applyAction(deps, action, dryRun, base, log, result);

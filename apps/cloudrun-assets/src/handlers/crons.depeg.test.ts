@@ -689,6 +689,33 @@ describe('reconcile-stablecoin-depeg sweep mode', () => {
         expect(out.circuit).toBe('mass_action');
         expect(rec.sets.map(s => s.mint).sort()).toEqual([USDC, USDT].sort());
         expect(out.skipped.max_actions_exceeded).toBe(2);
+        expect(out.skipped.budget_exhausted).toBeUndefined();
+    });
+
+    test('running out of budget defers the remaining actions as budget_exhausted, not max_actions_exceeded', async () => {
+        const { deps, rec } = makeDeps({
+            listResult: {
+                ok: true,
+                items: [item(USDC, 'critical'), item(USDT, 'critical'), item(USDE, 'warning'), item(PYUSD, 'warning')],
+                pages: 1,
+                truncated: false,
+            },
+            dryRunDefault: false,
+        });
+        // The first advisory write overruns the default 90s sweep budget.
+        let now = FIXED_NOW;
+        deps.now = () => now;
+        const setSystemAdvisory = deps.repo.setSystemAdvisory;
+        deps.repo.setSystemAdvisory = async args => {
+            now += 2 * 60_000;
+            return setSystemAdvisory(args);
+        };
+        const out = await reconcile(deps, {});
+        expect(out.partial).toBe(true);
+        expect(out.circuit).toBeNull();
+        expect(rec.sets).toHaveLength(1);
+        expect(out.skipped.budget_exhausted).toBe(3);
+        expect(out.skipped.max_actions_exceeded).toBeUndefined();
     });
 
     test('tier state advances across two runs and the second run performs the cooldown clear', async () => {

@@ -813,7 +813,28 @@ describe('refresh-peg-guard circuits', () => {
         expect(out.circuit).toBe('mass_action');
         expect(out.actionsSet).toBe(2);
         expect(out.skipped.max_actions_exceeded).toBe(2);
+        expect(out.skipped.budget_exhausted).toBeUndefined();
         expect(events(h.rec, 'depeg_circuit_open')[0]).toMatchObject({ reason: 'mass_action', applied: 2, dropped: 2 });
+    });
+
+    test('running out of budget defers the remaining actions as budget_exhausted, not max_actions_exceeded', async () => {
+        const h = makeHarness({
+            prevRows: USD_MINTS.map(mint => pegRow(mint, 'critical', { badSinceAt: FIXED_NOW - HOUR })),
+            prices: Object.fromEntries(DEFAULT_CURRENCIES.map(mint => [mint, entry(mint, 0.9)])),
+        });
+        // The first advisory write overruns the default 60s budget.
+        const setSystemAdvisory = h.deps.repo.setSystemAdvisory;
+        h.deps.repo.setSystemAdvisory = async args => {
+            h.clock.now += 2 * MINUTE;
+            return setSystemAdvisory(args);
+        };
+        const out = await run(h, { dryRun: false });
+        expect(out.partial).toBe(true);
+        expect(out.circuit).toBeNull();
+        expect(out.actionsSet).toBe(1);
+        expect(out.skipped.budget_exhausted).toBe(3);
+        expect(out.skipped.max_actions_exceeded).toBeUndefined();
+        expect(summary(h.rec)).toMatchObject({ partial: true, skipped: { budget_exhausted: 3 } });
     });
 });
 
@@ -874,7 +895,8 @@ describe('refresh-peg-guard ownership', () => {
             advisories: [advisory(USDC, 'warning', 'peg_guard')],
         });
         const out = await run(h, { dryRun: false });
-        expect(out.ownedByWebacy).toBe(1);
+        // Covered by Webacy but reconciled here, so it is not counted as left to Webacy.
+        expect(out.ownedByWebacy).toBe(0);
         expect(out.reconciled).toBe(4);
         expect(out.actionsCleared).toBe(1);
         expect(h.rec.clears[0]).toMatchObject({
@@ -1360,6 +1382,20 @@ describe('refresh-peg-guard fiat references', () => {
         const out = await run(h, { dryRun: false });
         expect(out.actionsCleared).toBe(1);
         expect(h.rec.clears[0]).toMatchObject({ mint: EURC, note: 'tokens.xyz peg monitor: on peg for 7h' });
+    });
+
+    test('a stored rate that never succeeded is neither a usable currency nor a stale one', async () => {
+        const h = makeHarness({
+            currencies: [EURC],
+            prices: { [EURC]: eurcOnPeg },
+            fxRows: [
+                fxRow('EUR', EUR_RATE, FIXED_NOW - 2 * HOUR),
+                { ...fxRow('GBP', 1.3, FIXED_NOW - 2 * HOUR), lastOkAt: null },
+            ],
+        });
+        const out = await run(h);
+        expect(out.fxRates).toEqual({ fetched: false, currencies: 1, stale: 0 });
+        expect(summary(h.rec)).toMatchObject({ fx_rates: { fetched: false, currencies: 1, stale: 0 } });
     });
 
     test('fxStaleMs tightens the fallback window', async () => {

@@ -119,7 +119,9 @@ export type ReconcilerSkipReason =
     | 'watch_tier'
     | 'premium_tier'
     | 'unchanged'
-    | 'max_actions_exceeded';
+    | 'max_actions_exceeded'
+    /** Counted by the jobs, never by the reconciler: the run budget ran out before the action was applied. */
+    | 'budget_exhausted';
 
 export interface ReconcilerSkip {
     mint: string;
