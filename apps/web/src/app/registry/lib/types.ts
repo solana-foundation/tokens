@@ -1,20 +1,11 @@
-/**
- * The data team is mid-migration (solana-data DAT-553): classification is
- * served as `tier_{1,2,3}_class` today and as `group` / `category` / `class`
- * once that ships, at which point `solana_asset_class` disappears. Every
- * classification field is optional so either shape normalizes cleanly.
- */
+/** One row of `GET data.solana.com/v1/assets` (solana-data DAT-553 contract). */
 export interface AssetRegistryApiRow {
     token: string;
     mint_address: string;
-    group?: string | null;
-    category?: string | null;
-    class?: string | null;
-    tier_1_class?: string | null;
-    tier_2_class?: string | null;
-    tier_3_class?: string | null;
-    /** Legacy name for the class tier; identical to `tier_3_class`. */
-    solana_asset_class?: string | null;
+    /** Foundation taxonomy, top to leaf: group > category > class. */
+    group: string | null;
+    category: string | null;
+    class: string | null;
     allium_asset_class: string | null;
     rwa_asset_class: string | null;
     allium_asset_value_usd: string | null;
