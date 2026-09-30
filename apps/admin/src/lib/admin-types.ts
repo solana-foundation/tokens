@@ -343,6 +343,8 @@ export type CanonicalEditor = {
         fallbackImageUrl?: string;
         fallbackLogoSource: LogoSource;
         isActive: boolean;
+        /** Static-registry id this asset is defined under (current or former id). */
+        registryAssetId?: string;
     };
     aliases: string[];
     collections: CuratedCategorySlug[];

@@ -102,6 +102,9 @@ function makeEmptyDeps(overrides: Partial<SearchPrefetchDeps> = {}): SearchPrefe
         async findVariantByMint() {
             return null;
         },
+        async listAssetIdRenames() {
+            return [];
+        },
         async isDeletedRef() {
             return false;
         },

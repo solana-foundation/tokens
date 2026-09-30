@@ -6,6 +6,7 @@ import { isValidBearerToken } from '@tokens/cloudrun-shutdown';
 import {
     getByAssetId,
     getByAssetIds,
+    listAssetIdRenames,
     IdentityRequiredError,
     InvalidArgsError,
     UnauthorizedError,
@@ -262,6 +263,7 @@ const ATOMIC_RETRY_QUERY_NAMES = new Set([
     'listActiveWithCoinGeckoIds',
     'listByCategory',
     'listDeletedRefs',
+    'listAssetIdRenames',
     'assetAdvisoriesList',
     'sanctumListActive',
     'assetMarketsGetLatestByAssetId',
@@ -399,6 +401,7 @@ export function createApp(deps: ServerDeps) {
     const queries: Record<string, Handler> = Object.create(null);
     queries.getByAssetId = args => getByAssetId(deps.repo, args);
     queries.getByAssetIds = args => getByAssetIds(deps.repo, args);
+    queries.listAssetIdRenames = args => listAssetIdRenames(deps.repo, args);
     queries.search = args => search(deps.repo, args);
     queries.resolveAssetRef = args => resolveAssetRef(deps.repo, args);
     queries.resolveAssetRefForApi = args => resolveAssetRefForApi(deps.repo, args);

@@ -345,6 +345,9 @@ const noopRepo: AssetsRepo = {
     async findVariantByMint() {
         return null;
     },
+    async listAssetIdRenames() {
+        return [];
+    },
     async isDeletedRef() {
         return false;
     },

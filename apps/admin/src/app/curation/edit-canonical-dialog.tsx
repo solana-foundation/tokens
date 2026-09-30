@@ -23,13 +23,23 @@ type CategoryId = CuratedCategorySlug;
 
 const COLLECTIONS: CategoryId[] = ['majors', 'currencies', 'rwas', 'etfs', 'metals', 'stocks'];
 
+/** Mirrors `ASSET_ID_PATTERN` in cloudrun-admin (the server is the authority). */
+const ASSET_ID_PATTERN = /^[a-z0-9][a-z0-9._-]*$/;
+
 interface EditCanonicalDialogProps {
     assetId: string | null;
     open: boolean;
     onOpenChange: (open: boolean) => void;
+    /** Called after a save that changed the asset id, with the old and new ids. */
+    onRenamed?: (previousAssetId: string, nextAssetId: string) => void;
 }
 
-export function EditCanonicalDialog({ assetId, open, onOpenChange }: EditCanonicalDialogProps): React.JSX.Element {
+export function EditCanonicalDialog({
+    assetId,
+    open,
+    onOpenChange,
+    onRenamed,
+}: EditCanonicalDialogProps): React.JSX.Element {
     const { data: editor } = useAdminQuery<CanonicalEditor>(
         'getCanonicalEditor',
         open && assetId ? { assetId } : 'skip',
@@ -39,6 +49,7 @@ export function EditCanonicalDialog({ assetId, open, onOpenChange }: EditCanonic
         'generateCanonicalLogoUploadUrl',
     );
 
+    const [nextAssetId, setNextAssetId] = useState('');
     const [category, setCategory] = useState<AssetCategory>('crypto');
     const [name, setName] = useState('');
     const [symbol, setSymbol] = useState('');
@@ -59,6 +70,7 @@ export function EditCanonicalDialog({ assetId, open, onOpenChange }: EditCanonic
 
     useEffect(() => {
         if (!open || !editor) return;
+        setNextAssetId(editor.asset.assetId);
         setCategory(editor.asset.category);
         setName(editor.asset.name ?? '');
         setSymbol(editor.asset.symbol ?? '');
@@ -129,13 +141,24 @@ export function EditCanonicalDialog({ assetId, open, onOpenChange }: EditCanonic
         }
     }
 
+    const trimmedNextAssetId = nextAssetId.trim();
+    const isRenaming = Boolean(editor) && trimmedNextAssetId !== editor?.asset.assetId;
+    const assetIdError = !isRenaming
+        ? null
+        : !trimmedNextAssetId
+          ? 'Asset ID is required.'
+          : !ASSET_ID_PATTERN.test(trimmedNextAssetId)
+            ? 'Use lowercase letters, digits, ".", "_" or "-", starting with a letter or digit.'
+            : null;
+
     async function onSubmit() {
-        if (!assetId) return;
+        if (!assetId || assetIdError) return;
         setIsSubmitting(true);
-        const toastId = toast.loading('Saving canonical asset…');
+        const toastId = toast.loading(isRenaming ? 'Renaming canonical asset…' : 'Saving canonical asset…');
         try {
             const result = await updateCanonicalAsset({
                 assetId,
+                ...(isRenaming ? { newAssetId: trimmedNextAssetId } : {}),
                 category,
                 name,
                 symbol,
@@ -150,7 +173,13 @@ export function EditCanonicalDialog({ assetId, open, onOpenChange }: EditCanonic
                 collections,
                 isActive: activity === 'active',
             });
-            if (result.updated) toast.success(`Saved ${assetId}`, { id: toastId });
+            if (result.updated) {
+                toast.success(
+                    result.assetId !== assetId ? `Renamed ${assetId} → ${result.assetId}` : `Saved ${assetId}`,
+                    { id: toastId },
+                );
+            }
+            if (result.assetId !== assetId) onRenamed?.(assetId, result.assetId);
             onOpenChange(false);
         } catch (error) {
             toast.error(error instanceof Error ? error.message : String(error), { id: toastId });
@@ -193,7 +222,36 @@ export function EditCanonicalDialog({ assetId, open, onOpenChange }: EditCanonic
                         <div className="space-y-4">
                             <div className="space-y-1.5">
                                 <Label htmlFor="asset-id">Asset ID</Label>
-                                <Input id="asset-id" value={editor.asset.assetId} disabled />
+                                <Input
+                                    id="asset-id"
+                                    value={nextAssetId}
+                                    onChange={event => setNextAssetId(event.target.value)}
+                                    autoCapitalize="none"
+                                    autoCorrect="off"
+                                    spellCheck={false}
+                                    aria-invalid={assetIdError ? true : undefined}
+                                />
+                                {assetIdError ? <p className="text-sm text-destructive">{assetIdError}</p> : null}
+                                {isRenaming && !assetIdError ? (
+                                    <div className="space-y-1.5 rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 text-sm">
+                                        <p className="font-inter-medium">
+                                            Renaming {editor.asset.assetId} to {trimmedNextAssetId}
+                                        </p>
+                                        <p className="text-muted-foreground">
+                                            The id is rewritten across variants, lists, and market and stock
+                                            caches. The old id keeps resolving to this asset.
+                                        </p>
+                                        {editor.asset.registryAssetId ? (
+                                            <p className="text-muted-foreground">
+                                                This asset comes from the static registry as{' '}
+                                                <code>{editor.asset.registryAssetId}</code>. The nightly seed and
+                                                the API follow the rename, but search, trending, and public pages
+                                                keep showing the registry id until{' '}
+                                                <code>packages/asset-registry</code> is updated in code.
+                                            </p>
+                                        ) : null}
+                                    </div>
+                                ) : null}
                             </div>
                             <div className="space-y-1.5">
                                 <Label htmlFor="asset-category">Category</Label>
@@ -404,8 +462,11 @@ export function EditCanonicalDialog({ assetId, open, onOpenChange }: EditCanonic
                     <Button variant="outline" onClick={() => onOpenChange(false)} disabled={isSubmitting}>
                         Cancel
                     </Button>
-                    <Button onClick={onSubmit} disabled={isSubmitting || isUploading || !assetId || !editor}>
-                        {isSubmitting ? 'Saving…' : 'Save Canonical'}
+                    <Button
+                        onClick={onSubmit}
+                        disabled={isSubmitting || isUploading || !assetId || !editor || Boolean(assetIdError)}
+                    >
+                        {isSubmitting ? 'Saving…' : isRenaming ? 'Rename and Save' : 'Save Canonical'}
                     </Button>
                 </DialogFooter>
             </DialogContent>

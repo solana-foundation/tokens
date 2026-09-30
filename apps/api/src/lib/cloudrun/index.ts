@@ -60,6 +60,8 @@ export {
 
 export { listDeletedRefs, type ListDeletedRefsArgs, type ListDeletedRefsResult } from './assetDeletionTombstones';
 
+export { listAssetIdRenames, type AssetIdRename, type ListAssetIdRenamesResult } from './assetIdRenames';
+
 export {
     assetAdvisoriesList,
     type AssetAdvisoriesListResult,

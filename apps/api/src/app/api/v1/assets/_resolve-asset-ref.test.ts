@@ -1,5 +1,7 @@
-import { describe, expect, it } from 'bun:test';
+import { afterEach, describe, expect, it } from 'bun:test';
 import { Effect } from 'effect';
+
+import { __setAssetIdRenamesForTests, __setAssetIdRenamesLoaderForTests } from '@/lib/asset-id-renames';
 
 import { resolveAssetRefContext } from './_resolve-asset-ref';
 
@@ -31,5 +33,45 @@ describe('resolveAssetRefContext', () => {
         expect(result.assetId).toBe(`solana-${UNKNOWN_MINT}`);
         expect(result.resolvedBy).toBe('singleton');
         expect(result.mint).toBe(UNKNOWN_MINT);
+    });
+});
+
+describe('resolveAssetRefContext with admin-renamed assets', () => {
+    afterEach(() => {
+        __setAssetIdRenamesForTests(null);
+        __setAssetIdRenamesLoaderForTests(null);
+    });
+
+    it('maps a registry id to the id the asset was renamed to', async () => {
+        __setAssetIdRenamesForTests({ tesla: 'tesla-inc' });
+
+        const byOldId = await Effect.runPromise(resolveAssetRefContext('tesla'));
+        expect(byOldId.assetId).toBe('tesla-inc');
+        expect(byOldId.ref).toBe('tesla');
+        expect(byOldId.resolvedBy).toBe('registry');
+    });
+
+    it('maps registry mint matches to the renamed id as well', async () => {
+        __setAssetIdRenamesForTests({ tesla: 'tesla-inc' });
+
+        const result = await Effect.runPromise(resolveAssetRefContext(TESLA_XSTOCK_MINT));
+        expect(result.assetId).toBe('tesla-inc');
+        expect(result.mint).toBe(TESLA_XSTOCK_MINT);
+    });
+
+    it('leaves assets that were not renamed untouched', async () => {
+        __setAssetIdRenamesForTests({ tesla: 'tesla-inc' });
+
+        const result = await Effect.runPromise(resolveAssetRefContext('bitcoin'));
+        expect(result.assetId).toBe('bitcoin');
+        expect(result.resolvedBy).toBe('assetId');
+    });
+
+    it('falls back to the registry id when the rename table cannot be loaded', async () => {
+        __setAssetIdRenamesLoaderForTests(() => Effect.die(new Error('assets service down')));
+
+        const result = await Effect.runPromise(resolveAssetRefContext('tesla'));
+        expect(result.assetId).toBe('tesla');
+        expect(result.resolvedBy).toBe('assetId');
     });
 });

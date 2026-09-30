@@ -960,6 +960,14 @@ export function CurationUi(): React.JSX.Element {
                 onOpenChange={open => {
                     if (!open) setEditingCanonicalId(null);
                 }}
+                onRenamed={(previousAssetId, nextAssetId) => {
+                    // Keep the row expanded under its new id.
+                    setExpandedAssetIds(current => {
+                        if (!(previousAssetId in current)) return current;
+                        const { [previousAssetId]: wasExpanded, ...rest } = current;
+                        return { ...rest, [nextAssetId]: Boolean(wasExpanded) };
+                    });
+                }}
             />
             <AddVariantDialog
                 canonical={addVariantCanonical}

@@ -43,6 +43,8 @@ interface RecorderState {
     deletedCollectionSlugs: string[];
     deleteCascadeRows: number;
     tombstonedRefs: Set<string>;
+    /** Admin renames: registry (old) id -> current id in the database. */
+    renames: Map<string, string>;
     loweredAddedAtCalls: Array<{ mint: string; addedAtMs: number }>;
     refreshedViewCount: number;
     identityAssetsByAssetId: Record<string, IdentityAssetRow>;
@@ -65,6 +67,7 @@ function makeRepo(): { repo: SeedRepo; state: RecorderState } {
         deletedCollectionSlugs: [],
         deleteCascadeRows: 0,
         tombstonedRefs: new Set(),
+        renames: new Map(),
         loweredAddedAtCalls: [],
         refreshedViewCount: 0,
         identityAssetsByAssetId: {},
@@ -102,6 +105,12 @@ function makeRepo(): { repo: SeedRepo; state: RecorderState } {
         },
         async listTombstonedRefs(normalizedRefs) {
             return normalizedRefs.filter(ref => state.tombstonedRefs.has(ref));
+        },
+        async listAssetIdRenames(assetIds) {
+            return assetIds.flatMap(from => {
+                const to = state.renames.get(from);
+                return to ? [{ from, to }] : [];
+            });
         },
         async lowerCollectionMemberAddedAtByMint(mint, addedAtMs) {
             state.loweredAddedAtCalls.push({ mint, addedAtMs });
@@ -220,6 +229,31 @@ describe('seedCanonicalAssetsRegistry', () => {
         expect(state.upsertedVariants.length).toBe(0);
     });
 
+    it('seeds an admin-renamed registry asset under its current id, never the old one', async () => {
+        const { repo, state } = makeRepo();
+        state.renames.set('jup', 'jupiter-dao');
+        const res = await seedCanonicalAssetsRegistry(makeDeps(repo), {});
+        expect(res.ok).toBe(true);
+        expect(res.renamed).toBe(1);
+        expect(res.assets).toBe(1);
+
+        expect(state.upsertedAssets.map(a => a.assetId)).toEqual(['jupiter-dao']);
+        expect(state.upsertedVariants.map(v => v.assetId)).toEqual(['jupiter-dao']);
+        // Variant ids are opaque upsert keys: they keep their original value.
+        expect(state.upsertedVariants[0]!.variantId).toBe(sampleAsset.variants[0]!.variantId);
+        expect(state.upsertedAliases.length).toBeGreaterThan(0);
+        expect(state.upsertedAliases.every(a => a.assetId === 'jupiter-dao')).toBe(true);
+        expect(state.upsertedAliases.find(a => a.kind === 'assetId')?.normalized).toBe('jupiter-dao');
+    });
+
+    it('reports renamed: 0 and keeps registry ids when nothing was renamed', async () => {
+        const { repo, state } = makeRepo();
+        state.renames.set('some-other-asset', 'elsewhere');
+        const res = await seedCanonicalAssetsRegistry(makeDeps(repo), {});
+        expect(res.renamed).toBe(0);
+        expect(state.upsertedAssets.map(a => a.assetId)).toEqual(['jup']);
+    });
+
     it('skips view refresh when not provided', async () => {
         const { repo, state } = makeRepo();
         const repoNoView: SeedRepo = { ...repo };
@@ -313,6 +347,17 @@ describe('seedCuratedCollectionsFixture', () => {
         expect(res.tombstonedSkipped).toBe(occurrences);
         expect(res.membersInserted).toBe(fixtureMemberCount - occurrences);
         expect(state.insertedCollectionMembers.some(m => m.assetId === tombstonedAssetId)).toBe(false);
+    });
+
+    it('inserts membership under the current id for an admin-renamed asset', async () => {
+        const { repo, state } = makeRepo();
+        const renamedFrom = fixture[0]!.members[0]!.assetId;
+        state.renames.set(renamedFrom.toLowerCase(), 'renamed-asset');
+        const res = await seedCuratedCollectionsFixture({ repo, now: () => FIXED_NOW }, {});
+        expect(res.ok).toBe(true);
+        expect(res.membersInserted).toBe(fixtureMemberCount);
+        expect(state.insertedCollectionMembers.some(m => m.assetId === renamedFrom)).toBe(false);
+        expect(state.insertedCollectionMembers.some(m => m.assetId === 'renamed-asset')).toBe(true);
     });
 
     it('is idempotent: a recovery re-run inserts nothing when all rows already exist', async () => {

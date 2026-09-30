@@ -47,6 +47,12 @@ export interface AssetVariantRow {
     is_active: boolean;
 }
 
+/** An admin rename: `from` is the former id (lowercased), `to` the current id. */
+export interface AssetIdRenameRow {
+    from: string;
+    to: string;
+}
+
 export interface AssetResult {
     assetId: string;
     category: AssetCategory;
@@ -90,6 +96,11 @@ export interface AssetsRepo {
     findAssetsBySymbolFuzzy(query: string, limit: number): Promise<AssetRow[]>;
     findVariantByMint(mint: string): Promise<AssetVariantRow | null>;
     isDeletedRef(normalizedRef: string): Promise<boolean>;
+    /**
+     * Admin renames as `former id (lowercased) -> current id`. Pass ids to look
+     * up specific former ids; omit to list every rename (bounded).
+     */
+    listAssetIdRenames(normalizedAssetIds?: readonly string[]): Promise<AssetIdRenameRow[]>;
     listByCategory(category: string, includeInactive: boolean, limit: number): Promise<AssetRow[]>;
     listActiveWithCoinGecko(limit: number): Promise<AssetRow[]>;
     setDescriptionByAssetId(assetId: string, description: string | null, updatedAt: Date): Promise<boolean>;
@@ -201,10 +212,28 @@ export async function getByAssetId(repo: AssetsRepo, args: unknown): Promise<Ass
     const includeInactive = readOptionalBoolean(a, 'includeInactive') ?? false;
     const assetId = assetIdRaw.trim();
     if (!assetId) return null;
-    const row = await repo.findByAssetId(assetId);
+    const row = (await repo.findByAssetId(assetId)) ?? (await findRenamedAsset(repo, assetId));
     if (!row) return null;
     if (!includeInactive && !row.is_active) return null;
     return rowToResult(row);
+}
+
+/**
+ * An id an admin renamed keeps working: callers that still hold the former id
+ * (the static registry, old links) get the asset under its current id.
+ */
+async function findRenamedAsset(repo: AssetsRepo, assetId: string): Promise<AssetRow | null> {
+    const normalized = assetId.toLowerCase();
+    const renames = await repo.listAssetIdRenames([normalized]);
+    const rename = renames.find(r => r.from === normalized);
+    if (!rename || rename.to === assetId) return null;
+    return repo.findByAssetId(rename.to);
+}
+
+/** Every admin rename, for callers that cache the (small) map — see apps/api. */
+export async function listAssetIdRenames(repo: AssetsRepo, _args: unknown): Promise<AssetIdRenameRow[]> {
+    void _args;
+    return repo.listAssetIdRenames();
 }
 
 async function resolveByAlias(

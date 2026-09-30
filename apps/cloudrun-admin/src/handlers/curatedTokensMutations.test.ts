@@ -26,7 +26,13 @@ const MINT = 'So11111111111111111111111111111111111111112';
 
 interface RepoState {
     createAsset?: 'created' | 'exists';
-    updateAsset?: 'updated' | 'not_found';
+    updateAsset?:
+        | 'updated'
+        | 'not_found'
+        | 'asset_id_exists'
+        | 'asset_id_reserved'
+        | 'asset_id_aliased'
+        | 'asset_id_deleted';
     deleteAsset?: 'deleted' | 'not_found' | 'has_variants';
     createVariant?: CreateVariantOutcome;
     updateVariant?: 'updated' | 'not_found' | 'variant_id_collision';
@@ -111,7 +117,7 @@ describe('authz (mutations)', () => {
 
 describe('alias priorities', () => {
     it('mirror the Convex replaceAliasesForKind call sites', () => {
-        expect(ALIAS_PRIORITIES).toEqual({ name: 900, symbol: 800, coingeckoId: 700, custom: 500 });
+        expect(ALIAS_PRIORITIES).toEqual({ assetId: 1000, name: 900, symbol: 800, coingeckoId: 700, custom: 500 });
     });
 });
 
@@ -159,6 +165,16 @@ describe('createCanonicalAsset', () => {
             createCanonicalAsset(deps, { assetId: 'x', category: 'nope' }, ADMIN),
         ).rejects.toBeInstanceOf(InvalidArgsError);
     });
+
+    it('rejects ids that are not lowercase slugs before touching the repo', async () => {
+        const { deps, calls } = makeDeps();
+        for (const assetId of ['Bitcoin', 'bit coin', '-btc', 'btc/usd']) {
+            await expect(createCanonicalAsset(deps, { assetId, category: 'crypto' }, ADMIN)).rejects.toThrow(
+                'assetId must be lowercase',
+            );
+        }
+        expect(calls.createCanonicalAsset).toBeUndefined();
+    });
 });
 
 describe('updateCanonicalAsset', () => {
@@ -193,6 +209,58 @@ describe('updateCanonicalAsset', () => {
         await expect(updateCanonicalAsset(deps, { assetId: 'ghost' }, ADMIN)).rejects.toThrow(
             'Canonical asset not found',
         );
+    });
+
+    it('forwards a trimmed newAssetId and returns the new id', async () => {
+        const { deps, calls } = makeDeps();
+        const result = await updateCanonicalAsset(deps, { assetId: 'bitcoin', newAssetId: ' btc ' }, ADMIN);
+        expect(result).toEqual({ assetId: 'btc', updated: true });
+        const args = calls.updateCanonicalAsset?.[0] as Record<string, unknown>;
+        expect(args.assetId).toBe('bitcoin');
+        expect(args.newAssetId).toBe('btc');
+    });
+
+    it('drops newAssetId when it equals the current id, even a legacy non-slug id', async () => {
+        const { deps, calls } = makeDeps();
+        const legacy = `solana-${MINT}`;
+        const result = await updateCanonicalAsset(deps, { assetId: legacy, newAssetId: legacy }, ADMIN);
+        expect(result).toEqual({ assetId: legacy, updated: true });
+        expect('newAssetId' in (calls.updateCanonicalAsset?.[0] as Record<string, unknown>)).toBe(false);
+    });
+
+    it('rejects an empty or malformed newAssetId before touching the repo', async () => {
+        const { deps, calls } = makeDeps();
+        await expect(updateCanonicalAsset(deps, { assetId: 'bitcoin', newAssetId: '  ' }, ADMIN)).rejects.toThrow(
+            'newAssetId must not be empty',
+        );
+        for (const newAssetId of ['BTC', 'b tc', '.btc', 'btc/usd']) {
+            await expect(updateCanonicalAsset(deps, { assetId: 'bitcoin', newAssetId }, ADMIN)).rejects.toThrow(
+                'assetId must be lowercase',
+            );
+        }
+        await expect(updateCanonicalAsset(deps, { assetId: 'bitcoin', newAssetId: 7 }, ADMIN)).rejects.toBeInstanceOf(
+            InvalidArgsError,
+        );
+        expect(calls.updateCanonicalAsset).toBeUndefined();
+    });
+
+    it('maps rename refusals to messages', async () => {
+        const exists = makeDeps({ updateAsset: 'asset_id_exists' });
+        await expect(
+            updateCanonicalAsset(exists.deps, { assetId: 'bitcoin', newAssetId: 'ethereum' }, ADMIN),
+        ).rejects.toThrow('An asset with that id already exists');
+        const reserved = makeDeps({ updateAsset: 'asset_id_reserved' });
+        await expect(
+            updateCanonicalAsset(reserved.deps, { assetId: 'bitcoin', newAssetId: 'xbt' }, ADMIN),
+        ).rejects.toThrow('former id of another asset');
+        const aliased = makeDeps({ updateAsset: 'asset_id_aliased' });
+        await expect(
+            updateCanonicalAsset(aliased.deps, { assetId: 'wrapped-bitcoin', newAssetId: 'btc' }, ADMIN),
+        ).rejects.toThrow('name, symbol or alias of another asset');
+        const deleted = makeDeps({ updateAsset: 'asset_id_deleted' });
+        await expect(
+            updateCanonicalAsset(deleted.deps, { assetId: 'bitcoin', newAssetId: 'gone' }, ADMIN),
+        ).rejects.toThrow('hard-deleted asset');
     });
 });
 

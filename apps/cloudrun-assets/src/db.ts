@@ -244,6 +244,23 @@ export function makePostgresAssetsRepo(sql: Sql): AssetsRepo {
             return rows[0] ?? null;
         },
 
+        async listAssetIdRenames(normalizedAssetIds) {
+            if (normalizedAssetIds !== undefined && normalizedAssetIds.length === 0) return [];
+            // See the seed repo's `listAssetIdRenames`: an `assetId`-kind alias
+            // that no longer matches its asset's id marks an admin rename.
+            const rows = await sql<{ from_id: string; to_id: string }[]>`
+                SELECT al.normalized AS from_id, al.asset_id AS to_id
+                FROM asset_aliases al
+                WHERE al.kind = 'assetId'
+                  AND al.normalized <> lower(al.asset_id)
+                  ${normalizedAssetIds !== undefined ? sql`AND al.normalized IN ${sql([...normalizedAssetIds])}` : sql``}
+                  AND EXISTS (SELECT 1 FROM assets a WHERE a.asset_id = al.asset_id)
+                ORDER BY al.updated_at ASC, al.id ASC
+                LIMIT 5000
+            `;
+            return rows.map(r => ({ from: r.from_id, to: r.to_id }));
+        },
+
         async isDeletedRef(normalizedRef) {
             if (!normalizedRef) return false;
             const rows = await sql<{ exists: boolean }[]>`
@@ -4177,6 +4194,22 @@ export function makePostgresSeedRepo(sql: Sql): SeedRepo {
                 WHERE normalized_ref IN ${sql([...normalizedRefs])}
             `;
             return rows.map(r => r.normalized_ref);
+        },
+        async listAssetIdRenames(assetIds) {
+            if (assetIds.length === 0) return [];
+            // An `assetId`-kind alias that no longer matches its asset's id is
+            // the marker an admin rename leaves behind (cloudrun-admin
+            // `renameAssetId`). Orphaned markers (asset gone) are ignored.
+            const rows = await sql<{ from_id: string; to_id: string }[]>`
+                SELECT al.normalized AS from_id, al.asset_id AS to_id
+                FROM asset_aliases al
+                WHERE al.kind = 'assetId'
+                  AND al.normalized IN ${sql([...assetIds])}
+                  AND al.normalized <> lower(al.asset_id)
+                  AND EXISTS (SELECT 1 FROM assets a WHERE a.asset_id = al.asset_id)
+                ORDER BY al.updated_at ASC, al.id ASC
+            `;
+            return rows.map(r => ({ from: r.from_id, to: r.to_id }));
         },
         async lowerCollectionMemberAddedAtByMint(mint, addedAtMs) {
             const rows = await sql<{ id: string }[]>`

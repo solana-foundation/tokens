@@ -57,6 +57,7 @@ interface FakeState {
     assets?: AssetRow[];
     variants?: VariantWithMarketRow[];
     customAliases?: Array<{ assetId: string; alias: string }>;
+    assetIdAliases?: Array<{ assetId: string; normalized: string }>;
     members?: Array<{ slug: 'majors' | 'currencies' | 'rwas' | 'etfs' | 'metals' | 'stocks'; assetId: string }>;
     markets?: Record<string, { symbol: string | null; name: string | null; logoURI: string | null; liquidity: number | null; lastFetchedAt: number | null }>;
 }
@@ -80,6 +81,8 @@ function makeRepo(state: FakeState = {}): { repo: AdminReadsRepo; calls: Record<
         listCustomAliases: async () => state.customAliases ?? [],
         listCustomAliasesByAssetId: async assetId =>
             (state.customAliases ?? []).filter(a => a.assetId === assetId).map(a => a.alias),
+        listAssetIdAliasesByAssetId: async assetId =>
+            (state.assetIdAliases ?? []).filter(a => a.assetId === assetId).map(a => a.normalized),
         listCollectionMembers: async () => state.members ?? [],
         getAssetByAssetId: async assetId => (state.assets ?? []).find(a => a.assetId === assetId) ?? null,
         getVariantByMint: async mint => (state.variants ?? []).find(v => v.mint === mint) ?? null,
@@ -359,6 +362,7 @@ describe('getCanonicalEditor', () => {
                 fallbackImageUrl: '/logos/popular/bitcoin.png',
                 fallbackLogoSource: 'override',
                 isActive: true,
+                registryAssetId: 'bitcoin',
             },
             aliases: ['digital gold'],
             collections: ['majors'],
@@ -393,6 +397,29 @@ describe('getCanonicalEditor', () => {
         expect(result?.asset.fallbackLogoSource).toBe('none');
         expect(result?.asset.description).toBe('desc');
         expect(result && 'fallbackImageUrl' in result.asset).toBe(false);
+    });
+
+    it('omits registryAssetId for an asset the static registry does not define', async () => {
+        const { deps } = makeDeps({
+            assets: [asset({ assetId: 'random-token', name: 'Random', symbol: 'RND', coingeckoId: null })],
+            assetIdAliases: [{ assetId: 'random-token', normalized: 'random-token' }],
+        });
+        const result = await getCanonicalEditor(deps, { assetId: 'random-token' }, ADMIN);
+        expect(result && 'registryAssetId' in result.asset).toBe(false);
+    });
+
+    it('reports the former registry id for a renamed registry asset', async () => {
+        const { deps } = makeDeps({
+            assets: [asset({ assetId: 'btc-renamed' })],
+            assetIdAliases: [
+                { assetId: 'btc-renamed', normalized: 'btc-renamed' },
+                { assetId: 'btc-renamed', normalized: 'bitcoin' },
+                { assetId: 'other-asset', normalized: 'ethereum' },
+            ],
+        });
+        const result = await getCanonicalEditor(deps, { assetId: 'btc-renamed' }, ADMIN);
+        expect(result?.asset.assetId).toBe('btc-renamed');
+        expect(result?.asset.registryAssetId).toBe('bitcoin');
     });
 });
 
