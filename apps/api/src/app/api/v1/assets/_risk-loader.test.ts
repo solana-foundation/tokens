@@ -186,6 +186,7 @@ describe('loadAssetRisk', () => {
     let snapshot: Market | null = null;
     let overview: (() => Response) | null = null;
     let overviewCalls = 0;
+    let healthCalls = 0;
 
     function json(body: unknown, status = 200): Response {
         return new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
@@ -207,6 +208,7 @@ describe('loadAssetRisk', () => {
         snapshot = null;
         overview = null;
         overviewCalls = 0;
+        healthCalls = 0;
         globalThis.fetch = (async (input: string | URL | Request) => {
             const url = String(input);
             if (url.includes('/query/variantMarketsGetLatestByMints')) {
@@ -227,7 +229,28 @@ describe('loadAssetRisk', () => {
                 ]);
             }
             if (url.includes('/query/stablecoinHealthGetByMints')) {
-                return json([{ mint: JUP_MINT, pegHealth: null, structuralHealth: null }]);
+                healthCalls += 1;
+                return json([
+                    {
+                        mint: JUP_MINT,
+                        pegHealth: {
+                            provider: 'tokens',
+                            pegCurrency: 'USD',
+                            referenceKind: 'fixed',
+                            tier: 'watch',
+                            overallRisk: null,
+                            deviationPct: -0.7,
+                            priceUsd: 0.993,
+                            pegUsd: 1,
+                            liquidityUsd: 2_500_000,
+                            tierSince: SNAPSHOT_AT,
+                            updatedAt: Date.now(),
+                            ok: true,
+                            errorMessage: null,
+                        },
+                        structuralHealth: null,
+                    },
+                ]);
             }
             if (url.includes('/query/curatedMembershipGetSnapshot')) {
                 return json({ loadedAt: Date.now(), mintsByList: {}, allMints: [], entriesByMint: {} });
@@ -254,10 +277,10 @@ describe('loadAssetRisk', () => {
         __resetCloudRunClientForTesting();
     });
 
-    function load() {
+    function load(category: string = 'crypto') {
         const context = {
             selectedMint: JUP_MINT,
-            assetDoc: { assetId: 'solana-jup' },
+            assetDoc: { assetId: 'solana-jup', category },
             selectedVariant: {},
             advisoriesByMint: new Map(),
         } as unknown as Parameters<typeof loadAssetRisk>[0];
@@ -289,6 +312,25 @@ describe('loadAssetRisk', () => {
         expect(payload.risk.marketScoreInput.liquidityUsd).toBe(DEEP.liquidity);
         expect(payload.risk.marketScoreInput.holderCount).toBe(DEEP.holder);
         expect(payload.risk.lastUpdatedAt).toBeGreaterThanOrEqual(before);
+    });
+
+    it('reads stablecoin health only for stablecoin-category assets', async () => {
+        snapshot = DEEP;
+
+        const crypto = await load('crypto');
+        expect(healthCalls).toBe(0);
+        if (!crypto.risk.ok) throw new Error('expected ok');
+        expect(crypto.risk.pegHealth).toBeNull();
+        expect(crypto.risk.structuralHealth).toBeNull();
+
+        const stable = await load('stablecoin');
+        expect(healthCalls).toBe(1);
+        if (!stable.risk.ok) throw new Error('expected ok');
+        expect(stable.risk.pegHealth?.provider).toBe('tokens');
+        expect(stable.risk.pegHealth?.tier).toBe('watch');
+        expect(stable.risk.pegHealth?.deviationPct).toBe(-0.7);
+        expect(stable.risk.pegHealth?.stale).toBe(false);
+        expect(stable.risk.structuralHealth).toBeNull();
     });
 
     it('stays not_found when neither a snapshot nor live data exists', async () => {

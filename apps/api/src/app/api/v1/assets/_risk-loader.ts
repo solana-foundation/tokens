@@ -94,9 +94,12 @@ export function loadAssetRisk(
     return Effect.gen(function* () {
         const mint = context.selectedMint;
         // Market snapshot and stablecoin health are independent reads; the health
-        // load fails open (empty map), so it never affects the market path.
+        // load fails open (empty map), so it never affects the market path. Health
+        // is a stablecoin-only surface (same category gate as asset detail), so
+        // every other asset skips the RPC: an empty mint list resolves locally.
+        const healthMints = context.assetDoc.category === 'stablecoin' ? [mint] : [];
         const [rows, healthByMint] = yield* Effect.all(
-            [variantMarketsGetLatestByMints({ mints: [mint] }), loadStablecoinHealthOrEmpty([mint])],
+            [variantMarketsGetLatestByMints({ mints: [mint] }), loadStablecoinHealthOrEmpty(healthMints)],
             { concurrency: 'unbounded' },
         );
         const snapshot = rows[0]?.market ?? null;
