@@ -355,14 +355,16 @@ export function formatHealthUpdatedAt(updatedAt: number | null | undefined): str
 /**
  * Accessible summary for the peg pill, e.g.
  * "Peg status: Warning, −2.40% below peg. Updated Sep 13, 2026 14:30 UTC. Source: Webacy".
- * The source names whichever observer produced the row; yield tokens read
- * "Holding value, −0.50% below its recent high".
+ * The source names whichever observer produced the row. Yield tokens have no
+ * peg, so the pill's only accessible name (it is a `role="img"`) announces
+ * them as "Price status: Holding value, −0.50% below its recent high".
  */
 export function pegStatusTitle(pegHealth: CompactPegHealth | PegHealth): string {
     const copy = pegTierCopy(pegHealth.tier, pegHealth.referenceKind);
     const updated = formatHealthUpdatedAt(pegHealth.updatedAt);
+    const subject = pegHealth.referenceKind === 'high_water' ? 'Price status' : 'Peg status';
     const sentences = [
-        `Peg status: ${copy.label}, ${pegDeviationText(pegHealth)}.`,
+        `${subject}: ${copy.label}, ${pegDeviationText(pegHealth)}.`,
         ...(updated ? [`Updated ${updated}.`] : []),
         `Source: ${pegProviderLabel(pegHealth.provider)}`,
     ];

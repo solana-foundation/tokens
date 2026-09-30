@@ -396,7 +396,7 @@ describe('copy helpers', () => {
                 updatedAt: 0,
                 stale: false,
             }),
-        ).toBe('Peg status: Holding value, −0.50% below its recent high. Source: tokens.xyz peg monitor');
+        ).toBe('Price status: Holding value, −0.50% below its recent high. Source: tokens.xyz peg monitor');
         expect(
             pegStatusTitle({
                 provider: 'tokens',
@@ -406,7 +406,7 @@ describe('copy helpers', () => {
                 updatedAt: 0,
                 stale: false,
             }),
-        ).toBe('Peg status: Slipping, −1.50% below its recent high. Source: tokens.xyz peg monitor');
+        ).toBe('Price status: Slipping, −1.50% below its recent high. Source: tokens.xyz peg monitor');
         const fx = normalizePegHealth(
             pegHealthPayload({ provider: 'tokens', referenceKind: 'fx', pegCurrency: 'EUR', updatedAt: 0 }),
         );
