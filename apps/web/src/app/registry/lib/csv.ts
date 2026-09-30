@@ -17,10 +17,6 @@ export const REGISTRY_CSV_COLUMNS: ReadonlyArray<{
     { header: 'category', value: row => row.category },
     { header: 'class', value: row => row.assetClass },
     { header: 'coingecko_market_cap_usd', value: row => row.marketCapUsd },
-    {
-        header: 'token_page_url',
-        value: row => (row.hasTokenPage ? `https://tokens.xyz/token/${row.mintAddress}` : null),
-    },
 ];
 
 /** RFC 4180 field escaping: quote when the value contains a comma, quote, or newline; double inner quotes. */

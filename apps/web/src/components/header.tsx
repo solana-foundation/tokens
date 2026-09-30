@@ -105,7 +105,7 @@ export function Header() {
                                 })
                             }
                         >
-                            Assets Registry
+                            Asset Registry
                         </Link>
                     </nav>
                 </div>

@@ -46,11 +46,11 @@ describe('registryRowsToCsv', () => {
         const csv = registryRowsToCsv([baseRow, { ...baseRow, symbol: 'X,Y', name: null, hasTokenPage: false }]);
         const lines = csv.split('\r\n');
         expect(lines.at(-1)).toBe('');
-        expect(lines[0]).toBe('symbol,name,mint_address,group,category,class,coingecko_market_cap_usd,token_page_url');
+        expect(lines[0]).toBe('symbol,name,mint_address,group,category,class,coingecko_market_cap_usd');
         expect(lines[1]).toBe(
-            `USDC,USD Coin,${baseRow.mintAddress},Stablecoins,Fiat-Backed,USD Stablecoins,60000000000,https://tokens.xyz/token/${baseRow.mintAddress}`,
+            `USDC,USD Coin,${baseRow.mintAddress},Stablecoins,Fiat-Backed,USD Stablecoins,60000000000`,
         );
-        expect(lines[2]).toBe(`"X,Y",,${baseRow.mintAddress},Stablecoins,Fiat-Backed,USD Stablecoins,60000000000,`);
+        expect(lines[2]).toBe(`"X,Y",,${baseRow.mintAddress},Stablecoins,Fiat-Backed,USD Stablecoins,60000000000`);
         expect(lines).toHaveLength(4);
     });
 
