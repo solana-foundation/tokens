@@ -593,6 +593,7 @@ jobs:
           set -euo pipefail
           TAG="resilience-${GITHUB_SHA:0:12}"
           WORKER_TAG="res-${GITHUB_SHA:0:12}"
+          WORKER_SERVICE=tokens-assets-jobs-prd-us
           describe() {
             gcloud run services describe tokens-assets-prd-us \
               --region=us-east4 --project="$GCP_PROJECT" --format=json
@@ -601,11 +602,19 @@ jobs:
             curl -sS -X POST -H 'Content-Type: application/json' \
               --data "$(jq -n --arg t "$1" '{text: $t}')" "$SLACK_WEBHOOK" || true
           }
+          # Retries absorb Grafana Cloud wake-up 503s (see the 2026-09-17
+          # usage-digest incident); "" after all attempts means Loki is
+          # genuinely unreachable and the caller must treat the check as failed.
           loki_count() {
-            curl -sfG "$GRAFANA_API_URL/api/datasources/proxy/uid/grafanacloud-logs/loki/api/v1/query" \
-              -H "Authorization: Bearer $GRAFANA_API_TOKEN" \
-              --data-urlencode "query=$1" \
-              | jq -r '.data.result[0].value[1] // "0"' || echo ""
+            local attempt out
+            for attempt in 1 2 3; do
+              out=$(curl -sfG "$GRAFANA_API_URL/api/datasources/proxy/uid/grafanacloud-logs/loki/api/v1/query" \
+                -H "Authorization: Bearer $GRAFANA_API_TOKEN" \
+                --data-urlencode "query=$1" \
+                | jq -r '.data.result[0].value[1] // "0"') && { echo "$out"; return 0; }
+              sleep 10
+            done
+            echo ""
           }
           candidate=$(describe | jq -r --arg tag "$TAG" \
             '.status.traffic[] | select(.tag == $tag) | .revisionName' | head -1)
@@ -619,30 +628,49 @@ jobs:
             [.status.traffic[]
              | select(.revisionName != null and .revisionName != $candidate and (.percent // 0) > 0)]
             | sort_by(.percent) | last | .revisionName // empty')
-          served=$(describe | jq -r --arg rev "$candidate" \
-            '[.status.traffic[] | select(.revisionName == $rev) | (.percent // 0)] | add')
-          if [ "$served" = "100" ]; then
-            echo "Candidate $candidate already serving 100% — continuing."
-            exit 0
-          fi
+          promote_worker() {
+            local worker
+            if ! gcloud run services describe "$WORKER_SERVICE" \
+                --region=us-east4 --project="$GCP_PROJECT" >/dev/null 2>&1; then
+              echo "No $WORKER_SERVICE service — skipping worker promotion."
+              return 0
+            fi
+            worker=$(gcloud run services describe "$WORKER_SERVICE" \
+              --region=us-east4 --project="$GCP_PROJECT" --format=json \
+              | jq -r --arg tag "$WORKER_TAG" '.status.traffic[] | select(.tag == $tag) | .revisionName' | head -1)
+            if [ -z "$worker" ]; then
+              echo "worker candidate tagged $WORKER_TAG not found on $WORKER_SERVICE"
+              return 1
+            fi
+            gcloud run services update-traffic "$WORKER_SERVICE" \
+              --region=us-east4 --project="$GCP_PROJECT" \
+              --to-revisions="$worker=100" --quiet || return 1
+            echo "worker=$worker"
+          }
           fail_and_rollback() {
-            scripts/promote-assets-revision.sh "$candidate" rollback "$stable" || true
-            MSG="🔴 Auto-promotion of assets candidate '$candidate' failed at $1: $2. Rolled back to '${stable:-<unknown>}'. Investigate, then promote manually via the 'Cloud Run promote' workflow and re-run this workflow. Run: $RUN_URL"
+            local outcome
+            if scripts/promote-assets-revision.sh "$candidate" rollback "$stable"; then
+              outcome="Rolled back to '$stable'."
+            else
+              outcome="⚠️ ROLLBACK ALSO FAILED — traffic may still be split between '$candidate' and '${stable:-<unknown>}'. Fix traffic NOW: gcloud run services update-traffic tokens-assets-prd-us --region=us-east4 --project=$GCP_PROJECT --to-revisions=${stable:-<stable>}=100"
+            fi
+            MSG="🔴 Auto-promotion of assets candidate '$candidate' failed at $1: $2. $outcome Investigate, then promote manually via the 'Cloud Run promote' workflow and re-run this workflow. Run: $RUN_URL"
             echo "::error::$MSG"
             slack "$MSG"
             exit 1
           }
+          trap 'fail_and_rollback "cancellation" "the workflow run was cancelled mid-promotion"' INT TERM
           observe() {
             local stage="$1" seconds="$2" start now window code fails runs
             start=$(date +%s)
             while :; do
               sleep 30
               now=$(date +%s)
-              code=$(curl -s -o /dev/null -m 10 -w '%{http_code}' "$tag_url/health" || echo 000)
+              code=$(curl -s -o /dev/null -m 10 --retry 2 -w '%{http_code}' "$tag_url/health" || echo 000)
               [ "$code" = "200" ] || fail_and_rollback "$stage" "candidate /health returned $code"
               window=$(( now - start + 90 ))
-              fails=$(loki_count "sum(count_over_time({service=\"tokens-smoke\"} | json | event=\`smoke_canary_summary\` | failed > 0 [${window}s]))")
-              [ -n "$fails" ] || fail_and_rollback "$stage" "smoke-canary query failed (Loki unreachable)"
+              fails=$(loki_count "sum(count_over_time({service=\"tokens-smoke\"} | json | event=\`smoke_canary_summary\` | failed_any = \`true\` [${window}s]))")
+              [ -n "$fails" ] || fail_and_rollback "$stage" "smoke-canary query failed (Loki unreachable after 3 attempts)"
               [ "$fails" = "0" ] || fail_and_rollback "$stage" "$fails failed smoke-canary run(s) since stage start"
               [ $(( now - start )) -ge "$seconds" ] && break
             done
@@ -651,23 +679,25 @@ jobs:
               fail_and_rollback "$stage" "no smoke-canary runs observed — canary is down; refusing to promote blind"
             fi
           }
+          served=$(describe | jq -r --arg rev "$candidate" \
+            '[.status.traffic[] | select(.revisionName == $rev) | (.percent // 0)] | add')
+          if [ "$served" = "100" ]; then
+            echo "Candidate $candidate already serving 100% (manual promotion) — ensuring worker matches."
+            promote_worker || fail_and_rollback "worker promotion" "the $WORKER_SERVICE candidate could not be promoted"
+            exit 0
+          fi
           for stage in 10 50; do
-            scripts/promote-assets-revision.sh "$candidate" "$stage" "$stable"
+            scripts/promote-assets-revision.sh "$candidate" "$stage" "$stable" \
+              || fail_and_rollback "${stage}%" "traffic update to ${stage}% failed"
             slack "⏳ Auto-promoting assets candidate '$candidate': serving ${stage}% (stable '$stable'), observing canary + health for 4m. Run: $RUN_URL"
             observe "${stage}%" 240
           done
-          scripts/promote-assets-revision.sh "$candidate" 100 "$stable"
+          scripts/promote-assets-revision.sh "$candidate" 100 "$stable" \
+            || fail_and_rollback "100%" "traffic update to 100% failed"
           observe "100%" 120
-          worker=$(gcloud run services describe tokens-assets-jobs-prd-us \
-            --region=us-east4 --project="$GCP_PROJECT" --format=json 2>/dev/null \
-            | jq -r --arg tag "$WORKER_TAG" '.status.traffic[] | select(.tag == $tag) | .revisionName' | head -1 || true)
-          if [ -n "$worker" ]; then
-            gcloud run services update-traffic tokens-assets-jobs-prd-us \
-              --region=us-east4 --project="$GCP_PROJECT" \
-              --to-revisions="$worker=100" --quiet
-          fi
-          slack "✅ Assets candidate '$candidate' auto-promoted to 100% (worker: ${worker:-n/a}). Stable-for-rollback was '$stable'. Run: $RUN_URL"
-
+          promote_worker || fail_and_rollback "worker promotion" "the $WORKER_SERVICE candidate could not be promoted"
+          trap - INT TERM
+          slack "✅ Assets candidate '$candidate' auto-promoted to 100% (API + worker). Stable-for-rollback was '$stable'. Run: $RUN_URL"
       # teamId is required for team-owned projects; without it the API returns
       # no deployments and rollback silently breaks.
       - name: Capture previous prod deployment ID (API)
