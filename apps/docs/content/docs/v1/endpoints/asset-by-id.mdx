@@ -392,7 +392,7 @@ The web app renders a `high_water` `ok` row as **"Holding value"** (not "On peg"
 ### Guidance
 
 - **Tier semantics depend on `provider` and `referenceKind`.**
-    - `webacy`: `tier` is derived by Webacy from `overallRisk`, a score over a multi-signal model (ok <25, watch 25-49, warning 50-69, critical >=70). `premium` means the token trades 2%+ **above** its peg with no risk signals; it is not a depeg.
+    - `webacy`: `tier` is derived by Webacy from `overallRisk`, a score over a multi-signal model (ok under 25, watch 25-49, warning 50-69, critical 70 or higher). `premium` means the token trades 2%+ **above** its peg with no risk signals; it is not a depeg.
     - `tokens`, `fixed` and `fx`: `tier` is derived from `deviationPct` alone, and only below-reference deviation counts: `ok` at or above -0.5%, `watch` down to -1%, `warning` down to -3%, `critical` below -3%. `overallRisk` is always `null`.
     - `tokens`, `high_water`: wider bands against the token's recent high: `ok` at or above -1%, `watch` down to -2%, `warning` down to -5%, `critical` below -5%. These rows never show `premium`; any deviation at or above zero reads as `ok`.
 - **Higher score = riskier.** `overallRisk`, `score`, and every category `score` are Webacy risk scores on a 0-100 scale where 0 is best. Do not render them next to gauges that read the other way; prefer `tier`, `grade`, and category `status`.
