@@ -257,6 +257,7 @@ describe('advisory helpers', () => {
             reason: 'Drainer',
             url: null,
             since: 3,
+            source: 'admin',
         });
         expect(summarizeAssetAdvisories(asset([MINT_D]))).toEqual([]);
     });

@@ -1,0 +1,88 @@
+{
+    "uid": "tokens-stablecoin-peg-guard-stale",
+    "title": "tokens-assets: no peg guard summary in 30m",
+    "ruleGroup": "tokens-stablecoin-depeg",
+    "folderUID": "tokens-xyz",
+    "noDataState": "Alerting",
+    "execErrState": "OK",
+    "for": "5m",
+    "data": [
+        {
+            "refId": "A",
+            "datasourceUid": "grafanacloud-logs",
+            "queryType": "range",
+            "relativeTimeRange": {
+                "from": 1800,
+                "to": 0
+            },
+            "model": {
+                "expr": "sum(count_over_time({service=~\"tokens-assets(-jobs)?-prd-us\"} | json | job=\"refresh-peg-guard\" | event=\"peg_guard_summary\" [30m]))",
+                "queryType": "range",
+                "refId": "A"
+            }
+        },
+        {
+            "refId": "B",
+            "datasourceUid": "__expr__",
+            "queryType": "",
+            "relativeTimeRange": {
+                "from": 0,
+                "to": 0
+            },
+            "model": {
+                "type": "reduce",
+                "refId": "B",
+                "expression": "A",
+                "reducer": "last",
+                "settings": {
+                    "mode": "replaceNN",
+                    "replaceWithValue": 0
+                }
+            }
+        },
+        {
+            "refId": "C",
+            "datasourceUid": "__expr__",
+            "queryType": "",
+            "relativeTimeRange": {
+                "from": 0,
+                "to": 0
+            },
+            "model": {
+                "type": "threshold",
+                "refId": "C",
+                "expression": "B",
+                "conditions": [
+                    {
+                        "evaluator": {
+                            "type": "lt",
+                            "params": [1]
+                        },
+                        "operator": {
+                            "type": "and"
+                        },
+                        "query": {
+                            "params": ["B"]
+                        },
+                        "reducer": {
+                            "type": "last",
+                            "params": []
+                        },
+                        "type": "query"
+                    }
+                ]
+            }
+        }
+    ],
+    "condition": "C",
+    "labels": {
+        "service": "tokens-assets",
+        "severity": "warning",
+        "slack": "true"
+    },
+    "annotations": {
+        "summary": "The tokens.xyz peg monitor has not completed a run in 30 minutes",
+        "description": "No peg_guard_summary log line from refresh-peg-guard in 30 minutes (six missed 5-minute runs). Either the Cloud Scheduler job is failing (check the scheduler run history and the job's HTTP status), PEG_GUARD_ENABLED is not 'true' on the assets worker (the handler returns disabled without a summary), BIRDEYE_API_KEY is missing (the whole depeg job group is then absent), or the worker is down. While the peg guard is silent every USD stablecoin Webacy does not cover (all but USDC, USDT and PYUSD) has no live peg status, and any advisory the peg guard set stays in place until it runs again.",
+        "runbook_url": "https://github.com/solana-foundation/tokens/blob/main/docs/operations/asset-advisory-runbook.md#automated-depeg-advisories-tokensxyz-peg-monitor"
+    }
+}

@@ -82,6 +82,10 @@ describe('setAdvisoryInTx', () => {
 
         expect(upsert!.text).toContain('INSERT INTO asset_variant_advisories');
         expect(upsert!.text).toContain('ON CONFLICT (mint) DO UPDATE');
+        // Human writes always (re)claim the row from the depeg automation.
+        expect(upsert!.text).toContain("'admin', false");
+        expect(upsert!.text).toContain("source = 'admin'");
+        expect(upsert!.text).toContain('managed_by_system = false');
         // (mint, status, reason, url, set_by, set_by_email, set_at, updated_at)
         expect(upsert!.params).toEqual([
             MINT,
@@ -96,6 +100,7 @@ describe('setAdvisoryInTx', () => {
 
         expect(event!.text).toContain('INSERT INTO asset_variant_advisory_events');
         expect(event!.text).toContain("'set'");
+        expect(event!.text).toContain("'admin'");
         // (id, mint, status, reason, url, reactivated, actor id, actor email, created_at)
         const [id, mint, status, reason, url, reactivated, actorId, actorEmail, createdAt] = event!.params;
         expect(String(id)).toMatch(/^ave_[0-9a-f]{32}$/);
@@ -196,6 +201,7 @@ describe('clearAdvisoryInTx', () => {
         expect(event.text).toContain('INSERT INTO asset_variant_advisory_events');
         expect(event.text).toContain("'clear'");
         expect(event.text).toContain('NULL, NULL, NULL, false');
+        expect(event.text).toContain("'admin'");
         // (id, mint, actor id, actor email, created_at)
         const [id, mint, actorId, actorEmail, createdAt] = event.params;
         expect(String(id)).toMatch(/^ave_[0-9a-f]{32}$/);

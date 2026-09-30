@@ -38,6 +38,15 @@ const app = createApp({
             : {}),
         ...(process.env.TOKENS_ENV?.trim() ? { envLabel: process.env.TOKENS_ENV.trim() } : {}),
     },
+    // Webacy depeg webhooks: verified + deduped here, then forwarded to the
+    // assets jobs worker (see hooks.webacy.ts). Both values are deploy-time env;
+    // the route still mounts without them so misconfiguration surfaces as
+    // 500 / forward_failed instead of a 404 that Webacy would silently retry.
+    webacyHooks: {
+        sql,
+        webhookSecret: process.env.WEBACY_WEBHOOK_SECRET?.trim() || undefined,
+        assetsJobsUrl: process.env.TOKENS_CLOUDRUN_ASSETS_JOBS_URL?.trim() || undefined,
+    },
     authToken,
 });
 

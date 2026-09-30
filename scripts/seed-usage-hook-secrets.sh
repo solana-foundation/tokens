@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
 # Seed the usage service's /hooks/* secrets from Doppler (tokens/prd) into
 # GCP Secret Manager, wire them into the Cloud Run service, and verify the
-# log-drain + clerk-webhook endpoints end-to-end.
+# log-drain + clerk-webhook + webacy endpoints end-to-end.
 #
 # Prereqs: `doppler login` (prd access), gcloud authed on the target project.
-# See apps/cloudrun-usage/src/hooks.ts for the endpoints being wired.
+# See apps/cloudrun-usage/src/hooks.ts and hooks.webacy.ts for the endpoints
+# being wired. WEBACY_WEBHOOK_SECRET is written to Doppler by
+# scripts/webacy-webhook-subscribe.ts --create; re-run this script after it.
 set -euo pipefail
 
 PROJECT="${GCP_PROJECT:?GCP_PROJECT must be set}"
@@ -18,6 +20,7 @@ declare -A SECRETS=(
   [LOKI_PUSH_AUTH]=tokens-loki-push-auth-prd
   [VERCEL_DRAIN_SECRET]=tokens-vercel-drain-secret-prd
   [CLERK_WEBHOOK_SECRET]=tokens-clerk-webhook-secret-prd
+  [WEBACY_WEBHOOK_SECRET]=tokens-webacy-webhook-secret-prd
 )
 
 echo "== 1/4 Checking Doppler access =="
@@ -29,7 +32,7 @@ for name in "${!SECRETS[@]}"; do
     exit 1
   fi
 done
-echo "all 4 present"
+echo "all ${#SECRETS[@]} present"
 
 echo "== 2/4 Seeding Secret Manager ($PROJECT) =="
 for name in "${!SECRETS[@]}"; do
@@ -42,7 +45,7 @@ done
 echo "== 3/4 Wiring secrets into $SERVICE (rolls a new revision) =="
 gcloud run services update "$SERVICE" \
   --project "$PROJECT" --region "$REGION" \
-  --update-secrets "LOKI_PUSH_URL=tokens-loki-push-url-prd:latest,LOKI_PUSH_AUTH=tokens-loki-push-auth-prd:latest,VERCEL_DRAIN_SECRET=tokens-vercel-drain-secret-prd:latest,CLERK_WEBHOOK_SECRET=tokens-clerk-webhook-secret-prd:latest" \
+  --update-secrets "LOKI_PUSH_URL=tokens-loki-push-url-prd:latest,LOKI_PUSH_AUTH=tokens-loki-push-auth-prd:latest,VERCEL_DRAIN_SECRET=tokens-vercel-drain-secret-prd:latest,CLERK_WEBHOOK_SECRET=tokens-clerk-webhook-secret-prd:latest,WEBACY_WEBHOOK_SECRET=tokens-webacy-webhook-secret-prd:latest" \
   --quiet >/dev/null
 URL=$(gcloud run services describe "$SERVICE" --project "$PROJECT" --region "$REGION" --format='value(status.url)')
 echo "deployed: $URL"
@@ -57,6 +60,15 @@ if [[ "$code" == "400" ]]; then
   echo "clerk-webhook: OK ($code $body)"
 else
   echo "clerk-webhook: FAIL — got $code '$body', expected 400 'missing svix headers'"; fail=1
+fi
+
+# webacy: healthy = 401 "missing signature" (500 = secret still unset)
+code=$(curl -s -o /tmp/webacy-check.txt -w '%{http_code}' -X POST -H 'X-Event-Type: DEPEG_TIER_CHANGE' -d '{}' "$URL/hooks/webacy")
+body=$(cat /tmp/webacy-check.txt; rm -f /tmp/webacy-check.txt)
+if [[ "$code" == "401" ]]; then
+  echo "webacy: OK ($code $body)"
+else
+  echo "webacy: FAIL - got $code '$body', expected 401 'missing signature'"; fail=1
 fi
 
 # log-drain without secret: expect 403
@@ -96,6 +108,10 @@ ALL GREEN. Now flip the two targets:
    (do NOT create a new endpoint — that mints a new whsec_):
    $URL/hooks/clerk-webhook
    Then use "Send test event" and expect 200.
+
+3. Webacy: the subscription's webhookUrl must be
+   $URL/hooks/webacy
+   (bun scripts/webacy-webhook-subscribe.ts --list to check; --create to subscribe).
 EOF
 else
   echo; echo "Verification failed — do NOT flip Vercel/Clerk yet."; exit 1

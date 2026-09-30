@@ -23,14 +23,40 @@ export class OidcAuthError extends Error {
 
 export interface MakeGoogleOidcVerifierOptions {
     audience?: string;
+    /**
+     * Service-account email(s) allowed to invoke. A single value may also be a
+     * comma-separated list (so TOKENS_CRON_INVOKER_SA can pin the Scheduler SA
+     * and the usage service's runtime SA, which forwards Webacy webhooks).
+     */
     invokerEmail?: string;
+    /** Additional allowed invoker emails; merged with `invokerEmail`. */
+    invokerEmails?: readonly string[];
     jwksUrl?: string;
+}
+
+/**
+ * Normalise one or more raw invoker values (each possibly comma-separated)
+ * into a deduped, lower-cased list. Empty entries are dropped.
+ */
+export function parseInvokerEmails(...raw: Array<string | readonly string[] | undefined>): string[] {
+    const out = new Set<string>();
+    for (const value of raw) {
+        if (!value) continue;
+        const parts = typeof value === 'string' ? [value] : value;
+        for (const part of parts) {
+            for (const email of part.split(',')) {
+                const trimmed = email.trim().toLowerCase();
+                if (trimmed) out.add(trimmed);
+            }
+        }
+    }
+    return [...out];
 }
 
 export function makeGoogleOidcVerifier(opts: MakeGoogleOidcVerifierOptions = {}): VerifyOidc {
     const audience = opts.audience?.trim() || undefined;
-    const invokerEmail = opts.invokerEmail?.trim() || undefined;
-    if (!audience && !invokerEmail) {
+    const invokerEmails = parseInvokerEmails(opts.invokerEmail, opts.invokerEmails);
+    if (!audience && invokerEmails.length === 0) {
         throw new Error(
             'makeGoogleOidcVerifier requires at least one of `audience` or `invokerEmail` to pin token acceptance; refusing to verify with only the Google issuer (any Google identity would pass).',
         );
@@ -51,7 +77,7 @@ export function makeGoogleOidcVerifier(opts: MakeGoogleOidcVerifierOptions = {})
         const iss = typeof payload.iss === 'string' ? payload.iss : '';
         const sub = typeof payload.sub === 'string' ? payload.sub : '';
         const email = typeof payload.email === 'string' ? payload.email : undefined;
-        if (invokerEmail && email !== invokerEmail) {
+        if (invokerEmails.length > 0 && (!email || !invokerEmails.includes(email.toLowerCase()))) {
             throw new OidcAuthError('OIDC token email does not match expected invoker');
         }
         return { sub, email, aud, iss };

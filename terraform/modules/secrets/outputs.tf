@@ -21,10 +21,11 @@ output "api_key_encryption_secret_id" {
 
 output "usage_hooks_secret_ids" {
   value = {
-    LOKI_PUSH_URL        = google_secret_manager_secret.usage_hooks["loki-push-url"].secret_id
-    LOKI_PUSH_AUTH       = google_secret_manager_secret.usage_hooks["loki-push-auth"].secret_id
-    VERCEL_DRAIN_SECRET  = google_secret_manager_secret.usage_hooks["vercel-drain-secret"].secret_id
-    CLERK_WEBHOOK_SECRET = google_secret_manager_secret.usage_hooks["clerk-webhook-secret"].secret_id
+    LOKI_PUSH_URL         = google_secret_manager_secret.usage_hooks["loki-push-url"].secret_id
+    LOKI_PUSH_AUTH        = google_secret_manager_secret.usage_hooks["loki-push-auth"].secret_id
+    VERCEL_DRAIN_SECRET   = google_secret_manager_secret.usage_hooks["vercel-drain-secret"].secret_id
+    CLERK_WEBHOOK_SECRET  = google_secret_manager_secret.usage_hooks["clerk-webhook-secret"].secret_id
+    WEBACY_WEBHOOK_SECRET = google_secret_manager_secret.usage_hooks["webacy-webhook-secret"].secret_id
   }
   description = "Secret ids for the usage service /hooks/* env vars (versions seeded out-of-band)."
 }
