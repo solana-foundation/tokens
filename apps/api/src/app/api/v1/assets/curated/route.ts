@@ -59,6 +59,7 @@ import {
     aggregateTokenStats,
     buildCuratedMintRank,
     buildSnapshotFromTokenMarketsDoc,
+    matchRegistryAssetForDbAsset,
     mergeAssetStatsWithAggregates,
     optionalSymbol,
     optionalText,
@@ -431,8 +432,14 @@ export const GET = route(
                         if (registryAssetId && registryAssetId !== a.assetId) continue;
                     }
 
-                    const registryAsset =
-                        resolveRegistryAlias(a.assetId) ?? (a.coingeckoId ? resolveRegistryAlias(a.coingeckoId) : null);
+                    const registryAsset = matchRegistryAssetForDbAsset({
+                        registryAsset:
+                            resolveRegistryAlias(a.assetId) ??
+                            (a.coingeckoId ? resolveRegistryAlias(a.coingeckoId) : null),
+                        assetId: a.assetId,
+                        coingeckoId: a.coingeckoId,
+                        mints: variantsForList.map(variant => variant.mint),
+                    });
                     const name = (registryAsset?.name ?? '').trim() || (a.name ?? '').trim();
                     const symbol = (registryAsset?.symbol ?? '').trim() || (a.symbol ?? '').trim();
                     const coingeckoId = (a.coingeckoId ?? '').trim() || (registryAsset?.coingeckoId ?? '').trim();
