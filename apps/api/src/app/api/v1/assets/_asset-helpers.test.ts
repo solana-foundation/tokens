@@ -8,10 +8,12 @@ import {
     computeCompanyMarketCapUsd,
     computePreStocksDerived,
     isCanonicalPublicEquityAsset,
+    matchRegistryAssetForDbAsset,
     parsePrimaryVariantStrategy,
     parseStockVariantTier,
     parseVariantSortBy,
     pickPrimaryVariant,
+    resolveVariantSymbol,
     selectCanonicalAssetStats,
     type TokenMarketSnapshot,
     variantMatchesFilters,
@@ -737,5 +739,81 @@ describe('pickPrimaryVariant advisory exclusion', () => {
             { mint: ONDO, status: 'blocked', reason: 'b', url: null, since: 1 },
         ]);
         expect(pickPrimaryVariant(silver(), new Map(), tokenByMint)?.mint).toBe(SILV);
+    });
+});
+
+describe('resolveVariantSymbol', () => {
+    it('derives the issuer symbol for Ondo/xStock-labelled variants of another asset', () => {
+        expect(resolveVariantSymbol({ label: 'Ondo', canonicalSymbol: 'TSLA', marketSymbol: 'TSLA' })).toBe('TSLAon');
+        expect(resolveVariantSymbol({ label: 'xStock', canonicalSymbol: 'TSLA', marketSymbol: 'TSLAx' })).toBe('TSLAx');
+    });
+
+    it('does not treat a label equal to the asset symbol as the Ondo issuer marker', () => {
+        // The ONDO governance token's variant is labelled "ONDO" by the admin add-variant flow.
+        expect(resolveVariantSymbol({ label: 'ONDO', canonicalSymbol: 'ONDO', marketSymbol: 'ONDO' })).toBe('ONDO');
+        expect(resolveVariantSymbol({ label: 'ONDO', canonicalSymbol: 'ondo', marketSymbol: 'ONDO' })).toBe('ONDO');
+    });
+});
+
+describe('matchRegistryAssetForDbAsset', () => {
+    const registryAsset: CanonicalAsset = {
+        assetId: 'wisdomtree-floating-rate-treasury-fund',
+        name: 'WisdomTree Floating Rate Treasury Fund',
+        category: 'rwa',
+        coingeckoId: 'wisdomtree-floating-rate-treasury-fund-ondo-tokenized',
+        aliases: [],
+        variants: [
+            {
+                variantId: 'wisdomtree-floating-rate-treasury-fund:Ondo',
+                mint: 'o6U1Sm6Vd7EofMyCrL28mrp2QLzgYGgjveHiEQ5ondo',
+                kind: 'etf',
+                trustTier: 'tier3',
+                tags: [],
+            },
+        ],
+    };
+
+    it('matches by asset id', () => {
+        expect(matchRegistryAssetForDbAsset({ registryAsset, assetId: 'wisdomtree-floating-rate-treasury-fund' })).toBe(
+            registryAsset,
+        );
+    });
+
+    it('matches by CoinGecko id in either direction', () => {
+        expect(
+            matchRegistryAssetForDbAsset({
+                registryAsset,
+                assetId: 'usfr',
+                coingeckoId: 'wisdomtree-floating-rate-treasury-fund-ondo-tokenized',
+            }),
+        ).toBe(registryAsset);
+        expect(
+            matchRegistryAssetForDbAsset({
+                registryAsset,
+                assetId: 'wisdomtree-floating-rate-treasury-fund-ondo-tokenized',
+            }),
+        ).toBe(registryAsset);
+    });
+
+    it('matches a legacy/renamed DB id through a shared variant mint', () => {
+        expect(
+            matchRegistryAssetForDbAsset({
+                registryAsset,
+                assetId: 'usfr-legacy',
+                mints: ['o6U1Sm6Vd7EofMyCrL28mrp2QLzgYGgjveHiEQ5ondo'],
+            }),
+        ).toBe(registryAsset);
+    });
+
+    it('rejects an unrelated registry asset found through an alias collision', () => {
+        expect(
+            matchRegistryAssetForDbAsset({
+                registryAsset,
+                assetId: 'ondo',
+                coingeckoId: 'ondo-finance',
+                mints: ['ondohH8Vssxiqcy5u6Efi4AYN17KZrzQtv2a91dnrgW'],
+            }),
+        ).toBeNull();
+        expect(matchRegistryAssetForDbAsset({ registryAsset: null, assetId: 'ondo' })).toBeNull();
     });
 });

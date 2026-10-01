@@ -150,7 +150,9 @@ export function resolveVariantSymbol(args: {
     canonicalSymbol?: unknown;
 }): string | null {
     const canonicalSymbol = optionalSymbol(args.canonicalSymbol);
-    const provider = getProviderOnlyLabel(args.label);
+    // A label that is literally the asset's own symbol (e.g. ONDO's variant labelled "ONDO") is not the
+    // Ondo/xStock issuer marker; treating it as one would synthesize "ONDOon".
+    const provider = isCanonicalSymbolMatch(args.label, canonicalSymbol) ? null : getProviderOnlyLabel(args.label);
     const variantSymbol = optionalSymbol(args.variantSymbol);
     const marketSymbol = optionalSymbol(args.marketSymbol);
     const labelSymbol = optionalSymbol(args.label);
@@ -172,6 +174,38 @@ export function resolveVariantSymbol(args: {
     return (
         (variantIsBackfill ? null : variantSymbol) ?? providerSymbol ?? (marketIsBackfill ? null : marketSymbol) ?? null
     );
+}
+
+/**
+ * Registry lookups by alias can return an unrelated asset (an alias collision), which must never
+ * override a DB-authored asset's identity. Accept the registry asset only when it is the same asset:
+ * same id, same CoinGecko id, or at least one shared variant mint (keeps legacy/renamed DB ids such as
+ * `susd` -> registry `usd` working).
+ */
+export function matchRegistryAssetForDbAsset(args: {
+    registryAsset: CanonicalAsset | null | undefined;
+    assetId: string;
+    coingeckoId?: string | null;
+    mints?: Iterable<string>;
+}): CanonicalAsset | null {
+    const registryAsset = args.registryAsset ?? null;
+    if (!registryAsset) return null;
+
+    const assetId = args.assetId.trim();
+    if (registryAsset.assetId === assetId) return registryAsset;
+
+    const coingeckoId = (args.coingeckoId ?? '').trim();
+    if (coingeckoId && registryAsset.coingeckoId === coingeckoId) return registryAsset;
+    if (registryAsset.coingeckoId && registryAsset.coingeckoId === assetId) return registryAsset;
+
+    const mints = new Set(
+        Array.from(args.mints ?? [])
+            .map(mint => mint.trim())
+            .filter(Boolean),
+    );
+    if (mints.size > 0 && registryAsset.variants.some(variant => mints.has(variant.mint))) return registryAsset;
+
+    return null;
 }
 
 export function toFiniteNumberOrNull(value: unknown): number | null {

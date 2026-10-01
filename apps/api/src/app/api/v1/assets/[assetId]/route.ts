@@ -34,6 +34,7 @@ import {
     aggregateTokenStats,
     buildCuratedMintRank,
     listSymbols,
+    matchRegistryAssetForDbAsset,
     mergeAssetStatsWithAggregates,
     optionalSymbol,
     optionalText,
@@ -183,33 +184,32 @@ export const GET = route(
             } else {
                 const coingeckoId = (assetDoc.coingeckoId ?? '').trim() || null;
 
-                const registryAsset =
-                    resolveRegistryAlias(assetDoc.assetId) ?? (coingeckoId ? resolveRegistryAlias(coingeckoId) : null);
+                const variantsRows = yield* assetVariantsListByAssetIds({ assetIds: [assetDoc.assetId] });
+                const variants = variantsRows[0]?.variants ?? [];
+
+                // Only let the registry speak for this asset when it is demonstrably the same asset; an
+                // alias collision must not rename a DB-authored asset (e.g. `ondo` -> a WisdomTree fund).
+                const registryAsset = matchRegistryAssetForDbAsset({
+                    registryAsset:
+                        resolveRegistryAlias(assetDoc.assetId) ??
+                        (coingeckoId ? resolveRegistryAlias(coingeckoId) : null),
+                    assetId: assetDoc.assetId,
+                    coingeckoId,
+                    mints: variants.map(variant => variant.mint),
+                });
                 const registryName = (registryAsset?.name ?? '').trim() || null;
                 const registrySymbol = (registryAsset?.symbol ?? '').trim() || null;
-                const registryVariants =
-                    registryAsset &&
-                    (registryAsset.assetId === assetDoc.assetId ||
-                        (coingeckoId && registryAsset.coingeckoId === coingeckoId))
-                        ? registryAsset.variants
-                        : null;
+                const registryVariants = registryAsset?.variants ?? null;
 
-                // Variants and the CoinGecko coin doc are independent — fetch concurrently.
-                const [variantsRows, coinDoc] = yield* Effect.all(
-                    [
-                        assetVariantsListByAssetIds({ assetIds: [assetDoc.assetId] }),
-                        coingeckoId && (!registryName || !registrySymbol)
-                            ? coingeckoGetCoinById({ id: coingeckoId }).pipe(
-                                  tapErrorAndDefault('assets.detail.coingeckoCoin', null, {
-                                      assetId,
-                                      coinId: coingeckoId,
-                                  }),
-                              )
-                            : Effect.succeed(null),
-                    ],
-                    { concurrency: 'unbounded' },
-                );
-                const variants = variantsRows[0]?.variants ?? [];
+                const coinDoc =
+                    coingeckoId && (!registryName || !registrySymbol)
+                        ? yield* coingeckoGetCoinById({ id: coingeckoId }).pipe(
+                              tapErrorAndDefault('assets.detail.coingeckoCoin', null, {
+                                  assetId,
+                                  coinId: coingeckoId,
+                              }),
+                          )
+                        : null;
 
                 const coinName = (coinDoc?.name ?? '').trim() || null;
                 const coinSymbol = (coinDoc?.symbol ?? '').trim() ? coinDoc!.symbol.trim().toUpperCase() : null;
