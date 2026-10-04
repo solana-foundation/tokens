@@ -46,7 +46,12 @@ export function normalizeQueryError(error: unknown): string | null {
 }
 
 export function formatUsdPrice(value: number): string {
-    const maximumFractionDigits = Math.abs(value) < 1 ? 6 : 2;
+    const abs = Math.abs(value);
+    // Sub-cent prices (e.g. SHIB at 0.00000573) would round to a single digit at 6 decimals.
+    if (abs > 0 && abs < 0.01) {
+        return `$${value.toLocaleString('en-US', { maximumSignificantDigits: 4 })}`;
+    }
+    const maximumFractionDigits = abs < 1 ? 6 : 2;
     return `$${value.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits })}`;
 }
 

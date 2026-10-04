@@ -11,6 +11,7 @@ import { normalizeAdvisory, type AssetAdvisory } from '@/lib/asset-advisory';
 import { normalizeLogoSrc } from '@/lib/normalize-logo-src';
 import { trackEvent } from '@/lib/posthog-client';
 import { formatCompactAddress, formatUsd } from '@/app/token/[address]/lib/format';
+import { formatSmallPriceDecimal } from '@/lib/format';
 
 export interface AssetLaunchEntry {
     mint: string;
@@ -52,7 +53,8 @@ function formatPrice(value: number | null): string {
     if (value == null || !Number.isFinite(value)) return '—';
     if (value >= 1) return `$${value.toLocaleString(undefined, { maximumFractionDigits: 2 })}`;
     if (value >= 0.01) return `$${value.toFixed(4)}`;
-    return `$${value.toPrecision(3)}`;
+    if (value <= 0) return '$0.00';
+    return `$${formatSmallPriceDecimal(value)}`;
 }
 
 function LaunchLogo({ logoURI, label }: { logoURI: string | null; label: string }) {
