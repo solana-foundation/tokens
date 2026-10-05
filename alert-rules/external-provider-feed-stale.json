@@ -16,7 +16,7 @@
         "to": 0
       },
       "model": {
-        "expr": "sum(rate({service=~\"tokens-.+\"} | json | event=\"external_call\" | ok=\"true\" [5m]))",
+        "expr": "sum(rate({service=~\"tokens-.+\"} | json | event=\"external_call\" | provider!~\"logo_.*\" | ok=\"true\" [5m]))",
         "queryType": "range",
         "refId": "A"
       }
@@ -86,8 +86,8 @@
     "slack": "true"
   },
   "annotations": {
-    "summary": "External provider calls have stopped \u2014 possible outage",
-    "description": "No successful external_call events from any provider in the last 15 minutes. Either tokens.xyz isn't generating any traffic that calls upstreams, or every upstream is failing. Check the External providers dashboard and the API overview dashboard for traffic levels.",
+    "summary": "External provider calls have stopped — possible outage",
+    "description": "No successful external_call events from any provider in the last 15 minutes. Either tokens.xyz isn't generating any traffic that calls upstreams, or every upstream is failing. Check the External providers dashboard and the API overview dashboard for traffic levels. Excludes logo-sync probes (provider=logo_*) so successful artwork fetches cannot mask a silent data feed.",
     "runbook_url": "https://example.com/runbooks/external-provider-feed-stale"
   }
 }
