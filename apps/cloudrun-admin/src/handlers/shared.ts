@@ -67,6 +67,16 @@ export const STOCK_VARIANT_TIER_VALUES: readonly StockVariantTier[] = [
 /** `imageStorageId` was dropped by the Postgres migrator, so 'storage' is gone from the union. */
 export type LogoSource = 'url' | 'override' | 'variant' | 'none';
 
+/**
+ * Format for asset ids an admin types in (create + rename). Lowercase slug:
+ * ids are URL path segments and the rename marker compares against
+ * `lower(asset_id)`, so new ids must not differ from an old id by case only.
+ * Existing ids (e.g. `solana-<mint>` singletons) are never re-validated.
+ */
+export const ASSET_ID_PATTERN = /^[a-z0-9][a-z0-9._-]*$/;
+export const ASSET_ID_FORMAT_MESSAGE =
+    'assetId must be lowercase letters, digits, ".", "_" or "-" and start with a letter or digit';
+
 export function looksLikeSolanaMintAddress(value: string): boolean {
     return /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(value);
 }

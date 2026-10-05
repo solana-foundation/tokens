@@ -17,6 +17,8 @@ import { CURATED_LIST_SLUGS, type CuratedListSlug } from '@tokens/asset-registry
 import { InvalidArgsError } from './errors';
 import {
     ASSET_CATEGORY_VALUES,
+    ASSET_ID_FORMAT_MESSAGE,
+    ASSET_ID_PATTERN,
     CURATED_CATEGORY_SLUGS,
     STOCK_VARIANT_TIER_VALUES,
     TRUST_TIER_VALUES,
@@ -43,6 +45,8 @@ import type { CallerIdentity } from '../server';
 
 /** Alias priorities per kind (mirrors Convex `replaceAliasesForKind*` call sites). */
 export const ALIAS_PRIORITIES = {
+    /** The asset's own id; also the "renamed from" marker after a rename (see `renameAssetId`). */
+    assetId: 1000,
     name: 900,
     symbol: 800,
     coingeckoId: 700,
@@ -69,6 +73,8 @@ export interface CreateCanonicalAssetWrite {
 
 export interface UpdateCanonicalAssetWrite {
     assetId: string;
+    /** Rename target; only set when it differs from `assetId` (already validated). */
+    newAssetId?: string;
     category?: AssetCategory;
     /** undefined = unchanged; null = clear; string = set (already normalized). */
     name?: string | null;
@@ -143,7 +149,19 @@ export interface UpdateCollectionMetaWrite {
 
 export interface AdminMutationsRepo {
     createCanonicalAsset(args: CreateCanonicalAssetWrite): Promise<'created' | 'exists'>;
-    updateCanonicalAsset(args: UpdateCanonicalAssetWrite): Promise<'updated' | 'not_found'>;
+    /**
+     * `asset_id_exists`: the rename target is already an asset.
+     * `asset_id_reserved`: the rename target is another asset's former id.
+     * `asset_id_aliased`: the rename target is another asset's name, symbol,
+     * coingecko id or custom alias.
+     * `asset_id_deleted`: the rename target belongs to a hard-deleted asset.
+     * In every case nothing is written.
+     */
+    updateCanonicalAsset(
+        args: UpdateCanonicalAssetWrite,
+    ): Promise<
+        'updated' | 'not_found' | 'asset_id_exists' | 'asset_id_reserved' | 'asset_id_aliased' | 'asset_id_deleted'
+    >;
     deleteCanonicalAsset(args: { assetId: string }): Promise<'deleted' | 'not_found' | 'has_variants'>;
     createVariant(args: CreateVariantWrite): Promise<CreateVariantOutcome>;
     updateVariant(args: UpdateVariantWrite): Promise<'updated' | 'not_found' | 'variant_id_collision'>;
@@ -178,6 +196,7 @@ export async function createCanonicalAsset(
     const obj = asArgsObject(args);
     const assetId = requireString(obj, 'assetId').trim();
     if (!assetId) throw new InvalidArgsError('assetId is required');
+    if (!ASSET_ID_PATTERN.test(assetId)) throw new InvalidArgsError(ASSET_ID_FORMAT_MESSAGE);
     const category = requireEnum(obj, 'category', ASSET_CATEGORY_VALUES);
     const aliases = optionalStringArray(obj, 'aliases') ?? [];
     const collections = optionalCuratedSlugArray(obj, 'collections') ?? [];
@@ -212,6 +231,18 @@ export async function updateCanonicalAsset(
     const assetId = requireString(obj, 'assetId').trim();
     if (!assetId) throw new InvalidArgsError('assetId is required');
 
+    // Rename: only the NEW id is format-checked (legacy ids may not conform).
+    let newAssetId: string | undefined;
+    const rawNewAssetId = optionalString(obj, 'newAssetId');
+    if (rawNewAssetId !== undefined) {
+        const trimmed = rawNewAssetId.trim();
+        if (!trimmed) throw new InvalidArgsError('newAssetId must not be empty');
+        if (trimmed !== assetId) {
+            if (!ASSET_ID_PATTERN.test(trimmed)) throw new InvalidArgsError(ASSET_ID_FORMAT_MESSAGE);
+            newAssetId = trimmed;
+        }
+    }
+
     const clearImage = optionalBoolean(obj, 'clearImage') ?? false;
     const normalizeTriState = (key: string): string | null | undefined => {
         const value = optionalNullableString(obj, key);
@@ -230,6 +261,7 @@ export async function updateCanonicalAsset(
 
     const outcome = await deps.repo.updateCanonicalAsset({
         assetId,
+        ...(newAssetId !== undefined ? { newAssetId } : {}),
         ...(category !== undefined ? { category } : {}),
         ...(name !== undefined ? { name } : {}),
         ...(symbol !== undefined ? { symbol } : {}),
@@ -243,7 +275,17 @@ export async function updateCanonicalAsset(
         nowMs: nowMs(deps),
     });
     if (outcome === 'not_found') throw new InvalidArgsError('Canonical asset not found');
-    return { assetId, updated: true };
+    if (outcome === 'asset_id_exists') throw new InvalidArgsError('An asset with that id already exists');
+    if (outcome === 'asset_id_reserved') {
+        throw new InvalidArgsError('That id is the former id of another asset and still resolves to it');
+    }
+    if (outcome === 'asset_id_aliased') {
+        throw new InvalidArgsError('That id is already a name, symbol or alias of another asset and resolves to it');
+    }
+    if (outcome === 'asset_id_deleted') {
+        throw new InvalidArgsError('That id belongs to a hard-deleted asset and cannot be reused');
+    }
+    return { assetId: newAssetId ?? assetId, updated: true };
 }
 
 /* ------------------------------------------------------------------------- *

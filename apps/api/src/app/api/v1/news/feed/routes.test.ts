@@ -24,6 +24,10 @@ const ENV_KEYS = [
     'TOKENS_REDIS_TARGET',
     'UPSTASH_REDIS_REST_URL',
     'UPSTASH_REDIS_REST_TOKEN',
+    'X_BEARER_TOKEN',
+    'X_API_KEY',
+    'X_API_SECRET',
+    'BIRDEYE_API_KEY',
 ] as const;
 
 const savedEnv: Partial<Record<(typeof ENV_KEYS)[number], string>> = {};
@@ -192,5 +196,78 @@ describe('CoinGecko news route catalog boundary', () => {
         expect(body.items.length).toBe(1);
         expect(catalogCalls).toBe(0);
         expect(upstreamCalls).toBe(1);
+    });
+});
+
+describe('news feed X posts', () => {
+    const SOL_MINT = 'So11111111111111111111111111111111111111112';
+
+    it('restores token-tag cashtags to $SYMBOL in tweet titles', async () => {
+        process.env.X_BEARER_TOKEN = 'x-bearer';
+        globalThis.fetch = (async (input: string | URL | Request) => {
+            const url = String(input);
+            if (url.startsWith('https://api.x.com/2/users/by/username/tokens')) {
+                return new Response(
+                    JSON.stringify({ data: { id: '1', name: 'tokens', username: 'tokens' } }),
+                    { status: 200 },
+                );
+            }
+            if (url.startsWith('https://api.x.com/2/users/1/tweets')) {
+                return new Response(
+                    JSON.stringify({
+                        data: [
+                            {
+                                id: '2103467406857499101',
+                                text: `BREAKING: solana:${SOL_MINT} broke above $120, up 6% on the day.`,
+                                created_at: '2026-09-25T12:51:24.000Z',
+                            },
+                        ],
+                    }),
+                    { status: 200 },
+                );
+            }
+            throw new Error(`Unexpected fetch: ${url}`);
+        }) as typeof fetch;
+
+        const response = await request(feedGet, '/api/v1/news/feed?source=tweets&limit=5');
+        expect(response.status).toBe(200);
+        const body = (await response.json()) as { items: { title: string; feed_source: string }[] };
+        expect(body.items.length).toBe(1);
+        expect(body.items[0]?.feed_source).toBe('x');
+        expect(body.items[0]?.title).toBe('BREAKING: $SOL broke above $120, up 6% on the day.');
+    });
+
+    it('matches restored cashtags against token-page terms', async () => {
+        process.env.X_BEARER_TOKEN = 'x-bearer';
+        globalThis.fetch = (async (input: string | URL | Request) => {
+            const url = String(input);
+            if (url.startsWith('https://api.x.com/2/users/by/username/tokens')) {
+                return new Response(
+                    JSON.stringify({ data: { id: '1', name: 'tokens', username: 'tokens' } }),
+                    { status: 200 },
+                );
+            }
+            if (url.startsWith('https://api.x.com/2/users/1/tweets')) {
+                return new Response(
+                    JSON.stringify({
+                        data: [
+                            {
+                                id: '1',
+                                text: `solana:${SOL_MINT} broke above $120.`,
+                                created_at: '2026-09-25T12:51:24.000Z',
+                            },
+                            { id: '2', text: 'Nothing to see here.', created_at: '2026-09-25T12:50:00.000Z' },
+                        ],
+                    }),
+                    { status: 200 },
+                );
+            }
+            throw new Error(`Unexpected fetch: ${url}`);
+        }) as typeof fetch;
+
+        const response = await request(feedGet, '/api/v1/news/feed?source=tweets&symbol=SOL');
+        expect(response.status).toBe(200);
+        const body = (await response.json()) as { items: { title: string }[] };
+        expect(body.items.map(item => item.title)).toEqual(['$SOL broke above $120.']);
     });
 });

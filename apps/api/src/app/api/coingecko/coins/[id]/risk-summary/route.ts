@@ -3,14 +3,9 @@ import { Effect } from 'effect';
 import { getCuratedListSlugsForMint } from '@/lib/curated-membership';
 
 import { coingeckoGetCoinById } from '@/lib/cloudrun';
-import { computeMarketScore, type MarketScoreInput } from '@/lib/token-risk-helpers';
+import { computeMarketScore, estimate7dVolume, type MarketScoreInput } from '@/lib/token-risk-helpers';
 import { BadRequestError, NotFoundError } from '@tokens/effect';
 import { route } from '@/effect/next-route';
-
-function estimate7dVolume(volume24hUsd: number | null): number | null {
-    if (volume24hUsd == null || volume24hUsd <= 0) return null;
-    return volume24hUsd * 7;
-}
 
 function insufficient(reason: string) {
     const marketScore = computeMarketScore({

@@ -7,6 +7,7 @@ import {
     resolveAssetRefForApi as cloudRunResolveAssetRefForApi,
     sanctumResolveRef,
 } from '@/lib/cloudrun';
+import { currentAssetId, loadAssetIdRenames } from '@/lib/asset-id-renames';
 import { getVariantByMint, resolveAlias as resolveRegistryAlias } from '@tokens/asset-registry';
 import { looksLikeSolanaMintAddress, mintToSingletonAssetId, singletonAssetIdToMint } from './_singleton-asset-id';
 
@@ -83,7 +84,13 @@ function resolveKnownMintRef(
         if (registryMatch) {
             const registryDeleted = yield* isDeletedRef(registryMatch.asset.coingeckoId ?? registryMatch.asset.assetId);
             if (!registryDeleted) {
-                return resolution({ assetId: registryMatch.asset.assetId, ref, resolvedBy, mint });
+                const renames = yield* loadAssetIdRenames();
+                return resolution({
+                    assetId: currentAssetId(renames, registryMatch.asset.assetId),
+                    ref,
+                    resolvedBy,
+                    mint,
+                });
             }
         }
 
@@ -120,10 +127,14 @@ export function resolveAssetRefContext(assetRef: string, options: AssetRefResolu
             }
 
             // Fast path: registry is in-memory and resolves common asset refs synchronously.
+            // The registry keeps an asset's original id; an admin may have renamed it in
+            // the database since, so map the registry id to the asset's current id.
             const registry = resolveRegistryAlias(ref);
             if (registry) {
-                return isDeletedRef(registry.coingeckoId ?? registry.assetId).pipe(
-                    Effect.flatMap(isRegistryDeleted => {
+                return Effect.all([isDeletedRef(registry.coingeckoId ?? registry.assetId), loadAssetIdRenames()], {
+                    concurrency: 'unbounded',
+                }).pipe(
+                    Effect.flatMap(([isRegistryDeleted, renames]) => {
                         if (isRegistryDeleted) {
                             return Effect.fail(new NotFoundError({ message: 'Asset not found', resource: 'asset' }));
                         }
@@ -137,11 +148,12 @@ export function resolveAssetRefContext(assetRef: string, options: AssetRefResolu
                                 }),
                             );
                         }
+                        const assetId = currentAssetId(renames, registry.assetId);
                         return Effect.succeed(
                             resolution({
-                                assetId: registry.assetId,
+                                assetId,
                                 ref,
-                                resolvedBy: registry.assetId === ref ? 'assetId' : 'registry',
+                                resolvedBy: assetId === ref ? 'assetId' : 'registry',
                             }),
                         );
                     }),

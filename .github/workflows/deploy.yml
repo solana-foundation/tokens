@@ -523,7 +523,9 @@ jobs:
             TOKENS_APP_STAGE_URL \
             TOKENS_APP_PROD_URL \
             TOKENS_ADMIN_STAGE_URL \
-            TOKENS_ADMIN_PROD_URL; do
+            TOKENS_ADMIN_PROD_URL \
+            GRAFANA_API_URL \
+            GRAFANA_API_TOKEN; do
             value=$(doppler secrets get "$key" --plain --project "$DOPPLER_PROJECT" --config "$DOPPLER_CONFIG")
             echo "::add-mask::$value"
             echo "$key=$value" >> "$GITHUB_OUTPUT"
@@ -562,11 +564,13 @@ jobs:
       - name: Install Vercel CLI
         run: bun add -g vercel@54.9.0
 
-      # The assets prod deploy is a deliberate 0%-traffic candidate (manual
-      # 10→50→100 promotion per the DB-resilience runbook). Shipping the new
-      # API while assets traffic is still on the old revision recreates the
-      # 2026-09-04 incident, so when this release touches assets we hold the
-      # Vercel prod deploys until the candidate serves 100% of traffic.
+      # The assets prod deploy lands as a 0%-traffic candidate (DB-resilience
+      # runbook). Shipping the new API while assets traffic is still on the
+      # old revision recreates the 2026-09-04 incident, so when this release
+      # touches assets we walk the candidate 10→50→100 here, gated on the
+      # minute-cadence smoke canary and the candidate's own /health, rolling
+      # back to the stable revision on any failed check. The 'Cloud Run
+      # promote' workflow remains the manual override.
       - id: gcp_auth
         if: contains(fromJson(needs.changes.outputs.services), 'assets')
         uses: google-github-actions/auth@71f986410dfbc7added4569d411d040a91dc6935 # v2
@@ -577,17 +581,40 @@ jobs:
       - if: contains(fromJson(needs.changes.outputs.services), 'assets')
         uses: google-github-actions/setup-gcloud@77e7a554d41e2ee56fc945c52dfd3f33d12def9a # v2
 
-      - name: Wait for assets candidate promotion (manual)
+      - name: Auto-promote assets candidate (canary-gated)
         if: contains(fromJson(needs.changes.outputs.services), 'assets')
         env:
           SLACK_WEBHOOK: ${{ steps.secrets.outputs.SLACK_DEPLOY_WEBHOOK_URL }}
+          GRAFANA_API_URL: ${{ steps.secrets.outputs.GRAFANA_API_URL }}
+          GRAFANA_API_TOKEN: ${{ steps.secrets.outputs.GRAFANA_API_TOKEN }}
+          GCP_PROJECT: ${{ vars.GCP_PROJECT }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -euo pipefail
           TAG="resilience-${GITHUB_SHA:0:12}"
+          WORKER_TAG="res-${GITHUB_SHA:0:12}"
+          WORKER_SERVICE=tokens-assets-jobs-prd-us
           describe() {
             gcloud run services describe tokens-assets-prd-us \
-              --region=us-east4 --project=${{ vars.GCP_PROJECT }} --format=json
+              --region=us-east4 --project="$GCP_PROJECT" --format=json
+          }
+          slack() {
+            curl -sS -X POST -H 'Content-Type: application/json' \
+              --data "$(jq -n --arg t "$1" '{text: $t}')" "$SLACK_WEBHOOK" || true
+          }
+          # Retries absorb Grafana Cloud wake-up 503s (see the 2026-09-17
+          # usage-digest incident); "" after all attempts means Loki is
+          # genuinely unreachable and the caller must treat the check as failed.
+          loki_count() {
+            local attempt out
+            for attempt in 1 2 3; do
+              out=$(curl -sfG "$GRAFANA_API_URL/api/datasources/proxy/uid/grafanacloud-logs/loki/api/v1/query" \
+                -H "Authorization: Bearer $GRAFANA_API_TOKEN" \
+                --data-urlencode "query=$1" \
+                | jq -r '.data.result[0].value[1] // "0"') && { echo "$out"; return 0; }
+              sleep 10
+            done
+            echo ""
           }
           candidate=$(describe | jq -r --arg tag "$TAG" \
             '.status.traffic[] | select(.tag == $tag) | .revisionName' | head -1)
@@ -595,34 +622,82 @@ jobs:
             echo "::error::No assets candidate revision tagged $TAG — did cloudrun_prd deploy?"
             exit 1
           fi
+          tag_url=$(describe | jq -r --arg tag "$TAG" \
+            '.status.traffic[] | select(.tag == $tag) | .url' | head -1)
+          stable=$(describe | jq -r --arg candidate "$candidate" '
+            [.status.traffic[]
+             | select(.revisionName != null and .revisionName != $candidate and (.percent // 0) > 0)]
+            | sort_by(.percent) | last | .revisionName // empty')
+          promote_worker() {
+            local worker
+            if ! gcloud run services describe "$WORKER_SERVICE" \
+                --region=us-east4 --project="$GCP_PROJECT" >/dev/null 2>&1; then
+              echo "No $WORKER_SERVICE service — skipping worker promotion."
+              return 0
+            fi
+            worker=$(gcloud run services describe "$WORKER_SERVICE" \
+              --region=us-east4 --project="$GCP_PROJECT" --format=json \
+              | jq -r --arg tag "$WORKER_TAG" '.status.traffic[] | select(.tag == $tag) | .revisionName' | head -1)
+            if [ -z "$worker" ]; then
+              echo "worker candidate tagged $WORKER_TAG not found on $WORKER_SERVICE"
+              return 1
+            fi
+            gcloud run services update-traffic "$WORKER_SERVICE" \
+              --region=us-east4 --project="$GCP_PROJECT" \
+              --to-revisions="$worker=100" --quiet || return 1
+            echo "worker=$worker"
+          }
+          fail_and_rollback() {
+            local outcome
+            if scripts/promote-assets-revision.sh "$candidate" rollback "$stable"; then
+              outcome="Rolled back to '$stable'."
+            else
+              outcome="⚠️ ROLLBACK ALSO FAILED — traffic may still be split between '$candidate' and '${stable:-<unknown>}'. Fix traffic NOW: gcloud run services update-traffic tokens-assets-prd-us --region=us-east4 --project=$GCP_PROJECT --to-revisions=${stable:-<stable>}=100"
+            fi
+            MSG="🔴 Auto-promotion of assets candidate '$candidate' failed at $1: $2. $outcome Investigate, then promote manually via the 'Cloud Run promote' workflow and re-run this workflow. Run: $RUN_URL"
+            echo "::error::$MSG"
+            slack "$MSG"
+            exit 1
+          }
+          trap 'fail_and_rollback "cancellation" "the workflow run was cancelled mid-promotion"' INT TERM
+          observe() {
+            local stage="$1" seconds="$2" start now window code fails runs
+            start=$(date +%s)
+            while :; do
+              sleep 30
+              now=$(date +%s)
+              code=$(curl -s -o /dev/null -m 10 --retry 2 -w '%{http_code}' "$tag_url/health" || echo 000)
+              [ "$code" = "200" ] || fail_and_rollback "$stage" "candidate /health returned $code"
+              window=$(( now - start + 90 ))
+              fails=$(loki_count "sum(count_over_time({service=\"tokens-smoke\"} | json | event=\`smoke_canary_summary\` | failed_any = \`true\` [${window}s]))")
+              [ -n "$fails" ] || fail_and_rollback "$stage" "smoke-canary query failed (Loki unreachable after 3 attempts)"
+              [ "$fails" = "0" ] || fail_and_rollback "$stage" "$fails failed smoke-canary run(s) since stage start"
+              [ $(( now - start )) -ge "$seconds" ] && break
+            done
+            runs=$(loki_count "sum(count_over_time({service=\"tokens-smoke\"} | json | event=\`smoke_canary_summary\` [$(( seconds + 90 ))s]))")
+            if [ -z "$runs" ] || [ "$runs" = "0" ]; then
+              fail_and_rollback "$stage" "no smoke-canary runs observed — canary is down; refusing to promote blind"
+            fi
+          }
           served=$(describe | jq -r --arg rev "$candidate" \
             '[.status.traffic[] | select(.revisionName == $rev) | (.percent // 0)] | add')
           if [ "$served" = "100" ]; then
-            echo "Candidate $candidate already serving 100% — continuing."
+            echo "Candidate $candidate already serving 100% (manual promotion) — ensuring worker matches."
+            promote_worker || fail_and_rollback "worker promotion" "the $WORKER_SERVICE candidate could not be promoted"
             exit 0
           fi
-          MSG="Tokens Deploy is holding the prod Vercel deploys until assets candidate '$candidate' is promoted to 100% (currently ${served}%). Promote via the 'Cloud Run promote' workflow (env=prd, service=assets, percent 10→50→100 per the resilience runbook; then target=worker at 100) or: gcloud run services update-traffic tokens-assets-prd-us --region=us-east4 --project=${{ vars.GCP_PROJECT }} --to-revisions=$candidate=100. Run: $RUN_URL"
-          echo "$MSG"
-          echo "### Waiting for assets promotion" >> "$GITHUB_STEP_SUMMARY"
-          echo "$MSG" >> "$GITHUB_STEP_SUMMARY"
-          curl -sS -X POST -H 'Content-Type: application/json' \
-            --data "$(jq -n --arg t "$MSG" '{text: ("⏳ " + $t)}')" "$SLACK_WEBHOOK" || true
-          # 75 min: runbook-compliant promotion is ≥15 min observation at 10%
-          # + ≥15 min at 50% + operator response/command time.
-          deadline=$(( $(date +%s) + 4500 ))
-          while [ "$(date +%s)" -lt "$deadline" ]; do
-            served=$(describe | jq -r --arg rev "$candidate" \
-              '[.status.traffic[] | select(.revisionName == $rev) | (.percent // 0)] | add')
-            echo "candidate $candidate serving ${served}%"
-            if [ "$served" = "100" ]; then
-              echo "Promotion complete — continuing with prod Vercel deploys."
-              exit 0
-            fi
-            sleep 30
+          for stage in 10 50; do
+            scripts/promote-assets-revision.sh "$candidate" "$stage" "$stable" \
+              || fail_and_rollback "${stage}%" "traffic update to ${stage}% failed"
+            slack "⏳ Auto-promoting assets candidate '$candidate': serving ${stage}% (stable '$stable'), observing canary + health for 4m. Run: $RUN_URL"
+            observe "${stage}%" 240
           done
-          echo "::error::Assets candidate $candidate was not promoted to 100% within 75 minutes. Promote it, then re-run this workflow — the prod Vercel deploys did NOT happen (the gate exits immediately on re-run once the candidate serves 100%)."
-          exit 1
-
+          scripts/promote-assets-revision.sh "$candidate" 100 "$stable" \
+            || fail_and_rollback "100%" "traffic update to 100% failed"
+          observe "100%" 120
+          promote_worker || fail_and_rollback "worker promotion" "the $WORKER_SERVICE candidate could not be promoted"
+          trap - INT TERM
+          slack "✅ Assets candidate '$candidate' auto-promoted to 100% (API + worker). Stable-for-rollback was '$stable'. Run: $RUN_URL"
       # teamId is required for team-owned projects; without it the API returns
       # no deployments and rollback silently breaks.
       - name: Capture previous prod deployment ID (API)

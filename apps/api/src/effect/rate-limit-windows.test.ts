@@ -92,3 +92,72 @@ describe('enforceUpstashLimits burst + sustained windows', () => {
         expect(sustained?.args[0]).toBe(3000);
     });
 });
+
+describe('enforceCloudRunLimits (Memorystore-backed usage RPC)', () => {
+    const okResult = {
+        allowed: true as const,
+        rateLimit: { limit: 400, remaining: 399, resetMs: 1_790_000_000_000 },
+        quota: { limit: 1_000_000_000, used: 5, remaining: 999_999_995, resetMs: 1_790_500_000_000 },
+    };
+
+    it('returns the meta shape unchanged when allowed', async () => {
+        const calls: unknown[] = [];
+        const meta = await Effect.runPromise(
+            __internals.enforceCloudRunLimits(AUTH, args => {
+                calls.push(args);
+                return Effect.succeed(okResult);
+            }),
+        );
+        expect(meta).toEqual({ rateLimit: okResult.rateLimit, quota: okResult.quota });
+        expect(calls.length).toBe(1);
+        const args = calls[0] as { apiKeyId: string; rateLimit: unknown; sustainedRateLimit: unknown; quota: unknown };
+        expect(args.apiKeyId).toBe('key_1');
+        expect(args.rateLimit).toEqual({ requests: 400, windowSeconds: 10 });
+        expect(args.sustainedRateLimit).toBeDefined();
+        expect(args.quota).toBeDefined();
+    });
+
+    it('maps allowed=false onto RateLimitedError with the blocking service', async () => {
+        for (const service of ['rateLimit', 'sustainedRateLimit', 'quota'] as const) {
+            const err = (await Effect.runPromise(
+                Effect.flip(
+                    __internals.enforceCloudRunLimits(AUTH, () =>
+                        Effect.succeed({ allowed: false as const, service, retryAfterMs: 1234 }),
+                    ),
+                ),
+            )) as { _tag: string; service?: string; retryAfterMs?: number };
+            expect(err._tag).toBe('RateLimitedError');
+            expect(err.service).toBe(service);
+            expect(err.retryAfterMs).toBe(1234);
+        }
+    });
+});
+
+describe('enforceLimits backend switch', () => {
+    it('defaults to the Upstash limiter when TOKENS_LIMITS_BACKEND is unset', async () => {
+        delete process.env.TOKENS_LIMITS_BACKEND;
+        const err = (await Effect.runPromise(Effect.flip(__internals.enforceLimits(AUTH)))) as { _tag: string };
+        expect(err._tag).toBe('MissingEnvError');
+    });
+
+    it('routes to the usage RPC when TOKENS_LIMITS_BACKEND=usage', async () => {
+        process.env.TOKENS_LIMITS_BACKEND = 'usage';
+        try {
+            let called = 0;
+            const meta = await Effect.runPromise(
+                __internals.enforceLimits(AUTH, () => {
+                    called += 1;
+                    return Effect.succeed({
+                        allowed: true as const,
+                        rateLimit: { limit: 1, remaining: 1, resetMs: 1 },
+                        quota: { limit: 1, used: 1, remaining: 0, resetMs: 1 },
+                    });
+                }),
+            );
+            expect(called).toBe(1);
+            expect(meta.rateLimit.limit).toBe(1);
+        } finally {
+            delete process.env.TOKENS_LIMITS_BACKEND;
+        }
+    });
+});

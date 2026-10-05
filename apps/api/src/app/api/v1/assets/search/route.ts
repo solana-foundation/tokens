@@ -48,6 +48,7 @@ import {
     aggregateTokenStats,
     buildCuratedMintRank,
     buildSnapshotFromTokenMarketsDoc,
+    matchRegistryAssetForDbAsset,
     mergeAssetStatsWithAggregates,
     normalizeText,
     optionalSymbol,
@@ -387,8 +388,13 @@ export const GET = route(
             for (const row of variantsRows) variantsByAssetId.set(row.assetId, row.variants);
 
             const assets: CanonicalAsset[] = firstPage.map(a => {
-                const registryAsset =
-                    resolveRegistryAlias(a.assetId) ?? (a.coingeckoId ? resolveRegistryAlias(a.coingeckoId) : null);
+                const registryAsset = matchRegistryAssetForDbAsset({
+                    registryAsset:
+                        resolveRegistryAlias(a.assetId) ?? (a.coingeckoId ? resolveRegistryAlias(a.coingeckoId) : null),
+                    assetId: a.assetId,
+                    coingeckoId: a.coingeckoId,
+                    mints: (variantsByAssetId.get(a.assetId) ?? []).map(variant => variant.mint),
+                });
                 const coin = a.coingeckoId ? (coinById.get(a.coingeckoId) ?? null) : null;
 
                 const name =

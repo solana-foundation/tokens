@@ -8,18 +8,23 @@ import { describe, expect, it } from 'bun:test';
 
 import type { TransactionSql } from 'postgres';
 
-import { replaceAliasesForKind, replaceCustomAliases, syncCollections } from './curatedTokensMutations';
+import { renameAssetId, replaceAliasesForKind, replaceCustomAliases, syncCollections } from './curatedTokensMutations';
 
 interface RecordedQuery {
     text: string;
     params: unknown[];
 }
 
-function makeFakeTx(): { tx: TransactionSql; queries: RecordedQuery[] } {
+/** `respond` lets a test return rows for a statement (default: no rows). */
+function makeFakeTx(respond: (text: string) => unknown[] = () => []): {
+    tx: TransactionSql;
+    queries: RecordedQuery[];
+} {
     const queries: RecordedQuery[] = [];
     const tx = (async (strings: TemplateStringsArray, ...values: unknown[]) => {
-        queries.push({ text: strings.join('$'), params: values });
-        return [];
+        const text = strings.join('$');
+        queries.push({ text, params: values });
+        return respond(text);
     }) as unknown as TransactionSql;
     return { tx, queries };
 }
@@ -120,5 +125,120 @@ describe('syncCollections', () => {
         for (const q of queries) {
             expect(q.text).toContain('DELETE FROM asset_collection_members');
         }
+    });
+});
+
+describe('renameAssetId', () => {
+    const RENAMED_TABLES = [
+        'assets',
+        'asset_aliases',
+        'asset_variants',
+        'asset_collection_members',
+        'asset_markets_latest',
+        'asset_risk_latest',
+        'stock_instruments_latest',
+        'stock_prices_latest',
+        'stock_ohlcv_candles',
+        'trending_markets',
+        'fresh_trending_markets',
+    ];
+    const writes = (queries: RecordedQuery[]) => queries.filter(q => !q.text.trim().startsWith('SELECT'));
+    const updatedTable = (q: RecordedQuery) => /UPDATE\s+(\w+)/.exec(q.text)?.[1];
+
+    it('rewrites asset_id on every table that carries a copy', async () => {
+        const { tx, queries } = makeFakeTx();
+        expect(await renameAssetId(tx, { from: 'bitcoin', to: 'btc', nowMs: NOW })).toBe('renamed');
+
+        const updates = queries.filter(q => q.text.trim().startsWith('UPDATE'));
+        expect(updates.map(updatedTable)).toEqual(RENAMED_TABLES);
+        for (const update of updates) {
+            expect(update.text).toContain('SET asset_id = $');
+            expect(update.params[0]).toBe('btc');
+            expect(update.params[update.params.length - 1]).toBe('bitcoin'); // WHERE asset_id = from
+        }
+    });
+
+    it('records both ids as assetId aliases (priority 1000) pointing at the new id', async () => {
+        const { tx, queries } = makeFakeTx();
+        await renameAssetId(tx, { from: 'Old-Id', to: 'new-id', nowMs: NOW });
+
+        const inserts = queries.filter(q => q.text.includes('INSERT INTO asset_aliases'));
+        expect(inserts).toHaveLength(2);
+        for (const insert of inserts) {
+            expect(insert.text).toContain("'assetId'");
+            expect(insert.text).toContain('ON CONFLICT (asset_id, normalized, kind) DO NOTHING');
+            expect(insert.params[3]).toBe('new-id'); // asset_id
+            expect(insert.params[4]).toBe(1000);
+        }
+        // (id, normalized, alias, ...): new id first, then the old id as the rename marker.
+        expect(inserts.map(q => [q.params[1], q.params[2]])).toEqual([
+            ['new-id', 'new-id'],
+            ['old-id', 'Old-Id'],
+        ]);
+    });
+
+    it('clears orphaned rows keyed by the new id before moving rows onto it, never tombstones', async () => {
+        const { tx, queries } = makeFakeTx();
+        await renameAssetId(tx, { from: 'bitcoin', to: 'btc', nowMs: NOW });
+
+        const all = writes(queries);
+        const firstUpdate = all.findIndex(q => q.text.trim().startsWith('UPDATE'));
+        const deletes = all.slice(0, firstUpdate);
+        expect(deletes.length).toBeGreaterThan(0);
+        for (const del of deletes) {
+            expect(del.text.trim().startsWith('DELETE')).toBe(true);
+            expect(del.params[0]).toBe('btc'); // never the asset being renamed
+            expect(del.params).not.toContain('bitcoin');
+        }
+        // Tombstones keep a hard-deleted asset dead; a rename must never remove them.
+        expect(all.some(q => q.text.includes('asset_deletion_tombstones'))).toBe(false);
+        // asset_variants is never cleared: existing variants refuse the rename instead.
+        expect(deletes.some(q => q.text.includes('asset_variants'))).toBe(false);
+    });
+
+    it('refuses without writing when the new id is already an asset', async () => {
+        const { tx, queries } = makeFakeTx(text => (text.includes('FROM assets') ? [{ '?column?': 1 }] : []));
+        expect(await renameAssetId(tx, { from: 'bitcoin', to: 'ethereum', nowMs: NOW })).toBe('asset_id_exists');
+        expect(writes(queries)).toEqual([]);
+    });
+
+    it('refuses without writing when variants already sit under the new id', async () => {
+        const { tx, queries } = makeFakeTx(text => (text.includes('FROM asset_variants') ? [{ '?column?': 1 }] : []));
+        expect(await renameAssetId(tx, { from: 'bitcoin', to: 'btc', nowMs: NOW })).toBe('asset_id_exists');
+        expect(writes(queries)).toEqual([]);
+    });
+
+    it("refuses without writing when the new id is another asset's former id", async () => {
+        const { tx, queries } = makeFakeTx(text => (text.includes('FROM asset_aliases') ? [{ kind: 'assetId' }] : []));
+        expect(await renameAssetId(tx, { from: 'bitcoin', to: 'btc', nowMs: NOW })).toBe('asset_id_reserved');
+        expect(writes(queries)).toEqual([]);
+        const check = queries.find(q => q.text.includes('FROM asset_aliases'));
+        // normalized target, then excludes rows owned by either side of this rename.
+        expect(check?.params).toEqual(['btc', 'bitcoin', 'btc']);
+    });
+
+    it("refuses without writing when the new id is another asset's name, symbol or alias", async () => {
+        for (const kind of ['name', 'symbol', 'coingeckoId', 'custom']) {
+            const { tx, queries } = makeFakeTx(text => (text.includes('FROM asset_aliases') ? [{ kind }] : []));
+            expect(await renameAssetId(tx, { from: 'wrapped-bitcoin', to: 'btc', nowMs: NOW })).toBe(
+                'asset_id_aliased',
+            );
+            expect(writes(queries)).toEqual([]);
+            // Every alias kind is checked, not only former ids.
+            const check = queries.find(q => q.text.includes('FROM asset_aliases'));
+            expect(check?.text).not.toContain("kind = 'assetId'");
+        }
+    });
+
+    it('refuses without writing when the new id belongs to a hard-deleted asset', async () => {
+        const { tx, queries } = makeFakeTx(text =>
+            text.includes('FROM asset_deletion_tombstones') ? [{ '?column?': 1 }] : [],
+        );
+        expect(await renameAssetId(tx, { from: 'bitcoin', to: 'btc', nowMs: NOW })).toBe('asset_id_deleted');
+        expect(writes(queries)).toEqual([]);
+        const check = queries.find(q => q.text.includes('FROM asset_deletion_tombstones'));
+        // Matches the deleted asset's own id and any tombstoned ref equal to the target.
+        expect(check?.text).toContain('normalized_ref');
+        expect(check?.params).toEqual(['btc', 'btc']);
     });
 });

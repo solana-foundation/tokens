@@ -76,6 +76,9 @@ function makeEmptyDeps(overrides: Partial<CuratedPrefetchDeps> = {}): CuratedPre
         async findVariantByMint() {
             return null;
         },
+        async listAssetIdRenames() {
+            return [];
+        },
         async isDeletedRef() {
             return false;
         },

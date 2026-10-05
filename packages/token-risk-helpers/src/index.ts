@@ -225,6 +225,12 @@ function scoreHolderCount(holderCount: number | null): MarketScoreComponentResul
     return { score, status, hasData: true };
 }
 
+/** 7-day volume estimated from 24h volume, for sources that only report 24h. */
+export function estimate7dVolume(volume24hUsd: number | null | undefined): number | null {
+    if (volume24hUsd == null || !(volume24hUsd > 0)) return null;
+    return volume24hUsd * 7;
+}
+
 function computeTokenAgeDays(tokenMintTime: string | Date | null): number | null {
     if (tokenMintTime == null) return null;
     try {
@@ -502,7 +508,12 @@ export function computeMarketScore(input: MarketScoreInput): MarketScoreResult {
     };
 }
 
-function createInsufficientDataResult(reason: string): MarketScoreResult {
+/**
+ * The "we could not score this token" result. Callers with no market data at
+ * all should return this directly rather than running the scorer on
+ * placeholder inputs.
+ */
+export function createInsufficientDataResult(reason: string): MarketScoreResult {
     const score = 0;
     const grade = getGrade(score);
     const emptyComponent: MarketScoreComponentResult = { score: 0, status: 'info', hasData: false };

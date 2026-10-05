@@ -4,6 +4,7 @@ import { fetchJsonWithRetry, tapErrorAndDefault } from '@tokens/effect';
 import { route } from '@/effect/next-route';
 import { createCoinGeckoNewsNotFoundRecovery, validateCoinGeckoNewsCoinId } from '@/lib/coingecko-news';
 import { resolveXBearerToken, runXRequest } from '@/lib/x-auth';
+import { restoreXCashtagsInTexts } from '@/lib/x-cashtags';
 import { buildMediaByKey, getPostImage, type XMedia, type XPostMediaAttachment } from '@/lib/x-media';
 import {
     articleMatchesTerms,
@@ -254,10 +255,16 @@ async function fetchTokensFeed(limit: number): Promise<FeedArticle[]> {
     })));
     const mediaByKey = buildMediaByKey(postsResponse.includes?.media);
 
-    return (postsResponse.data ?? [])
-        .filter(post => post.id && post.text && post.created_at && !isReplyPost(post))
-        .map(post => ({
-            title: cleanPostText(post.text),
+    const posts = (postsResponse.data ?? []).filter(
+        post => post.id && post.text && post.created_at && !isReplyPost(post),
+    );
+    // X's token tags arrive as `solana:<mint>` in the API text; restore them to `$SYMBOL` so
+    // posts read like they do on x.com (and so `$SYMBOL` term matching sees them).
+    const titles = await Effect.runPromise(restoreXCashtagsInTexts(posts.map(post => cleanPostText(post.text))));
+
+    return posts
+        .map((post, index) => ({
+            title: titles[index] ?? cleanPostText(post.text),
             url: buildXPostUrl(user.username, post.id),
             image: getPostImage(post, mediaByKey, user.profile_image_url),
             author: user.username,

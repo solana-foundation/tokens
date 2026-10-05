@@ -7,6 +7,7 @@ import { useRouter } from 'next/navigation';
 import { trackEvent } from '@/lib/posthog-client';
 import { useInlineLatestClose } from '@/hooks/queries/use-inline-latest-close';
 import { buildCoinHref } from '@/lib/coin-href';
+import { formatSmallPriceDecimal } from '@/lib/format';
 import { useWindowVirtualizer } from '@tanstack/react-virtual';
 import {
     createColumnHelper,
@@ -278,7 +279,7 @@ const TRENDING_WINDOW_LABELS: Record<TrendingWindow, string> = {
 function formatPrice(price: number | null | undefined): string {
     if (price == null || isNaN(price)) return '$0.00';
     if (price === 0) return '$0.00';
-    if (price < 0.00001) return `$${price.toExponential(2)}`;
+    if (price < 0.00001) return `$${formatSmallPriceDecimal(price)}`;
     if (price < 0.01) return `$${price.toFixed(6)}`;
     if (price < 1) return `$${price.toFixed(4)}`;
     return `$${price.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;

@@ -321,19 +321,9 @@ function makeClickhouseClient(state: FakeState): ClickhouseClient {
         async fetchSolanaMintSnapshots() {
             return [];
         },
-        async query() {
-            return [];
-        },
         async queryPreset() {
             return [];
         },
-        tables: () => ({
-            database: 'db',
-            stockTradesTable: 'stock_trades',
-            stockInstrumentsTable: 'stock_instruments',
-            solanaTradesTable: 'solana_trades',
-            priceScale: 1e9,
-        }),
     };
 }
 
@@ -472,6 +462,9 @@ function makeSeedDeps(state: FakeState): SeedCronDeps {
             },
             async deleteCollectionCascade() {
                 return 0;
+            },
+            async listAssetIdRenames() {
+                return [];
             },
             async listTombstonedRefs() {
                 return [];

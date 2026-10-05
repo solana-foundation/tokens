@@ -12,7 +12,7 @@
 
 import type { VariantAdvisory } from '@tokens/asset-registry';
 
-export const SCORING_VERSION = 'v2-scoring-2026-07-05.1' as const;
+export const SCORING_VERSION = 'v2-scoring-2026-09-27.1' as const;
 
 export type CandidateSource = 'provider' | 'db' | 'registry';
 

@@ -351,7 +351,10 @@ function buildVariantsWithMarket(
 
     return asset.variants.map(variant => {
         const market = tokenByMint.get(variant.mint) ?? null;
-        const providerLabel = getProviderOnlyLabel(variant.label);
+        // A label equal to the asset's own symbol (e.g. ONDO) is not the Ondo/xStock issuer marker.
+        const providerLabel = isCanonicalSymbolMatch(variant.label, assetFallbackSymbol)
+            ? null
+            : getProviderOnlyLabel(variant.label);
         const labelFallback = providerLabel ? '' : variant.label;
         const variantSymbol = pickFirstSymbol(variant.symbol);
         const variantSymbolFallback =

@@ -178,6 +178,9 @@ function makeSeedRepo(state: FakeState): SeedRepo {
         async deleteCollectionCascade() {
             return 0;
         },
+        async listAssetIdRenames() {
+            return [];
+        },
         async listTombstonedRefs() {
             return [];
         },

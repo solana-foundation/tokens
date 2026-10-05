@@ -29,6 +29,7 @@ function makeReadsRepo(): AdminReadsRepo {
         listVariantsWithMarketsByAssetIds: async () => [],
         listCustomAliases: async () => [],
         listCustomAliasesByAssetId: async () => [],
+        listAssetIdAliasesByAssetId: async () => [],
         listCollectionMembers: async () => [],
         getAssetByAssetId: async () => null,
         getVariantByMint: async () => null,

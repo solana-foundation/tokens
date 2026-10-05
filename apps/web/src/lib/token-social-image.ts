@@ -9,6 +9,7 @@ import { ADVISORY_COPY, advisoryTone, type AssetAdvisory } from '@/lib/asset-adv
 import { getOgInterFonts, OG_FONT_FAMILY_INTER } from '@/lib/og-fonts';
 import { cleanTokenName, getTokenLogoURL } from '@/lib/logo-overrides';
 import { fetchApiAppJsonOrNull } from '@/lib/api-app';
+import { formatSmallPriceDecimal } from '@/lib/format';
 import { fetchHermesLatestPrice } from '@/lib/realtime-prices/pyth-hermes-server';
 import {
     normalizeRequestedSolanaMint,
@@ -185,7 +186,7 @@ const OG_PRICE_FORMATTER = new Intl.NumberFormat('en-US', {
 function formatPriceForOg(price: number): string {
     if (!Number.isFinite(price)) return '--';
     if (price === 0) return '$0.00';
-    if (price < 0.00001) return `$${price.toExponential(2)}`;
+    if (price < 0.00001) return `$${formatSmallPriceDecimal(price)}`;
     if (price < 0.01) return `$${price.toFixed(6)}`;
     if (price < 1) return `$${price.toFixed(4)}`;
     return '$' + OG_PRICE_FORMATTER.format(price);

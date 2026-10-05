@@ -907,29 +907,57 @@ Compute a quick market-based “risk summary” for a mint.
 
 ### Notes
 
-- This endpoint requires a cached market snapshot; if missing you’ll get an “Insufficient Data” response.
+- The score is computed from the mint’s cached market snapshot. Mints without one (most tokens outside the
+  registry) are scored from a live market read instead.
+- **Check `hasInsufficientData` before reading the grade.** When it is `true` the token is _unscored_ — there
+  was no market data to score, or too little — and `score`, `grade` and `tone` are placeholders (`0`, `"C"`,
+  `"risk"`), not an assessment. An unscored token is never reported with a passing grade.
+- The live read is best-effort. If it is unavailable (provider trouble, or the key’s live-read budget for the
+  window is spent) the response is a `200` with `hasInsufficientData: true`, not an error. Retry later.
+- Native SOL is always `100` / `A`.
 
 ### Response
 
 ```ts
 interface AssetsRiskSummaryResponse {
+    /** 0–100. */
     score: number;
-    grade: string;
+    /** `A` ≥ 85, `B` ≥ 70, otherwise `C`. */
+    grade: 'A' | 'B' | 'C';
+    /** `Established` (A), `Speculative` or `Trusted Launch` (B), `Weak Metrics` (C), or `Insufficient Data`. */
     label: string;
-    tone: 'info' | 'success' | 'warning' | 'danger';
+    tone: 'risk' | 'warning' | 'safe' | 'info';
     isTrustedLaunch: boolean;
-    caps: Array<unknown>;
+    /** Limiting factors that capped the score, e.g. `Low Market Cap (<$100K)`. */
+    caps: string[];
     hasInsufficientData: boolean;
-    insufficientDataReason?: string;
+    insufficientDataReason: string | null;
 }
 ```
+
+A scored token:
+
+```json
+{
+    "score": 88,
+    "grade": "A",
+    "label": "Established",
+    "tone": "safe",
+    "isTrustedLaunch": false,
+    "caps": [],
+    "hasInsufficientData": false,
+    "insufficientDataReason": null
+}
+```
+
+An unscored token:
 
 ```json
 {
     "score": 0,
     "grade": "C",
     "label": "Insufficient Data",
-    "tone": "info",
+    "tone": "risk",
     "isTrustedLaunch": false,
     "caps": [],
     "hasInsufficientData": true,

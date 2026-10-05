@@ -259,7 +259,7 @@ function buildXstockGroupAssets(): CanonicalAsset[] {
             name,
             ...(symbol ? [symbol] : []),
             ...(coingeckoId ? [coingeckoId] : []),
-            ...variants.flatMap(v => [v.mint, v.label ?? '']),
+            ...variants.flatMap(v => [v.mint]),
         ]);
 
         assets.push({

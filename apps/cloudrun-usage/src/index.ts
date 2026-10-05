@@ -2,6 +2,7 @@ import { registerGracefulShutdown, wrapFetchWithShutdownGuard } from '@tokens/cl
 import { getSql, makePostgresPlatformAuthRepo, makePostgresUsageIngestRepo } from './db';
 import { makePostgresDashboardRepo, makePostgresIdentityRepo } from './db/dashboard';
 import { makePostgresUsageDashboardRepo } from './db/usageDashboard';
+import { makeLimitsRedis } from './redis';
 import { createApp } from './server';
 
 const authToken = process.env.TOKENS_CLOUDRUN_AUTH_TOKEN?.trim();
@@ -17,6 +18,11 @@ if (!apiKeyEncryptionSecret) {
 
 const port = Number(process.env.PORT) || 8080;
 const sql = getSql();
+const redisHost = process.env.REDIS_HOST?.trim();
+const redisPort = Number(process.env.REDIS_PORT?.trim() || 6379);
+if (!redisHost) {
+    console.warn('REDIS_HOST is not set — limitsEnforce will be unavailable (API falls open)');
+}
 const app = createApp({
     platformAuth: makePostgresPlatformAuthRepo(sql),
     usageIngest: makePostgresUsageIngestRepo(sql),
@@ -24,6 +30,7 @@ const app = createApp({
     usageDashboard: makePostgresUsageDashboardRepo(sql),
     identity: makePostgresIdentityRepo(sql),
     ...(apiKeyEncryptionSecret ? { apiKeyEncryptionSecret } : {}),
+    ...(redisHost ? { limitsRedis: makeLimitsRedis({ host: redisHost, port: redisPort }) } : {}),
     hooks: {
         ...(process.env.LOKI_PUSH_URL?.trim() ? { lokiPushUrl: process.env.LOKI_PUSH_URL.trim() } : {}),
         ...(process.env.LOKI_PUSH_AUTH?.trim() ? { lokiPushAuth: process.env.LOKI_PUSH_AUTH.trim() } : {}),
