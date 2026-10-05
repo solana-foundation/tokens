@@ -16,7 +16,7 @@
         "to": 0
       },
       "model": {
-        "expr": "sum(count_over_time({service=\"tokens-assets-jobs-prd-us\"} | json | httpRequest_requestUrl=~\".*/jobs/logo-sync$\" | httpRequest_status >= 500 [1h])) or on() vector(0)",
+        "expr": "sum(count_over_time({service=\"tokens-assets-jobs-prd-us\"} | json | event=\"logo_sync\" | synced = 0 | failed >= 5 [1h])) or on() vector(0)",
         "queryType": "range",
         "refId": "A"
       }
@@ -86,8 +86,8 @@
     "slack": "true"
   },
   "annotations": {
-    "summary": "tokens-assets: logo-sync returned 5xx on ≥2 runs in the last hour",
-    "description": "POST /jobs/logo-sync on the assets worker answers 5xx only when every attempted mint failed (ok:false) or the handler threw — per-mint fetch failures never fail the batch. Two or more in an hour (Scheduler retries once) means the job cannot publish anything: check GCS_LOGO_BUCKET / bucket IAM, the mint_logos table (migration 0023/0024), and the worker logs for the {\"event\":\"logo_sync\"} summary. Per-URL fetch noise (404s, redirects, blocked IPFS gateways) is expected and deliberately excluded from the provider error-rate rules.",
+    "summary": "tokens-assets: logo-sync published nothing on ≥2 runs in the last hour",
+    "description": "Counts {\"event\":\"logo_sync\"} run summaries where every attempted mint failed and the batch was non-trivial (synced=0, failed>=5; 7d of prod logs show 1-2 candidate runs routinely fail outright on a single dead URL, while real incidents fail 5-200) — the same condition that makes POST /jobs/logo-sync answer 5xx; per-mint fetch failures never fail the batch. Two or more in an hour (Scheduler retries once) means the job cannot publish anything: check GCS_LOGO_BUCKET / bucket IAM, the mint_logos table (migration 0023/0024), and the worker logs. Caveat: a handler crash before the summary emits no logo_sync line and is not counted here (Cloud Run request logs are not shipped to this Loki tenant). Per-URL fetch noise (404s, redirects, blocked IPFS gateways) is expected and deliberately excluded from the provider error-rate rules.",
     "runbook_url": "https://github.com/solana-foundation/tokens/blob/main/docs/operations/logo-sync.md"
   }
 }
