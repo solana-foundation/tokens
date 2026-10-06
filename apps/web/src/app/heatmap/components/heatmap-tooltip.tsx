@@ -1,6 +1,7 @@
 'use client';
 
 import Image from 'next/image';
+import { ArrowUpRight } from 'lucide-react';
 import { useCallback, useImperativeHandle, useLayoutEffect, useRef, useState, type ReactNode, type Ref } from 'react';
 
 import { formatPrice } from '@/lib/format';
@@ -45,7 +46,16 @@ function Logo({ src, symbol }: { src?: string; symbol: string }) {
     );
 }
 
-function Header({ logo, name, symbol, tag }: { logo?: string; name: string; symbol: string; tag?: string }) {
+interface HeaderProps {
+    logo?: string;
+    name: string;
+    symbol: string;
+    tag?: string;
+    /** Clicking the tile leaves the map for a token or asset page. */
+    opensPage?: boolean;
+}
+
+function Header({ logo, name, symbol, tag, opensPage }: HeaderProps) {
     return (
         <div className="flex items-center gap-3 rounded-xl px-2 py-2">
             <Logo key={logo ?? symbol} src={logo} symbol={symbol} />
@@ -56,6 +66,9 @@ function Header({ logo, name, symbol, tag }: { logo?: string; name: string; symb
                     {tag ? <span className={`${PILL_CLASS} border border-white/10`}>{tag}</span> : null}
                 </div>
             </div>
+            {opensPage ? (
+                <ArrowUpRight aria-hidden="true" className="size-4 shrink-0 self-start text-white/50" />
+            ) : null}
         </div>
     );
 }
@@ -104,7 +117,13 @@ function TooltipBody({ tile }: { tile: LayoutTile }) {
         const { variant } = tile;
         return (
             <>
-                <Header logo={variant.logoURI} name={variant.name} symbol={variant.symbol} tag={variant.groupLabel} />
+                <Header
+                    logo={variant.logoURI}
+                    name={variant.name}
+                    symbol={variant.symbol}
+                    tag={variant.groupLabel}
+                    opensPage={variant.hasTokenPage}
+                />
                 <Stats>
                     <Row label="Price" value={formatPrice(variant.price)} />
                     <ChangeRow label="24h" change={variant.change24h} period="24h" />
@@ -113,7 +132,6 @@ function TooltipBody({ tile }: { tile: LayoutTile }) {
                     <Row label="On-Solana value" value={formatUsdCompact(variant.marketCap)} />
                     <Row label="Liquidity" value={formatUsdCompact(variant.liquidity)} />
                 </Stats>
-                {variant.hasTokenPage ? <p className={HINT_CLASS}>Click to open the token page</p> : null}
             </>
         );
     }
@@ -127,6 +145,7 @@ function TooltipBody({ tile }: { tile: LayoutTile }) {
                 name={asset.name}
                 symbol={asset.symbol}
                 tag={drills ? `${asset.variants.length} variants` : undefined}
+                opensPage={!drills}
             />
             <Stats>
                 <Row label="Price" value={formatPrice(asset.price)} />
@@ -135,7 +154,6 @@ function TooltipBody({ tile }: { tile: LayoutTile }) {
                 <Row label="24h volume" value={formatVolume(asset.volume24h)} />
                 <Row label={marketCapLabel(asset)} value={formatUsdCompact(asset.marketCap)} />
             </Stats>
-            <p className={HINT_CLASS}>{drills ? 'Click to see the variants' : 'Click to open the asset page'}</p>
         </>
     );
 }
