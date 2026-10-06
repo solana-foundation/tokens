@@ -27,7 +27,7 @@ import { type TimeInterval } from '@/lib/birdeye';
 import { validateOhlcvRange } from '@/lib/ohlcv-bounds';
 
 import type { CanonicalAsset } from '@tokens/asset-registry';
-import { PRE_STOCKS, resolveAlias as resolveRegistryAlias } from '@tokens/asset-registry';
+import { resolveAlias as resolveRegistryAlias } from '@tokens/asset-registry';
 import { prestocksGetLatestByMints } from '@/lib/cloudrun/prestocksReads';
 import {
     resolveAssetImageUrl,
@@ -43,7 +43,6 @@ import {
     selectCanonicalAssetStats,
     executionQualitySnapshotFromConvexFillQuality,
     computeCompanyMarketCapUsd,
-    computePreStocksDerived,
     isCanonicalPublicEquityAsset,
     isStockPricedCategory,
     type TokenMarketSnapshot,
@@ -65,7 +64,12 @@ import {
 } from '../_asset-detail-includes';
 import { scheduleCacheWarm, scheduleCoinPriceWarm, scheduleStockPriceWarm } from '../_asset-detail-warm';
 import { loadVariantMarkets } from '../_load-variant-markets';
-import { buildAssetDetailResponse, type PreStocksMintSnapshot } from '../_asset-detail-response';
+import { buildAssetDetailResponse } from '../_asset-detail-response';
+import {
+    buildPreStocksCanonicalMarket,
+    freshPreStocksByMint,
+    selectPreStocksMints,
+} from '../_prestocks-canonical';
 import { DEFAULT_MARKETS_STALE_MS, EQUITY_MARKETS_STALE_MS } from '../_market-cache';
 
 function parseIncludes(raw: string | null): { includes: Set<AssetInclude>; invalid: string[] } {
@@ -323,10 +327,7 @@ export const GET = route(
                     ? 'stock_redeemability'
                     : parsePrimaryVariantStrategy(requestedPrimaryVariantStrategy);
 
-            const preStocksMintSet = new Set(PRE_STOCKS.map(listing => listing.mint));
-            const assetPreStocksMints = canonicalAsset.variants
-                .map(variant => variant.mint)
-                .filter(mint => preStocksMintSet.has(mint));
+            const assetPreStocksMints = selectPreStocksMints(canonicalAsset.variants.map(variant => variant.mint));
 
             // These lookups only depend on the canonical asset — run them concurrently
             // instead of as sequential Convex round-trips.
@@ -381,22 +382,7 @@ export const GET = route(
                     { concurrency: 'unbounded' },
                 );
 
-            // PreStocks reference marks have no provider timestamp — treat a feed
-            // that hasn't refreshed in 24h as dead rather than displaying it forever.
-            const PRESTOCKS_MAX_AGE_MS = 24 * 60 * 60_000;
-            const preStocksByMint = new Map<string, PreStocksMintSnapshot>();
-            for (const entry of preStocksEntries) {
-                const snapshot = entry.snapshot;
-                if (!snapshot) continue;
-                if (Date.now() - snapshot.lastFetchedAt > PRESTOCKS_MAX_AGE_MS) continue;
-                preStocksByMint.set(entry.mint, {
-                    symbol: snapshot.symbol,
-                    markPriceUsd: snapshot.markPriceUsd,
-                    markValuationUsd: snapshot.markValuationUsd,
-                    tokenPriceUsd: snapshot.tokenPriceUsd,
-                    lastFetchedAt: snapshot.lastFetchedAt,
-                });
-            }
+            const preStocksByMint = freshPreStocksByMint(preStocksEntries);
 
             if (resolvedCoinId && asset.coingeckoId !== resolvedCoinId) {
                 asset = { ...asset, coingeckoId: resolvedCoinId };
@@ -432,12 +418,16 @@ export const GET = route(
             const stockSnapshot = stockInstrument
                 ? yield* stockPricesGetLatestByAssetId({ assetId: asset.assetId }).pipe(tapErrorAndDefault('assets.detail.stockPrice', null, { assetId: asset.assetId }))
                 : null;
+            const preStocksCanonicalMarket = buildPreStocksCanonicalMarket({
+                variantMints: asset.variants.map(variant => variant.mint),
+                preStocksByMint,
+                onChainPriceUsd: mint => tokenByMint.get(mint)?.price,
+            });
             // Admin-created PreStocks assets (e.g. `figure-ai`) carry no pre-IPO
             // marker in their id or aliases, so a fresh PreStocks reference is
             // what keeps them off the public-equity stock benchmark.
-            const hasPreStocksReference = asset.variants.some(variant => preStocksByMint.has(variant.mint));
             const shouldUseStockCanonicalMarket =
-                Boolean(stockInstrument) || (isCanonicalPublicEquityAsset(asset) && !hasPreStocksReference);
+                Boolean(stockInstrument) || (isCanonicalPublicEquityAsset(asset) && !preStocksCanonicalMarket);
             if (stockInstrument) {
                 const lastFetchedAt = stockSnapshot?.lastFetchedAt ?? null;
                 const isStale = lastFetchedAt === null || Date.now() - lastFetchedAt > 10 * 60_000;
@@ -494,14 +484,6 @@ export const GET = route(
 
             const companyMarketCap = computeCompanyMarketCapUsd(asset, stockSnapshot);
 
-            // At most one PreStocks mint exists per asset today; prefer the first
-            // variant with a fresh snapshot if that ever changes.
-            const preStocksCanonicalMint =
-                asset.variants.map(v => v.mint).find(mint => preStocksByMint.has(mint)) ?? null;
-            const preStocksCanonicalSnapshot = preStocksCanonicalMint
-                ? (preStocksByMint.get(preStocksCanonicalMint) ?? null)
-                : null;
-
             if (shouldUseStockCanonicalMarket) {
                 canonicalMarket = {
                     source: 'clickhouse_stock',
@@ -514,31 +496,8 @@ export const GET = route(
                     providerLastUpdatedAt: stockSnapshot?.asOf ?? null,
                     asOf: stockSnapshot?.asOf ?? null,
                 };
-            } else if (preStocksCanonicalMint && preStocksCanonicalSnapshot) {
-                // Tokenized pre-IPO exposure: the company-level benchmark is the
-                // valuation implied by the token price against the PreStocks
-                // reference mark, derived from OUR on-chain price so it never
-                // disagrees with the displayed price.
-                const derived = computePreStocksDerived(
-                    preStocksCanonicalSnapshot,
-                    tokenByMint.get(preStocksCanonicalMint)?.price,
-                );
-                canonicalMarket = {
-                    source: 'prestocks',
-                    symbol: preStocksCanonicalSnapshot.symbol,
-                    mint: preStocksCanonicalMint,
-                    price: derived.basisPriceUsd,
-                    marketCap: derived.impliedValuationUsd,
-                    markPriceUsd: preStocksCanonicalSnapshot.markPriceUsd,
-                    markValuationUsd: preStocksCanonicalSnapshot.markValuationUsd,
-                    impliedValuationUsd: derived.impliedValuationUsd,
-                    premiumToMarkPercent: derived.premiumToMarkPercent,
-                    volume24hUSD: null,
-                    priceChange24hPercent: null,
-                    lastFetchedAt: preStocksCanonicalSnapshot.lastFetchedAt,
-                    providerLastUpdatedAt: preStocksCanonicalSnapshot.lastFetchedAt,
-                    asOf: preStocksCanonicalSnapshot.lastFetchedAt,
-                };
+            } else if (preStocksCanonicalMarket) {
+                canonicalMarket = preStocksCanonicalMarket;
             } else if (coinId) {
                 coinSnapshot = yield* coingeckoGetPriceLatestByCoinId({ coinId }).pipe(tapErrorAndDefault('assets.detail.coinPrice', null, { assetId: asset.assetId, coinId }));
 
