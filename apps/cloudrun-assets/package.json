@@ -24,7 +24,7 @@
     "hono": "^4.13.5",
     "jose": "^5.9.6",
     "postgres": "^3.4.5",
-    "sharp": "0.35.4"
+    "sharp": "0.35.5"
   },
   "devDependencies": {
     "@eslint/js": "^9.16.0",

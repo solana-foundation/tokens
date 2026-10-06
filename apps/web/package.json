@@ -42,7 +42,7 @@
     "posthog-js": "^1.379.3",
     "react": "^19.2.3",
     "react-dom": "^19.2.3",
-    "sharp": "^0.35.4",
+    "sharp": "^0.35.5",
     "sonner": "^2.0.7",
     "symbols-react": "^1.2.7",
     "torph": "^0.0.9"
