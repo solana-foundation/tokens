@@ -13,7 +13,7 @@ import type { HeatmapPeriod } from '../lib/types';
 // `data-camera-anchor`: the tile a view is zooming out of or into. Its label would be a blurred giant
 // behind that view, so it fades out as the view fades in (the camera drives the variable).
 const TILE_CLASS =
-    'absolute overflow-hidden rounded-[3px] text-left outline-none transition-[filter] duration-150 hover:z-10 hover:brightness-[1.06] hover:ring-2 hover:ring-gray-1400/70 focus-visible:z-10 focus-visible:ring-2 focus-visible:ring-gray-1400 [&[data-camera-anchor]>*]:opacity-(--camera-label-opacity)';
+    'absolute overflow-hidden rounded-[3px] text-left outline-none transition-[filter] duration-150 ring-offset-white hover:z-10 hover:brightness-[1.06] hover:ring-2 hover:ring-gray-1400 hover:ring-offset-1 focus-visible:z-10 focus-visible:ring-2 focus-visible:ring-gray-1400 focus-visible:ring-offset-1 [&[data-camera-anchor]>*]:opacity-(--camera-label-opacity)';
 
 /** What a tile has room to say. Below `symbol` it is colour only and relies on the tooltip. */
 type Detail = 'full' | 'change' | 'symbol' | 'none';

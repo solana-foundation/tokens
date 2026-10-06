@@ -81,6 +81,12 @@ type Scene =
       }
     | { kind: 'fade'; stageKey: string; id: number; under: LayerSpec; over: LayerSpec };
 
+/**
+ * Room between the map and the stage's clipping edge, so the hover/focus ring (2px plus a 1px
+ * offset) of a tile on the edge is drawn whole instead of cut off.
+ */
+const STAGE_PADDING = 4;
+
 const ZOOM_MS = 460;
 const FADE_MS = 180;
 
@@ -282,8 +288,8 @@ export function Heatmap({ data }: { data: HeatmapData }) {
         if (!element) return;
 
         const measure = () => {
-            const width = Math.floor(element.clientWidth);
-            const height = Math.floor(element.clientHeight);
+            const width = Math.floor(element.clientWidth) - STAGE_PADDING * 2;
+            const height = Math.floor(element.clientHeight) - STAGE_PADDING * 2;
             setStage(current => (current?.width === width && current.height === height ? current : { width, height }));
         };
         measure();
@@ -618,8 +624,8 @@ export function Heatmap({ data }: { data: HeatmapData }) {
                         key={spec.key}
                         ref={layerRef(spec.key)}
                         // Opaque, so the outer view never shows through the gaps between the inner view's tiles.
-                        className="absolute inset-0 origin-top-left bg-white"
-                        style={{ zIndex: z }}
+                        className="absolute origin-top-left bg-white"
+                        style={{ inset: STAGE_PADDING, zIndex: z }}
                     >
                         <HeatmapLayer
                             layout={spec.layout}

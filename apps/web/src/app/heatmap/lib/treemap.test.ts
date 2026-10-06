@@ -183,6 +183,35 @@ describe('layoutSector', () => {
 });
 
 describe('layoutAsset', () => {
+    test('a group holding most of the variants gets room for them, whatever its volume', () => {
+        // Solana: wSOL out-trades all 60 LSTs together by ~40×.
+        const lsts = Array.from({ length: 60 }, (_, index) => variant(`lst${index}`, 1_000_000 / (index + 1), 'yield'));
+        const solana = asset('solana', 'majors', 3_400_000_000, [variant('wSOL', 3_400_000_000, 'native'), ...lsts]);
+        const groups = layoutAsset(solana, WIDTH, HEIGHT).groups;
+        const share = (id: string) => area(groups.find(group => group.id === id)!.rect) / (WIDTH * HEIGHT);
+
+        expect(share('yield')).toBeGreaterThan(0.45);
+        expect(share('native')).toBeGreaterThan(0.4);
+    });
+
+    test('a dominant variant leaves the minor ones real tiles, not slivers', () => {
+        // SK Hynix on 2026-10-06: SKHY $2.6M, SKHYon $99, SKHYx $9.
+        const hynix = asset('sk-hynix', 'stocks', 2_644_943, [
+            variant('SKHY', 2_644_943, 'stocks'),
+            variant('SKHYon', 99, 'stocks'),
+            variant('SKHYx', 9, 'stocks'),
+        ]);
+        const tiles = layoutAsset(hynix, WIDTH, HEIGHT).groups[0]!.tiles;
+        const share = (key: string) => area(tiles.find(tile => tile.key === key)!.rect) / (WIDTH * HEIGHT);
+
+        expect(share('variant:SKHY')).toBeGreaterThan(0.5);
+        for (const key of ['variant:SKHYon', 'variant:SKHYx']) {
+            expect(share(key)).toBeGreaterThan(0.08);
+            const rect = tiles.find(tile => tile.key === key)!.rect;
+            expect(Math.min(rect.w, rect.h)).toBeGreaterThan(150);
+        }
+    });
+
     test('groups variants by display category and keeps tiny variants readable', () => {
         const bitcoin = asset('bitcoin', 'crypto', 1_700_000_000_000, [
             variant('cbBTC', 250_000_000),

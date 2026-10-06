@@ -51,7 +51,7 @@ export const TILE_EXPONENT = 0.5;
  */
 export const OVERVIEW_BALANCE = { exponent: 0.35, floor: 0.03 } as const;
 /** Variant groups inside one asset: stronger compression, every group stays readable. */
-export const ASSET_BALANCE = { exponent: 0.4, floor: 0.08 } as const;
+export const ASSET_BALANCE = { exponent: 0.4, floor: 0.08, countShare: 0.6 } as const;
 
 export const GROUP_HEADER_HEIGHT = 24;
 const GROUP_HEADER_MIN_WIDTH = 64;
@@ -70,6 +70,11 @@ const EQUAL_TILE_MIN_AREA = 34 * 26;
 /** Sector and asset views enlarge small tiles to these areas instead of merging them, so nothing is hidden. */
 const SECTOR_TILE_MIN_AREA = 36 * 26;
 const VARIANT_TILE_MIN_AREA = 68 * 46;
+/**
+ * A variant view exists to compare variants, and one often out-trades the rest ten-thousand-fold
+ * (SKHY $2.6M vs SKHYx $9). Each variant gets at least this share of its group.
+ */
+const VARIANT_TILE_MIN_SHARE = 0.1;
 /** An enlarged tile's short side must reach this fraction of the square root of its minimum area. */
 const LIFT_MIN_SIDE_RATIO = 0.45;
 const MERGE_PASSES = 8;
@@ -102,9 +107,12 @@ interface ComputedGroup<T> {
 interface ComputeOptions {
     width: number;
     height: number;
-    balance: { exponent: number; floor: number };
-    /** Fold unreadably small tiles into "+N more", or enlarge them to at least `minArea` px². */
-    overflow: { mode: 'merge' } | { mode: 'lift'; minArea: number };
+    balance: Balance;
+    /**
+     * Fold unreadably small tiles into "+N more", or enlarge them to at least `minArea` px² and
+     * `minShare` of their group (never past half the group in total, so the leaders stay leaders).
+     */
+    overflow: { mode: 'merge' } | { mode: 'lift'; minArea: number; minShare?: number };
 }
 
 interface TreeNode {
@@ -124,15 +132,53 @@ function sanitize(value: number | null | undefined): number {
     return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : 0;
 }
 
-function groupShares(totals: number[], balance: { exponent: number; floor: number }): number[] {
-    if (totals.length === 1) return [1];
+interface Balance {
+    exponent: number;
+    /** Minimum share of the stage for any group. */
+    floor: number;
+    /**
+     * Also floor each group at this multiple of its share of the items (capped at half the stage):
+     * a group holding most of the variants needs the room to show them, whatever its volume.
+     */
+    countShare?: number;
+}
+
+/**
+ * Group areas: share ∝ total^exponent, then water-filled so every group gets at least its floor.
+ * Groups under their floor are pinned at it and the rest is shared out by weight, so a floor is
+ * met exactly instead of being diluted by renormalising.
+ */
+function groupShares(totals: number[], counts: number[], balance: Balance): number[] {
+    const n = totals.length;
+    if (n === 1) return [1];
 
     const raw = totals.map(total => (total > 0 ? total ** balance.exponent : 0));
     const rawSum = raw.reduce((sum, value) => sum + value, 0);
-    const floor = Math.min(balance.floor, 1 / totals.length);
-    const floored = raw.map(value => Math.max(rawSum > 0 ? value / rawSum : 1 / totals.length, floor));
-    const flooredSum = floored.reduce((sum, value) => sum + value, 0);
-    return floored.map(value => value / flooredSum);
+    const base = raw.map(value => (rawSum > 0 ? value / rawSum : 1 / n));
+    const countSum = counts.reduce((sum, value) => sum + value, 0);
+    const floors = counts.map(count => {
+        const byCount = balance.countShare && countSum > 0 ? Math.min(0.5, (balance.countShare * count) / countSum) : 0;
+        // Never above an even split, so the floors always fit.
+        return Math.min(1 / n, Math.max(balance.floor, byCount));
+    });
+
+    const pinned = new Set<number>();
+    let shares = base;
+    for (let pass = 0; pass < n; pass++) {
+        const pinnedShare = [...pinned].reduce((sum, index) => sum + floors[index]!, 0);
+        const freeWeight = base.reduce((sum, value, index) => (pinned.has(index) ? sum : sum + value), 0);
+        const freeCount = n - pinned.size;
+        shares = base.map((value, index) => {
+            if (pinned.has(index)) return floors[index]!;
+            return freeWeight > 0 ? (value / freeWeight) * (1 - pinnedShare) : (1 - pinnedShare) / freeCount;
+        });
+        const under = shares
+            .map((share, index) => index)
+            .filter(index => !pinned.has(index) && shares[index]! < floors[index]!);
+        if (under.length === 0) break;
+        for (const index of under) pinned.add(index);
+    }
+    return shares;
 }
 
 function hasHeader(width: number, height: number): boolean {
@@ -145,7 +191,11 @@ function compute<T>(inputs: Array<GroupInput<T>>, options: ComputeOptions): Arra
     if (groups.length === 0 || width <= 0 || height <= 0) return [];
 
     const totals = groups.map(group => group.items.reduce((sum, item) => sum + sanitize(item.value), 0));
-    const shares = groupShares(totals, options.balance);
+    const shares = groupShares(
+        totals,
+        groups.map(group => group.items.length),
+        options.balance,
+    );
     const showHeaders = groups.length > 1;
 
     // Per-group working state: tiles to draw (largest first) and tiles folded into "+N more".
@@ -160,7 +210,10 @@ function compute<T>(inputs: Array<GroupInput<T>>, options: ComputeOptions): Arra
             weightTotal,
             area,
             moreMinArea: Math.min(MORE_TILE_MIN_AREA, area * 0.5),
-            liftArea: options.overflow.mode === 'lift' ? options.overflow.minArea : 0,
+            liftArea:
+                options.overflow.mode === 'lift'
+                    ? Math.max(options.overflow.minArea, area * (options.overflow.minShare ?? 0))
+                    : 0,
         };
 
         if (options.overflow.mode === 'lift') return { ...base, equal: total <= 0, shown: sorted, merged: [] };
@@ -391,7 +444,12 @@ export function layoutAsset(asset: HeatmapAsset, width: number, height: number):
 
     const computed = compute(
         [...groups.values()].sort((a, b) => a.order - b.order),
-        { width, height, balance: ASSET_BALANCE, overflow: { mode: 'lift', minArea: VARIANT_TILE_MIN_AREA } },
+        {
+            width,
+            height,
+            balance: ASSET_BALANCE,
+            overflow: { mode: 'lift', minArea: VARIANT_TILE_MIN_AREA, minShare: VARIANT_TILE_MIN_SHARE },
+        },
     );
     return toLayout('asset', computed, width, height, (item, rect) => ({
         kind: 'variant',

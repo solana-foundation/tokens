@@ -35,10 +35,13 @@ export const NO_DATA_FILL = '#f4f3f0';
 export const NO_DATA_HATCH = 'rgba(11, 11, 11, 0.09)';
 export const NO_DATA_INK = '#52514e';
 
-/** Absolute % thresholds separating steps 0|1, 1|2, 2|3. */
+/**
+ * Absolute % thresholds separating steps 0|1, 1|2, 2|3. The neutral band is deliberately narrow:
+ * any real move reads as up or down, and gray is left for flat prices (stablecoins, stale quotes).
+ */
 const THRESHOLDS: Record<HeatmapPeriod, readonly [number, number, number]> = {
-    '24h': [0.5, 2, 5],
-    '1h': [0.25, 1, 2.5],
+    '24h': [0.1, 1.5, 4],
+    '1h': [0.05, 0.5, 1.5],
 };
 
 export function changeBin(change: number | null | undefined, period: HeatmapPeriod): ChangeBin | null {
