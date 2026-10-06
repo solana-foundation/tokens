@@ -432,7 +432,12 @@ export const GET = route(
             const stockSnapshot = stockInstrument
                 ? yield* stockPricesGetLatestByAssetId({ assetId: asset.assetId }).pipe(tapErrorAndDefault('assets.detail.stockPrice', null, { assetId: asset.assetId }))
                 : null;
-            const shouldUseStockCanonicalMarket = Boolean(stockInstrument) || isCanonicalPublicEquityAsset(asset);
+            // Admin-created PreStocks assets (e.g. `figure-ai`) carry no pre-IPO
+            // marker in their id or aliases, so a fresh PreStocks reference is
+            // what keeps them off the public-equity stock benchmark.
+            const hasPreStocksReference = asset.variants.some(variant => preStocksByMint.has(variant.mint));
+            const shouldUseStockCanonicalMarket =
+                Boolean(stockInstrument) || (isCanonicalPublicEquityAsset(asset) && !hasPreStocksReference);
             if (stockInstrument) {
                 const lastFetchedAt = stockSnapshot?.lastFetchedAt ?? null;
                 const isStale = lastFetchedAt === null || Date.now() - lastFetchedAt > 10 * 60_000;

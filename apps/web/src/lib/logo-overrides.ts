@@ -184,7 +184,16 @@ export function getMintLogoOverride(mint: string | undefined): string | undefine
 
 // Set of available prestock logo slugs (filename without extension).
 // Stored as lowercase because prestock filenames are lowercase.
-const PRESTOCK_LOGO_SLUGS = new Set(['anduril', 'anthropic', 'kalshi', 'openai', 'polymarket', 'spacex', 'xai']);
+const PRESTOCK_LOGO_SLUGS = new Set([
+    'anduril',
+    'anthropic',
+    'figureai',
+    'kalshi',
+    'neuralink',
+    'openai',
+    'polymarket',
+    'spacex',
+]);
 
 function toAlnumLower(value: string): string {
     return value.toLowerCase().replace(/[^a-z0-9]/g, '');
