@@ -54,11 +54,10 @@ function data(sectors: Array<[string, HeatmapAsset[]]>): HeatmapData {
 }
 
 describe('isPopulated', () => {
-    test('needs both 24h volume and a 24h change', () => {
-        expect(isPopulated({ volume24h: 10, change24h: 0 })).toBe(true);
-        expect(isPopulated({ volume24h: 10, change24h: null })).toBe(false);
-        expect(isPopulated({ volume24h: 0, change24h: 1.2 })).toBe(false);
-        expect(isPopulated({ volume24h: null, change24h: 1.2 })).toBe(false);
+    test('needs a 24h price change; volume does not matter', () => {
+        expect(isPopulated({ change24h: 0 })).toBe(true);
+        expect(isPopulated({ change24h: -1.2 })).toBe(true);
+        expect(isPopulated({ change24h: null })).toBe(false);
     });
 });
 
@@ -66,15 +65,15 @@ describe('populatedOnly', () => {
     test('drops dead assets, and categories left empty', () => {
         const result = populatedOnly(
             data([
-                ['stocks', [asset('nvidia', 100, 0.2), asset('idle', 0, null), asset('stale', 50, null)]],
-                ['rwas', [asset('tbll', 0, null)]],
+                ['stocks', [asset('nvidia', 100, 0.2), asset('quiet', 0, 0.1), asset('unquoted', 50, null)]],
+                ['rwas', [asset('buidl', 0, null)]],
             ]),
         );
 
         expect(result.sectors.map(sector => [sector.id, sector.assets.map(a => a.assetId)])).toEqual([
-            ['stocks', ['nvidia']],
+            ['stocks', ['nvidia', 'quiet']],
         ]);
-        expect(result.assetCount).toBe(1);
+        expect(result.assetCount).toBe(2);
     });
 
     test('keeps only populated variants, and drops the drill-down when fewer than two remain', () => {
@@ -85,8 +84,8 @@ describe('populatedOnly', () => {
                     [
                         asset('bitcoin', 100, 0.1, [
                             variant('cbBTC', 90, 0.1),
-                            variant('wBTC', 10, -0.2),
-                            variant('dust', 0, 0),
+                            variant('21BTC', 0, 0),
+                            variant('zenBTC', 0, null),
                         ]),
                         asset('nvidia', 100, 0.2, [variant('NVDAx', 100, 0.2), variant('NVDAon', 0, null)]),
                     ],
@@ -95,7 +94,8 @@ describe('populatedOnly', () => {
         );
         const [bitcoin, nvidia] = result.sectors[0]!.assets;
 
-        expect(bitcoin!.variants.map(v => v.id)).toEqual(['cbBTC', 'wBTC']);
+        // A quiet variant with a price change stays; one with no change data goes.
+        expect(bitcoin!.variants.map(v => v.id)).toEqual(['cbBTC', '21BTC']);
         expect(nvidia!.variants).toEqual([]);
         expect(result.variantCount).toBe(3);
     });

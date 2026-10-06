@@ -247,7 +247,7 @@ function isEditable(target: EventTarget | null): boolean {
  *   sector — home-page category (curated list slug) filling the stage
  *   asset  — canonical asset whose variants fill the stage (wins over sector)
  *   period — which price change colours the tiles
- *   showEmpty — internal only: also draw assets with no 24h volume or no 24h change
+ *   showEmpty — internal only: also draw assets with no 24h price change
  */
 export function Heatmap({ data: allData }: { data: HeatmapData }) {
     const [query, setQuery] = useQueryStates(
@@ -260,7 +260,7 @@ export function Heatmap({ data: allData }: { data: HeatmapData }) {
         { history: 'push', scroll: false },
     );
     const { period } = query;
-    // Dead tiles (no 24h volume or no 24h change) are hidden; `?showEmpty=true` brings them back
+    // Assets with no 24h price change are hidden; `?showEmpty=true` brings them back
     // for internal checks. Deliberately not in the UI.
     const data = useMemo(() => (query.showEmpty ? allData : populatedOnly(allData)), [allData, query.showEmpty]);
 

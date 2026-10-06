@@ -1,12 +1,13 @@
 import type { HeatmapAsset, HeatmapData, HeatmapVariant } from './types';
 
 /**
- * Populated: traded on Solana in the last 24h and has a 24h price change, so its tile has a size
- * and a colour. Everything else (unlisted-hours stock tokens, idle treasuries, dust variants)
- * would draw as a gray "No data / No volume" tile.
+ * Populated: has a 24h price change, the number the tile is coloured by. Volume doesn't matter: a
+ * variant can have a live price and not trade all day (21BTC). Assets without one are priced only
+ * nominally if at all (permissioned RWAs like BUIDL, stock tokens without quotes) and would draw as a
+ * gray "No data" tile.
  */
-export function isPopulated(item: Pick<HeatmapAsset | HeatmapVariant, 'volume24h' | 'change24h'>): boolean {
-    return (item.volume24h ?? 0) > 0 && item.change24h !== null;
+export function isPopulated(item: Pick<HeatmapAsset | HeatmapVariant, 'change24h'>): boolean {
+    return item.change24h !== null;
 }
 
 /**
