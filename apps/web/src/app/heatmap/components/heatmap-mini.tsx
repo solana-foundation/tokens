@@ -83,9 +83,9 @@ export function HeatmapMini({ data, onCycle, onCycleIntent }: HeatmapMiniProps) 
     return (
         <section
             aria-label="Heat map"
-            className="overflow-hidden rounded-[19px] border border-border-light/70 bg-gray-100/60 shadow-[0_14px_36px_rgba(20,20,21,0.12)] backdrop-blur-xl"
+            className="overflow-hidden rounded-[27px] border border-border-light/50 bg-gray-100/50 shadow-[0_22px_60px_rgba(20,20,21,0.16)] backdrop-blur-xl"
         >
-            <div className="flex items-center justify-between gap-3 px-1.5 pt-1.5">
+            <div className="flex items-center justify-between gap-3 px-2 pt-2">
                 <button
                     type="button"
                     aria-label={`Heat map category: ${label}. Click for the next category.`}
@@ -120,17 +120,17 @@ export function HeatmapMini({ data, onCycle, onCycleIntent }: HeatmapMiniProps) 
                 </Link>
             </div>
 
-            <div className="p-1.5">
+            <div className="mt-2 rounded-[29px] border border-border-medium bg-white p-2">
                 <Link
                     href={href}
                     onClick={trackOpen}
                     aria-label={isTrending ? 'Open trending tokens' : `Open the ${label} heat map`}
-                    className="block rounded-[13px] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-border-medium"
+                    className="block rounded-[21px] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-border-medium"
                 >
                     <div
                         ref={stageRef}
                         className={cn(
-                            'relative w-full overflow-hidden rounded-[13px] bg-white',
+                            'relative w-full overflow-hidden rounded-[21px] bg-white',
                             !tiles.length && 'animate-pulse',
                         )}
                         style={{ height: MAP_HEIGHT }}

@@ -2,7 +2,17 @@
 
 import Image from 'next/image';
 import { ArrowUpRight } from 'lucide-react';
-import { useCallback, useImperativeHandle, useLayoutEffect, useRef, useState, type ReactNode, type Ref } from 'react';
+import {
+    useCallback,
+    useEffect,
+    useImperativeHandle,
+    useLayoutEffect,
+    useRef,
+    useState,
+    type ReactNode,
+    type Ref,
+} from 'react';
+import { createPortal } from 'react-dom';
 
 import { formatPrice } from '@/lib/format';
 import { changeBin, NO_DATA_FILL } from '../lib/color';
@@ -203,7 +213,13 @@ export function HeatmapTooltip({ ref }: { ref: Ref<HeatmapTooltipHandle> }) {
         if (tile) place();
     }, [tile, place]);
 
-    return (
+    // Rendered into <body>: inside the market feed, the popup's transform and the panel's backdrop-filter
+    // make `position: fixed` relative to them instead of the viewport, which threw the card off-screen.
+    const [portalTarget, setPortalTarget] = useState<HTMLElement | null>(null);
+    useEffect(() => setPortalTarget(document.body), []);
+    if (!portalTarget) return null;
+
+    return createPortal(
         <div
             ref={elementRef}
             role="tooltip"
@@ -211,6 +227,7 @@ export function HeatmapTooltip({ ref }: { ref: Ref<HeatmapTooltipHandle> }) {
             style={{ visibility: tile ? 'visible' : 'hidden' }}
         >
             {tile ? <TooltipBody tile={tile} /> : null}
-        </div>
+        </div>,
+        portalTarget,
     );
 }
