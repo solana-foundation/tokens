@@ -7,7 +7,8 @@ import { CURATED_LIST_FALLBACK_NAMES } from '@tokens/asset-registry/curated-list
 import { apiAppJson } from '@/lib/api-app';
 import { CURATED_LIST_ORDER_WITHOUT_LSTS } from '@/lib/curated-lists';
 import { buildHeatmapData } from './build-heatmap';
-import type { HeatmapData, HeatmapSectorMembership, RawCuratedResponse } from './types';
+import { trendingSector, type RawTrendingAsset } from './preview';
+import type { HeatmapData, HeatmapSector, HeatmapSectorMembership, RawCuratedResponse } from './types';
 
 /**
  * Market data comes from the `all` union in one request. The per-list
@@ -63,4 +64,13 @@ export async function fetchHeatmapData(): Promise<HeatmapData> {
     const data = buildHeatmapData(response, membership, Date.now());
     if (data.assetCount === 0) throw new Error('Curated assets response contained no assets');
     return data;
+}
+
+/** The home page's Trending tab as a heat map category. Trending moves fast, so it caches briefly. */
+export async function fetchTrendingSector(): Promise<HeatmapSector> {
+    'use cache';
+    cacheLife({ stale: 30, revalidate: 30, expire: 300 });
+
+    const response = await fetchJson<{ trending?: RawTrendingAsset[] }>('/api/v1/assets/trending?limit=50&mode=fresh');
+    return trendingSector(response.trending ?? []);
 }

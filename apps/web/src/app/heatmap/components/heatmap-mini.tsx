@@ -8,7 +8,7 @@ import { cn } from '@tokens/ui/cn';
 import { trackEvent } from '@/lib/posthog-client';
 import { changeBin, NO_DATA_FILL } from '../lib/color';
 import { formatChange } from '../lib/labels';
-import type { HeatmapMiniResponse } from '../lib/preview';
+import { TRENDING_SECTOR_ID, type HeatmapMiniResponse } from '../lib/preview';
 import { layoutSector, type LayoutTile } from '../lib/treemap';
 import { HeatmapTooltip, type HeatmapTooltipHandle } from './heatmap-tooltip';
 
@@ -66,9 +66,19 @@ export function HeatmapMini({ data, onCycle, onCycleIntent }: HeatmapMiniProps) 
 
     const sectors = data?.sectors ?? [];
     const label = sector?.label ?? 'Heat map';
-    const href = sector ? `/heatmap?sector=${encodeURIComponent(sector.id)}` : '/heatmap';
+    // Trending has no full heat map; it opens the home page's Trending tab instead.
+    const isTrending = sector?.id === TRENDING_SECTOR_ID;
+    const href = !sector
+        ? '/heatmap'
+        : isTrending
+          ? '/?category=trending'
+          : `/heatmap?sector=${encodeURIComponent(sector.id)}`;
     const trackOpen = () =>
-        trackEvent('nav_link_clicked', { destination: 'heatmap', link_url: href, source: 'market_feed' });
+        trackEvent('nav_link_clicked', {
+            destination: isTrending ? 'trending' : 'heatmap',
+            link_url: href,
+            source: 'market_feed',
+        });
 
     return (
         <section
@@ -105,7 +115,7 @@ export function HeatmapMini({ data, onCycle, onCycleIntent }: HeatmapMiniProps) 
                     onClick={trackOpen}
                     className="inline-flex items-center gap-0.5 rounded-lg px-1.5 py-1 text-xs font-medium text-text-low transition-colors hover:text-text-extra-high focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-border-medium"
                 >
-                    Heat map
+                    {isTrending ? 'View all' : 'Heat map'}
                     <ArrowUpRight aria-hidden="true" className="size-3.5" />
                 </Link>
             </div>
@@ -114,7 +124,7 @@ export function HeatmapMini({ data, onCycle, onCycleIntent }: HeatmapMiniProps) 
                 <Link
                     href={href}
                     onClick={trackOpen}
-                    aria-label={`Open the ${label} heat map`}
+                    aria-label={isTrending ? 'Open trending tokens' : `Open the ${label} heat map`}
                     className="block rounded-[13px] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-border-medium"
                 >
                     <div

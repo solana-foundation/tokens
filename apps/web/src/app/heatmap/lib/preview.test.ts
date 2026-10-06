@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 
-import { miniPreview } from './preview';
+import { miniPreview, trendingSector } from './preview';
 import type { HeatmapAsset, HeatmapData, HeatmapVariant } from './types';
 
 function variant(id: string): HeatmapVariant {
@@ -47,6 +47,7 @@ describe('miniPreview', () => {
                 label: 'Crypto',
                 assets: [asset('bitcoin', 0.1, [variant('a'), variant('b')]), asset('zcash', 2), asset('buidl', null)],
             },
+            { id: 'etfs', label: 'ETFs', assets: [asset('spy', 0.4)] },
             {
                 id: 'stocks',
                 label: 'Stocks',
@@ -56,18 +57,24 @@ describe('miniPreview', () => {
                     { ...asset('mid', 0.5), volume24h: 100 },
                 ],
             },
-            { id: 'rwas', label: 'Treasuries', assets: [asset('buidl', null)] },
         ],
         assetCount: 7,
         variantCount: 2,
         generatedAt: 0,
     };
+    const trending = { id: 'trending', label: 'Trending', assets: [asset('near', -1.2)] };
 
-    test('lists only categories with populated assets', () => {
-        expect(miniPreview(full, 'majors')!.sectors).toEqual([
-            { id: 'majors', label: 'Crypto' },
+    test('offers Stocks, Crypto and Trending, in that order', () => {
+        expect(miniPreview(full, 'majors', { extraSectors: [trending] })!.sectors).toEqual([
             { id: 'stocks', label: 'Stocks' },
+            { id: 'majors', label: 'Crypto' },
+            { id: 'trending', label: 'Trending' },
         ]);
+    });
+
+    test('skips Trending when it is unavailable', () => {
+        expect(miniPreview(full, 'trending')!.sectors.map(s => s.id)).toEqual(['stocks', 'majors']);
+        expect(miniPreview(full, 'trending')!.sector.id).toBe('stocks');
     });
 
     test('returns the category without dead assets or variant lists, keeping hover-card fields', () => {
@@ -80,11 +87,33 @@ describe('miniPreview', () => {
     });
 
     test('keeps the highest-volume assets when limited', () => {
-        expect(miniPreview(full, 'stocks', 2)!.sector.assets.map(a => a.assetId)).toEqual(['big', 'mid']);
+        expect(miniPreview(full, 'stocks', { limit: 2 })!.sector.assets.map(a => a.assetId)).toEqual(['big', 'mid']);
     });
 
-    test('falls back to Stocks when the category is unknown or empty', () => {
-        expect(miniPreview(full, 'rwas')!.sector.id).toBe('stocks');
+    test('falls back to Stocks for a category it does not offer', () => {
+        expect(miniPreview(full, 'etfs')!.sector.id).toBe('stocks');
         expect(miniPreview(full, 'nope')!.sector.id).toBe('stocks');
+    });
+});
+
+describe('trendingSector', () => {
+    test('one populated tile per asset, keeping the best-ranked token', () => {
+        const sector = trendingSector([
+            {
+                assetId: 'near',
+                symbol: 'NEAR',
+                name: 'NEAR (Bridged)',
+                market: { priceChange24hPercent: -1.2, volume24hUSD: 12e6, price: 5 },
+            },
+            { assetId: 'near', symbol: 'wNEAR', market: { priceChange24hPercent: 3, volume24hUSD: 1e6 } },
+            { assetId: 'quiet', symbol: 'Q', market: { priceChange24hPercent: null, volume24hUSD: 50 } },
+            { assetId: '', symbol: 'X', market: { priceChange24hPercent: 1, volume24hUSD: 5 } },
+        ]);
+
+        expect(sector).toMatchObject({ id: 'trending', label: 'Trending' });
+        expect(sector.assets.map(a => [a.assetId, a.symbol, a.change24h, a.volume24h])).toEqual([
+            ['near', 'NEAR', -1.2, 12e6],
+        ]);
+        expect(sector.assets[0]).toMatchObject({ name: 'NEAR (Bridged)', price: 5, marketCap: null });
     });
 });

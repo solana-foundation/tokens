@@ -1,25 +1,96 @@
-import { populatedOnly } from './populated';
+import { normalizeLogoSrc } from '@/lib/normalize-logo-src';
+import { isPopulated, populatedOnly } from './populated';
 import type { HeatmapAsset, HeatmapData, HeatmapSector } from './types';
 
 export interface HeatmapMiniResponse {
-    /** Categories that currently have populated assets, in home-page order. */
+    /** Categories the mini map cycles through, in order. */
     sectors: Array<{ id: string; label: string }>;
-    /** The requested category, or a fallback when it has nothing to show. */
+    /** The requested category, or a fallback when it is not offered or has nothing to show. */
     sector: HeatmapSector;
 }
 
+/** What the feed's mini map cycles through. `trending` is not a heat map category; see trendingSector. */
+export const MINI_SECTORS = ['stocks', 'majors', 'trending'] as const;
+export const TRENDING_SECTOR_ID = 'trending';
 const FALLBACK_SECTOR = 'stocks';
 
+/** Subset of a `GET /api/v1/assets/trending` row that a tile and its hover card use. */
+export interface RawTrendingAsset {
+    assetId: string;
+    symbol?: string | null;
+    name?: string | null;
+    imageUrl?: string | null;
+    market?: {
+        price?: number | null;
+        priceChange24hPercent?: number | null;
+        priceChange1hPercent?: number | null;
+        volume24hUSD?: number | null;
+    } | null;
+}
+
+function finite(value: number | null | undefined): number | null {
+    return typeof value === 'number' && Number.isFinite(value) ? value : null;
+}
+
 /**
- * Data for the mini map in the floating market feed: the category's `limit` highest-volume populated
- * assets, with what a tile and its hover card show and nothing else (no variant lists).
+ * The trending list as a heat map category: same tiles (sized by 24h volume, coloured by 24h change),
+ * one per asset. An asset trending through several of its tokens keeps its best-ranked one.
  */
-export function miniPreview(full: HeatmapData, sectorId: string, limit = Infinity): HeatmapMiniResponse | null {
-    const { sectors } = populatedOnly(full);
+export function trendingSector(rows: readonly RawTrendingAsset[]): HeatmapSector {
+    const seen = new Set<string>();
+    const assets: HeatmapAsset[] = [];
+    for (const row of rows) {
+        const assetId = row.assetId?.trim();
+        if (!assetId || seen.has(assetId)) continue;
+        seen.add(assetId);
+        const symbol = (row.symbol ?? '').trim() || '—';
+        const logoURI = normalizeLogoSrc((row.imageUrl ?? '').trim() || undefined);
+        const asset: HeatmapAsset = {
+            assetId,
+            symbol,
+            name: (row.name ?? '').trim() || symbol,
+            sectorId: TRENDING_SECTOR_ID,
+            ...(logoURI ? { logoURI } : {}),
+            price: finite(row.market?.price),
+            change24h: finite(row.market?.priceChange24hPercent),
+            change1h: finite(row.market?.priceChange1hPercent),
+            marketCap: null,
+            marketCapSource: 'onchain',
+            volume24h: finite(row.market?.volume24hUSD),
+            variantCount: 0,
+            variants: [],
+        };
+        if (isPopulated(asset)) assets.push(asset);
+    }
+    return { id: TRENDING_SECTOR_ID, label: 'Trending', assets };
+}
+
+interface MiniPreviewOptions {
+    /** Keep each category's highest-volume assets only. */
+    limit?: number;
+    /** Categories offered, in cycle order. */
+    order?: readonly string[];
+    /** Categories that do not come from the heat map data (trending). */
+    extraSectors?: readonly HeatmapSector[];
+}
+
+/**
+ * Data for the mini map in the floating market feed: the offered categories that have something to
+ * show, and the requested one with what a tile and its hover card need (no variant lists).
+ */
+export function miniPreview(
+    full: HeatmapData,
+    sectorId: string,
+    { limit = Infinity, order = MINI_SECTORS, extraSectors = [] }: MiniPreviewOptions = {},
+): HeatmapMiniResponse | null {
+    const { sectors: populated } = populatedOnly(full);
+    const available = order
+        .map(id => extraSectors.find(sector => sector.id === id) ?? populated.find(sector => sector.id === id))
+        .filter((sector): sector is HeatmapSector => Boolean(sector && sector.assets.length > 0));
     const sector =
-        sectors.find(candidate => candidate.id === sectorId) ??
-        sectors.find(candidate => candidate.id === FALLBACK_SECTOR) ??
-        sectors[0];
+        available.find(candidate => candidate.id === sectorId) ??
+        available.find(candidate => candidate.id === FALLBACK_SECTOR) ??
+        available[0];
     if (!sector) return null;
 
     const assets = [...sector.assets]
@@ -28,7 +99,7 @@ export function miniPreview(full: HeatmapData, sectorId: string, limit = Infinit
         .map((asset): HeatmapAsset => ({ ...asset, variantCount: 0, variants: [] }));
 
     return {
-        sectors: sectors.map(({ id, label }) => ({ id, label })),
+        sectors: available.map(({ id, label }) => ({ id, label })),
         sector: { ...sector, assets },
     };
 }
