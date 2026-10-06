@@ -78,9 +78,9 @@ export function Header() {
                         <span className="text-text-extra-high font-semibold text-2xl">Tokens</span>
                     </Link>
                     {/*
-                      Asset Registry shows from lg. Explore joins at 1120px, the first width where the left
-                      track holds logo + both links beside the centered 320px search; below that the logo
-                      already links home.
+                      Asset Registry shows from lg. Explore joins at 1120px and Heat map at 1360px, the first
+                      widths where the left track holds the logo and those links beside the centered 320px
+                      search; below that the logo already links home and the home tabs link to the heat map.
                     */}
                     <nav aria-label="Browse" className="hidden shrink-0 items-center gap-4 lg:flex">
                         <Link
@@ -100,6 +100,24 @@ export function Header() {
                             }
                         >
                             Explore
+                        </Link>
+                        <Link
+                            href="/heatmap"
+                            className={cn(
+                                NAV_LINK_CLASS,
+                                'hidden min-[1360px]:inline-flex',
+                                pathname === '/heatmap' && 'text-text-extra-high',
+                            )}
+                            aria-current={pathname === '/heatmap' ? 'page' : undefined}
+                            onClick={() =>
+                                trackEvent('nav_link_clicked', {
+                                    destination: 'heatmap',
+                                    link_url: '/heatmap',
+                                    source: 'header',
+                                })
+                            }
+                        >
+                            Heat map
                         </Link>
                         <Link
                             href="/registry"
