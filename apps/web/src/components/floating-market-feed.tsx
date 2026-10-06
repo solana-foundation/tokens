@@ -2,7 +2,6 @@
 
 import * as React from 'react';
 import Image from 'next/image';
-import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { useQuery } from '@tanstack/react-query';
 import { Effect } from 'effect';
@@ -10,7 +9,6 @@ import { apiJson } from '@/effect/api-client';
 import { shouldRetryApiQuery } from '@/effect/query-retry';
 import { AnimatePresence, domAnimation, LazyMotion, m, useReducedMotion } from 'motion/react';
 import { ArrowUpRight, ChevronDown, ChevronUp, Info, Settings2, X } from 'lucide-react';
-import { IconTriangleFill } from 'symbols-react';
 
 import { cn } from '@tokens/ui/cn';
 import {
@@ -23,11 +21,8 @@ import {
 import { Skeleton } from '@tokens/ui/skeleton';
 import { Switch } from '@tokens/ui/switch';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@tokens/ui/tooltip';
-import { useTrendingTokens } from '@/hooks/queries/use-token-search';
-import { buildCoinHref } from '@/lib/coin-href';
 import type { CoinGeckoNewsArticle } from '@/lib/coingecko';
 import { trackEvent } from '@/lib/posthog-client';
-import type { Token } from '@/lib/types';
 import {
     DEFAULT_FLOATING_MARKET_FEED_SETTINGS,
     FLOATING_MARKET_FEED_SIZE_OPTIONS,
@@ -39,11 +34,12 @@ import {
     sanitizeFloatingMarketFeedSettings,
     type FloatingMarketFeedSettings,
 } from './floating-market-feed-utils';
+import { HeatmapMini } from '@/app/heatmap/components/heatmap-mini';
+import type { HeatmapSector } from '@/app/heatmap/lib/types';
 import { useFloatingMarketFeedContext } from './floating-market-feed-context';
 
 const EMPTY_ARTICLES: CoinGeckoNewsArticle[] = [];
 const EMPTY_TERMS: string[] = [];
-const EMPTY_TOKENS: Token[] = [];
 const SPACEX_MARKET_BANNER_ACTIVE = false;
 const MARKET_BANNER_DISMISSED_AT_KEY = 'tokens:market-banner-dismissed-at';
 const FLOATING_MARKET_FEED_SETTINGS_KEY = 'tokens:floating-market-feed-settings:v2';
@@ -150,10 +146,13 @@ function isSafeHref(value: string | undefined | null): value is string {
     }
 }
 
-function formatPercent(value: number | null | undefined): string {
-    if (value == null || Number.isNaN(value)) return '--';
-    const prefix = value > 0 ? '+' : value < 0 ? '-' : '';
-    return `${prefix}${Math.abs(value).toFixed(2)}%`;
+/** The mini heat map's category: one GET of the cached heat map, without variants (~13 KB gzipped). */
+const HEATMAP_MINI_SECTOR = 'stocks';
+
+async function fetchHeatmapMiniSector(): Promise<HeatmapSector> {
+    const response = await fetch(`/api/heatmap?sector=${HEATMAP_MINI_SECTOR}`);
+    if (!response.ok) throw new Error(`Heat map request failed: ${response.status}`);
+    return (await response.json()) as HeatmapSector;
 }
 
 interface FloatingMarketFeedResponse {
@@ -185,7 +184,9 @@ function persistFloatingMarketFeedSettings(settings: FloatingMarketFeedSettings)
 }
 
 function useFloatingMarketFeedSettings() {
-    const [settings, setSettingsState] = React.useState<FloatingMarketFeedSettings>(DEFAULT_FLOATING_MARKET_FEED_SETTINGS);
+    const [settings, setSettingsState] = React.useState<FloatingMarketFeedSettings>(
+        DEFAULT_FLOATING_MARKET_FEED_SETTINGS,
+    );
     const [loaded, setLoaded] = React.useState(false);
 
     React.useEffect(() => {
@@ -271,8 +272,11 @@ export function FloatingMarketFeed() {
         enabled: !hideFeed,
     });
 
-    const { data: trendingTokensData, isLoading: trendingTokensLoading } = useTrendingTokens({
-        mode: 'fresh',
+    const { data: heatmapSector, isError: heatmapFailed } = useQuery({
+        queryKey: ['floating-market-feed', 'heatmap', HEATMAP_MINI_SECTOR],
+        queryFn: fetchHeatmapMiniSector,
+        staleTime: 60 * 1000,
+        retry: 1,
         enabled: !hideFeed,
     });
 
@@ -281,7 +285,6 @@ export function FloatingMarketFeed() {
     const errorMessage = getQueryErrorMessage(feedError);
     const displayName = pageContext?.displayName ?? 'Markets';
     const feedIsPending = articles.length === 0 && feedIsLoading && !hadError;
-    const tickerTokens = React.useMemo(() => (trendingTokensData ?? EMPTY_TOKENS).slice(0, 8), [trendingTokensData]);
     const isTokenContext = Boolean(pageContext?.tokenFeedCoinId || tokenFeedTerms.length > 0);
 
     React.useEffect(() => {
@@ -346,9 +349,7 @@ export function FloatingMarketFeed() {
                             key="market-feed"
                             aria-label={`${displayName} market feed`}
                             initial={
-                                shouldReduceMotion
-                                    ? false
-                                    : { height: 0, marginTop: 0, opacity: 0, y: 8, scale: 0.98 }
+                                shouldReduceMotion ? false : { height: 0, marginTop: 0, opacity: 0, y: 8, scale: 0.98 }
                             }
                             animate={
                                 shouldReduceMotion
@@ -365,7 +366,7 @@ export function FloatingMarketFeed() {
                             className="flex w-[min(calc(100vw-2rem),24rem)] flex-col gap-3 overflow-visible"
                         >
                             <FloatingMarketBanner />
-                            <FloatingMarketTickerBanner tokens={tickerTokens} isLoading={trendingTokensLoading} />
+                            {heatmapFailed ? null : <HeatmapMini sector={heatmapSector} />}
                             <FloatingMarketNewsPanel
                                 articles={articles}
                                 hadError={hadError}
@@ -411,11 +412,7 @@ function MarketBannerLogo({ logoURI }: { logoURI: string }) {
     );
 }
 
-function PixelatedBannerImage({
-    src,
-}: {
-    src: string;
-}) {
+function PixelatedBannerImage({ src }: { src: string }) {
     const canvasRef = React.useRef<HTMLCanvasElement>(null);
     const shouldReduceMotion = useReducedMotion();
     const maskImage = 'radial-gradient(ellipse 82% 118% at 78% 50%, #000 0%, #000 48%, transparent 78%)';
@@ -535,11 +532,11 @@ function PixelatedBannerImage({
             activeContext.clearRect(0, 0, size.width, size.height);
             activeContext.globalCompositeOperation = 'source-over';
 
-            for (let y = 0; y < size.height; ) {
+            for (let y = 0; y < size.height;) {
                 const rowNoise = randomForCell(0, y, seed);
                 const blockHeight = Math.max(1, Math.round(basePixelSize * (0.62 + rowNoise * 0.9)));
 
-                for (let x = 0; x < size.width; ) {
+                for (let x = 0; x < size.width;) {
                     const cellNoise = randomForCell(x, y, seed);
                     const resolveNoise = randomForCell(x, y, seed + 11);
                     const xRatio = x / size.width;
@@ -634,13 +631,7 @@ function PixelatedBannerImage({
     );
 }
 
-function MarketBannerCard({
-    onDismiss,
-    surface,
-}: {
-    onDismiss: () => void;
-    surface: 'market_feed' | 'mobile';
-}) {
+function MarketBannerCard({ onDismiss, surface }: { onDismiss: () => void; surface: 'market_feed' | 'mobile' }) {
     // SpaceX-specific for now — intentionally not driven by the token page context.
     const label = 'Market launch';
     const title = 'The SpaceX IPO';
@@ -652,14 +643,19 @@ function MarketBannerCard({
     return (
         <section className="relative min-h-[10rem] overflow-hidden rounded-[27px] bg-[#111111] p-3.5 pr-32 text-left text-white shadow-[0_22px_60px_rgba(20,20,21,0.28)]">
             <PixelatedBannerImage src="/banners/spacex-raptor.jpeg" />
-            <div className="pointer-events-none absolute inset-0 bg-gradient-to-r from-[#111111] via-[#111111]/88 to-[#111111]/16" aria-hidden />
+            <div
+                className="pointer-events-none absolute inset-0 bg-gradient-to-r from-[#111111] via-[#111111]/88 to-[#111111]/16"
+                aria-hidden
+            />
 
             <div className="relative z-10 flex min-w-0 items-center gap-3 pr-9">
                 <MarketBannerLogo logoURI="/logos/prestocks/spacex.svg" />
                 <div className="min-w-0 truncate text-sm font-semibold text-white/72">{label}</div>
             </div>
 
-            <div className="relative z-10 mt-6 text-[1.6rem] font-semibold leading-tight tracking-normal text-white">{title}</div>
+            <div className="relative z-10 mt-6 text-[1.6rem] font-semibold leading-tight tracking-normal text-white">
+                {title}
+            </div>
             <p className="relative z-10 mt-2 line-clamp-2 text-sm font-medium leading-5 text-white/64">{description}</p>
 
             <div className="relative z-10 mt-5 flex items-center">
@@ -729,17 +725,6 @@ function ActiveMobileMarketBanner() {
         <div className="fixed inset-x-0 top-0 z-50 px-4 pt-[calc(0.75rem+env(safe-area-inset-top))] sm:hidden">
             <MarketBannerCard onDismiss={dismiss} surface="mobile" />
         </div>
-    );
-}
-
-function FloatingMarketTickerBanner({ tokens, isLoading }: { tokens: Token[]; isLoading?: boolean }) {
-    return (
-        <section
-            aria-label="Trending market tickers"
-            className="overflow-hidden rounded-[19px] border border-border-light/70 bg-gray-100/60 shadow-[0_14px_36px_rgba(20,20,21,0.12)] backdrop-blur-xl"
-        >
-            <TickerRail tokens={tokens} isLoading={isLoading} />
-        </section>
     );
 }
 
@@ -987,66 +972,6 @@ function FloatingMarketFeedSwitchRow({
                 className="data-[state=checked]:bg-[#111111] data-[state=unchecked]:bg-gray-200"
             />
         </div>
-    );
-}
-
-function TickerRail({ tokens, isLoading }: { tokens: Token[]; isLoading?: boolean }) {
-    return (
-        <div className="market-feed-ticker-viewport relative overflow-hidden py-1.5">
-            {tokens.length === 0 || isLoading ? (
-                <div className="flex h-7 items-center gap-2 px-2">
-                    {[72, 88, 76, 92, 80].map(width => (
-                        <Skeleton
-                            key={width}
-                            className="h-7 shrink-0 rounded-full bg-gray-100"
-                            style={{ width }}
-                        />
-                    ))}
-                </div>
-            ) : (
-                <div className="market-feed-ticker flex w-max items-center gap-2 px-2">
-                    {/* The rail renders the list twice so the marquee loops seamlessly. */}
-                    {tokens.map(token => (
-                        <TickerPill key={token.address} token={token} />
-                    ))}
-                    {tokens.map(token => (
-                        <TickerPill key={`${token.address}:repeat`} token={token} />
-                    ))}
-                </div>
-            )}
-        </div>
-    );
-}
-
-function TickerPill({ token }: { token: Token }) {
-    const isPositive = token.priceChange24hPercent >= 0;
-    const routeName = (token.assetId ?? '').trim() || token.address;
-    const href = buildCoinHref(routeName, token.address);
-
-    return (
-        <Link
-            href={href}
-            onClick={() =>
-                trackEvent('feed_ticker_clicked', {
-                    ...(token.address ? { token_address: token.address } : {}),
-                    ...(token.symbol ? { token_symbol: token.symbol } : {}),
-                    token_price_change_24h: token.priceChange24hPercent,
-                    source: 'market_feed',
-                })
-            }
-            className="flex h-7 shrink-0 items-center gap-2 rounded-full bg-white px-3 text-xs font-medium text-text-medium shadow-[0_1px_2px_rgba(20,20,21,0.08)] transition-colors hover:bg-white/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-border-medium"
-        >
-            <span className="max-w-16 truncate text-text-extra-high">{token.symbol || '???'}</span>
-            <span
-                className={cn(
-                    'inline-flex items-center gap-1 tabular-nums',
-                    isPositive ? 'text-emerald-700' : 'text-red-600',
-                )}
-            >
-                <IconTriangleFill className={cn('size-2 fill-current', !isPositive && 'rotate-180')} aria-hidden />
-                {formatPercent(token.priceChange24hPercent)}
-            </span>
-        </Link>
     );
 }
 

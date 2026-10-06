@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 
-import { toPreviewData } from './preview';
+import { sectorPreview } from './preview';
 import type { HeatmapAsset, HeatmapData, HeatmapVariant } from './types';
 
 function variant(id: string): HeatmapVariant {
@@ -39,7 +39,7 @@ function asset(assetId: string, change24h: number | null, variants: HeatmapVaria
     };
 }
 
-describe('toPreviewData', () => {
+describe('sectorPreview', () => {
     const full: HeatmapData = {
         sectors: [
             {
@@ -53,14 +53,42 @@ describe('toPreviewData', () => {
         generatedAt: 0,
     };
 
-    test('drops dead assets and every variant list', () => {
-        const { data } = toPreviewData(full);
+    test('returns one category, populated assets only, without variant lists', () => {
+        const sector = sectorPreview(full, 'majors')!;
 
-        expect(data.sectors[0]!.assets.map(a => a.assetId)).toEqual(['bitcoin', 'zcash']);
-        expect(data.sectors[0]!.assets.every(a => a.variants.length === 0)).toBe(true);
+        expect(sector.label).toBe('Crypto');
+        expect(sector.assets.map(a => a.assetId)).toEqual(['bitcoin', 'zcash']);
+        expect(sector.assets.every(a => a.variants.length === 0)).toBe(true);
     });
 
-    test('links assets with variants into the heat map and the rest to their asset page', () => {
-        expect(toPreviewData(full).hrefs).toEqual({ bitcoin: '/heatmap?asset=bitcoin', zcash: '/zcash' });
+    test('keeps the highest-volume assets when limited, trimmed to what a thumbnail draws', () => {
+        const sector = sectorPreview(
+            {
+                ...full,
+                sectors: [
+                    {
+                        id: 'stocks',
+                        label: 'Stocks',
+                        assets: [
+                            { ...asset('small', 1), volume24h: 10 },
+                            { ...asset('big', -1), volume24h: 1000 },
+                            { ...asset('mid', 0.5), volume24h: 100 },
+                        ],
+                    },
+                ],
+            },
+            'stocks',
+            2,
+        )!;
+
+        expect(sector.assets.map(a => [a.assetId, a.volume24h, a.change24h])).toEqual([
+            ['big', 1000, -1],
+            ['mid', 100, 0.5],
+        ]);
+        expect(sector.assets[0]).toMatchObject({ name: '', price: null, variants: [] });
+    });
+
+    test('is null for an unknown or empty category', () => {
+        expect(sectorPreview(full, 'stocks')).toBeNull();
     });
 });

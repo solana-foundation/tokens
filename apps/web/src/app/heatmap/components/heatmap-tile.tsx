@@ -191,17 +191,9 @@ export interface HeatmapTileProps {
     period: HeatmapPeriod;
     onOpenAsset: (assetId: string) => void;
     onOpenSector: (sectorId: string) => void;
-    /** Where an asset tile links, overriding the drill-down (the home-page preview links into /heatmap). */
-    href?: string;
 }
 
-export const HeatmapTile = memo(function HeatmapTile({
-    tile,
-    period,
-    onOpenAsset,
-    onOpenSector,
-    href,
-}: HeatmapTileProps) {
+export const HeatmapTile = memo(function HeatmapTile({ tile, period, onOpenAsset, onOpenSector }: HeatmapTileProps) {
     const { x, y, w, h } = tile.rect;
     const box: CSSProperties = { left: x, top: y, width: w, height: h };
     const shared = { 'data-tile': tile.key, 'aria-label': tileAriaLabel(tile, period) };
@@ -251,14 +243,6 @@ export const HeatmapTile = memo(function HeatmapTile({
 
         return (
             <Link href={`/token/${tile.variant.mint}`} prefetch={false} {...shared} className={className} style={style}>
-                {content}
-            </Link>
-        );
-    }
-
-    if (href) {
-        return (
-            <Link href={href} prefetch={false} {...shared} className={className} style={style}>
                 {content}
             </Link>
         );
