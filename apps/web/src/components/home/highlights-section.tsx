@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useMemo, useRef, useState } from 'react';
+import { useCallback, useMemo, useRef, useState, type ReactNode } from 'react';
 import Image from 'next/image';
 import Link from 'next/link';
 
@@ -18,11 +18,13 @@ import type { Token } from '@/lib/types';
 
 interface HighlightsSectionProps {
     cards: HomeHighlightCards;
+    /** Full-width row under the cards (the heat map preview), spaced like the card grid. */
+    children?: ReactNode;
 }
 
 const INLINE_CHART_FALLBACK_DAYS = 7;
 
-export function HighlightsSection({ cards }: HighlightsSectionProps) {
+export function HighlightsSection({ cards, children }: HighlightsSectionProps) {
     return (
         <section className="mx-auto max-w-7xl px-6 pb-10 md:pb-12">
             <div className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3">
@@ -32,6 +34,7 @@ export function HighlightsSection({ cards }: HighlightsSectionProps) {
                     <HighlightStatCard key={`${card.id}:${card.token.assetId ?? card.token.address}`} card={card} />
                 ))}
             </div>
+            {children ? <div className="mt-4">{children}</div> : null}
         </section>
     );
 }
@@ -108,11 +111,11 @@ function HighlightStatCard({ card }: { card: HighlightCard }) {
               ? scrubbedPrice === null
                   ? formatLargeNumber(card.token.volume1hUSD)
                   : formatPrice(scrubbedPrice)
-            : card.metric === 'volume24h'
-              ? scrubbedPrice === null
-                  ? formatLargeNumber(card.token.volume24hUSD)
-                  : formatPrice(scrubbedPrice)
-              : null;
+              : card.metric === 'volume24h'
+                ? scrubbedPrice === null
+                    ? formatLargeNumber(card.token.volume24hUSD)
+                    : formatPrice(scrubbedPrice)
+                : null;
     const metricClass = isPercentMetric ? (isPositive ? 'text-emerald-700' : 'text-red-600') : 'text-text-extra-high';
 
     const content = (
@@ -221,7 +224,9 @@ function TokenLogo({ token }: { token: Token }) {
     const [hasError, setHasError] = useState(false);
     const symbol = token.symbol?.trim() || token.name?.trim() || '??';
     const initials = symbol.slice(0, 2).toUpperCase();
-    const resolvedLogoURI = normalizeLogoSrc(getTokenLogoURLWithSecondarySymbol(token.symbol, token.name, token.logoURI));
+    const resolvedLogoURI = normalizeLogoSrc(
+        getTokenLogoURLWithSecondarySymbol(token.symbol, token.name, token.logoURI),
+    );
 
     if (!resolvedLogoURI || hasError) {
         return (

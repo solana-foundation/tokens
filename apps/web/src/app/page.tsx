@@ -4,6 +4,8 @@ import { Suspense } from 'react';
 import { HeroSearch } from '@/components/hero-search';
 import { CategoryTabs, HighlightsSection, HomeTokensProvider } from '@/components/home';
 import { SiteFooter } from '@/components/site-footer';
+import { HeatmapPreviewFallback } from '@/app/heatmap/components/heatmap-preview';
+import { HeatmapPreviewSection } from '@/app/heatmap/components/heatmap-preview-section';
 import { fetchApiAppJsonOrNull } from '@/lib/api-app';
 import { CURATED_LIST_ORDER_WITHOUT_LSTS, type CuratedTokenListIdWithoutLsts } from '@/lib/curated-lists';
 import { createHomeHighlights, type HomeTabId } from '@/lib/home-highlights';
@@ -428,7 +430,12 @@ async function HomeTokensSection({ searchParams }: { searchParams: HomePageProps
 
     return (
         <>
-            <HighlightsSection cards={highlights} />
+            <HighlightsSection cards={highlights}>
+                {/* Streams on its own: a cold heat map cache must not hold up the token table. */}
+                <Suspense fallback={<HeatmapPreviewFallback />}>
+                    <HeatmapPreviewSection />
+                </Suspense>
+            </HighlightsSection>
 
             <HomeTokensProvider
                 categories={[...categories, { id: 'trending', name: 'Trending' }]}
@@ -541,4 +548,3 @@ function HomeTokensFallback() {
         </>
     );
 }
-

@@ -1,6 +1,5 @@
 'use client';
 
-import Link from 'next/link';
 import { useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { domAnimation, LazyMotion, m, useReducedMotion } from 'motion/react';
 import { trackEvent } from '@/lib/posthog-client';
@@ -20,7 +19,7 @@ import {
     DropdownMenuTrigger,
 } from '@tokens/ui/dropdown-menu';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@tokens/ui/tooltip';
-import { Info, LayoutGrid, Settings2 } from 'lucide-react';
+import { Info, Settings2 } from 'lucide-react';
 
 const TRENDING_WINDOW_LABELS: Record<TrendingWindow, string> = {
     '5m': '5m',
@@ -156,32 +155,6 @@ function TrendingCycleRow<T extends string>({
     );
 }
 
-/**
- * The active category drawn as a heat map (its sectors are these tabs). Sits right after the tabs on
- * desktop, where the floating feed covers the row's right edge, and at that edge on mobile, where
- * the tab strip scrolls.
- */
-function HeatmapLink({ categoryId, className }: { categoryId: HomeTabId; className?: string }) {
-    const href = `/heatmap?sector=${encodeURIComponent(categoryId)}`;
-
-    return (
-        <Link
-            href={href}
-            aria-label="View this category as a heat map"
-            className={cn(
-                'inline-flex h-9 shrink-0 items-center justify-center gap-1.5 rounded-full border border-border-light bg-white/70 px-2.5 text-[13px] font-semibold text-text-medium shadow-[0_1px_2px_rgba(20,20,21,0.08)] transition-[transform,background-color,border-color,color] duration-150 ease-out hover:border-border-medium hover:bg-white hover:text-text-extra-high active:scale-[0.97] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-border-medium sm:px-3.5',
-                className,
-            )}
-            onClick={() =>
-                trackEvent('nav_link_clicked', { destination: 'heatmap', link_url: href, source: 'home_category_tabs' })
-            }
-        >
-            <LayoutGrid aria-hidden="true" className="size-4" />
-            <span className="hidden sm:inline">Heat map</span>
-        </Link>
-    );
-}
-
 function TrendingSettingsMenu({
     mode,
     window,
@@ -281,7 +254,7 @@ function CategoryTabsInner() {
         <div>
             <div className="mx-auto max-w-7xl px-4 md:px-6">
                 <div className="mb-4 flex items-center justify-between gap-3">
-                    <div className="flex min-w-0 flex-1 items-center gap-3 overflow-x-auto pb-2 -mb-2 scrollbar-hide">
+                    <div className="min-w-0 flex-1 overflow-x-auto pb-2 -mb-2 scrollbar-hide">
                         <SegmentedControl
                             className={cn(
                                 'w-max min-w-0 [&_button]:!text-[22px]',
@@ -312,9 +285,6 @@ function CategoryTabsInner() {
                             }}
                             aria-label="Token list category"
                         />
-                        {isTrending ? null : (
-                            <HeatmapLink categoryId={activeCategoryId} className="hidden sm:inline-flex" />
-                        )}
                     </div>
 
                     {isTrending ? (
@@ -350,9 +320,7 @@ function CategoryTabsInner() {
                                 }}
                             />
                         </div>
-                    ) : (
-                        <HeatmapLink categoryId={activeCategoryId} className="mb-2 sm:hidden" />
-                    )}
+                    ) : null}
                 </div>
             </div>
 
