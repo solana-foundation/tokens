@@ -1,6 +1,7 @@
 'use client';
 
-import { useCallback, useImperativeHandle, useLayoutEffect, useRef, useState, type Ref } from 'react';
+import Image from 'next/image';
+import { useCallback, useImperativeHandle, useLayoutEffect, useRef, useState, type ReactNode, type Ref } from 'react';
 
 import { formatPrice } from '@/lib/format';
 import { changeBin, NO_DATA_FILL } from '../lib/color';
@@ -17,15 +18,61 @@ export interface HeatmapTooltipHandle {
 const POINTER_OFFSET = 14;
 const VIEWPORT_MARGIN = 8;
 
+// Styling mirrors the token page's variants hover card (token-variants-badge.tsx, dark appearance).
+const PILL_CLASS = 'shrink-0 rounded-full bg-white/10 px-2 py-0.5 text-[11px] text-[var(--tooltip-text)]/80';
+const HINT_CLASS = 'px-2 pt-1 pb-1.5 text-[11px] font-medium text-white/50';
+
+function Logo({ src, symbol }: { src?: string; symbol: string }) {
+    const [failed, setFailed] = useState(false);
+    if (!src || failed) {
+        return (
+            <div className="flex size-10 shrink-0 items-center justify-center rounded-full bg-white/10 text-[10px] font-bold text-[var(--tooltip-text)]">
+                {symbol.slice(0, 2).toUpperCase()}
+            </div>
+        );
+    }
+    return (
+        <Image
+            src={src}
+            alt=""
+            // Same request size as the tiles, so the logo is already in the browser cache.
+            width={40}
+            height={40}
+            className="size-10 shrink-0 rounded-full bg-white/10 object-cover"
+            onError={() => setFailed(true)}
+            referrerPolicy="no-referrer"
+        />
+    );
+}
+
+function Header({ logo, name, symbol, tag }: { logo?: string; name: string; symbol: string; tag?: string }) {
+    return (
+        <div className="flex items-center gap-3 rounded-xl px-2 py-2">
+            <Logo key={logo ?? symbol} src={logo} symbol={symbol} />
+            <div className="min-w-0 flex-1">
+                <div className="truncate text-sm font-medium text-white">{name}</div>
+                <div className="mt-1 flex flex-wrap items-center gap-1.5">
+                    <span className={PILL_CLASS}>${symbol}</span>
+                    {tag ? <span className={`${PILL_CLASS} border border-white/10`}>{tag}</span> : null}
+                </div>
+            </div>
+        </div>
+    );
+}
+
+function Stats({ children }: { children: ReactNode }) {
+    return <dl className="grid grid-cols-[auto_1fr] gap-x-6 gap-y-1.5 px-2 pt-1 pb-2 text-xs">{children}</dl>;
+}
+
 function ChangeRow({ label, change, period }: { label: string; change: number | null; period: HeatmapPeriod }) {
     const bin = changeBin(change, period);
     return (
         <>
-            <dt className="text-text-low">{label}</dt>
-            <dd className="flex items-center justify-end gap-1.5 font-medium tabular-nums text-text-extra-high">
+            <dt className="text-white/50">{label}</dt>
+            <dd className="flex items-center justify-end gap-1.5 font-sans tabular-nums text-white">
                 <span
                     aria-hidden="true"
-                    className="size-2 rounded-[2px] border border-black/10"
+                    className="size-2 rounded-[2px] border border-white/20"
                     style={{ background: bin?.fill ?? NO_DATA_FILL }}
                 />
                 {formatChange(change)}
@@ -37,8 +84,8 @@ function ChangeRow({ label, change, period }: { label: string; change: number | 
 function Row({ label, value }: { label: string; value: string }) {
     return (
         <>
-            <dt className="text-text-low">{label}</dt>
-            <dd className="text-right font-medium tabular-nums text-text-extra-high">{value}</dd>
+            <dt className="text-white/50">{label}</dt>
+            <dd className="text-right font-sans tabular-nums text-white">{value}</dd>
         </>
     );
 }
@@ -47,8 +94,8 @@ function TooltipBody({ tile }: { tile: LayoutTile }) {
     if (tile.kind === 'more') {
         return (
             <>
-                <p className="font-semibold text-text-extra-high">+{tile.count} more</p>
-                <p className="mt-1 text-text-low">Too small to draw at this size. Click to open the category.</p>
+                <div className="px-2 pt-2 text-sm font-medium text-white">+{tile.count} more</div>
+                <p className={HINT_CLASS}>Too small to draw here. Click to open the category.</p>
             </>
         );
     }
@@ -57,43 +104,38 @@ function TooltipBody({ tile }: { tile: LayoutTile }) {
         const { variant } = tile;
         return (
             <>
-                <p className="font-semibold text-text-extra-high">
-                    {variant.symbol} <span className="font-normal text-text-low">{variant.name}</span>
-                </p>
-                <dl className="mt-2 grid grid-cols-[auto_1fr] gap-x-4 gap-y-1">
+                <Header logo={variant.logoURI} name={variant.name} symbol={variant.symbol} tag={variant.groupLabel} />
+                <Stats>
                     <Row label="Price" value={formatPrice(variant.price)} />
                     <ChangeRow label="24h" change={variant.change24h} period="24h" />
                     <ChangeRow label="1h" change={variant.change1h} period="1h" />
                     <Row label="24h volume" value={formatVolume(variant.volume24h)} />
                     <Row label="On-Solana value" value={formatUsdCompact(variant.marketCap)} />
                     <Row label="Liquidity" value={formatUsdCompact(variant.liquidity)} />
-                </dl>
-                <p className="mt-2 text-text-extra-low">
-                    {variant.groupLabel}
-                    {variant.hasTokenPage ? ' · click to open the token page' : ''}
-                </p>
+                </Stats>
+                {variant.hasTokenPage ? <p className={HINT_CLASS}>Click to open the token page</p> : null}
             </>
         );
     }
 
     const { asset } = tile;
+    const drills = asset.variants.length > 1;
     return (
         <>
-            <p className="font-semibold text-text-extra-high">
-                {asset.symbol} <span className="font-normal text-text-low">{asset.name}</span>
-            </p>
-            <dl className="mt-2 grid grid-cols-[auto_1fr] gap-x-4 gap-y-1">
+            <Header
+                logo={asset.logoURI}
+                name={asset.name}
+                symbol={asset.symbol}
+                tag={drills ? `${asset.variants.length} variants` : undefined}
+            />
+            <Stats>
                 <Row label="Price" value={formatPrice(asset.price)} />
                 <ChangeRow label="24h" change={asset.change24h} period="24h" />
                 <ChangeRow label="1h" change={asset.change1h} period="1h" />
                 <Row label="24h volume" value={formatVolume(asset.volume24h)} />
                 <Row label={marketCapLabel(asset)} value={formatUsdCompact(asset.marketCap)} />
-            </dl>
-            <p className="mt-2 text-text-extra-low">
-                {asset.variants.length > 1
-                    ? `${asset.variants.length} variants · click to see them`
-                    : 'Click to open the asset page'}
-            </p>
+            </Stats>
+            <p className={HINT_CLASS}>{drills ? 'Click to see the variants' : 'Click to open the asset page'}</p>
         </>
     );
 }
@@ -147,7 +189,7 @@ export function HeatmapTooltip({ ref }: { ref: Ref<HeatmapTooltipHandle> }) {
         <div
             ref={elementRef}
             role="tooltip"
-            className="pointer-events-none fixed left-0 top-0 z-50 w-max max-w-[280px] rounded-xl border border-border-light bg-white px-3 py-2.5 text-[12px] leading-[1.35] shadow-[0_8px_30px_rgba(0,0,0,0.12)]"
+            className="pointer-events-none fixed left-0 top-0 z-50 w-[280px] max-w-[calc(100vw-2rem)] rounded-2xl border border-border-strong bg-[var(--tooltip-bg)] p-1 text-[var(--tooltip-text)] shadow-[0_16px_48px_rgba(0,0,0,0.12)]"
             style={{ visibility: tile ? 'visible' : 'hidden' }}
         >
             {tile ? <TooltipBody tile={tile} /> : null}
