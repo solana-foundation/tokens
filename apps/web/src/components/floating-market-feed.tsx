@@ -3,7 +3,7 @@
 import * as React from 'react';
 import Image from 'next/image';
 import { usePathname } from 'next/navigation';
-import { useQuery } from '@tanstack/react-query';
+import { keepPreviousData, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Effect } from 'effect';
 import { apiJson } from '@/effect/api-client';
 import { shouldRetryApiQuery } from '@/effect/query-retry';
@@ -30,12 +30,13 @@ import {
     getFloatingMarketFeedSource,
     getFloatingMarketFeedTitle,
     getNextFloatingMarketFeedSize,
+    getNextHeatmapSector,
     resolveNextFloatingMarketFeedSettings,
     sanitizeFloatingMarketFeedSettings,
     type FloatingMarketFeedSettings,
 } from './floating-market-feed-utils';
 import { HeatmapMini } from '@/app/heatmap/components/heatmap-mini';
-import type { HeatmapSector } from '@/app/heatmap/lib/types';
+import type { HeatmapMiniResponse } from '@/app/heatmap/lib/preview';
 import { useFloatingMarketFeedContext } from './floating-market-feed-context';
 
 const EMPTY_ARTICLES: CoinGeckoNewsArticle[] = [];
@@ -146,14 +147,14 @@ function isSafeHref(value: string | undefined | null): value is string {
     }
 }
 
-/** The mini heat map's category: one GET of the cached heat map, without variants (~13 KB gzipped). */
-const HEATMAP_MINI_SECTOR = 'stocks';
-
-async function fetchHeatmapMiniSector(): Promise<HeatmapSector> {
-    const response = await fetch(`/api/heatmap?sector=${HEATMAP_MINI_SECTOR}`);
+/** One heat map category for the feed's mini map (top assets, no variants; a few KB gzipped). */
+async function fetchHeatmapMini(sectorId: string): Promise<HeatmapMiniResponse> {
+    const response = await fetch(`/api/heatmap?sector=${encodeURIComponent(sectorId)}`);
     if (!response.ok) throw new Error(`Heat map request failed: ${response.status}`);
-    return (await response.json()) as HeatmapSector;
+    return (await response.json()) as HeatmapMiniResponse;
 }
+
+const heatmapMiniQueryKey = (sectorId: string) => ['floating-market-feed', 'heatmap', sectorId] as const;
 
 interface FloatingMarketFeedResponse {
     items?: CoinGeckoNewsArticle[];
@@ -272,13 +273,35 @@ export function FloatingMarketFeed() {
         enabled: !hideFeed,
     });
 
-    const { data: heatmapSector, isError: heatmapFailed } = useQuery({
-        queryKey: ['floating-market-feed', 'heatmap', HEATMAP_MINI_SECTOR],
-        queryFn: fetchHeatmapMiniSector,
+    const queryClient = useQueryClient();
+    const { data: heatmapMini, isError: heatmapFailed } = useQuery({
+        queryKey: heatmapMiniQueryKey(settings.heatmapSector),
+        queryFn: () => fetchHeatmapMini(settings.heatmapSector),
         staleTime: 60 * 1000,
         retry: 1,
+        // Keep showing the current category while the next one loads.
+        placeholderData: keepPreviousData,
         enabled: !hideFeed,
     });
+    const nextHeatmapSector = heatmapMini
+        ? getNextHeatmapSector(
+              heatmapMini.sector.id,
+              heatmapMini.sectors.map(sector => sector.id),
+          )
+        : null;
+    const cycleHeatmapSector = React.useCallback(() => {
+        if (!nextHeatmapSector) return;
+        trackEvent('feed_heatmap_category_changed', { category: nextHeatmapSector });
+        setSettings({ heatmapSector: nextHeatmapSector });
+    }, [nextHeatmapSector, setSettings]);
+    const prefetchNextHeatmapSector = React.useCallback(() => {
+        if (!nextHeatmapSector) return;
+        void queryClient.prefetchQuery({
+            queryKey: heatmapMiniQueryKey(nextHeatmapSector),
+            queryFn: () => fetchHeatmapMini(nextHeatmapSector),
+            staleTime: 60 * 1000,
+        });
+    }, [nextHeatmapSector, queryClient]);
 
     const articles = feedArticlesData ?? EMPTY_ARTICLES;
     const hadError = feedHadError;
@@ -366,7 +389,13 @@ export function FloatingMarketFeed() {
                             className="flex w-[min(calc(100vw-2rem),24rem)] flex-col gap-3 overflow-visible"
                         >
                             <FloatingMarketBanner />
-                            {heatmapFailed ? null : <HeatmapMini sector={heatmapSector} />}
+                            {heatmapFailed && !heatmapMini ? null : (
+                                <HeatmapMini
+                                    data={heatmapMini}
+                                    onCycle={cycleHeatmapSector}
+                                    onCycleIntent={prefetchNextHeatmapSector}
+                                />
+                            )}
                             <FloatingMarketNewsPanel
                                 articles={articles}
                                 hadError={hadError}

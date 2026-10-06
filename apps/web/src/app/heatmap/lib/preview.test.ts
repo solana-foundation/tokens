@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 
-import { sectorPreview } from './preview';
+import { miniPreview } from './preview';
 import type { HeatmapAsset, HeatmapData, HeatmapVariant } from './types';
 
 function variant(id: string): HeatmapVariant {
@@ -39,7 +39,7 @@ function asset(assetId: string, change24h: number | null, variants: HeatmapVaria
     };
 }
 
-describe('sectorPreview', () => {
+describe('miniPreview', () => {
     const full: HeatmapData = {
         sectors: [
             {
@@ -47,48 +47,44 @@ describe('sectorPreview', () => {
                 label: 'Crypto',
                 assets: [asset('bitcoin', 0.1, [variant('a'), variant('b')]), asset('zcash', 2), asset('buidl', null)],
             },
+            {
+                id: 'stocks',
+                label: 'Stocks',
+                assets: [
+                    { ...asset('small', 1), volume24h: 10 },
+                    { ...asset('big', -1), volume24h: 1000 },
+                    { ...asset('mid', 0.5), volume24h: 100 },
+                ],
+            },
+            { id: 'rwas', label: 'Treasuries', assets: [asset('buidl', null)] },
         ],
-        assetCount: 3,
+        assetCount: 7,
         variantCount: 2,
         generatedAt: 0,
     };
 
-    test('returns one category, populated assets only, without variant lists', () => {
-        const sector = sectorPreview(full, 'majors')!;
+    test('lists only categories with populated assets', () => {
+        expect(miniPreview(full, 'majors')!.sectors).toEqual([
+            { id: 'majors', label: 'Crypto' },
+            { id: 'stocks', label: 'Stocks' },
+        ]);
+    });
+
+    test('returns the category without dead assets or variant lists, keeping hover-card fields', () => {
+        const { sector } = miniPreview(full, 'majors')!;
 
         expect(sector.label).toBe('Crypto');
         expect(sector.assets.map(a => a.assetId)).toEqual(['bitcoin', 'zcash']);
         expect(sector.assets.every(a => a.variants.length === 0)).toBe(true);
+        expect(sector.assets[0]).toMatchObject({ name: 'bitcoin', price: 1 });
     });
 
-    test('keeps the highest-volume assets when limited, trimmed to what a thumbnail draws', () => {
-        const sector = sectorPreview(
-            {
-                ...full,
-                sectors: [
-                    {
-                        id: 'stocks',
-                        label: 'Stocks',
-                        assets: [
-                            { ...asset('small', 1), volume24h: 10 },
-                            { ...asset('big', -1), volume24h: 1000 },
-                            { ...asset('mid', 0.5), volume24h: 100 },
-                        ],
-                    },
-                ],
-            },
-            'stocks',
-            2,
-        )!;
-
-        expect(sector.assets.map(a => [a.assetId, a.volume24h, a.change24h])).toEqual([
-            ['big', 1000, -1],
-            ['mid', 100, 0.5],
-        ]);
-        expect(sector.assets[0]).toMatchObject({ name: '', price: null, variants: [] });
+    test('keeps the highest-volume assets when limited', () => {
+        expect(miniPreview(full, 'stocks', 2)!.sector.assets.map(a => a.assetId)).toEqual(['big', 'mid']);
     });
 
-    test('is null for an unknown or empty category', () => {
-        expect(sectorPreview(full, 'stocks')).toBeNull();
+    test('falls back to Stocks when the category is unknown or empty', () => {
+        expect(miniPreview(full, 'rwas')!.sector.id).toBe('stocks');
+        expect(miniPreview(full, 'nope')!.sector.id).toBe('stocks');
     });
 });
