@@ -1,7 +1,7 @@
 'use client';
 
 import Link from 'next/link';
-import { Fragment } from 'react';
+import { Fragment, memo } from 'react';
 import { ArrowUpRight, List } from 'lucide-react';
 import { SegmentedControl } from '@solana/design-system/segmented-control';
 import { Breadcrumb, BreadcrumbItem, BreadcrumbList, BreadcrumbPage, BreadcrumbSeparator } from '@tokens/ui/breadcrumb';
@@ -28,6 +28,32 @@ interface HeatmapToolbarProps {
 const PERIOD_ITEMS = HEATMAP_PERIODS.map(value => ({ value, label: value }));
 const LINK_CLASS =
     'inline-flex items-center gap-1 whitespace-nowrap text-[13px] font-medium text-text-low transition-colors hover:text-text-extra-high';
+
+/**
+ * Memoised: the segmented control measures its layout on every render (for its sliding pill), and
+ * re-rendering it on each zoom would force a synchronous layout of the freshly mounted tiles.
+ */
+const PeriodSwitch = memo(function PeriodSwitch({
+    period,
+    onPeriodChange,
+}: {
+    period: HeatmapPeriod;
+    onPeriodChange: (period: HeatmapPeriod) => void;
+}) {
+    return (
+        <div className="flex items-center gap-2 text-[13px] text-text-low">
+            <span aria-hidden="true" className="shrink-0 whitespace-nowrap">
+                Change
+            </span>
+            <SegmentedControl
+                aria-label="Price change period"
+                items={PERIOD_ITEMS}
+                value={period}
+                onValueChange={value => onPeriodChange(value as HeatmapPeriod)}
+            />
+        </div>
+    );
+});
 
 export function HeatmapToolbar({ crumbs, assetHref, tableHref, period, onPeriodChange }: HeatmapToolbarProps) {
     return (
@@ -70,17 +96,7 @@ export function HeatmapToolbar({ crumbs, assetHref, tableHref, period, onPeriodC
                     <List aria-hidden="true" className="size-3.5" />
                     View as table
                 </Link>
-                <div className="flex items-center gap-2 text-[13px] text-text-low">
-                    <span aria-hidden="true" className="shrink-0 whitespace-nowrap">
-                        Change
-                    </span>
-                    <SegmentedControl
-                        aria-label="Price change period"
-                        items={PERIOD_ITEMS}
-                        value={period}
-                        onValueChange={value => onPeriodChange(value as HeatmapPeriod)}
-                    />
-                </div>
+                <PeriodSwitch period={period} onPeriodChange={onPeriodChange} />
             </div>
         </div>
     );

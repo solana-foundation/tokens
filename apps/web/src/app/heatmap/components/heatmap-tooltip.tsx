@@ -139,7 +139,8 @@ export function HeatmapTooltip({ ref }: { ref: Ref<HeatmapTooltipHandle> }) {
 
     // Re-place once the new tile's content has rendered and changed the tooltip's size.
     useLayoutEffect(() => {
-        place();
+        // Hidden: nothing to place, and measuring would force a layout in the middle of a zoom.
+        if (tile) place();
     }, [tile, place]);
 
     return (

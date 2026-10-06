@@ -1,6 +1,14 @@
 import { describe, expect, test } from 'bun:test';
 
-import { anchorFor, cameraMove, expandFrom, squeezeInto, viewKey, type HeatmapView } from './camera';
+import {
+    anchorFor,
+    cameraFrame,
+    cameraMove,
+    planCamera,
+    viewKey,
+    type HeatmapView,
+    type LayerTransform,
+} from './camera';
 import type { HeatmapLayout, LayoutTile, Rect } from './treemap';
 import type { HeatmapAsset } from './types';
 
@@ -91,33 +99,68 @@ describe('cameraMove', () => {
     });
 });
 
-describe('layer transforms', () => {
-    function apply(point: { x: number; y: number }, t: ReturnType<typeof squeezeInto>) {
-        return { x: t.x + point.x * t.scaleX, y: t.y + point.y * t.scaleY };
+describe('camera', () => {
+    function apply(point: { x: number; y: number }, t: LayerTransform) {
+        return { x: t.x + point.x * t.scale, y: t.y + point.y * t.scale };
     }
+    const plan = planCamera(BITCOIN, STAGE.width, STAGE.height);
 
-    test('squeezeInto maps the stage corners onto the anchor', () => {
-        const t = squeezeInto(BITCOIN, STAGE.width, STAGE.height);
-
-        expect(apply({ x: 0, y: 0 }, t)).toEqual({ x: 600, y: 24 });
-        expect(apply({ x: 1000, y: 600 }, t)).toEqual({ x: 900, y: 424 });
+    test('fits a stage-shaped viewport, centred, inside the anchor', () => {
+        // BITCOIN is 300×400 in a 1000×600 stage: width binds, fit = 0.3.
+        expect(plan.fit).toBeCloseTo(0.3);
+        expect(plan.viewport).toEqual({ x: 600, y: 134, w: 300, h: 180 });
     });
 
-    test('expandFrom maps the anchor corners onto the stage', () => {
-        const t = expandFrom(BITCOIN, STAGE.width, STAGE.height);
+    test('p = 0 is the outer view at rest, with the inner view parked in the viewport', () => {
+        const frame = cameraFrame(plan, 0);
 
-        expect(apply({ x: 600, y: 24 }, t).x).toBeCloseTo(0);
-        expect(apply({ x: 600, y: 24 }, t).y).toBeCloseTo(0);
-        expect(apply({ x: 900, y: 424 }, t).x).toBeCloseTo(1000);
-        expect(apply({ x: 900, y: 424 }, t).y).toBeCloseTo(600);
+        expect(frame.outer).toEqual({ x: -0, y: -0, scale: 1 });
+        expect(frame.inner.scale).toBeCloseTo(0.3);
+        expect(frame.inner.x).toBeCloseTo(600);
+        expect(frame.inner.y).toBeCloseTo(134);
+        expect(frame.innerOpacity).toBe(0);
     });
 
-    test('expandFrom caps the scale for tiny anchors but keeps them centred', () => {
-        const tiny: Rect = { x: 100, y: 100, w: 10, h: 10 };
-        const t = expandFrom(tiny, STAGE.width, STAGE.height);
+    test('p = 1 is the inner view at rest, with the viewport blown up to the stage', () => {
+        const frame = cameraFrame(plan, 1);
 
-        expect(t.scaleX).toBe(8);
-        expect(t.scaleY).toBe(8);
-        expect(apply({ x: 105, y: 105 }, t)).toEqual({ x: 500, y: 300 });
+        expect(frame.inner.scale).toBeCloseTo(1);
+        expect(frame.inner.x).toBeCloseTo(0);
+        expect(frame.inner.y).toBeCloseTo(0);
+        expect(frame.innerOpacity).toBe(1);
+        expect(apply({ x: 600, y: 134 }, frame.outer).x).toBeCloseTo(0);
+        expect(apply({ x: 900, y: 314 }, frame.outer).y).toBeCloseTo(600);
+    });
+
+    test('zooms about a fixed point, with both layers moving as one', () => {
+        const focus = { x: plan.focusX, y: plan.focusY };
+        for (const p of [0.1, 0.35, 0.5, 0.8]) {
+            const frame = cameraFrame(plan, p);
+            const still = apply(focus, frame.outer);
+            expect(still.x).toBeCloseTo(focus.x);
+            expect(still.y).toBeCloseTo(focus.y);
+            // The inner layer's origin is wherever the outer layer currently draws the viewport.
+            const viewportOrigin = apply({ x: plan.viewport.x, y: plan.viewport.y }, frame.outer);
+            expect(frame.inner.x).toBeCloseTo(viewportOrigin.x);
+            expect(frame.inner.y).toBeCloseTo(viewportOrigin.y);
+            expect(frame.inner.scale).toBeCloseTo(frame.outer.scale * plan.fit);
+        }
+    });
+
+    test('scale changes geometrically and opacity only ever rises', () => {
+        const scales = [0, 0.25, 0.5, 0.75, 1].map(p => cameraFrame(plan, p).outer.scale);
+        for (let i = 1; i < scales.length; i++) {
+            expect(scales[i]! / scales[i - 1]!).toBeCloseTo(scales[1]! / scales[0]!);
+        }
+        let previous = -1;
+        for (let p = 0; p <= 1; p += 0.05) {
+            const opacity = cameraFrame(plan, p).innerOpacity;
+            expect(opacity).toBeGreaterThanOrEqual(previous);
+            previous = opacity;
+        }
+    });
+
+    test('clamps the zoom for tiny anchors', () => {
+        expect(planCamera({ x: 10, y: 10, w: 5, h: 5 }, STAGE.width, STAGE.height).fit).toBeCloseTo(1 / 64);
     });
 });
