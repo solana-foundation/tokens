@@ -28,14 +28,17 @@ export interface HeatmapTooltipHandle {
 
 const POINTER_OFFSET = 14;
 const VIEWPORT_MARGIN = 8;
+/** Glide between tiles; snap when the card first appears. */
+const GLIDE = 'transform 90ms cubic-bezier(0.2, 0.8, 0.2, 1)';
 
 // Styling mirrors the token page's variants hover card (token-variants-badge.tsx, dark appearance).
 const PILL_CLASS = 'shrink-0 rounded-full bg-white/10 px-2 py-0.5 text-[11px] text-[var(--tooltip-text)]/80';
 const HINT_CLASS = 'px-2 pt-1 pb-1.5 text-[11px] font-medium text-white/50';
 
 function Logo({ src, symbol }: { src?: string; symbol: string }) {
-    const [failed, setFailed] = useState(false);
-    if (!src || failed) {
+    // Tracked per src, so a broken logo doesn't blank the next tile's (the element is reused).
+    const [failedSrc, setFailedSrc] = useState<string | null>(null);
+    if (!src || failedSrc === src) {
         return (
             <div className="flex size-10 shrink-0 items-center justify-center rounded-full bg-white/10 text-[10px] font-bold text-[var(--tooltip-text)]">
                 {symbol.slice(0, 2).toUpperCase()}
@@ -50,7 +53,7 @@ function Logo({ src, symbol }: { src?: string; symbol: string }) {
             width={40}
             height={40}
             className="size-10 shrink-0 rounded-full bg-white/10 object-cover"
-            onError={() => setFailed(true)}
+            onError={() => setFailedSrc(src)}
             referrerPolicy="no-referrer"
         />
     );
@@ -68,7 +71,7 @@ interface HeaderProps {
 function Header({ logo, name, symbol, tag, opensPage }: HeaderProps) {
     return (
         <div className="flex items-center gap-3 rounded-xl px-2 py-2">
-            <Logo key={logo ?? symbol} src={logo} symbol={symbol} />
+            <Logo src={logo} symbol={symbol} />
             <div className="min-w-0 flex-1">
                 <div className="truncate text-sm font-medium text-white">{name}</div>
                 <div className="mt-1 flex flex-wrap items-center gap-1.5">
@@ -176,6 +179,9 @@ export function HeatmapTooltip({ ref }: { ref: Ref<HeatmapTooltipHandle> }) {
     const elementRef = useRef<HTMLDivElement>(null);
     const [tile, setTile] = useState<LayoutTile | null>(null);
     const pointRef = useRef({ x: 0, y: 0 });
+    // Which side of the pointer the card sits on. Kept while the card is up and only flipped when
+    // that side stops fitting, so sweeping across tiles doesn't bounce it above/below the cursor.
+    const sideRef = useRef<{ right: boolean; below: boolean } | null>(null);
 
     const place = useCallback(() => {
         const element = elementRef.current;
@@ -183,12 +189,29 @@ export function HeatmapTooltip({ ref }: { ref: Ref<HeatmapTooltipHandle> }) {
 
         const { x, y } = pointRef.current;
         const { offsetWidth: width, offsetHeight: height } = element;
-        // Prefer below-right of the point; flip when that would leave the viewport.
-        let left = x + POINTER_OFFSET;
-        if (left + width > window.innerWidth - VIEWPORT_MARGIN) left = x - POINTER_OFFSET - width;
-        let top = y + POINTER_OFFSET;
-        if (top + height > window.innerHeight - VIEWPORT_MARGIN) top = y - POINTER_OFFSET - height;
+        const fitsRight = x + POINTER_OFFSET + width <= window.innerWidth - VIEWPORT_MARGIN;
+        const fitsBelow = y + POINTER_OFFSET + height <= window.innerHeight - VIEWPORT_MARGIN;
+        const fitsLeft = x - POINTER_OFFSET - width >= VIEWPORT_MARGIN;
+        const fitsAbove = y - POINTER_OFFSET - height >= VIEWPORT_MARGIN;
+        const previous = sideRef.current;
+        // First placement: away from the nearer screen edge, so a sweep within that region never has to
+        // flip. After that, keep the side while it fits.
+        const side = {
+            right: previous
+                ? previous.right
+                    ? fitsRight || !fitsLeft
+                    : !fitsLeft && fitsRight
+                : fitsRight && (x < window.innerWidth / 2 || !fitsLeft),
+            below: previous
+                ? previous.below
+                    ? fitsBelow || !fitsAbove
+                    : !fitsAbove && fitsBelow
+                : fitsBelow && (y < window.innerHeight / 2 || !fitsAbove),
+        };
+        sideRef.current = side;
 
+        const left = side.right ? x + POINTER_OFFSET : x - POINTER_OFFSET - width;
+        const top = side.below ? y + POINTER_OFFSET : y - POINTER_OFFSET - height;
         element.style.transform = `translate3d(${Math.max(VIEWPORT_MARGIN, left)}px, ${Math.max(VIEWPORT_MARGIN, top)}px, 0)`;
     }, []);
 
@@ -196,11 +219,17 @@ export function HeatmapTooltip({ ref }: { ref: Ref<HeatmapTooltipHandle> }) {
         ref,
         () => ({
             show(nextTile, clientX, clientY) {
+                // Glide only once the card is up; appearing must snap, not slide in from where it last was.
+                const element = elementRef.current;
+                if (element) element.style.transition = sideRef.current ? GLIDE : '';
                 pointRef.current = { x: clientX, y: clientY };
                 setTile(current => (current?.key === nextTile.key ? current : nextTile));
                 place();
             },
             hide() {
+                sideRef.current = null;
+                const element = elementRef.current;
+                if (element) element.style.transition = '';
                 setTile(null);
             },
         }),
