@@ -43,7 +43,6 @@ import {
     type HeatmapPeriod,
     type HeatmapSector,
 } from '../lib/types';
-import { HeatmapLegend } from './heatmap-legend';
 import { HeatmapTile, preloadTileLogos } from './heatmap-tile';
 import { HeatmapToolbar, type HeatmapCrumb } from './heatmap-toolbar';
 import { HeatmapTooltip, type HeatmapTooltipHandle } from './heatmap-tooltip';
@@ -643,7 +642,6 @@ export function Heatmap({ data }: { data: HeatmapData }) {
                 ) : null}
             </div>
 
-            <HeatmapLegend period={period} />
             <HeatmapTooltip ref={tooltipRef} />
         </div>
     );

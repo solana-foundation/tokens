@@ -36,12 +36,13 @@ export const NO_DATA_HATCH = 'rgba(11, 11, 11, 0.09)';
 export const NO_DATA_INK = '#52514e';
 
 /**
- * Absolute % thresholds separating steps 0|1, 1|2, 2|3. The neutral band is deliberately narrow:
- * any real move reads as up or down, and gray is left for flat prices (stablecoins, stale quotes).
+ * Absolute % thresholds separating steps 0|1, 1|2, 2|3. Gray means exactly what the tile prints:
+ * a change that rounds to 0.00%. Any visible move is coloured up or down.
  */
+const FLAT = 0.005;
 const THRESHOLDS: Record<HeatmapPeriod, readonly [number, number, number]> = {
-    '24h': [0.1, 1.5, 4],
-    '1h': [0.05, 0.5, 1.5],
+    '24h': [FLAT, 1.5, 4],
+    '1h': [FLAT, 0.5, 1.5],
 };
 
 export function changeBin(change: number | null | undefined, period: HeatmapPeriod): ChangeBin | null {
@@ -53,27 +54,4 @@ export function changeBin(change: number | null | undefined, period: HeatmapPeri
     if (size === 0) return BINS[0];
 
     return BINS[(change < 0 ? -size : size) as ChangeBin['step']];
-}
-
-export interface LegendStop {
-    bin: ChangeBin;
-    label: string;
-}
-
-function formatThreshold(value: number): string {
-    return `${value}%`;
-}
-
-/** Legend swatches, most negative first, labelled with each step's bound. */
-export function legendStops(period: HeatmapPeriod): LegendStop[] {
-    const [flat, mid, strong] = THRESHOLDS[period];
-    return [
-        { bin: BINS[-3], label: `≤ −${formatThreshold(strong)}` },
-        { bin: BINS[-2], label: `−${formatThreshold(mid)}` },
-        { bin: BINS[-1], label: `−${formatThreshold(flat)}` },
-        { bin: BINS[0], label: '0%' },
-        { bin: BINS[1], label: `+${formatThreshold(flat)}` },
-        { bin: BINS[2], label: `+${formatThreshold(mid)}` },
-        { bin: BINS[3], label: `≥ +${formatThreshold(strong)}` },
-    ];
 }
