@@ -14,7 +14,7 @@ import {
     type PointerEvent,
 } from 'react';
 import { useReducedMotion } from 'motion/react';
-import { parseAsString, parseAsStringEnum, useQueryStates } from 'nuqs';
+import { parseAsBoolean, parseAsString, parseAsStringEnum, useQueryStates } from 'nuqs';
 
 import { buildCoinHref } from '@/lib/coin-href';
 import {
@@ -28,6 +28,7 @@ import {
     type HeatmapView,
 } from '../lib/camera';
 import { formatUsdCompact } from '../lib/labels';
+import { populatedOnly } from '../lib/populated';
 import {
     layoutAsset,
     layoutOverview,
@@ -246,17 +247,22 @@ function isEditable(target: EventTarget | null): boolean {
  *   sector — home-page category (curated list slug) filling the stage
  *   asset  — canonical asset whose variants fill the stage (wins over sector)
  *   period — which price change colours the tiles
+ *   showEmpty — internal only: also draw assets with no 24h volume or no 24h change
  */
-export function Heatmap({ data }: { data: HeatmapData }) {
+export function Heatmap({ data: allData }: { data: HeatmapData }) {
     const [query, setQuery] = useQueryStates(
         {
             sector: parseAsString,
             asset: parseAsString,
+            showEmpty: parseAsBoolean.withDefault(false),
             period: parseAsStringEnum<HeatmapPeriod>([...HEATMAP_PERIODS]).withDefault('24h'),
         },
         { history: 'push', scroll: false },
     );
     const { period } = query;
+    // Dead tiles (no 24h volume or no 24h change) are hidden; `?showEmpty=true` brings them back
+    // for internal checks. Deliberately not in the UI.
+    const data = useMemo(() => (query.showEmpty ? allData : populatedOnly(allData)), [allData, query.showEmpty]);
 
     const index = useMemo(() => {
         const sectors = new Map<string, HeatmapSector>();
