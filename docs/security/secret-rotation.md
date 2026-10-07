@@ -11,10 +11,16 @@ terraform declares secrets but does not push env changes to a running service.
 Use `gcloud run services update` for the live wiring; when traffic is pinned,
 the update creates a 0%-traffic revision that must be promoted explicitly.
 
-Status: the `_PREVIOUS` fallbacks and the `apiKeysReencrypt` mutation referred
-to below ship with the rotation-support change (PR 5 of the SDLC remediation).
-Until that lands, rotating the bearer token or encryption secret requires a
-short maintenance window and the steps marked "without fallback".
+The `_PREVIOUS` fallbacks and the `apiKeysReencrypt` mutation referred to
+below ship with the rotation-support change (PR #175). Until it is deployed,
+rotating the bearer token or encryption secret requires a short maintenance
+window and the steps marked "without fallback".
+
+Wire every `_PREVIOUS` value as a Secret Manager reference pinned to the old
+version (`--update-secrets=NAME=<secret-id>:<version>`), never as a plaintext
+`--update-env-vars` value: plaintext env is visible in revision descriptions,
+`gcloud run services describe`, and the console. Find the old version number
+with `gcloud secrets versions list <secret-id>`.
 
 ## `TOKENS_CLOUDRUN_AUTH_TOKEN` (shared RPC bearer)
 
@@ -30,12 +36,12 @@ cloudrun-assets (+ jobs worker), cloudrun-prices, cloudrun-usage,
     ```
     This adds a new Secret Manager version; Cloud Run services pick it up on
     their next revision as the current token.
-2. Set the old value as the fallback on every Cloud Run service so both are
-   accepted during the cutover:
+2. Point the fallback at the previous Secret Manager version on every Cloud
+   Run service so both values are accepted during the cutover:
     ```
     for svc in admin assets assets-jobs prices usage; do
       gcloud run services update tokens-$svc-<env>-us --region us-east4 \
-        --update-env-vars=TOKENS_CLOUDRUN_AUTH_TOKEN_PREVIOUS=<old value>
+        --update-secrets=TOKENS_CLOUDRUN_AUTH_TOKEN_PREVIOUS=tokens-cloudrun-auth-token-<env>:<old version>
     done
     ```
     Promote the new revisions. (Without fallback: skip this step and accept
@@ -47,7 +53,7 @@ cloudrun-assets (+ jobs worker), cloudrun-prices, cloudrun-usage,
    client caches the token at boot).
 4. Verify: dashboard loads and can list keys; `scripts/_cloudrun.mjs ping`
    succeeds; no `unauthorized` 401s in the usage service logs.
-5. Remove the fallback: `--remove-env-vars=TOKENS_CLOUDRUN_AUTH_TOKEN_PREVIOUS`
+5. Remove the fallback: `--remove-secrets=TOKENS_CLOUDRUN_AUTH_TOKEN_PREVIOUS`
    on each service, promote, and disable the old Secret Manager version.
 6. Record the rotation in Doppler's activity log (do not add dates to this
    repo).
@@ -58,13 +64,14 @@ Consumers: apps/app (signer), cloudrun-usage (verifier).
 
 1. `terraform apply -replace=module.env.module.secrets.random_password.identity_signing_secret`
    and read `terraform output -raw identity_signing_secret_value`.
-2. On the usage service set `TOKENS_IDENTITY_SIGNING_SECRET_PREVIOUS=<old value>`
+2. On the usage service add
+   `--update-secrets=TOKENS_IDENTITY_SIGNING_SECRET_PREVIOUS=tokens-identity-signing-secret-<env>:<old version>`
    so tokens signed with either value verify; promote the revision.
 3. Set the new value in Vercel on the app project and redeploy apps/app.
 4. Verify: dashboard key list, create key, reveal key all succeed; no
    `identity_invalid` warnings in the usage logs.
-5. Remove `TOKENS_IDENTITY_SIGNING_SECRET_PREVIOUS`, promote, disable the old
-   Secret Manager version.
+5. `--remove-secrets=TOKENS_IDENTITY_SIGNING_SECRET_PREVIOUS`, promote, disable
+   the old Secret Manager version.
 
 Tokens are valid for 60 s, so there is no long-lived material to invalidate.
 
@@ -78,7 +85,8 @@ under a new secret.
 1. Generate a new 32-byte random value locally (`openssl rand -hex 32`) and add
    it as a new version of `tokens-api-key-encryption-secret-<env>` in Secret
    Manager. Do not change Doppler yet.
-2. On the usage service set `TOKENS_API_KEY_ENCRYPTION_SECRET_PREVIOUS=<old value>`
+2. On the usage service add
+   `--update-secrets=TOKENS_API_KEY_ENCRYPTION_SECRET_PREVIOUS=tokens-api-key-encryption-secret-<env>:<old version>`
    and promote. Decryption now tries the current value then the previous one,
    so reveal keeps working for every row.
 3. Run the re-encrypt job (bearer-gated, explicit confirmation):
@@ -86,14 +94,15 @@ under a new secret.
     node scripts/_cloudrun.mjs usage mutation apiKeysReencrypt '{"confirm":"reencrypt"}'
     ```
     It rewrites every row that decrypts only with the previous value and
-    returns `{processed, reencrypted, failed}`. Re-run until `failed` is 0.
-    A row that fails both secrets is a legacy hash-only key; it still
-    authenticates, and the owner regenerates it from the dashboard to make it
-    revealable again.
+    returns `{processed, reencrypted, alreadyCurrent, failed, failedIds}`. It
+    is idempotent; re-run after any interruption. A row in `failedIds`
+    decrypts with neither secret (written under an older, unknown value); it
+    still authenticates, and the owner regenerates it from the dashboard to
+    make it revealable again.
 4. Verify: reveal a key from a project created before the rotation.
-5. Remove `TOKENS_API_KEY_ENCRYPTION_SECRET_PREVIOUS`, promote, disable the old
-   Secret Manager version, and update Doppler `tokens/<env>` so the next
-   out-of-band seed uses the new value.
+5. `--remove-secrets=TOKENS_API_KEY_ENCRYPTION_SECRET_PREVIOUS`, promote,
+   disable the old Secret Manager version, and update Doppler `tokens/<env>`
+   so the next out-of-band seed uses the new value.
 
 Without fallback: rows encrypted under the old value become unrevealable
 until regenerated. Only do that in an emergency (suspected secret exposure),
