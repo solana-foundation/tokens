@@ -139,13 +139,22 @@ module "cloud_run" {
         secret_id = module.secrets.cloudrun_auth_token_secret_id
       }
     },
-    # Usage-service-only secrets: key reveal encryption (dashboard reset/reveal)
-    # and the /hooks/* observability ingest. Versions seeded out-of-band — see
-    # modules/secrets.
+    # Usage-service-only secrets: key reveal encryption (dashboard reset/reveal),
+    # the signed-identity HMAC key, and the /hooks/* observability ingest.
+    # Encryption + hooks versions are seeded out-of-band — see modules/secrets.
+    #
+    # NOTE: the cloud_run module ignores drift on container env, so adding a
+    # secret here does not change a service that already exists. Wire it on
+    # the live service once per env (then promote the new revision):
+    #   gcloud run services update tokens-usage-<env>-us --region <region> \
+    #     --update-secrets=TOKENS_IDENTITY_SIGNING_SECRET=tokens-identity-signing-secret-<env>:latest
     each.value == "usage" ? merge(
       {
         TOKENS_API_KEY_ENCRYPTION_SECRET = {
           secret_id = module.secrets.api_key_encryption_secret_id
+        }
+        TOKENS_IDENTITY_SIGNING_SECRET = {
+          secret_id = module.secrets.identity_signing_secret_id
         }
       },
       { for name, id in module.secrets.usage_hooks_secret_ids : name => { secret_id = id } }
