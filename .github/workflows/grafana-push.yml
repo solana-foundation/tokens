@@ -46,7 +46,7 @@ jobs:
         id: secrets
         run: |
           set -euo pipefail
-          for key in GRAFANA_API_URL GRAFANA_API_TOKEN GRAFANA_FOLDER_UID PAGERDUTY_INTEGRATION_KEY SLACK_ALERT_WEBHOOK_URL; do
+          for key in GRAFANA_API_URL GRAFANA_API_TOKEN GRAFANA_FOLDER_UID PAGERDUTY_INTEGRATION_KEY GRAFANA_SLACK_WEBHOOK_URL; do
             value=$(doppler secrets get "$key" --plain --project "$DOPPLER_PROJECT" --config "$DOPPLER_CONFIG")
             echo "::add-mask::$value"
             echo "$key=$value" >> "$GITHUB_OUTPUT"
@@ -126,7 +126,7 @@ jobs:
           GRAFANA_API_URL: ${{ steps.secrets.outputs.GRAFANA_API_URL }}
           GRAFANA_API_TOKEN: ${{ steps.secrets.outputs.GRAFANA_API_TOKEN }}
           PAGERDUTY_INTEGRATION_KEY: ${{ steps.secrets.outputs.PAGERDUTY_INTEGRATION_KEY }}
-          SLACK_ALERT_WEBHOOK_URL: ${{ steps.secrets.outputs.SLACK_ALERT_WEBHOOK_URL }}
+          GRAFANA_SLACK_WEBHOOK_URL: ${{ steps.secrets.outputs.GRAFANA_SLACK_WEBHOOK_URL }}
         run: |
           set -euo pipefail
           shopt -s nullglob

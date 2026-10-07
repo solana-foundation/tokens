@@ -3,7 +3,7 @@
   "name": "tokens-critical",
   "type": "slack",
   "settings": {
-    "url": "${SLACK_ALERT_WEBHOOK_URL}",
+    "url": "${GRAFANA_SLACK_WEBHOOK_URL}",
     "title": "[{{ .Status | toUpper }}] {{ .CommonLabels.alertname }}",
     "text": "{{ range .Alerts }}*{{ .Annotations.summary }}*\n{{ .Annotations.description }}\nlabels: {{ .Labels }}{{ if .Annotations.runbook_url }}\n:book: <{{ .Annotations.runbook_url }}|Runbook / SOP>{{ end }}\n{{ end }}"
   },
