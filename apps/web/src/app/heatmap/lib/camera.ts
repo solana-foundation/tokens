@@ -54,10 +54,6 @@ export function cameraMove(
     nextLayout: HeatmapLayout,
     nextView: HeatmapView,
 ): CameraMove {
-    // The overview is a scrolling stack of rows, taller than the stage: a row can be anywhere on
-    // the page, so views enter and leave it with a fade instead of a camera move.
-    if (previousLayout.level === 'overview' || nextLayout.level === 'overview') return { mode: 'fade' };
-
     const entering = anchorFor(previousLayout, nextView);
     if (usable(entering)) return { mode: 'in', anchor: entering };
 
@@ -73,8 +69,8 @@ export function cameraMove(
  * occupies `viewport`: the largest stage-shaped rect centred in the anchor.
  */
 export interface CameraPlan {
-    stageWidth: number;
-    stageHeight: number;
+    /** Where the inner view rests: the visible part of the stage, which on a tall scrolling overview is not its top. */
+    stage: Rect;
     viewport: Rect;
     /** viewport size / stage size; the inner view's scale when the camera is all the way out. */
     fit: number;
@@ -83,24 +79,23 @@ export interface CameraPlan {
     focusY: number;
 }
 
-export function planCamera(anchor: Rect, stageWidth: number, stageHeight: number): CameraPlan {
-    const fit = Math.max(MIN_FIT, Math.min(anchor.w / stageWidth, anchor.h / stageHeight, 1));
+export function planCamera(anchor: Rect, stage: Rect): CameraPlan {
+    const fit = Math.max(MIN_FIT, Math.min(anchor.w / stage.w, anchor.h / stage.h, 1));
     const viewport = {
-        x: anchor.x + (anchor.w - stageWidth * fit) / 2,
-        y: anchor.y + (anchor.h - stageHeight * fit) / 2,
-        w: stageWidth * fit,
-        h: stageHeight * fit,
+        x: anchor.x + (anchor.w - stage.w * fit) / 2,
+        y: anchor.y + (anchor.h - stage.h * fit) / 2,
+        w: stage.w * fit,
+        h: stage.h * fit,
     };
-    // Zooming from the whole stage onto the viewport is a similarity transform; its fixed point
-    // is the one place on screen that never moves, which is what makes the zoom read as a camera.
+    // Zooming the viewport up onto the stage box is a similarity transform; its fixed point is the
+    // one place on screen that never moves, which is what makes the zoom read as a camera.
     const shrink = 1 - fit;
     return {
-        stageWidth,
-        stageHeight,
+        stage,
         viewport,
         fit,
-        focusX: shrink > 1e-3 ? viewport.x / shrink : stageWidth / 2,
-        focusY: shrink > 1e-3 ? viewport.y / shrink : stageHeight / 2,
+        focusX: shrink > 1e-3 ? (viewport.x - fit * stage.x) / shrink : stage.x + stage.w / 2,
+        focusY: shrink > 1e-3 ? (viewport.y - fit * stage.y) / shrink : stage.y + stage.h / 2,
     };
 }
 

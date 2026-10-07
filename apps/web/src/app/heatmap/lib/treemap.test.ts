@@ -139,6 +139,21 @@ describe('layoutOverview', () => {
         expect(layout.groups[0]!.total).toBe(7000);
     });
 
+    test('a tile never takes more than half its map, however dominant', () => {
+        const layout = layoutSector(
+            sector('currencies', [1_260_000_000, 2_000_000, 400_000, 100_000, 50_000]),
+            WIDTH,
+            HEIGHT,
+        );
+        const areas = layout.groups[0]!.tiles.map(tile => area(tile.rect));
+        const total = areas.reduce((sum, value) => sum + value, 0);
+
+        expect(areas[0]! / total).toBeLessThanOrEqual(0.52);
+        expect(areas[0]! / total).toBeGreaterThan(0.45);
+        // The rest keep their relative sizes.
+        expect(areas[1]! / areas[2]!).toBeCloseTo(Math.sqrt(2_000_000 / 400_000), 0);
+    });
+
     test('merges tiles too small to draw, and unsizeable ones, into a "+N more" tile', () => {
         const volumes = [1e12, 5e11, ...Array.from({ length: 40 }, () => 1), null, 0];
         const layout = layoutOverview(data([sector('stocks', volumes)]), WIDTH, HEIGHT);
@@ -200,10 +215,10 @@ describe('layoutOverviewRows', () => {
     });
 
     test('a row grows with its asset count, within limits', () => {
-        expect(rowHeight(1)).toBe(112);
+        expect(rowHeight(1)).toBe(160);
         expect(rowHeight(36)).toBeGreaterThan(rowHeight(13));
-        expect(rowHeight(300)).toBe(440);
-        expect(rowHeight(10_000)).toBe(440);
+        expect(rowHeight(300)).toBe(600);
+        expect(rowHeight(10_000)).toBe(600);
     });
 });
 
@@ -218,8 +233,9 @@ describe('layoutSector', () => {
         expect(tiles.every(tile => tile.kind === 'asset')).toBe(true);
         expect(layout.groups[0]!.headerHeight).toBe(0);
         expect(Math.min(...tiles.map(tile => area(tile.rect)))).toBeGreaterThan(400);
-        // The enlarged tail may not crowd out the leaders.
-        expect(area(tiles[0]!.rect)).toBeGreaterThan(area(tiles[1]!.rect) * 1.3);
+        // The enlarged tail may not crowd out the leaders (the leader is capped at half the map).
+        expect(area(tiles[0]!.rect)).toBeGreaterThanOrEqual(area(tiles[1]!.rect));
+        expect(area(tiles[0]!.rect) / (WIDTH * HEIGHT)).toBeGreaterThan(0.45);
         expectTiled(layout);
     });
 });
@@ -246,7 +262,7 @@ describe('layoutAsset', () => {
         const tiles = layoutAsset(hynix, WIDTH, HEIGHT).groups[0]!.tiles;
         const share = (key: string) => area(tiles.find(tile => tile.key === key)!.rect) / (WIDTH * HEIGHT);
 
-        expect(share('variant:SKHY')).toBeGreaterThan(0.5);
+        expect(share('variant:SKHY')).toBeGreaterThan(0.45);
         for (const key of ['variant:SKHYon', 'variant:SKHYx']) {
             expect(share(key)).toBeGreaterThan(0.08);
             const rect = tiles.find(tile => tile.key === key)!.rect;

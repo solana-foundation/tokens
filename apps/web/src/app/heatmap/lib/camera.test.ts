@@ -81,19 +81,12 @@ describe('anchorFor', () => {
 
 describe('cameraMove', () => {
     test('zooms in on the tile being entered', () => {
-        expect(cameraMove(cryptoSector, SECTOR, bitcoinAsset, ASSET)).toEqual({
-            mode: 'in',
-            anchor: { x: 0, y: 0, w: 700, h: 600 },
-        });
-    });
-
-    test('fades to and from the overview, which is a scrolling stack of rows', () => {
-        expect(cameraMove(overview, OVERVIEW, bitcoinAsset, ASSET)).toEqual({ mode: 'fade' });
-        expect(cameraMove(overview, OVERVIEW, cryptoSector, SECTOR)).toEqual({ mode: 'fade' });
-        expect(cameraMove(bitcoinAsset, ASSET, overview, OVERVIEW)).toEqual({ mode: 'fade' });
+        expect(cameraMove(overview, OVERVIEW, bitcoinAsset, ASSET)).toEqual({ mode: 'in', anchor: BITCOIN });
+        expect(cameraMove(overview, OVERVIEW, cryptoSector, SECTOR)).toEqual({ mode: 'in', anchor: CRYPTO });
     });
 
     test('zooms out to the tile being left', () => {
+        expect(cameraMove(bitcoinAsset, ASSET, overview, OVERVIEW)).toEqual({ mode: 'out', anchor: BITCOIN });
         expect(cameraMove(bitcoinAsset, ASSET, cryptoSector, SECTOR)).toEqual({
             mode: 'out',
             anchor: { x: 0, y: 0, w: 700, h: 600 },
@@ -102,7 +95,7 @@ describe('cameraMove', () => {
 
     test('fades when neither view is drawn inside the other', () => {
         const other: HeatmapView = { level: 'asset', assetId: 'merged-away' };
-        expect(cameraMove(cryptoSector, SECTOR, bitcoinAsset, other)).toEqual({ mode: 'fade' });
+        expect(cameraMove(overview, OVERVIEW, bitcoinAsset, other)).toEqual({ mode: 'fade' });
     });
 });
 
@@ -110,7 +103,8 @@ describe('camera', () => {
     function apply(point: { x: number; y: number }, t: LayerTransform) {
         return { x: t.x + point.x * t.scale, y: t.y + point.y * t.scale };
     }
-    const plan = planCamera(BITCOIN, STAGE.width, STAGE.height);
+    const FULL = { x: 0, y: 0, w: STAGE.width, h: STAGE.height };
+    const plan = planCamera(BITCOIN, FULL);
 
     test('fits a stage-shaped viewport, centred, inside the anchor', () => {
         // BITCOIN is 300×400 in a 1000×600 stage: width binds, fit = 0.3.
@@ -167,7 +161,21 @@ describe('camera', () => {
         }
     });
 
+    test('lands the inner view in a stage box away from the origin, e.g. the visible part of a tall page', () => {
+        const box = { x: 0, y: 900, w: STAGE.width, h: STAGE.height };
+        const shifted = planCamera(BITCOIN, box);
+        const end = cameraFrame(shifted, 1);
+
+        expect(end.inner.x).toBeCloseTo(0);
+        expect(end.inner.y).toBeCloseTo(900);
+        expect(end.inner.scale).toBeCloseTo(1);
+        const start = cameraFrame(shifted, 0).outer;
+        expect(Math.abs(start.x)).toBe(0);
+        expect(Math.abs(start.y)).toBe(0);
+        expect(start.scale).toBe(1);
+    });
+
     test('clamps the zoom for tiny anchors', () => {
-        expect(planCamera({ x: 10, y: 10, w: 5, h: 5 }, STAGE.width, STAGE.height).fit).toBeCloseTo(1 / 64);
+        expect(planCamera({ x: 10, y: 10, w: 5, h: 5 }, FULL).fit).toBeCloseTo(1 / 64);
     });
 });

@@ -14,6 +14,7 @@ import {
     type PointerEvent,
 } from 'react';
 import { useReducedMotion } from 'motion/react';
+import { flushSync } from 'react-dom';
 import { parseAsBoolean, parseAsString, parseAsStringEnum, useQueryStates } from 'nuqs';
 
 import { buildCoinHref } from '@/lib/coin-href';
@@ -68,6 +69,10 @@ type Scene =
           outer: LayerSpec;
           inner: LayerSpec;
           plan: CameraPlan;
+          /** Container height while the zoom runs: tall enough for both views and the box. */
+          height: number;
+          /** Page scroll to set when the zoom starts (zoom-out onto a row) or ends (zoom-in from one). */
+          scrollTo: number | null;
           target: 0 | 1;
           /** Camera position to start from; null continues from wherever an interrupted zoom was. */
           startP: number | null;
@@ -98,7 +103,25 @@ function destinationOf(scene: Scene): LayerSpec {
     return scene.target === 1 ? scene.inner : scene.outer;
 }
 
-function nextScene(scene: Scene, to: LayerSpec, stage: StageSize, stageKey: string, animate: boolean): Scene {
+/** A view's height in the stage: the overview is as tall as its rows; the rest fill the viewport. */
+function layerHeight(layer: LayerSpec, stage: StageSize): number {
+    return layer.layout.level === 'overview' ? layer.layout.height : stage.height;
+}
+
+interface ScrollContext {
+    /** Page offset of the stage's top edge. */
+    stageTop: number;
+    scrollY: number;
+}
+
+function nextScene(
+    scene: Scene,
+    to: LayerSpec,
+    stage: StageSize,
+    stageKey: string,
+    animate: boolean,
+    page: ScrollContext,
+): Scene {
     const id = scene.id + 1;
     if (!animate) return { kind: 'rest', stageKey, id, layer: to };
 
@@ -110,15 +133,29 @@ function nextScene(scene: Scene, to: LayerSpec, stage: StageSize, stageKey: stri
 
     const from = destinationOf(scene);
     const move = cameraMove(from.layout, from.view, to.layout, to.view);
-    if (move.mode === 'in') {
-        const plan = planCamera(move.anchor, stage.width, stage.height);
-        return { kind: 'zoom', stageKey, id, outer: from, inner: to, plan, target: 1, startP: 0 };
-    }
-    if (move.mode === 'out') {
-        const plan = planCamera(move.anchor, stage.width, stage.height);
-        return { kind: 'zoom', stageKey, id, outer: to, inner: from, plan, target: 0, startP: 1 };
-    }
-    return { kind: 'fade', stageKey, id, under: from, over: to };
+    if (move.mode === 'fade') return { kind: 'fade', stageKey, id, under: from, over: to };
+
+    const outer = move.mode === 'in' ? from : to;
+    const inner = move.mode === 'in' ? to : from;
+    // The inner view rests in the part of the stage that is on screen. On the tall overview that
+    // is wherever the page is scrolled to: zooming in, it is the viewport as it stands (the page
+    // then jumps to put the finished view at the top, which looks the same); zooming out, the page
+    // first jumps so the destination row sits at the top, and the view starts from there.
+    const onOverview = outer.layout.level === 'overview';
+    const scrollTo = onOverview
+        ? move.mode === 'in'
+            ? page.stageTop - SCROLL_OFFSET
+            : page.stageTop + move.anchor.y - SCROLL_OFFSET
+        : null;
+    const stagedScroll = onOverview && move.mode === 'out' && scrollTo !== null ? scrollTo : page.scrollY;
+    const boxY = onOverview ? Math.max(0, stagedScroll + SCROLL_OFFSET - page.stageTop) : 0;
+    const box = { x: 0, y: boxY, w: stage.width, h: stage.height };
+    const plan = planCamera(move.anchor, box);
+    const height = Math.max(layerHeight(outer, stage), layerHeight(inner, stage), box.y + box.h);
+
+    return move.mode === 'in'
+        ? { kind: 'zoom', stageKey, id, outer, inner, plan, height, scrollTo, target: 1, startP: 0 }
+        : { kind: 'zoom', stageKey, id, outer, inner, plan, height, scrollTo, target: 0, startP: 1 };
 }
 
 /** The tile in the outer view that the inner view grows out of, when it is a tile rather than a group. */
@@ -301,7 +338,11 @@ export function Heatmap({ data: allData }: { data: HeatmapData }) {
             // First measure, or the stage resized: every layout changed, so cut rather than zoom.
             setScene({ kind: 'rest', stageKey, id: (scene?.id ?? 0) + 1, layer: current });
         } else if (destinationOf(scene).key !== layerKey) {
-            setScene(nextScene(scene, current, stage, stageKey, !reduceMotion));
+            // Read during render, only when the view changes: the zoom's geometry depends on where
+            // the page is scrolled, and the first frame must be right before paint.
+            const stageTop = (stageRef.current?.getBoundingClientRect().top ?? 0) + window.scrollY + STAGE_PADDING;
+            const page: ScrollContext = { stageTop, scrollY: window.scrollY };
+            setScene(nextScene(scene, current, stage, stageKey, !reduceMotion, page));
         }
     }
 
@@ -352,14 +393,23 @@ export function Heatmap({ data: allData }: { data: HeatmapData }) {
             if (active.kind === 'zoom' && active.target === 0 && document.activeElement === stageElement) {
                 anchorTile?.focus({ preventScroll: true });
             }
-            setScene(latest =>
-                latest &&
-                latest.kind !== 'rest' &&
-                latest.id === active.id &&
-                destinationOf(latest).key === destination.key
-                    ? { kind: 'rest', stageKey: latest.stageKey, id: latest.id, layer: destination }
-                    : latest,
-            );
+            const rest = () =>
+                setScene(latest =>
+                    latest &&
+                    latest.kind !== 'rest' &&
+                    latest.id === active.id &&
+                    destinationOf(latest).key === destination.key
+                        ? { kind: 'rest', stageKey: latest.stageKey, id: latest.id, layer: destination }
+                        : latest,
+                );
+            if (active.kind === 'zoom' && active.target === 1 && active.scrollTo !== null) {
+                // The view finished in the visible part of a tall stage; collapse the stage to the view
+                // and move the page so nothing on screen changes. Both in one paint.
+                flushSync(rest);
+                window.scrollTo({ top: Math.max(0, active.scrollTo), behavior: 'auto' });
+            } else {
+                rest();
+            }
         };
 
         if (active.kind === 'fade') {
@@ -396,6 +446,11 @@ export function Heatmap({ data: allData }: { data: HeatmapData }) {
         const from = active.startP ?? progress.current;
         const to = active.target;
         const duration = ZOOM_MS * Math.abs(to - from);
+        if (to === 0 && active.scrollTo !== null && active.startP !== null) {
+            // Zooming out onto a row: the stage is already tall; put the row's page position where
+            // the view is, before the first frame, so the view appears to shrink into it in place.
+            window.scrollTo({ top: Math.max(0, active.scrollTo), behavior: 'auto' });
+        }
         outer.style.willChange = 'transform';
         inner.style.willChange = 'transform, opacity';
         outer.style.opacity = '';
@@ -441,6 +496,8 @@ export function Heatmap({ data: allData }: { data: HeatmapData }) {
         if (previous === view) return;
         const element = stageRef.current;
         if (!element) return;
+        // A zoom places the page itself (see nextScene); this is for cuts and fades.
+        if (sceneRef.current?.kind === 'zoom') return;
 
         const behavior: ScrollBehavior = reduceMotion ? 'auto' : 'smooth';
         if (view.level !== 'overview') {
@@ -597,9 +654,11 @@ export function Heatmap({ data: allData }: { data: HeatmapData }) {
     const isEmpty = destination !== null && destination.layout.groups.length === 0;
     // The overview is as tall as its rows; other views fill the viewport.
     const stageHeight =
-        (destination?.layout.level === 'overview'
-            ? destination.layout.height
-            : (stage?.height ?? STAGE_MIN_HEIGHT - STAGE_PADDING * 2)) +
+        (scene?.kind === 'zoom'
+            ? scene.height
+            : destination && stage
+              ? layerHeight(destination, stage)
+              : (stage?.height ?? STAGE_MIN_HEIGHT - STAGE_PADDING * 2)) +
         STAGE_PADDING * 2;
 
     return (
@@ -634,7 +693,13 @@ export function Heatmap({ data: allData }: { data: HeatmapData }) {
                         ref={layerRef(spec.key)}
                         // Opaque, so the outer view never shows through the gaps between the inner view's tiles.
                         className="absolute origin-top-left bg-white"
-                        style={{ inset: STAGE_PADDING, zIndex: z }}
+                        style={{
+                            left: STAGE_PADDING,
+                            top: STAGE_PADDING,
+                            width: stage?.width,
+                            height: stage ? layerHeight(spec, stage) : undefined,
+                            zIndex: z,
+                        }}
                     >
                         <HeatmapLayer
                             layout={spec.layout}

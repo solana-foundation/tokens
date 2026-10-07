@@ -44,6 +44,11 @@ export interface HeatmapLayout {
  * strictly proportional areas.
  */
 export const TILE_EXPONENT = 0.5;
+/**
+ * No tile takes more than this share of its map. Compression alone leaves USD at ~95% of
+ * Currencies (it out-trades EUR a thousandfold); the cap gives the rest of the map room.
+ */
+export const MAX_TILE_SHARE = 0.5;
 
 /**
  * Sector areas are compressed further (share ∝ total^exponent, never below
@@ -249,6 +254,11 @@ function compute<T>(inputs: Array<GroupInput<T>>, options: ComputeOptions): Arra
                     if (entry.equal) return 1;
                     return Math.max((tileWeight(item.value) / entry.weightTotal) * entry.area, liftFloor);
                 });
+                // Cap the leader at MAX_TILE_SHARE of the whole, keeping the others' proportions.
+                if (!entry.equal && areas.length > 1) {
+                    const rest = areas.slice(1).reduce((sum, value) => sum + value, 0);
+                    areas[0] = Math.min(areas[0]!, (rest * MAX_TILE_SHARE) / (1 - MAX_TILE_SHARE));
+                }
                 const mergedArea = entry.equal
                     ? entry.merged.length
                     : entry.merged.reduce(
@@ -418,12 +428,12 @@ export function layoutOverview(data: HeatmapData, width: number, height: number)
 
 /** Overview as rows: the gap between category rows and the limits on a row's map height. */
 const ROW_GAP = 16;
-const ROW_MIN_HEIGHT = 112;
-const ROW_MAX_HEIGHT = 440;
+const ROW_MIN_HEIGHT = 160;
+const ROW_MAX_HEIGHT = 600;
 
 /** Room for a category's map: grows with the square root of its asset count, within limits. */
 export function rowHeight(assetCount: number): number {
-    return Math.round(Math.min(ROW_MAX_HEIGHT, Math.max(ROW_MIN_HEIGHT, 72 + 26 * Math.sqrt(assetCount))));
+    return Math.round(Math.min(ROW_MAX_HEIGHT, Math.max(ROW_MIN_HEIGHT, 96 + 30 * Math.sqrt(assetCount))));
 }
 
 function shiftRect(rect: Rect, dy: number): Rect {
