@@ -217,7 +217,10 @@ function assetResultToToken(result: AssetSearchResult): Token | null {
     const marketSymbol = (market?.symbol ?? primary.symbol ?? '').trim() || undefined;
     const logoURI = getTokenLogoURLWithSecondarySymbol(symbol, marketSymbol, fallbackLogoURI);
     const priceChange1hPercent = pickFinite(market?.priceChange1hPercent, stats?.priceChange1hPercent);
-    const canonicalPrice = pickPositive(canonicalMarket?.price, null);
+    // A PreStocks canonical price is the PreStocks mint's own on-chain price, not a
+    // benchmark, so the row keeps its primary variant's price.
+    const canonicalPrice =
+        canonicalMarket?.source === 'prestocks' ? null : pickPositive(canonicalMarket?.price, null);
     const canonicalPriceChange24h = pickFinite(canonicalMarket?.priceChange24hPercent, null);
     const isStockCanonical = canonicalMarket?.source === 'clickhouse_stock';
     const showCanonicalVolumePill = shouldShowCanonicalVolumePill(result, canonicalMarket);

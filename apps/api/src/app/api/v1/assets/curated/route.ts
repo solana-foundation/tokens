@@ -14,6 +14,7 @@ import {
     type AssetAdvisorySummaryEntry,
 } from '@/lib/advisories';
 import { scheduleCoinPriceWarm as scheduleCoinPriceWarmShared } from '@/lib/cloudrun/cacheWarm';
+import { prestocksGetLatestByMints } from '@/lib/cloudrun/prestocksReads';
 import {
     assetCollectionsGetMembers,
     assetMarketsGetLatestByAssetIds,
@@ -77,6 +78,11 @@ import {
     type TokenMarketSnapshot,
     type VariantExecutionQualitySnapshot,
 } from '../_asset-helpers';
+import {
+    buildPreStocksCanonicalMarket,
+    freshPreStocksByMint,
+    selectPreStocksMints,
+} from '../_prestocks-canonical';
 import { looksLikeSolanaMintAddress, mintToSingletonAssetId } from '../_singleton-asset-id';
 import { normalizeCoinGeckoCoinIdForAsset } from '../_coingecko-id';
 import { addMemberFallbackAssets } from './_member-fallback-assets';
@@ -867,9 +873,34 @@ export const GET = route(
                 if (row.snapshot) stockSnapshotByAssetId.set(row.assetId, row.snapshot);
             }
 
+            // PreStocks tokens have no public market to quote: their canonical
+            // market is the valuation implied by the PreStocks reference mark.
+            const preStocksMints = selectPreStocksMints(
+                canonicalAssets.flatMap(asset => asset.variants.map(variant => variant.mint)),
+            );
+            const preStocksByMint = freshPreStocksByMint(
+                preStocksMints.length > 0
+                    ? yield* prestocksGetLatestByMints({ mints: preStocksMints }).pipe(
+                          tapErrorAndDefault('assets.curated.prestocks', [], { count: preStocksMints.length }),
+                      )
+                    : [],
+            );
+            function preStocksCanonicalMarketForAsset(asset: CanonicalAsset) {
+                return buildPreStocksCanonicalMarket({
+                    variantMints: asset.variants.map(variant => variant.mint),
+                    preStocksByMint,
+                    onChainPriceUsd: mint => tokenByMint.get(mint)?.price,
+                });
+            }
+            // A fresh PreStocks reference keeps admin-created PreStocks assets
+            // (no pre-IPO marker in their id or aliases) off the stock benchmark.
+            function usesStockCanonicalMarket(asset: CanonicalAsset): boolean {
+                if (stockInstrumentByAssetId.has(asset.assetId)) return true;
+                return isCanonicalPublicEquityAsset(asset) && !preStocksCanonicalMarketForAsset(asset);
+            }
+
             function applyCanonicalStats(asset: CanonicalAsset, stats: AssetStats | null): AssetStats | null {
-                const stockInstrument = stockInstrumentByAssetId.get(asset.assetId) ?? null;
-                const shouldUseStockCanonicalMarket = Boolean(stockInstrument) || isCanonicalPublicEquityAsset(asset);
+                const shouldUseStockCanonicalMarket = usesStockCanonicalMarket(asset);
                 const coinId =
                     normalizeCoinGeckoCoinIdForAsset({ assetId: asset.assetId, coinId: asset.coingeckoId }) ?? '';
                 const stockSnapshot = stockSnapshotByAssetId.get(asset.assetId) ?? null;
@@ -891,8 +922,7 @@ export const GET = route(
 
             function canonicalMarketForAsset(asset: CanonicalAsset) {
                 const stockInstrument = stockInstrumentByAssetId.get(asset.assetId) ?? null;
-                const shouldUseStockCanonicalMarket = Boolean(stockInstrument) || isCanonicalPublicEquityAsset(asset);
-                if (shouldUseStockCanonicalMarket) {
+                if (usesStockCanonicalMarket(asset)) {
                     const snapshot = stockSnapshotByAssetId.get(asset.assetId) ?? null;
                     return {
                         source: 'clickhouse_stock' as const,
@@ -906,6 +936,9 @@ export const GET = route(
                         asOf: snapshot?.asOf ?? null,
                     };
                 }
+
+                const preStocksCanonicalMarket = preStocksCanonicalMarketForAsset(asset);
+                if (preStocksCanonicalMarket) return preStocksCanonicalMarket;
 
                 if ((asset.coingeckoId ?? '').trim().length === 0) return null;
                 const coinId =

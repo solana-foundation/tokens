@@ -18,7 +18,8 @@ Unlike the other `cloudrun-*` services, `usage` has `ingress = INGRESS_TRAFFIC_A
 | `ping` | query | trivial echo, exercises the bearer-auth path end-to-end for smoke tests |
 | `apiKeysAuthenticate` | query | parity with `convex/apiKeys.ts:authenticate`. Resolves an active key by SHA-256 hash (personal-project fallback for legacy keys, default legacy scopes) and returns the platform auth context `apps/api` uses on every authenticated `/v1` request. |
 | `logApiRequest` | mutation | parity with `convex/auth.ts:logApiRequest`. Best-effort insert into `api_request_events` (same ownership checks + latency clamping) and a deduped `api_keys.last_used_at` bump. Feeds the cloudrun-assets rollup job. |
-| `ingestUsageAggregates` | mutation | parity with `convex/apiUsageRollups.ts:ingestUsageAggregates`. Ingests usage buckets (daily + per-endpoint with latency histograms) into the rollup tables additively, in one transaction. Its original caller (the Upstash drain timer) is retired. |
+| `ingestUsageAggregates` | mutation | parity with `convex/apiUsageRollups.ts:ingestUsageAggregates`. Ingests usage buckets (daily + per-endpoint with latency histograms) into the rollup tables additively, in one transaction. Its original caller (the Upstash drain timer) is retired. Buckets are deltas; not replay-safe. |
+| `syncUsageAggregates` | mutation | Target of the API's self-drain (`apps/api/src/effect/usage-drain.ts`). Same bucket shape, but buckets carry running totals and each column is raised to the larger of stored and incoming, so a replayed batch cannot double-count. |
 
 The dashboard queries and mutations (`users.*`, `projects.*`,
 `auth.getProjectUsage*`, key reset/reveal) will be implemented incrementally by

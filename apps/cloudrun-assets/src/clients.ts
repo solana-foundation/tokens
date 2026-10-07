@@ -950,22 +950,39 @@ function preStocksNonEmptyString(value: unknown): string | null {
     return typeof value === 'string' && value.trim() ? value.trim() : null;
 }
 
+function parsePreStocksEntry(value: unknown): PreStocksApiSnapshot | null {
+    if (typeof value !== 'object' || value === null) return null;
+    const raw = value as Record<string, unknown>;
+    const mint = preStocksNonEmptyString(raw.contract_address);
+    const symbol = preStocksNonEmptyString(raw.symbol);
+    if (!mint || !symbol) return null;
+    return {
+        symbol,
+        name: preStocksNonEmptyString(raw.name),
+        mint,
+        markPriceUsd: preStocksFiniteNumber(raw.markPrice),
+        markValuationUsd: preStocksFiniteNumber(raw.markValuation),
+        tokenPriceUsd: preStocksFiniteNumber(raw.tokenPrice),
+        impliedValuationUsd: preStocksFiniteNumber(raw.impliedValuation),
+        supply: preStocksFiniteNumber(raw.supply),
+        imageUrl: preStocksNonEmptyString(raw.image),
+        externalUrl: preStocksNonEmptyString(raw.external_url),
+    };
+}
+
 export function makePreStocksClient(opts: MakePreStocksOptions = {}): PreStocksClient {
     const baseUrl = (opts.baseUrl ?? 'https://prestocks.com').replace(/\/+$/, '');
     const fetchImpl = opts.fetchImpl ?? fetch;
 
     return {
-        async fetchBySymbol(symbol: string): Promise<PreStocksApiSnapshot | null> {
-            const cleaned = symbol.trim().toUpperCase();
-            if (!/^[A-Z0-9]+$/.test(cleaned)) return null;
-            const url = `${baseUrl}/api/${cleaned}`;
+        async fetchAll(): Promise<PreStocksApiSnapshot[]> {
+            const url = `${baseUrl}/api/prestocks`;
             const res = await withExternalTiming('prestocks', url, () =>
                 fetchImpl(url, {
                     headers: { Accept: 'application/json' },
                     signal: AbortSignal.timeout(PRESTOCKS_TIMEOUT_MS),
                 }),
             );
-            if (res.status === 404) return null;
             const text = await res.text().catch(() => '');
             if (!res.ok || !text) {
                 throw new Error(`PreStocks request failed: HTTP ${res.status} ${res.statusText}`);
@@ -977,25 +994,10 @@ export function makePreStocksClient(opts: MakePreStocksOptions = {}): PreStocksC
                 // eslint-disable-next-line no-control-regex
                 json = JSON.parse(text.replace(/[\u0000-\u001f]/g, ' '));
             } catch {
-                throw new Error(`PreStocks response is not valid JSON for ${cleaned}`);
+                throw new Error('PreStocks response is not valid JSON');
             }
-            if (typeof json !== 'object' || json === null) return null;
-            const raw = json as Record<string, unknown>;
-            const mint = preStocksNonEmptyString(raw.contract_address);
-            const symbolOut = preStocksNonEmptyString(raw.symbol);
-            if (!mint || !symbolOut) return null;
-            return {
-                symbol: symbolOut,
-                name: preStocksNonEmptyString(raw.name),
-                mint,
-                markPriceUsd: preStocksFiniteNumber(raw.markPrice),
-                markValuationUsd: preStocksFiniteNumber(raw.markValuation),
-                tokenPriceUsd: preStocksFiniteNumber(raw.tokenPrice),
-                impliedValuationUsd: preStocksFiniteNumber(raw.impliedValuation),
-                supply: preStocksFiniteNumber(raw.supply),
-                imageUrl: preStocksNonEmptyString(raw.image),
-                externalUrl: preStocksNonEmptyString(raw.external_url),
-            };
+            if (!Array.isArray(json)) throw new Error('PreStocks response is not an array');
+            return json.flatMap(entry => parsePreStocksEntry(entry) ?? []);
         },
     };
 }

@@ -55,10 +55,12 @@ export {
     authenticateApiKey,
     limitsEnforce,
     logApiRequest,
+    syncUsageAggregates,
     type AuthenticateApiKeyResult,
     type LimitsEnforceArgs,
     type LimitsEnforceResult,
     type LogApiRequestArgs,
+    type UsageAggregateBucket,
 } from './platformAuth';
 
 export { listDeletedRefs, type ListDeletedRefsArgs, type ListDeletedRefsResult } from './assetDeletionTombstones';
