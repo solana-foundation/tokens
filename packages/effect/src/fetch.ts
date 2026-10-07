@@ -23,7 +23,8 @@ export interface FetchJsonArgs {
     timeout?: Duration.Input;
 }
 
-export type FetchJsonError = RateLimitedError | UpstreamHttpError | FetchFailedError | JsonParseError | UpstreamDataError;
+export type FetchJsonError =
+    RateLimitedError | UpstreamHttpError | FetchFailedError | JsonParseError | UpstreamDataError;
 
 export interface FetchHttpRecovery<T> {
     value: T;
@@ -163,7 +164,6 @@ export function fetchJsonWithRetry<T = unknown>(
     const maxRetries = Math.max(0, args.maxRetries ?? 3);
     const baseDelay = args.baseDelay ?? '200 millis';
 
-    const started = Date.now();
     const endpoint = extractEndpoint(args.url);
 
     const request = Effect.retry(fetchJson<T>(args), {
@@ -185,40 +185,48 @@ export function fetchJsonWithRetry<T = unknown>(
         }),
     );
 
-    return request.pipe(
-        Effect.tap(result =>
-            Effect.service(CurrentRequestId).pipe(
-                Effect.map(requestId =>
-                    emitExternalCall({
-                        provider: args.service,
-                        endpoint,
-                        status: result.recovered ? result.status : null,
-                        duration_ms: Date.now() - started,
-                        ok: true,
-                        ...(result.recovered ? { recovered: true, outcome: result.outcome } : {}),
-                        ...(requestId ? { request_id: requestId } : {}),
-                    }),
+    // Timed from when the request runs, not when the Effect is built, on the monotonic clock: Next.js
+    // aborts a prerender that reads Date.now() ("blocking-prerender-current-time"), and these
+    // fetches run inside server components.
+    return Effect.suspend(() => {
+        const started = performance.now();
+        const elapsedMs = () => Math.round(performance.now() - started);
+
+        return request.pipe(
+            Effect.tap(result =>
+                Effect.service(CurrentRequestId).pipe(
+                    Effect.map(requestId =>
+                        emitExternalCall({
+                            provider: args.service,
+                            endpoint,
+                            status: result.recovered ? result.status : null,
+                            duration_ms: elapsedMs(),
+                            ok: true,
+                            ...(result.recovered ? { recovered: true, outcome: result.outcome } : {}),
+                            ...(requestId ? { request_id: requestId } : {}),
+                        }),
+                    ),
                 ),
             ),
-        ),
-        Effect.tapError(err =>
-            Effect.service(CurrentRequestId).pipe(
-                Effect.map(requestId =>
-                    emitExternalCall({
-                        provider: args.service,
-                        endpoint,
-                        status: extractStatus(err),
-                        duration_ms: Date.now() - started,
-                        ok: false,
-                        error_tag: extractErrorTag(err),
-                        ...(requestId ? { request_id: requestId } : {}),
-                    }),
+            Effect.tapError(err =>
+                Effect.service(CurrentRequestId).pipe(
+                    Effect.map(requestId =>
+                        emitExternalCall({
+                            provider: args.service,
+                            endpoint,
+                            status: extractStatus(err),
+                            duration_ms: elapsedMs(),
+                            ok: false,
+                            error_tag: extractErrorTag(err),
+                            ...(requestId ? { request_id: requestId } : {}),
+                        }),
+                    ),
                 ),
             ),
-        ),
-        Effect.map(result => result.value),
-        Effect.withSpan(`external.${args.service}`),
-    );
+            Effect.map(result => result.value),
+            Effect.withSpan(`external.${args.service}`),
+        );
+    });
 }
 
 function extractEndpoint(url: string): string {

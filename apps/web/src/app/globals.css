@@ -79,25 +79,6 @@ samp {
     }
 }
 
-@keyframes market-feed-ticker {
-    from {
-        transform: translateX(0);
-    }
-
-    to {
-        transform: translateX(calc(-50% - 0.25rem));
-    }
-}
-
-.market-feed-ticker {
-    animation: market-feed-ticker 22s linear infinite;
-}
-
-.market-feed-ticker-viewport:hover .market-feed-ticker,
-.market-feed-ticker-viewport:focus-within .market-feed-ticker {
-    animation-play-state: paused;
-}
-
 @supports (animation-timeline: scroll(self)) {
     .market-feed-news-scroll {
         animation: market-feed-mask-up linear both;
@@ -132,10 +113,6 @@ samp {
 }
 
 @media (prefers-reduced-motion: reduce) {
-    .market-feed-ticker {
-        animation: none;
-    }
-
     .market-feed-news-scroll {
         animation: none;
         mask-image: none;
