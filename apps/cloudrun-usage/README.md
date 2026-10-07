@@ -9,7 +9,7 @@ Unlike the other `cloudrun-*` services, `usage` has `ingress = INGRESS_TRAFFIC_A
 - `GET /health` — Cloud Run startup/liveness probe.
 - `POST /query/{name}` — bearer-auth, called by `apps/api`'s `CloudRunClient` (`Authorization: Bearer <TOKENS_CLOUDRUN_AUTH_TOKEN>`). Same shape as `cloudrun-assets`.
 - `POST /mutation/{name}` — bearer-auth, same gate as `/query/*`.
-- Caller identity: an optional `x-tokens-identity` header (base64 JSON `{clerkUserId, projectId?, email?}`) carries the Clerk-session-verified caller for user-scoped handlers, which enforce membership/role checks in SQL against it.
+- Caller identity: an optional `x-tokens-identity` header carries the Clerk-session-verified caller for user-scoped handlers, which enforce membership/role checks in SQL against it. The header is a **signed token** (`@tokens/cloudrun-shutdown/identity`): `base64url(payload).base64url(HMAC-SHA256)` where the payload is `{v:1, clerkUserId, projectId?, email?, kind, fn, bodySha256, iat, exp}`. The token is bound to the RPC (`kind` + `fn`), to the exact request body, and to a 60 s window; anything that fails verification is a `401 {error:'identity_invalid', reason}` before the handler runs, even for RPCs that ignore identity. During the rollout `TOKENS_IDENTITY_ACCEPT_UNSIGNED=true` also admits the legacy unsigned base64 JSON form.
 
 ## Implemented
 
@@ -31,6 +31,9 @@ the maintainers.
 | --- | --- | --- |
 | `DATABASE_URL` | yes | Cloud SQL Postgres connection string |
 | `TOKENS_CLOUDRUN_AUTH_TOKEN` | yes | Shared bearer token with the `CloudRunClient` caller for `/query/*` + `/mutation/*` |
+| `TOKENS_IDENTITY_SIGNING_SECRET` | yes\* | HMAC key verifying the signed `x-tokens-identity` token (apps/app signs with the same value). \*May be unset only while `TOKENS_IDENTITY_ACCEPT_UNSIGNED=true`; the process refuses to start with neither. |
+| `TOKENS_IDENTITY_ACCEPT_UNSIGNED` | no | `true` keeps accepting the legacy unsigned identity header during the signed-token rollout. Remove once every caller signs. |
+| `TOKENS_API_KEY_ENCRYPTION_SECRET` | no | Required for key reset/reveal (AES-GCM reveal copy); those handlers error without it |
 | `PORT` | no | Defaults to 8080 |
 | `PG_POOL_MAX` | no | postgres-js connection pool size, default 10 |
 | `PG_IDLE_TIMEOUT` | no | seconds, default 30 |
@@ -38,7 +41,7 @@ the maintainers.
 ## Local dev
 
 ```bash
-DATABASE_URL=postgres://... TOKENS_CLOUDRUN_AUTH_TOKEN=dev \
+DATABASE_URL=postgres://... TOKENS_CLOUDRUN_AUTH_TOKEN=dev TOKENS_IDENTITY_SIGNING_SECRET=dev-identity-signing-secret \
     bun run apps/cloudrun-usage/src/index.ts
 ```
 

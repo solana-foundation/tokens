@@ -11,6 +11,27 @@ if (!authToken) {
     process.exit(1);
 }
 
+// Signed x-tokens-identity verification. Mode table (secret = signing secret,
+// flag = TOKENS_IDENTITY_ACCEPT_UNSIGNED):
+//   secret set,   flag off → signed only (target state)
+//   secret set,   flag on  → signed + legacy (rollout window)
+//   secret unset, flag on  → legacy only (pre-rollout)
+//   secret unset, flag off → misconfigured; refuse to start so the previous
+//                            revision keeps serving.
+const identitySigningSecret = process.env.TOKENS_IDENTITY_SIGNING_SECRET?.trim();
+const acceptUnsignedIdentity = process.env.TOKENS_IDENTITY_ACCEPT_UNSIGNED?.trim() === 'true';
+if (!identitySigningSecret && !acceptUnsignedIdentity) {
+    console.error(
+        'TOKENS_IDENTITY_SIGNING_SECRET must be set (or TOKENS_IDENTITY_ACCEPT_UNSIGNED=true during rollout)',
+    );
+    process.exit(1);
+}
+if (!identitySigningSecret) {
+    console.warn('TOKENS_IDENTITY_SIGNING_SECRET is not set — accepting legacy unsigned identity headers only');
+} else if (acceptUnsignedIdentity) {
+    console.warn('TOKENS_IDENTITY_ACCEPT_UNSIGNED=true — legacy unsigned identity headers are still accepted');
+}
+
 const apiKeyEncryptionSecret = process.env.TOKENS_API_KEY_ENCRYPTION_SECRET?.trim();
 if (!apiKeyEncryptionSecret) {
     console.warn('TOKENS_API_KEY_ENCRYPTION_SECRET is not set — API key reset/reveal will be unavailable');
@@ -46,6 +67,8 @@ const app = createApp({
         ...(process.env.TOKENS_ENV?.trim() ? { envLabel: process.env.TOKENS_ENV.trim() } : {}),
     },
     authToken,
+    ...(identitySigningSecret ? { identitySigningSecret } : {}),
+    ...(acceptUnsignedIdentity ? { acceptUnsignedIdentity } : {}),
 });
 
 registerGracefulShutdown({ sql, serviceName: 'cloudrun-usage' });
