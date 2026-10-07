@@ -136,11 +136,11 @@ describe('pageSectors', () => {
     };
     const trending = { id: 'trending', label: 'Trending', assets: [asset('near', -1)] };
 
-    test('orders Crypto, Stocks, Trending, ETFs, then the rest in their own order', () => {
+    test('orders Trending, Crypto, Stocks, ETFs, then the rest in their own order', () => {
         expect(pageSectors(data, trending).sectors.map(s => s.id)).toEqual([
+            'trending',
             'majors',
             'stocks',
-            'trending',
             'etfs',
             'currencies',
             'rwas',

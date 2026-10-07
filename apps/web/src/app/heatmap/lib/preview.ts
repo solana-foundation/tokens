@@ -15,7 +15,7 @@ export const TRENDING_SECTOR_ID = 'trending';
 const FALLBACK_SECTOR = 'stocks';
 
 /** Row order on the heat map page; categories not listed follow in their own order. */
-export const PAGE_ROW_ORDER: readonly string[] = ['majors', 'stocks', TRENDING_SECTOR_ID, 'etfs'];
+export const PAGE_ROW_ORDER: readonly string[] = [TRENDING_SECTOR_ID, 'majors', 'stocks', 'etfs'];
 
 /**
  * The heat map page's rows: the categories in PAGE_ROW_ORDER (Trending included when available),
