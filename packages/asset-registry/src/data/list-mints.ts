@@ -478,7 +478,6 @@ export const STOCKS_MINTS: readonly string[] = [
     'PresTj4Yc2bAR197Er7wz4UUKSfqt6FryBEdAriBoQB',
     'Pre8AREmFPtoJFT8mQSXQLh56cwJmM7CFDRuoGBZiUP',
     'PreLWGkkeqG1s4HEfFZSy9moCrJ7btsHuUtfcCeoRua',
-    'PreC1KtJ1sBPPqaeeqL6Qb15GTLCYVvyYEwxhdfTwfx', // xAI (PreStocks)
     'y6kSRF4i9tfMMjZziPHtQE1PeUS6bWEHTzZMFgXondo', // STRCon
 
     // Ondo stocks batch (2026-06-18).
