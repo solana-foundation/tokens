@@ -42,6 +42,48 @@ resource "google_secret_manager_secret_iam_member" "cloudrun_auth_token_accessor
   depends_on = [google_project_service.secretmanager]
 }
 
+# HMAC key for the signed `x-tokens-identity` token apps/app sends to the usage
+# service (see docs/security/threat-model-api-keys.md). Generated here like the
+# bearer token; the value must also be set on the Vercel app project
+# (Production = prd, Preview = stg) as TOKENS_IDENTITY_SIGNING_SECRET.
+resource "random_password" "identity_signing_secret" {
+  length  = 64
+  special = false
+
+  keepers = {
+    env = var.env
+  }
+}
+
+resource "google_secret_manager_secret" "identity_signing_secret" {
+  project   = var.project_id
+  secret_id = "tokens-identity-signing-secret-${var.env}"
+
+  replication {
+    user_managed {
+      replicas {
+        location = var.region
+      }
+    }
+  }
+
+  depends_on = [google_project_service.secretmanager]
+}
+
+resource "google_secret_manager_secret_version" "identity_signing_secret" {
+  secret      = google_secret_manager_secret.identity_signing_secret.id
+  secret_data = random_password.identity_signing_secret.result
+}
+
+resource "google_secret_manager_secret_iam_member" "identity_signing_secret_accessor" {
+  project   = var.project_id
+  secret_id = google_secret_manager_secret.identity_signing_secret.secret_id
+  role      = "roles/secretmanager.secretAccessor"
+  member    = "serviceAccount:${var.runtime_sa_email}"
+
+  depends_on = [google_project_service.secretmanager]
+}
+
 # API key reveal-encryption secret. NO version is managed here: the value MUST
 # be byte-identical to the TOKENS_API_KEY_ENCRYPTION_SECRET Convex used (keys
 # encrypted before the migration must still decrypt). Seed it out-of-band:

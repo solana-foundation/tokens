@@ -9,6 +9,17 @@ output "cloudrun_auth_token_value" {
   description = "Generated bearer token. Copy into Doppler (tokens/<env>) and Vercel (apps/api) as TOKENS_CLOUDRUN_AUTH_TOKEN after first apply."
 }
 
+output "identity_signing_secret_id" {
+  value       = google_secret_manager_secret.identity_signing_secret.secret_id
+  description = "Secret Manager secret id for TOKENS_IDENTITY_SIGNING_SECRET (usage service verifier)."
+}
+
+output "identity_signing_secret_value" {
+  value       = random_password.identity_signing_secret.result
+  sensitive   = true
+  description = "Generated identity signing secret. Copy into Vercel (apps/app; Production = prd, Preview = stg) as TOKENS_IDENTITY_SIGNING_SECRET after first apply."
+}
+
 output "database_url_secret_id" {
   value       = google_secret_manager_secret.database_url.secret_id
   description = "Secret Manager secret id for DATABASE_URL."
