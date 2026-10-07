@@ -1,22 +1,17 @@
 import 'server-only';
 
+import { IDENTITY_HEADER, signIdentityToken, type IdentityClaims } from '@tokens/cloudrun-shutdown/identity';
+
 /**
  * Minimal Cloud Run client for the dashboard (usage service only).
- * Trimmed copy of `apps/api/src/lib/cloudrun/client.ts` — bearer token +
- * base64 `x-tokens-identity` header carrying the Clerk-session-verified caller.
+ * Trimmed copy of `apps/api/src/lib/cloudrun/client.ts` — bearer token plus a
+ * signed `x-tokens-identity` token carrying the Clerk-session-verified caller,
+ * bound to this exact RPC and body (see `@tokens/cloudrun-shutdown/identity`).
  */
 
-export interface CloudRunCallerIdentity {
-    clerkUserId: string;
-    projectId?: string;
-    email?: string;
-}
+export type CloudRunCallerIdentity = IdentityClaims;
 
-export const CLOUDRUN_IDENTITY_HEADER = 'x-tokens-identity';
-
-export function encodeCallerIdentity(identity: CloudRunCallerIdentity): string {
-    return Buffer.from(JSON.stringify(identity), 'utf8').toString('base64');
-}
+export const CLOUDRUN_IDENTITY_HEADER = IDENTITY_HEADER;
 
 export class CloudRunCallError extends Error {
     constructor(
@@ -45,7 +40,13 @@ export async function callCloudRunUsage<T>(
 ): Promise<T> {
     const base = requireEnv('TOKENS_CLOUDRUN_USAGE_URL').replace(/\/$/, '');
     const authToken = requireEnv('TOKENS_CLOUDRUN_AUTH_TOKEN');
+    const signingSecret = requireEnv('TOKENS_IDENTITY_SIGNING_SECRET');
     const timeoutMs = Number(process.env.TOKENS_CLOUDRUN_TIMEOUT_MS) || 15_000;
+
+    // The body string is hashed into the identity token, so serialise once and
+    // send those exact bytes.
+    const body = JSON.stringify(args);
+    const identityToken = await signIdentityToken(identity, { kind, fn: name, body }, signingSecret);
 
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), timeoutMs);
@@ -56,9 +57,9 @@ export async function callCloudRunUsage<T>(
             headers: {
                 'content-type': 'application/json',
                 authorization: `Bearer ${authToken}`,
-                [CLOUDRUN_IDENTITY_HEADER]: encodeCallerIdentity(identity),
+                [CLOUDRUN_IDENTITY_HEADER]: identityToken,
             },
-            body: JSON.stringify(args),
+            body,
         });
         if (!res.ok) {
             const body = await res.text().catch(() => '');
