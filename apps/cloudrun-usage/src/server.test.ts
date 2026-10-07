@@ -19,6 +19,7 @@ const noopPlatformAuth: PlatformAuthRepo = {
 
 const noopUsageIngest: UsageIngestRepo = {
     applyIngestBuckets: async () => {},
+    applySyncBuckets: async () => {},
 };
 
 export const noopIdentity: IdentityRepo = {
@@ -253,6 +254,7 @@ describe('createApp', () => {
     it('POST /mutation/ingestUsageAggregates applies buckets', async () => {
         const applied: unknown[] = [];
         const usageIngest: UsageIngestRepo = {
+            ...noopUsageIngest,
             applyIngestBuckets: async args => {
                 applied.push(args);
             },
@@ -338,8 +340,35 @@ describe('createApp', () => {
         expect(((await res.json()) as { clerkUserId: string }).clerkUserId).toBe('user_1');
     });
 
+    it('POST /mutation/syncUsageAggregates routes to the replay-safe write', async () => {
+        const added: unknown[] = [];
+        const synced: unknown[] = [];
+        const usageIngest: UsageIngestRepo = {
+            applyIngestBuckets: async args => {
+                added.push(args);
+            },
+            applySyncBuckets: async args => {
+                synced.push(args);
+            },
+        };
+        const res = await call(makeApp({ usageIngest }), '/mutation/syncUsageAggregates', {
+            method: 'POST',
+            headers: { authorization: 'Bearer tok', 'content-type': 'application/json' },
+            body: JSON.stringify({
+                buckets: [
+                    { projectId: 'p', day: '2026-07-01', totalCalls: 3, assetCalls: 1, successCalls: 3, sumLatencyMs: 9 },
+                ],
+            }),
+        });
+        expect(res.status).toBe(200);
+        expect(await res.json()).toEqual({ ingested: 1, dailyBuckets: 1, endpointBuckets: 0 });
+        expect(synced).toHaveLength(1);
+        expect(added).toHaveLength(0);
+    });
+
     it('POST /mutation hides handler-thrown errors as 500', async () => {
         const usageIngest: UsageIngestRepo = {
+            ...noopUsageIngest,
             applyIngestBuckets: async () => {
                 throw new Error('connection refused on db-internal');
             },

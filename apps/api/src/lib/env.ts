@@ -22,11 +22,16 @@ export interface ApiEnv {
     ddApiKey: string | null;
     cacheWarmSecret: string | null;
     usageIngestSecret: string | null;
+    /** Sent by Vercel Cron as a bearer token; guards the scheduled usage drain. */
+    cronSecret: string | null;
     playgroundProxySecret: string | null;
     usageLogMode: 'aggregated' | 'raw' | 'off';
+    /** Always 0 in `aggregated` mode, see `readUsageRawSampleRate`. */
     usageRawSampleRate: number;
     authCacheTtlSeconds: number;
     usageAggregationTtlSeconds: number;
+    /** Min seconds between drains of the Redis usage aggregates into the rollup tables; 0 disables. */
+    usageDrainIntervalSeconds: number;
     /**
      * Default per-key rate limit / quota applied when a key has no explicit
      * per-project override. Tunable via env so real limits can be set before
@@ -83,6 +88,34 @@ function readUsageLogMode(): ApiEnv['usageLogMode'] {
     return getDefaultUsageLogMode();
 }
 
+/**
+ * In `aggregated` mode the usage sync owns the rollup rows and keeps the
+ * larger of stored and incoming totals. A sampled raw event would be added to
+ * those same rows by the event rollup job, counting that request twice, so
+ * sampling is forced off there (and says so, rather than silently).
+ */
+function readUsageRawSampleRate(mode: ApiEnv['usageLogMode']): number {
+    const rate = readNumber('TOKENS_USAGE_RAW_SAMPLE_RATE', 0, 0, 1);
+    if (mode !== 'aggregated' || rate === 0) return rate;
+    console.warn(
+        JSON.stringify({
+            event: 'env_ignored_value',
+            name: 'TOKENS_USAGE_RAW_SAMPLE_RATE',
+            raw: String(rate),
+            used: 0,
+            reason: 'raw sampling would double-count usage in aggregated mode',
+        }),
+    );
+    return 0;
+}
+
+/**
+ * Usage hashes are keyed per UTC day and hold running totals. The TTL is
+ * refreshed on every write, so with a TTL above one day a hash cannot expire
+ * and restart from zero while its day is still receiving requests.
+ */
+const MIN_USAGE_AGGREGATION_TTL_SECONDS = 90_000;
+
 function readCloudRunEnv(): ApiEnv['cloudRun'] {
     const authToken = readTrimmed('TOKENS_CLOUDRUN_AUTH_TOKEN');
     const assets = readTrimmed('TOKENS_CLOUDRUN_ASSETS_URL');
@@ -118,6 +151,8 @@ export function loadEnv(): ApiEnv {
         );
     }
 
+    const usageLogMode = readUsageLogMode();
+
     cached = {
         upstash: upstashUrl && upstashToken ? { url: upstashUrl, token: upstashToken } : null,
         cloudRun: readCloudRunEnv(),
@@ -127,13 +162,15 @@ export function loadEnv(): ApiEnv {
         ddApiKey: readTrimmed('DD_API_KEY'),
         cacheWarmSecret: readTrimmed('TOKENS_CACHE_WARM_SECRET'),
         usageIngestSecret: readTrimmed('TOKENS_USAGE_INGEST_SECRET'),
+        cronSecret: readTrimmed('CRON_SECRET'),
         playgroundProxySecret: readTrimmed('TOKENS_PLAYGROUND_PROXY_SECRET'),
-        usageLogMode: readUsageLogMode(),
-        usageRawSampleRate: readNumber('TOKENS_USAGE_RAW_SAMPLE_RATE', 0, 0, 1),
+        usageLogMode,
+        usageRawSampleRate: readUsageRawSampleRate(usageLogMode),
         authCacheTtlSeconds: Math.floor(readNumber('TOKENS_AUTH_CACHE_TTL_SECONDS', 60, 0, 300)),
         usageAggregationTtlSeconds: Math.floor(
-            readNumber('TOKENS_USAGE_AGGREGATION_TTL_SECONDS', 172_800, 60, 604_800),
+            readNumber('TOKENS_USAGE_AGGREGATION_TTL_SECONDS', 172_800, MIN_USAGE_AGGREGATION_TTL_SECONDS, 604_800),
         ),
+        usageDrainIntervalSeconds: Math.floor(readNumber('TOKENS_USAGE_DRAIN_INTERVAL_SECONDS', 60, 0, 3_600)),
         defaultRateLimit: {
             requests: Math.floor(readNumber('TOKENS_DEFAULT_RATE_LIMIT_REQUESTS', 400, 1, 10_000_000)),
             windowSeconds: Math.floor(readNumber('TOKENS_DEFAULT_RATE_LIMIT_WINDOW_SECONDS', 10, 1, 3_600)),

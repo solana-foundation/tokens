@@ -30,13 +30,15 @@ describe('proxy public route allowlist', () => {
             '/api/v2/lists/search-tokens?q=usdc',
             '/api/v2/search?q=usdc',
             '/api/v2/resolve?q=usdc',
+            // Scheduler-only; guarded by a shared secret in the handler.
+            '/api/internal/usage-drain',
         ]) {
             expect(isPublicRoute(req(path))).toBe(true);
         }
     });
 
     it('keeps first-party and admin routes behind Clerk', () => {
-        for (const path of ['/api/v1/whoami', '/api/x/other', '/api/admin/anything']) {
+        for (const path of ['/api/v1/whoami', '/api/x/other', '/api/admin/anything', '/api/internal/other']) {
             expect(isPublicRoute(req(path))).toBe(false);
         }
     });
