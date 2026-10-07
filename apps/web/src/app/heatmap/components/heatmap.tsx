@@ -28,7 +28,7 @@ import {
     type HeatmapView,
 } from '../lib/camera';
 import { populatedOnly } from '../lib/populated';
-import { layoutAsset, layoutOverview, layoutSector, type HeatmapLayout, type LayoutTile } from '../lib/treemap';
+import { layoutAsset, layoutOverviewRows, layoutSector, type HeatmapLayout, type LayoutTile } from '../lib/treemap';
 import {
     HEATMAP_PERIODS,
     type HeatmapAsset,
@@ -79,6 +79,11 @@ type Scene =
  * offset) of a tile on the edge is drawn whole instead of cut off.
  */
 const STAGE_PADDING = 4;
+/** Sector and asset views fill the viewport below the page header; the overview is as tall as its rows. */
+const STAGE_MIN_HEIGHT = 440;
+const STAGE_VIEWPORT_INSET = 280;
+/** Fixed site header plus breathing room, when scrolling a view into place. */
+const SCROLL_OFFSET = 96;
 
 const ZOOM_MS = 460;
 const FADE_MS = 180;
@@ -241,15 +246,20 @@ export function Heatmap({ data: allData }: { data: HeatmapData }) {
         const element = stageRef.current;
         if (!element) return;
 
+        // Width from the element; height from the window (the element's own height follows the view).
         const measure = () => {
             const width = Math.floor(element.clientWidth) - STAGE_PADDING * 2;
-            const height = Math.floor(element.clientHeight) - STAGE_PADDING * 2;
+            const height = Math.max(STAGE_MIN_HEIGHT, window.innerHeight - STAGE_VIEWPORT_INSET) - STAGE_PADDING * 2;
             setStage(current => (current?.width === width && current.height === height ? current : { width, height }));
         };
         measure();
         const observer = new ResizeObserver(measure);
         observer.observe(element);
-        return () => observer.disconnect();
+        window.addEventListener('resize', measure);
+        return () => {
+            observer.disconnect();
+            window.removeEventListener('resize', measure);
+        };
     }, []);
 
     // Layouts are pure functions of (view, stage size): compute each once, so hovering a tile can
@@ -270,7 +280,7 @@ export function Heatmap({ data: allData }: { data: HeatmapData }) {
                 const sector = index.sectors.get(target.sectorId);
                 if (sector) computed = layoutSector(sector, size.width, size.height);
             }
-            const result = computed ?? layoutOverview(data, size.width, size.height);
+            const result = computed ?? layoutOverviewRows(data, size.width);
             layoutCache.set(cacheKey, result);
             return result;
         },
@@ -422,6 +432,39 @@ export function Heatmap({ data: allData }: { data: HeatmapData }) {
         (next: HeatmapPeriod) => void setQuery({ period: next }, { history: 'replace' }),
         [setQuery],
     );
+    // Views deeper than the overview fill the stage: bring it into view. Coming back, land on the
+    // row that was open, which may be anywhere down the page.
+    const previousViewRef = useRef(view);
+    useEffect(() => {
+        const previous = previousViewRef.current;
+        previousViewRef.current = view;
+        if (previous === view) return;
+        const element = stageRef.current;
+        if (!element) return;
+
+        const behavior: ScrollBehavior = reduceMotion ? 'auto' : 'smooth';
+        if (view.level !== 'overview') {
+            const top = element.getBoundingClientRect().top + window.scrollY - SCROLL_OFFSET;
+            if (window.scrollY > top + 1) window.scrollTo({ top: Math.max(0, top), behavior });
+            return;
+        }
+        const sectorId =
+            previous.level === 'sector'
+                ? previous.sectorId
+                : previous.level === 'asset'
+                  ? index.assets.get(previous.assetId)?.sectorId
+                  : null;
+        const row = sectorId
+            ? element.querySelector<HTMLElement>(`[data-sector-header="${CSS.escape(sectorId)}"]`)
+            : null;
+        if (row) {
+            window.scrollTo({
+                top: Math.max(0, row.getBoundingClientRect().top + window.scrollY - SCROLL_OFFSET),
+                behavior,
+            });
+        }
+    }, [view, index, reduceMotion]);
+
     const openAsset = useCallback((assetId: string) => void setQuery({ asset: assetId }), [setQuery]);
     const openSector = useCallback((sectorId: string) => void setQuery({ sector: sectorId, asset: null }), [setQuery]);
     const openOverview = useCallback(() => void setQuery({ sector: null, asset: null }), [setQuery]);
@@ -545,6 +588,12 @@ export function Heatmap({ data: allData }: { data: HeatmapData }) {
                   { spec: scene.over, z: 2 },
               ];
     const isEmpty = destination !== null && destination.layout.groups.length === 0;
+    // The overview is as tall as its rows; other views fill the viewport.
+    const stageHeight =
+        (destination?.layout.level === 'overview'
+            ? destination.layout.height
+            : (stage?.height ?? STAGE_MIN_HEIGHT - STAGE_PADDING * 2)) +
+        STAGE_PADDING * 2;
 
     return (
         <div>
@@ -559,7 +608,8 @@ export function Heatmap({ data: allData }: { data: HeatmapData }) {
                 ref={stageRef}
                 // Focus lands here while a zoom retires the layer that held it.
                 tabIndex={-1}
-                className={`relative h-[max(440px,calc(100dvh-280px))] w-full overflow-hidden rounded-lg outline-none ${scene ? '' : 'animate-pulse bg-gray-50'}`}
+                className={`relative w-full overflow-hidden rounded-lg outline-none ${scene ? '' : 'animate-pulse bg-gray-50'}`}
+                style={{ height: stageHeight }}
                 onPointerMove={onPointerMove}
                 onPointerDown={event => prepare(event.target)}
                 onPointerLeave={hideTooltip}

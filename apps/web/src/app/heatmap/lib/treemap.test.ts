@@ -3,8 +3,10 @@ import { describe, expect, test } from 'bun:test';
 import {
     layoutAsset,
     layoutOverview,
+    layoutOverviewRows,
     layoutSector,
     OVERVIEW_BALANCE,
+    rowHeight,
     TILE_EXPONENT,
     type HeatmapLayout,
     type Rect,
@@ -161,6 +163,47 @@ describe('layoutOverview', () => {
     test('returns no groups for an empty stage or empty data', () => {
         expect(layoutOverview(skewed, 0, HEIGHT).groups).toEqual([]);
         expect(layoutOverview(data([]), WIDTH, HEIGHT).groups).toEqual([]);
+    });
+});
+
+describe('layoutOverviewRows', () => {
+    const stacked = data([
+        sector('majors', [5000, 4000, 3000, 2000, 1000, 500, 250]),
+        sector('currencies', [300, 100, 50]),
+        sector(
+            'stocks',
+            Array.from({ length: 300 }, (_, index) => 10_000 / (index + 1)),
+        ),
+    ]);
+
+    test('one full-width row per category, in data order, each with a label', () => {
+        const layout = layoutOverviewRows(stacked, WIDTH);
+
+        expect(layout.level).toBe('overview');
+        expect(layout.groups.map(group => group.id)).toEqual(['majors', 'currencies', 'stocks']);
+        for (const group of layout.groups) {
+            expect(group.rect.x).toBe(0);
+            expect(group.rect.w).toBe(WIDTH);
+            expect(group.headerHeight).toBeGreaterThan(0);
+        }
+        expectTiled(layout);
+    });
+
+    test('rows stack top to bottom with a gap, and the layout is as tall as they need', () => {
+        const layout = layoutOverviewRows(stacked, WIDTH);
+        const [first, second, third] = layout.groups;
+
+        expect(second!.rect.y).toBeGreaterThan(first!.rect.y + first!.rect.h);
+        expect(third!.rect.y).toBeGreaterThan(second!.rect.y + second!.rect.h);
+        expect(layout.height).toBe(third!.rect.y + third!.rect.h);
+        expect(layout.height).toBeGreaterThan(HEIGHT);
+    });
+
+    test('a row grows with its asset count, within limits', () => {
+        expect(rowHeight(1)).toBe(112);
+        expect(rowHeight(36)).toBeGreaterThan(rowHeight(13));
+        expect(rowHeight(300)).toBe(440);
+        expect(rowHeight(10_000)).toBe(440);
     });
 });
 

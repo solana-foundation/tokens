@@ -81,12 +81,19 @@ describe('anchorFor', () => {
 
 describe('cameraMove', () => {
     test('zooms in on the tile being entered', () => {
-        expect(cameraMove(overview, OVERVIEW, bitcoinAsset, ASSET)).toEqual({ mode: 'in', anchor: BITCOIN });
-        expect(cameraMove(overview, OVERVIEW, cryptoSector, SECTOR)).toEqual({ mode: 'in', anchor: CRYPTO });
+        expect(cameraMove(cryptoSector, SECTOR, bitcoinAsset, ASSET)).toEqual({
+            mode: 'in',
+            anchor: { x: 0, y: 0, w: 700, h: 600 },
+        });
+    });
+
+    test('fades to and from the overview, which is a scrolling stack of rows', () => {
+        expect(cameraMove(overview, OVERVIEW, bitcoinAsset, ASSET)).toEqual({ mode: 'fade' });
+        expect(cameraMove(overview, OVERVIEW, cryptoSector, SECTOR)).toEqual({ mode: 'fade' });
+        expect(cameraMove(bitcoinAsset, ASSET, overview, OVERVIEW)).toEqual({ mode: 'fade' });
     });
 
     test('zooms out to the tile being left', () => {
-        expect(cameraMove(bitcoinAsset, ASSET, overview, OVERVIEW)).toEqual({ mode: 'out', anchor: BITCOIN });
         expect(cameraMove(bitcoinAsset, ASSET, cryptoSector, SECTOR)).toEqual({
             mode: 'out',
             anchor: { x: 0, y: 0, w: 700, h: 600 },
@@ -95,7 +102,7 @@ describe('cameraMove', () => {
 
     test('fades when neither view is drawn inside the other', () => {
         const other: HeatmapView = { level: 'asset', assetId: 'merged-away' };
-        expect(cameraMove(overview, OVERVIEW, bitcoinAsset, other)).toEqual({ mode: 'fade' });
+        expect(cameraMove(cryptoSector, SECTOR, bitcoinAsset, other)).toEqual({ mode: 'fade' });
     });
 });
 

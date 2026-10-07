@@ -54,6 +54,10 @@ export function cameraMove(
     nextLayout: HeatmapLayout,
     nextView: HeatmapView,
 ): CameraMove {
+    // The overview is a scrolling stack of rows, taller than the stage: a row can be anywhere on
+    // the page, so views enter and leave it with a fade instead of a camera move.
+    if (previousLayout.level === 'overview' || nextLayout.level === 'overview') return { mode: 'fade' };
+
     const entering = anchorFor(previousLayout, nextView);
     if (usable(entering)) return { mode: 'in', anchor: entering };
 

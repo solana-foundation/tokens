@@ -107,6 +107,8 @@ interface ComputedGroup<T> {
 interface ComputeOptions {
     width: number;
     height: number;
+    /** Draw group labels even for a single group (defaults to: only when there are several). */
+    header?: boolean;
     balance: Balance;
     /**
      * Fold unreadably small tiles into "+N more", or enlarge them to at least `minArea` px² and
@@ -196,7 +198,7 @@ function compute<T>(inputs: Array<GroupInput<T>>, options: ComputeOptions): Arra
         groups.map(group => group.items.length),
         options.balance,
     );
-    const showHeaders = groups.length > 1;
+    const showHeaders = options.header ?? groups.length > 1;
 
     // Per-group working state: tiles to draw (largest first) and tiles folded into "+N more".
     const state = groups.map((group, index) => {
@@ -412,6 +414,52 @@ export function layoutOverview(data: HeatmapData, width: number, height: number)
         { width, height, balance: OVERVIEW_BALANCE, overflow: { mode: 'merge' } },
     );
     return toLayout('overview', computed, width, height, assetTile);
+}
+
+/** Overview as rows: the gap between category rows and the limits on a row's map height. */
+const ROW_GAP = 16;
+const ROW_MIN_HEIGHT = 112;
+const ROW_MAX_HEIGHT = 440;
+
+/** Room for a category's map: grows with the square root of its asset count, within limits. */
+export function rowHeight(assetCount: number): number {
+    return Math.round(Math.min(ROW_MAX_HEIGHT, Math.max(ROW_MIN_HEIGHT, 72 + 26 * Math.sqrt(assetCount))));
+}
+
+function shiftRect(rect: Rect, dy: number): Rect {
+    return { ...rect, y: rect.y + dy };
+}
+
+function shiftGroup<T>(group: ComputedGroup<T>, dy: number): ComputedGroup<T> {
+    return {
+        ...group,
+        rect: shiftRect(group.rect, dy),
+        shown: group.shown.map(entry => ({ ...entry, rect: shiftRect(entry.rect, dy) })),
+        moreRect: group.moreRect ? shiftRect(group.moreRect, dy) : null,
+    };
+}
+
+/**
+ * The overview as stacked rows: one full-width heat map per category, in the home page's order,
+ * each with its label and a height from its asset count. The layout is as tall as the rows need.
+ */
+export function layoutOverviewRows(data: HeatmapData, width: number): HeatmapLayout {
+    const computed: Array<ComputedGroup<HeatmapAsset>> = [];
+    let y = 0;
+    for (const sector of data.sectors) {
+        if (sector.assets.length === 0) continue;
+        const height = GROUP_HEADER_HEIGHT + rowHeight(sector.assets.length);
+        const [group] = compute([{ id: sector.id, label: sector.label, items: sector.assets.map(assetItem) }], {
+            width,
+            height,
+            header: true,
+            balance: OVERVIEW_BALANCE,
+            overflow: { mode: 'merge' },
+        });
+        if (group) computed.push(shiftGroup(group, y));
+        y += height + ROW_GAP;
+    }
+    return toLayout('overview', computed, width, Math.max(0, y - ROW_GAP), assetTile);
 }
 
 /** One sector filling the viewport; every asset is drawn, the smallest enlarged to stay readable. */
