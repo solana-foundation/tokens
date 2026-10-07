@@ -132,7 +132,7 @@ jobs:
           shopt -s nullglob
           for f in notification-policies/contact-points/*.json; do
             uid=$(jq -r '.uid' "$f")
-            payload=$(envsubst < "$f")
+            payload=$(envsubst '${PAGERDUTY_INTEGRATION_KEY} ${GRAFANA_SLACK_WEBHOOK_URL}' < "$f")
             http_code=$(curl -sS -o /tmp/resp.json -w '%{http_code}' \
               -X PUT "$GRAFANA_API_URL/api/v1/provisioning/contact-points/$uid" \
               -H "Authorization: Bearer $GRAFANA_API_TOKEN" \
