@@ -2,7 +2,7 @@
     "uid": "tokens-stablecoin-depeg-circuit-open",
     "title": "tokens-assets: depeg reconciler circuit breaker opened",
     "ruleGroup": "tokens-stablecoin-depeg",
-    "folderUID": "tokens-xyz",
+    "folderUID": "tokens",
     "noDataState": "OK",
     "execErrState": "OK",
     "for": "0s",
@@ -80,6 +80,13 @@
         "severity": "critical",
         "pagerduty": "true",
         "slack": "true"
+    },
+    "notification_settings": {
+        "receiver": "tokens-critical",
+        "group_by": ["grafana_folder", "alertname"],
+        "group_wait": "30s",
+        "group_interval": "5m",
+        "repeat_interval": "4h"
     },
     "annotations": {
         "summary": "Depeg reconciler refused to act (suspicious_drop / mass_tier_flip / mass_action)",

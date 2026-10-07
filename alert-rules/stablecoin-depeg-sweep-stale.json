@@ -2,7 +2,7 @@
     "uid": "tokens-stablecoin-depeg-sweep-stale",
     "title": "tokens-assets: no depeg sweep summary in 9h",
     "ruleGroup": "tokens-stablecoin-depeg",
-    "folderUID": "tokens-xyz",
+    "folderUID": "tokens",
     "noDataState": "Alerting",
     "execErrState": "OK",
     "for": "0s",
@@ -79,6 +79,13 @@
         "service": "tokens-assets",
         "severity": "warning",
         "slack": "true"
+    },
+    "notification_settings": {
+        "receiver": "tokens-slack",
+        "group_by": ["grafana_folder", "alertname"],
+        "group_wait": "30s",
+        "group_interval": "5m",
+        "repeat_interval": "4h"
     },
     "annotations": {
         "summary": "The stablecoin depeg reconciliation sweep has not completed in 9 hours",
