@@ -283,9 +283,11 @@ export function FloatingMarketFeed() {
         placeholderData: keepPreviousData,
         enabled: !hideFeed,
     });
+    // From the chosen category, not the loaded one: while a category is still loading the data shown
+    // is the previous one's, and a quick second click must still advance.
     const nextHeatmapSector = heatmapMini
         ? getNextHeatmapSector(
-              heatmapMini.sector.id,
+              settings.heatmapSector,
               heatmapMini.sectors.map(sector => sector.id),
           )
         : null;

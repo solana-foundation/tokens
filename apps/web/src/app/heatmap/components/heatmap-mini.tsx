@@ -1,7 +1,7 @@
 'use client';
 
 import Link from 'next/link';
-import { useCallback, useLayoutEffect, useMemo, useRef, useState, type PointerEvent } from 'react';
+import { useCallback, useMemo, useRef, useState, type PointerEvent } from 'react';
 
 import { cn } from '@tokens/ui/cn';
 import { trackEvent } from '@/lib/posthog-client';
@@ -52,14 +52,17 @@ interface HeatmapMiniProps {
  * categories; the map links into the full heat map, and each tile shows the dark hover card.
  */
 export function HeatmapMini({ data, onCycle, onCycleIntent }: HeatmapMiniProps) {
-    const stageRef = useRef<HTMLDivElement>(null);
     const tooltipRef = useRef<HeatmapTooltipHandle>(null);
     const [width, setWidth] = useState(0);
 
-    useLayoutEffect(() => {
-        const element = stageRef.current;
+    // Callback ref rather than an effect: the stage element is recreated when the category changes
+    // between link-wrapped and not (Trending), and an observer left on the old element would report
+    // the detached node's width of 0.
+    const stageRef = useCallback((element: HTMLDivElement | null) => {
         if (!element) return;
-        const measure = () => setWidth(Math.floor(element.clientWidth));
+        const measure = () => {
+            if (element.isConnected) setWidth(Math.floor(element.clientWidth));
+        };
         measure();
         const observer = new ResizeObserver(measure);
         observer.observe(element);
@@ -105,6 +108,68 @@ export function HeatmapMini({ data, onCycle, onCycleIntent }: HeatmapMiniProps) 
             source: 'market_feed',
         });
 
+    // Trending tiles each open their asset page, so the map is not one link there.
+    const stage = (
+        <div
+            ref={stageRef}
+            className={cn('relative w-full overflow-hidden rounded-[21px] bg-white', !tiles.length && 'animate-pulse')}
+            style={{ height: MAP_HEIGHT }}
+            onPointerMove={onPointerMove}
+            onPointerLeave={hideTooltip}
+        >
+            {tiles.map(tile => {
+                const { x, y, w, h } = tile.rect;
+                const box = { left: x, top: y, width: w, height: h };
+                if (tile.kind !== 'asset') {
+                    return <div key={tile.key} className="absolute rounded-[2px] bg-gray-100" style={box} />;
+                }
+                const bin = changeBin(tile.asset.change24h, '24h');
+                const face = (
+                    <>
+                        {w >= 30 && h >= 16 ? (
+                            <span className="max-w-full truncate px-0.5 text-[10px] font-semibold">
+                                {tile.asset.symbol}
+                            </span>
+                        ) : null}
+                        {w >= 46 && h >= 30 ? (
+                            <span className="mt-0.5 text-[9px] tabular-nums">{formatChange(tile.asset.change24h)}</span>
+                        ) : null}
+                    </>
+                );
+                const tileClass =
+                    'absolute flex flex-col items-center justify-center overflow-hidden rounded-[2px] leading-none transition-[filter] duration-150 hover:brightness-[1.08]';
+                const style = { ...box, background: bin?.fill ?? NO_DATA_FILL, color: bin?.ink };
+                if (isTrending && tile.asset.href) {
+                    return (
+                        <Link
+                            key={tile.key}
+                            href={tile.asset.href}
+                            prefetch={false}
+                            data-tile={tile.key}
+                            aria-label={`${tile.asset.name} (${tile.asset.symbol}), ${formatChange(tile.asset.change24h)} 24h. Open asset page.`}
+                            onClick={() =>
+                                trackEvent('feed_ticker_clicked', {
+                                    token_symbol: tile.asset.symbol,
+                                    token_price_change_24h: tile.asset.change24h,
+                                    source: 'market_feed_heatmap',
+                                })
+                            }
+                            className={`${tileClass} focus-visible:z-10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-1400`}
+                            style={style}
+                        >
+                            {face}
+                        </Link>
+                    );
+                }
+                return (
+                    <div key={tile.key} data-tile={tile.key} className={tileClass} style={style}>
+                        {face}
+                    </div>
+                );
+            })}
+        </div>
+    );
+
     return (
         <section
             aria-label="Heatmap"
@@ -142,53 +207,18 @@ export function HeatmapMini({ data, onCycle, onCycleIntent }: HeatmapMiniProps) 
             </div>
 
             <div className="mt-2 rounded-[29px] border border-border-medium bg-white p-2">
-                <Link
-                    href={href}
-                    onClick={trackOpen}
-                    aria-label={isTrending ? 'Open trending tokens' : `Open the ${label} heat map`}
-                    className="block rounded-[21px] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-border-medium"
-                >
-                    <div
-                        ref={stageRef}
-                        className={cn(
-                            'relative w-full overflow-hidden rounded-[21px] bg-white',
-                            !tiles.length && 'animate-pulse',
-                        )}
-                        style={{ height: MAP_HEIGHT }}
-                        onPointerMove={onPointerMove}
-                        onPointerLeave={hideTooltip}
+                {isTrending ? (
+                    stage
+                ) : (
+                    <Link
+                        href={href}
+                        onClick={trackOpen}
+                        aria-label={`Open the ${label} heat map`}
+                        className="block rounded-[21px] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-border-medium"
                     >
-                        {tiles.map(tile => {
-                            const { x, y, w, h } = tile.rect;
-                            const box = { left: x, top: y, width: w, height: h };
-                            if (tile.kind !== 'asset') {
-                                return (
-                                    <div key={tile.key} className="absolute rounded-[2px] bg-gray-100" style={box} />
-                                );
-                            }
-                            const bin = changeBin(tile.asset.change24h, '24h');
-                            return (
-                                <div
-                                    key={tile.key}
-                                    data-tile={tile.key}
-                                    className="absolute flex flex-col items-center justify-center overflow-hidden rounded-[2px] leading-none transition-[filter] duration-150 hover:brightness-[1.08]"
-                                    style={{ ...box, background: bin?.fill ?? NO_DATA_FILL, color: bin?.ink }}
-                                >
-                                    {w >= 30 && h >= 16 ? (
-                                        <span className="max-w-full truncate px-0.5 text-[10px] font-semibold">
-                                            {tile.asset.symbol}
-                                        </span>
-                                    ) : null}
-                                    {w >= 46 && h >= 30 ? (
-                                        <span className="mt-0.5 text-[9px] tabular-nums">
-                                            {formatChange(tile.asset.change24h)}
-                                        </span>
-                                    ) : null}
-                                </div>
-                            );
-                        })}
-                    </div>
-                </Link>
+                        {stage}
+                    </Link>
+                )}
             </div>
             <HeatmapTooltip ref={tooltipRef} />
         </section>

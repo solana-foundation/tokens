@@ -103,6 +103,8 @@ export interface HeatmapAsset {
     variantCount: number;
     /** Only populated for assets with more than one variant; those are the ones that drill down. */
     variants: HeatmapVariant[];
+    /** Where a tile goes when it is a direct link rather than a drill-down (trending tiles). */
+    href?: string;
 }
 
 export interface HeatmapSector {

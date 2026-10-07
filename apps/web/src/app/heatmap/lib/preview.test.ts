@@ -101,6 +101,7 @@ describe('trendingSector', () => {
         const sector = trendingSector([
             {
                 assetId: 'near',
+                mint: '3ZLekZYq2qkZiSpnSvabjit34tUkjSwD1JFuW9as9wBG',
                 symbol: 'NEAR',
                 name: 'NEAR (Bridged)',
                 market: { priceChange24hPercent: -1.2, volume24hUSD: 12e6, price: 5 },
@@ -114,6 +115,11 @@ describe('trendingSector', () => {
         expect(sector.assets.map(a => [a.assetId, a.symbol, a.change24h, a.volume24h])).toEqual([
             ['near', 'NEAR', -1.2, 12e6],
         ]);
-        expect(sector.assets[0]).toMatchObject({ name: 'NEAR (Bridged)', price: 5, marketCap: null });
+        expect(sector.assets[0]).toMatchObject({
+            name: 'NEAR (Bridged)',
+            price: 5,
+            marketCap: null,
+            href: '/near?solana=3ZLekZYq2qkZiSpnSvabjit34tUkjSwD1JFuW9as9wBG',
+        });
     });
 });
