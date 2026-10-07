@@ -2,7 +2,6 @@
 
 import Link from 'next/link';
 import { Fragment, memo } from 'react';
-import { ArrowUpRight } from 'lucide-react';
 import { SegmentedControl } from '@solana/design-system/segmented-control';
 import { Breadcrumb, BreadcrumbItem, BreadcrumbList, BreadcrumbPage, BreadcrumbSeparator } from '@tokens/ui/breadcrumb';
 
@@ -22,16 +21,11 @@ const CRUMB_CLASS =
 
 interface HeatmapToolbarProps {
     crumbs: HeatmapCrumb[];
-    /** Asset page for the asset being viewed, when drilled into one. */
-    assetHref?: string;
     period: HeatmapPeriod;
     onPeriodChange: (period: HeatmapPeriod) => void;
 }
 
 const PERIOD_ITEMS = HEATMAP_PERIODS.map(value => ({ value, label: value }));
-const LINK_CLASS =
-    'inline-flex items-center gap-1 whitespace-nowrap text-[13px] font-medium text-text-low transition-colors hover:text-text-extra-high';
-
 /**
  * Memoised: the segmented control measures its layout on every render (for its sliding pill), and
  * re-rendering it on each zoom would force a synchronous layout of the freshly mounted tiles.
@@ -58,7 +52,7 @@ const PeriodSwitch = memo(function PeriodSwitch({
     );
 });
 
-export function HeatmapToolbar({ crumbs, assetHref, period, onPeriodChange }: HeatmapToolbarProps) {
+export function HeatmapToolbar({ crumbs, period, onPeriodChange }: HeatmapToolbarProps) {
     return (
         <div className="mb-3 flex flex-wrap items-center justify-between gap-x-6 gap-y-3">
             <div className="flex min-h-9 flex-wrap items-center gap-x-4 gap-y-1">
@@ -86,12 +80,6 @@ export function HeatmapToolbar({ crumbs, assetHref, period, onPeriodChange }: He
                         ))}
                     </BreadcrumbList>
                 </Breadcrumb>
-                {assetHref ? (
-                    <Link href={assetHref} className={LINK_CLASS}>
-                        Open asset page
-                        <ArrowUpRight aria-hidden="true" className="size-3.5" />
-                    </Link>
-                ) : null}
             </div>
 
             <PeriodSwitch period={period} onPeriodChange={onPeriodChange} />

@@ -17,7 +17,6 @@ import { useReducedMotion } from 'motion/react';
 import { flushSync } from 'react-dom';
 import { parseAsBoolean, parseAsString, parseAsStringEnum, useQueryStates } from 'nuqs';
 
-import { buildCoinHref } from '@/lib/coin-href';
 import {
     cameraFrame,
     cameraMove,
@@ -666,12 +665,7 @@ export function Heatmap({ data: allData }: { data: HeatmapData }) {
 
     return (
         <div>
-            <HeatmapToolbar
-                crumbs={crumbs}
-                assetHref={viewAsset ? buildCoinHref(viewAsset.assetId, viewAsset.mint) : undefined}
-                period={period}
-                onPeriodChange={setPeriod}
-            />
+            <HeatmapToolbar crumbs={crumbs} period={period} onPeriodChange={setPeriod} />
 
             <div
                 ref={stageRef}
