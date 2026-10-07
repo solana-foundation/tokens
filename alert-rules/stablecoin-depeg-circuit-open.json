@@ -1,0 +1,89 @@
+{
+    "uid": "tokens-stablecoin-depeg-circuit-open",
+    "title": "tokens-assets: depeg reconciler circuit breaker opened",
+    "ruleGroup": "tokens-stablecoin-depeg",
+    "folderUID": "tokens-xyz",
+    "noDataState": "OK",
+    "execErrState": "OK",
+    "for": "0s",
+    "data": [
+        {
+            "refId": "A",
+            "datasourceUid": "grafanacloud-logs",
+            "queryType": "range",
+            "relativeTimeRange": {
+                "from": 21600,
+                "to": 0
+            },
+            "model": {
+                "expr": "sum(count_over_time({service=~\"tokens-assets(-jobs)?-prd-us\"} | json | event=\"depeg_circuit_open\" [6h]))",
+                "queryType": "range",
+                "refId": "A"
+            }
+        },
+        {
+            "refId": "B",
+            "datasourceUid": "__expr__",
+            "queryType": "",
+            "relativeTimeRange": {
+                "from": 0,
+                "to": 0
+            },
+            "model": {
+                "type": "reduce",
+                "refId": "B",
+                "expression": "A",
+                "reducer": "last",
+                "settings": {
+                    "mode": "replaceNN",
+                    "replaceWithValue": 0
+                }
+            }
+        },
+        {
+            "refId": "C",
+            "datasourceUid": "__expr__",
+            "queryType": "",
+            "relativeTimeRange": {
+                "from": 0,
+                "to": 0
+            },
+            "model": {
+                "type": "threshold",
+                "refId": "C",
+                "expression": "B",
+                "conditions": [
+                    {
+                        "evaluator": {
+                            "type": "gt",
+                            "params": [0]
+                        },
+                        "operator": {
+                            "type": "and"
+                        },
+                        "query": {
+                            "params": ["B"]
+                        },
+                        "reducer": {
+                            "type": "last",
+                            "params": []
+                        },
+                        "type": "query"
+                    }
+                ]
+            }
+        }
+    ],
+    "condition": "C",
+    "labels": {
+        "service": "tokens-assets",
+        "severity": "critical",
+        "pagerduty": "true",
+        "slack": "true"
+    },
+    "annotations": {
+        "summary": "Depeg reconciler refused to act (suspicious_drop / mass_tier_flip / mass_action)",
+        "description": "The reconcile-stablecoin-depeg sweep opened a circuit breaker (event: depeg_circuit_open, field reason). suspicious_drop: Webacy returned far fewer of our tracked tokens than last sweep, so nothing was written (a vendor outage looks like everyone recovering; the advisory set is frozen). mass_tier_flip: too many tracked tokens changed tier in one poll, snapshots were stored but no advisories were touched. mass_action: more than maxActionsPerRun actions were due; the cap was applied and the rest deferred. Either a real market-wide event (act by hand) or a Webacy data incident (do not override until confirmed). Re-run with ignoreCircuitBreaker only after checking dd.xyz and the raw payload_json.",
+        "runbook_url": "https://github.com/solana-foundation/tokens/blob/main/docs/operations/asset-advisory-runbook.md#automated-depeg-advisories"
+    }
+}

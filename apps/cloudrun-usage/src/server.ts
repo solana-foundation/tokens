@@ -12,6 +12,7 @@ import * as usageDashboard from './handlers/usageDashboard';
 import type { UsageDashboardRepo } from './handlers/usageDashboard';
 import { ingestUsageAggregates, syncUsageAggregates, type UsageIngestRepo } from './handlers/usageIngest';
 import { registerHookRoutes, type HookDeps } from './hooks';
+import { registerWebacyHookRoutes, type WebacyHookDeps } from './hooks.webacy';
 
 export interface CallerIdentity {
     clerkUserId: string;
@@ -30,6 +31,8 @@ export interface ServerDeps {
     limitsRedis?: LimitsRedis;
     /** Vercel log-drain + Clerk webhook ingest (app-level auth, not bearer). */
     hooks?: HookDeps;
+    /** Webacy DEPEG_TIER_CHANGE webhook receiver (HMAC auth, not bearer). Unregistered when absent. */
+    webacyHooks?: WebacyHookDeps;
     authToken: string;
 }
 
@@ -69,7 +72,6 @@ export function decodeIdentityHeader(raw: string | undefined): CallerIdentity | 
         return null;
     }
 }
-
 
 export function createApp(deps: ServerDeps) {
     const app = new Hono();
@@ -154,6 +156,7 @@ export function createApp(deps: ServerDeps) {
     app.post('/mutation/:name', dispatch(mutations, 'mutation'));
 
     registerHookRoutes(app, deps.hooks ?? {});
+    if (deps.webacyHooks) registerWebacyHookRoutes(app, deps.webacyHooks);
 
     return app;
 }

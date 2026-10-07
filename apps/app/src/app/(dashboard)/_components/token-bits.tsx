@@ -16,6 +16,11 @@ export interface V2Advisory {
     reason: string;
     url: string | null;
     since: number;
+    /**
+     * `admin` (human), `webacy_depeg` or `peg_guard` (automated stablecoin depeg
+     * cautions from Webacy / the tokens.xyz peg monitor); absent on older API builds.
+     */
+    source?: 'admin' | 'webacy_depeg' | 'peg_guard';
 }
 
 export interface V2ListToken {

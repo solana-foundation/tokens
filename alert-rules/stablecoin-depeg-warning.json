@@ -1,0 +1,88 @@
+{
+    "uid": "tokens-stablecoin-depeg-warning",
+    "title": "tokens-assets: stablecoin entered Webacy depeg tier WARNING",
+    "ruleGroup": "tokens-stablecoin-depeg",
+    "folderUID": "tokens-xyz",
+    "noDataState": "OK",
+    "execErrState": "OK",
+    "for": "0s",
+    "data": [
+        {
+            "refId": "A",
+            "datasourceUid": "grafanacloud-logs",
+            "queryType": "range",
+            "relativeTimeRange": {
+                "from": 900,
+                "to": 0
+            },
+            "model": {
+                "expr": "sum(count_over_time({service=~\"tokens-assets(-jobs)?-prd-us\"} | json | event=\"depeg_tier_changed\" | observer!=\"peg_guard\" | new_tier=\"warning\" [15m]))",
+                "queryType": "range",
+                "refId": "A"
+            }
+        },
+        {
+            "refId": "B",
+            "datasourceUid": "__expr__",
+            "queryType": "",
+            "relativeTimeRange": {
+                "from": 0,
+                "to": 0
+            },
+            "model": {
+                "type": "reduce",
+                "refId": "B",
+                "expression": "A",
+                "reducer": "last",
+                "settings": {
+                    "mode": "replaceNN",
+                    "replaceWithValue": 0
+                }
+            }
+        },
+        {
+            "refId": "C",
+            "datasourceUid": "__expr__",
+            "queryType": "",
+            "relativeTimeRange": {
+                "from": 0,
+                "to": 0
+            },
+            "model": {
+                "type": "threshold",
+                "refId": "C",
+                "expression": "B",
+                "conditions": [
+                    {
+                        "evaluator": {
+                            "type": "gt",
+                            "params": [0]
+                        },
+                        "operator": {
+                            "type": "and"
+                        },
+                        "query": {
+                            "params": ["B"]
+                        },
+                        "reducer": {
+                            "type": "last",
+                            "params": []
+                        },
+                        "type": "query"
+                    }
+                ]
+            }
+        }
+    ],
+    "condition": "C",
+    "labels": {
+        "service": "tokens-assets",
+        "severity": "warning",
+        "slack": "true"
+    },
+    "annotations": {
+        "summary": "A tracked stablecoin moved to Webacy depeg tier warning",
+        "description": "A tracked Solana stablecoin entered Webacy depeg tier warning (score 50-69) in the last 15 minutes (event: depeg_tier_changed, fields: mint, symbol, old_tier, deviation_pct, source). With warningConfirmMs = 0 the reconciler sets a caution advisory on the next reconcile unless dry-run is on or a human already owns the row. Watch for a follow-up critical alert; no page for warning alone.",
+        "runbook_url": "https://github.com/solana-foundation/tokens/blob/main/docs/operations/asset-advisory-runbook.md#automated-depeg-advisories"
+    }
+}

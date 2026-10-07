@@ -1,6 +1,7 @@
 import { Effect } from 'effect';
 
 import {
+    isAdvisorySource,
     isAdvisoryStatus,
     isHiddenAdvisory,
     isTradeRestrictedAdvisory,
@@ -66,6 +67,7 @@ function toAdvisory(row: AssetAdvisoryRow): VariantAdvisory | null {
         reason: typeof row.reason === 'string' ? row.reason : '',
         url: typeof row.url === 'string' && row.url.length > 0 ? row.url : null,
         since: typeof row.since === 'number' && Number.isFinite(row.since) ? row.since : 0,
+        source: isAdvisorySource(row.source) ? row.source : 'admin',
     };
 }
 
@@ -257,6 +259,7 @@ export function summarizeAssetAdvisories(asset: CanonicalAsset): AssetAdvisorySu
             reason: advisory.reason,
             url: advisory.url,
             since: advisory.since,
+            source: advisory.source ?? 'admin',
         });
     }
     out.sort((a, b) => {

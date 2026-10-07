@@ -7,10 +7,21 @@ import {
     advisoryActorLabel,
     advisoryBadgeVariant,
     advisorySetToastMessage,
+    advisorySourceLabel,
     advisoryStatusLabel,
     describeAdvisoryEvent,
+    formatPegDeviation,
     formatRelativeTime,
     isAdvisoryStatus,
+    isSystemActor,
+    isSystemManagedAdvisory,
+    pegProviderLabel,
+    pegReferenceLabel,
+    pegTierBadgeVariant,
+    pegTierLabel,
+    structuralGradeBadgeVariant,
+    SYSTEM_ADVISORY_CLEAR_WARNING,
+    SYSTEM_ADVISORY_EDIT_WARNING,
     validateAdvisoryReason,
     validateAdvisoryUrl,
 } from './advisory-labels';
@@ -101,6 +112,93 @@ describe('event and toast copy', () => {
             'user_2abcd…stuv',
         );
         expect(advisoryActorLabel({ actorClerkUserId: 'user_short', actorEmail: null })).toBe('user_short');
+    });
+
+    it('names automated actors instead of truncating the sentinel', () => {
+        expect(advisoryActorLabel({ actorClerkUserId: 'system:webacy_depeg', actorEmail: null })).toBe(
+            'Webacy depeg monitor (automated)',
+        );
+        expect(advisoryActorLabel({ actorClerkUserId: 'system:peg_guard', actorEmail: null })).toBe(
+            'tokens.xyz peg monitor (automated)',
+        );
+        expect(advisoryActorLabel({ actorClerkUserId: 'system:other_bot', actorEmail: null })).toBe(
+            'Automated (other_bot)',
+        );
+        expect(isSystemActor({ actorClerkUserId: 'system:webacy_depeg' })).toBe(true);
+        expect(isSystemActor({ actorClerkUserId: 'user_2abc' })).toBe(false);
+    });
+});
+
+describe('advisory provenance and stablecoin health labels', () => {
+    it('labels sources and treats a missing source as manual', () => {
+        expect(advisorySourceLabel(undefined)).toBe('Manual');
+        expect(advisorySourceLabel('admin')).toBe('Manual');
+        expect(advisorySourceLabel('webacy_depeg')).toBe('Auto · Webacy depeg monitor');
+        expect(advisorySourceLabel('peg_guard')).toBe('Auto · tokens.xyz peg monitor');
+        expect(isSystemManagedAdvisory({ source: 'webacy_depeg' })).toBe(true);
+        expect(isSystemManagedAdvisory({ source: 'peg_guard' })).toBe(true);
+        expect(isSystemManagedAdvisory({ source: 'admin' })).toBe(false);
+        expect(isSystemManagedAdvisory({})).toBe(false);
+        expect(isSystemManagedAdvisory(null)).toBe(false);
+    });
+
+    it('keeps the system-advisory warnings generic across observers', () => {
+        for (const warning of [SYSTEM_ADVISORY_EDIT_WARNING, SYSTEM_ADVISORY_CLEAR_WARNING]) {
+            expect(warning).toContain('a depeg monitor');
+            expect(warning).not.toContain('Webacy');
+            expect(warning).not.toContain('\u2014');
+        }
+    });
+
+    it('labels the peg observer and defaults rows without one to Webacy', () => {
+        expect(pegProviderLabel('webacy')).toBe('Webacy');
+        expect(pegProviderLabel('tokens')).toBe('tokens.xyz peg monitor');
+        expect(pegProviderLabel(undefined)).toBe('Webacy');
+    });
+
+    it('labels yield-bearing tiers against their recent high and everything else against the peg', () => {
+        expect(pegTierLabel('ok')).toBe('On peg');
+        expect(pegTierLabel('ok', 'fixed')).toBe('On peg');
+        expect(pegTierLabel('ok', 'fx')).toBe('On peg');
+        expect(pegTierLabel('ok', null)).toBe('On peg');
+        expect(pegTierLabel('ok', 'high_water')).toBe('Holding value');
+        expect(pegTierLabel('watch', 'high_water')).toBe('Slipping');
+        expect(pegTierLabel('warning', 'high_water')).toBe('Warning');
+        expect(pegTierLabel('critical', 'high_water')).toBe('Critical');
+        expect(pegTierLabel('premium', 'high_water')).toBe('Above peg');
+    });
+
+    it('labels the peg reference with its currency or the yield high-water mark', () => {
+        expect(pegReferenceLabel('fixed', 'USD')).toBe('USD peg');
+        expect(pegReferenceLabel('fixed', null)).toBe('USD peg');
+        expect(pegReferenceLabel(undefined, undefined)).toBe('USD peg');
+        expect(pegReferenceLabel(null, 'usd')).toBe('USD peg');
+        expect(pegReferenceLabel('fx', 'EUR')).toBe('EUR peg (fx)');
+        expect(pegReferenceLabel('fx', 'gbp')).toBe('GBP peg (fx)');
+        expect(pegReferenceLabel('fx', null)).toBe('fiat peg (fx)');
+        expect(pegReferenceLabel('high_water', 'USD')).toBe('recent high (yield)');
+        expect(pegReferenceLabel('high_water', null)).toBe('recent high (yield)');
+    });
+
+    it('maps peg tiers and grades to badge tones', () => {
+        expect(pegTierBadgeVariant('ok')).toBe('success');
+        expect(pegTierBadgeVariant('watch')).toBe('info');
+        expect(pegTierBadgeVariant('premium')).toBe('info');
+        expect(pegTierBadgeVariant('warning')).toBe('warning');
+        expect(pegTierBadgeVariant('critical')).toBe('danger');
+        expect(pegTierLabel('premium')).toBe('Above peg');
+        expect(structuralGradeBadgeVariant('A-')).toBe('success');
+        expect(structuralGradeBadgeVariant('B+')).toBe('info');
+        expect(structuralGradeBadgeVariant('C')).toBe('warning');
+        expect(structuralGradeBadgeVariant('D+')).toBe('danger');
+        expect(structuralGradeBadgeVariant('F')).toBe('danger');
+    });
+
+    it('formats signed deviation', () => {
+        expect(formatPegDeviation(-2.4)).toBe('-2.40%');
+        expect(formatPegDeviation(0.351)).toBe('+0.35%');
+        expect(formatPegDeviation(0)).toBe('0.00%');
+        expect(formatPegDeviation(null)).toBe('n/a');
     });
 });
 

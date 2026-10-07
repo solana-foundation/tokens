@@ -1,7 +1,9 @@
 import {
     ADVISORY_STATUSES,
+    isAdvisorySource,
     isAdvisoryStatus,
     isTradeRestrictedAdvisory,
+    type AdvisorySource,
     type AdvisoryStatus,
     type VariantAdvisory,
 } from '@tokens/asset-registry';
@@ -120,6 +122,8 @@ export function normalizeAdvisory(value: unknown): AssetAdvisory | null {
         reason,
         url: normalizeAdvisoryUrl(record.url),
         since,
+        // Older API builds omit `source`; unknown values degrade to "manual".
+        ...(isAdvisorySource(record.source) ? { source: record.source } : {}),
     };
 }
 
@@ -163,10 +167,30 @@ export function advisoryReasonText(advisory: AssetAdvisory): string {
     return advisory.reason.trim() || DEFAULT_ADVISORY_REASON;
 }
 
-/** "SILV has been flagged as compromised" / "This token has an active caution advisory". */
+/** Sources written by an automated depeg monitor (Webacy or the tokens.xyz peg guard). */
+export const DEPEG_ADVISORY_SOURCES: ReadonlySet<AdvisorySource> = new Set<AdvisorySource>([
+    'webacy_depeg',
+    'peg_guard',
+]);
+
+export function isDepegAdvisorySource(source: AdvisorySource | undefined): boolean {
+    return source !== undefined && DEPEG_ADVISORY_SOURCES.has(source);
+}
+
+/** Title predicate for the auto-caution a depeg monitor sets. */
+export const DEPEG_ADVISORY_TITLE = 'is trading off its peg';
+
+/**
+ * "SILV has been flagged as compromised" / "This token has an active caution
+ * advisory" / "USX is trading off its peg" (depeg-monitor rows; tone and
+ * status are unchanged, only the predicate is specific).
+ */
 export function advisoryBannerTitle(advisory: AssetAdvisory, symbol?: string | null): string {
     const subject = (symbol ?? '').trim() || 'This token';
-    return `${subject} ${ADVISORY_COPY[advisory.status].title}`;
+    const predicate = isDepegAdvisorySource(advisory.source)
+        ? DEPEG_ADVISORY_TITLE
+        : ADVISORY_COPY[advisory.status].title;
+    return `${subject} ${predicate}`;
 }
 
 /** Prefix for `<meta name="description">` so text-only previews warn. */
@@ -261,10 +285,7 @@ export function formatAdvisorySince(since: number | null | undefined): string {
     return ADVISORY_SINCE_FORMATTER.format(new Date(since));
 }
 
-export function advisoryEventProps(
-    advisory: AssetAdvisory,
-    extra?: Record<string, unknown>,
-): Record<string, unknown> {
+export function advisoryEventProps(advisory: AssetAdvisory, extra?: Record<string, unknown>): Record<string, unknown> {
     return {
         advisory_status: advisory.status,
         ...(advisory.since > 0 ? { advisory_since: advisory.since } : {}),
