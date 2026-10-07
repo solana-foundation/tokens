@@ -3,6 +3,8 @@
 import Link from 'next/link';
 import { useCallback, useMemo, useRef, useState, type PointerEvent } from 'react';
 
+import { ChevronRight } from 'lucide-react';
+
 import { cn } from '@tokens/ui/cn';
 import { buildCoinHref } from '@/lib/coin-href';
 import { trackEvent } from '@/lib/posthog-client';
@@ -177,10 +179,24 @@ export function HeatmapMini({ data, onCycle, onCycleIntent }: HeatmapMiniProps) 
             className="overflow-hidden rounded-[27px] border border-border-light/50 bg-gray-100/50 shadow-[0_22px_60px_rgba(20,20,21,0.16)] backdrop-blur-xl"
         >
             <div className="flex items-center justify-between gap-3 px-3.5 pt-2.5">
-                <div className="flex min-w-0 items-center gap-1.5">
+                <Link
+                    href="/heatmap"
+                    onClick={() =>
+                        trackEvent('nav_link_clicked', {
+                            destination: 'heatmap',
+                            link_url: '/heatmap',
+                            source: 'market_feed',
+                        })
+                    }
+                    className="group flex min-w-0 items-center gap-1.5 rounded-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-border-medium"
+                >
                     <HeatmapIcon />
                     <h2 className="min-w-0 truncate text-base font-semibold text-text-extra-high">Heatmap</h2>
-                </div>
+                    <ChevronRight
+                        aria-hidden="true"
+                        className="size-4 shrink-0 text-text-extra-low transition-transform duration-150 ease-out group-hover:translate-x-0.5 motion-reduce:transition-none"
+                    />
+                </Link>
                 <button
                     type="button"
                     aria-label={`Showing ${label}. Click for the next category.`}

@@ -67,29 +67,52 @@ describe('viewKey', () => {
 
 describe('anchorFor', () => {
     test('finds a sector as a group of the overview only', () => {
-        expect(anchorFor(overview, SECTOR)).toEqual(CRYPTO);
+        expect(anchorFor(overview, SECTOR)).toEqual({ rect: CRYPTO });
         expect(anchorFor(cryptoSector, SECTOR)).toBeNull();
         expect(anchorFor(bitcoinAsset, SECTOR)).toBeNull();
     });
 
     test('finds an asset as a tile of the overview or its sector', () => {
-        expect(anchorFor(overview, ASSET)).toEqual(BITCOIN);
-        expect(anchorFor(cryptoSector, ASSET)).toEqual({ x: 0, y: 0, w: 700, h: 600 });
+        expect(anchorFor(overview, ASSET)).toEqual({ rect: BITCOIN, key: 'asset:bitcoin' });
+        expect(anchorFor(cryptoSector, ASSET)).toEqual({ rect: { x: 0, y: 0, w: 700, h: 600 }, key: 'asset:bitcoin' });
         expect(anchorFor(overview, { level: 'asset', assetId: 'merged-away' })).toBeNull();
+    });
+});
+
+describe('anchorFor with a Trending row', () => {
+    test("prefers an asset's own row over its Trending copy", () => {
+        const withTrending = layout('overview', [
+            {
+                id: 'trending',
+                rect: { x: 0, y: 0, w: 1000, h: 200 },
+                tiles: [assetTile('bitcoin', { x: 0, y: 0, w: 100, h: 100 })],
+            },
+            { id: 'crypto', rect: { x: 0, y: 300, w: 1000, h: 300 }, tiles: [assetTile('bitcoin', BITCOIN)] },
+        ]);
+        expect(anchorFor(withTrending, ASSET)).toEqual({ rect: BITCOIN, key: 'asset:bitcoin' });
     });
 });
 
 describe('cameraMove', () => {
     test('zooms in on the tile being entered', () => {
-        expect(cameraMove(overview, OVERVIEW, bitcoinAsset, ASSET)).toEqual({ mode: 'in', anchor: BITCOIN });
+        expect(cameraMove(overview, OVERVIEW, bitcoinAsset, ASSET)).toEqual({
+            mode: 'in',
+            anchor: BITCOIN,
+            anchorKey: 'asset:bitcoin',
+        });
         expect(cameraMove(overview, OVERVIEW, cryptoSector, SECTOR)).toEqual({ mode: 'in', anchor: CRYPTO });
     });
 
     test('zooms out to the tile being left', () => {
-        expect(cameraMove(bitcoinAsset, ASSET, overview, OVERVIEW)).toEqual({ mode: 'out', anchor: BITCOIN });
+        expect(cameraMove(bitcoinAsset, ASSET, overview, OVERVIEW)).toEqual({
+            mode: 'out',
+            anchor: BITCOIN,
+            anchorKey: 'asset:bitcoin',
+        });
         expect(cameraMove(bitcoinAsset, ASSET, cryptoSector, SECTOR)).toEqual({
             mode: 'out',
             anchor: { x: 0, y: 0, w: 700, h: 600 },
+            anchorKey: 'asset:bitcoin',
         });
     });
 

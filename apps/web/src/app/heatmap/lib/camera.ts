@@ -14,7 +14,15 @@ export function viewKey(view: HeatmapView): string {
  * previous one at `anchor`; `out`: the previous view is drawn inside the next
  * one at `anchor`; `fade`: neither contains the other.
  */
-export type CameraMove = { mode: 'fade' } | { mode: 'in' | 'out'; anchor: Rect };
+export type CameraMove = { mode: 'fade' } | { mode: 'in' | 'out'; anchor: Rect; anchorKey?: string };
+
+export interface Anchor {
+    rect: Rect;
+    /** The anchoring tile's key, when the anchor is a tile rather than a group. */
+    key?: string;
+}
+
+const TRENDING_GROUP = 'trending';
 
 export interface LayerTransform {
     x: number;
@@ -28,24 +36,32 @@ const MIN_ANCHOR_SIDE = 4;
 const MIN_FIT = 1 / 64;
 
 /** Where `target` is drawn inside `layout`, if that layout shows it as a tile or group. */
-export function anchorFor(layout: HeatmapLayout, target: HeatmapView): Rect | null {
+export function anchorFor(layout: HeatmapLayout, target: HeatmapView): Anchor | null {
     if (target.level === 'sector' && layout.level === 'overview') {
-        return layout.groups.find(group => group.id === target.sectorId)?.rect ?? null;
+        const rect = layout.groups.find(group => group.id === target.sectorId)?.rect;
+        return rect ? { rect } : null;
     }
 
     if (target.level === 'asset' && layout.level !== 'asset') {
-        const key = `asset:${target.assetId}`;
+        // The Trending row repeats assets from other rows; an asset's zoom belongs to its own row.
+        let fallback: Anchor | null = null;
         for (const group of layout.groups) {
-            const tile = group.tiles.find(candidate => candidate.key === key);
-            if (tile) return tile.rect;
+            const tile = group.tiles.find(
+                candidate => candidate.kind === 'asset' && candidate.asset.assetId === target.assetId,
+            );
+            if (!tile) continue;
+            const anchor = { rect: tile.rect, key: tile.key };
+            if (group.id !== TRENDING_GROUP) return anchor;
+            fallback ??= anchor;
         }
+        return fallback;
     }
 
     return null;
 }
 
-function usable(anchor: Rect | null): anchor is Rect {
-    return anchor !== null && anchor.w >= MIN_ANCHOR_SIDE && anchor.h >= MIN_ANCHOR_SIDE;
+function usable(anchor: Anchor | null): anchor is Anchor {
+    return anchor !== null && anchor.rect.w >= MIN_ANCHOR_SIDE && anchor.rect.h >= MIN_ANCHOR_SIDE;
 }
 
 export function cameraMove(
@@ -55,10 +71,10 @@ export function cameraMove(
     nextView: HeatmapView,
 ): CameraMove {
     const entering = anchorFor(previousLayout, nextView);
-    if (usable(entering)) return { mode: 'in', anchor: entering };
+    if (usable(entering)) return { mode: 'in', anchor: entering.rect, anchorKey: entering.key };
 
     const leaving = anchorFor(nextLayout, previousView);
-    if (usable(leaving)) return { mode: 'out', anchor: leaving };
+    if (usable(leaving)) return { mode: 'out', anchor: leaving.rect, anchorKey: leaving.key };
 
     return { mode: 'fade' };
 }

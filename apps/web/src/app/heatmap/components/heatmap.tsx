@@ -69,6 +69,8 @@ type Scene =
           outer: LayerSpec;
           inner: LayerSpec;
           plan: CameraPlan;
+          /** The outer view's tile being zoomed into or out of, if the anchor is a tile. */
+          anchorKey: string | null;
           /** Container height while the zoom runs: tall enough for both views and the box. */
           height: number;
           /** Page scroll to set when the zoom starts (zoom-out onto a row) or ends (zoom-in from one). */
@@ -151,16 +153,12 @@ function nextScene(
     const boxY = onOverview ? Math.max(0, stagedScroll + SCROLL_OFFSET - page.stageTop) : 0;
     const box = { x: 0, y: boxY, w: stage.width, h: stage.height };
     const plan = planCamera(move.anchor, box);
+    const anchorKey = move.anchorKey ?? null;
     const height = Math.max(layerHeight(outer, stage), layerHeight(inner, stage), box.y + box.h);
 
     return move.mode === 'in'
-        ? { kind: 'zoom', stageKey, id, outer, inner, plan, height, scrollTo, target: 1, startP: 0 }
-        : { kind: 'zoom', stageKey, id, outer, inner, plan, height, scrollTo, target: 0, startP: 1 };
-}
-
-/** The tile in the outer view that the inner view grows out of, when it is a tile rather than a group. */
-function anchorTileKey(inner: LayerSpec): string | null {
-    return inner.view.level === 'asset' ? `asset:${inner.view.assetId}` : null;
+        ? { kind: 'zoom', stageKey, id, outer, inner, plan, anchorKey, height, scrollTo, target: 1, startP: 0 }
+        : { kind: 'zoom', stageKey, id, outer, inner, plan, anchorKey, height, scrollTo, target: 0, startP: 1 };
 }
 
 function clearLayerStyle(element: HTMLElement | undefined): void {
@@ -260,7 +258,11 @@ export function Heatmap({ data: allData }: { data: HeatmapData }) {
         const assets = new Map<string, HeatmapAsset>();
         for (const sector of data.sectors) {
             sectors.set(sector.id, sector);
-            for (const asset of sector.assets) assets.set(asset.assetId, asset);
+            // The Trending row repeats assets from other rows without their variants; the asset's
+            // own row's entry is the one that drills down.
+            for (const asset of sector.assets) {
+                if (sector.id !== 'trending' || !assets.has(asset.assetId)) assets.set(asset.assetId, asset);
+            }
         }
         return { sectors, assets };
     }, [data]);
@@ -439,8 +441,9 @@ export function Heatmap({ data: allData }: { data: HeatmapData }) {
             settle();
             return;
         }
-        const tileKey = anchorTileKey(active.inner);
-        anchorTile = tileKey ? outer.querySelector<HTMLElement>(`[data-tile="${CSS.escape(tileKey)}"]`) : null;
+        anchorTile = active.anchorKey
+            ? outer.querySelector<HTMLElement>(`[data-tile="${CSS.escape(active.anchorKey)}"]`)
+            : null;
         anchorTile?.setAttribute('data-camera-anchor', '');
 
         const from = active.startP ?? progress.current;

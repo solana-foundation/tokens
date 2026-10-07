@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 
-import { miniPreview, trendingSector } from './preview';
+import { miniPreview, pageSectors, trendingSector } from './preview';
 import type { HeatmapAsset, HeatmapData, HeatmapVariant } from './types';
 
 function variant(id: string): HeatmapVariant {
@@ -120,5 +120,43 @@ describe('trendingSector', () => {
             marketCap: null,
             mint: '3ZLekZYq2qkZiSpnSvabjit34tUkjSwD1JFuW9as9wBG',
         });
+    });
+});
+
+describe('pageSectors', () => {
+    const data: HeatmapData = {
+        sectors: ['majors', 'currencies', 'rwas', 'etfs', 'metals', 'stocks'].map(id => ({
+            id,
+            label: id,
+            assets: [asset(`${id}-1`, 1)],
+        })),
+        assetCount: 6,
+        variantCount: 0,
+        generatedAt: 0,
+    };
+    const trending = { id: 'trending', label: 'Trending', assets: [asset('near', -1)] };
+
+    test('orders Crypto, Stocks, Trending, ETFs, then the rest in their own order', () => {
+        expect(pageSectors(data, trending).sectors.map(s => s.id)).toEqual([
+            'majors',
+            'stocks',
+            'trending',
+            'etfs',
+            'currencies',
+            'rwas',
+            'metals',
+        ]);
+    });
+
+    test('skips Trending when it is missing or empty', () => {
+        expect(pageSectors(data, null).sectors.map(s => s.id)).toEqual([
+            'majors',
+            'stocks',
+            'etfs',
+            'currencies',
+            'rwas',
+            'metals',
+        ]);
+        expect(pageSectors(data, { ...trending, assets: [] }).sectors.some(s => s.id === 'trending')).toBe(false);
     });
 });

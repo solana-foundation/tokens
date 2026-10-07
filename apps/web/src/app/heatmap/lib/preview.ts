@@ -14,6 +14,24 @@ export const MINI_SECTORS = ['stocks', 'majors', 'trending'] as const;
 export const TRENDING_SECTOR_ID = 'trending';
 const FALLBACK_SECTOR = 'stocks';
 
+/** Row order on the heat map page; categories not listed follow in their own order. */
+export const PAGE_ROW_ORDER: readonly string[] = ['majors', 'stocks', TRENDING_SECTOR_ID, 'etfs'];
+
+/**
+ * The heat map page's rows: the categories in PAGE_ROW_ORDER (Trending included when available),
+ * then any others as they came.
+ */
+export function pageSectors(data: HeatmapData, trending: HeatmapSector | null): HeatmapData {
+    const pool = trending && trending.assets.length > 0 ? [...data.sectors, trending] : [...data.sectors];
+    const ordered: HeatmapSector[] = [];
+    for (const id of PAGE_ROW_ORDER) {
+        const sector = pool.find(candidate => candidate.id === id);
+        if (sector) ordered.push(sector);
+    }
+    for (const sector of pool) if (!ordered.includes(sector)) ordered.push(sector);
+    return { ...data, sectors: ordered };
+}
+
 /** Subset of a `GET /api/v1/assets/trending` row that a tile and its hover card use. */
 export interface RawTrendingAsset {
     assetId: string;

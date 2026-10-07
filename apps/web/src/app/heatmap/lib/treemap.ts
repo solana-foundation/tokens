@@ -410,7 +410,8 @@ function toLayout<T>(
 }
 
 function assetItem(asset: HeatmapAsset): LayoutItem<HeatmapAsset> {
-    return { key: `asset:${asset.assetId}`, value: sanitize(asset.volume24h), data: asset };
+    // Keyed by row as well: the Trending row repeats assets that also sit in Crypto or Stocks.
+    return { key: `asset:${asset.sectorId}:${asset.assetId}`, value: sanitize(asset.volume24h), data: asset };
 }
 
 function assetTile(item: LayoutItem<HeatmapAsset>, rect: Rect): LayoutTile {
@@ -428,12 +429,12 @@ export function layoutOverview(data: HeatmapData, width: number, height: number)
 
 /** Overview as rows: the gap between category rows and the limits on a row's map height. */
 const ROW_GAP = 16;
-const ROW_MIN_HEIGHT = 160;
-const ROW_MAX_HEIGHT = 600;
+const ROW_MIN_HEIGHT = 200;
+const ROW_MAX_HEIGHT = 700;
 
 /** Room for a category's map: grows with the square root of its asset count, within limits. */
 export function rowHeight(assetCount: number): number {
-    return Math.round(Math.min(ROW_MAX_HEIGHT, Math.max(ROW_MIN_HEIGHT, 96 + 30 * Math.sqrt(assetCount))));
+    return Math.round(Math.min(ROW_MAX_HEIGHT, Math.max(ROW_MIN_HEIGHT, 120 + 34 * Math.sqrt(assetCount))));
 }
 
 function shiftRect(rect: Rect, dy: number): Rect {

@@ -215,10 +215,10 @@ describe('layoutOverviewRows', () => {
     });
 
     test('a row grows with its asset count, within limits', () => {
-        expect(rowHeight(1)).toBe(160);
+        expect(rowHeight(1)).toBe(200);
         expect(rowHeight(36)).toBeGreaterThan(rowHeight(13));
-        expect(rowHeight(300)).toBe(600);
-        expect(rowHeight(10_000)).toBe(600);
+        expect(rowHeight(300)).toBe(700);
+        expect(rowHeight(10_000)).toBe(700);
     });
 });
 

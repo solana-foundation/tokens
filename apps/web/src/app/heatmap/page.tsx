@@ -6,7 +6,8 @@ import { Skeleton } from '@tokens/ui/skeleton';
 import { FloatingMarketFeedPageContext } from '@/components/floating-market-feed-context';
 import { SiteFooter } from '@/components/site-footer';
 import { Heatmap } from './components/heatmap';
-import { fetchHeatmapData } from './lib/fetch-heatmap';
+import { fetchHeatmapData, fetchTrendingSector } from './lib/fetch-heatmap';
+import { pageSectors } from './lib/preview';
 
 export const metadata: Metadata = {
     title: 'Heat map | Tokens',
@@ -46,8 +47,12 @@ export default function HeatmapPage() {
 async function HeatmapLoader() {
     await connection();
     try {
-        const data = await fetchHeatmapData();
-        return <Heatmap data={data} />;
+        const [data, trending] = await Promise.all([
+            fetchHeatmapData(),
+            // Trending is a row on the page too; without it the page still renders.
+            fetchTrendingSector().catch(() => null),
+        ]);
+        return <Heatmap data={pageSectors(data, trending)} />;
     } catch (error) {
         console.error(
             JSON.stringify({
