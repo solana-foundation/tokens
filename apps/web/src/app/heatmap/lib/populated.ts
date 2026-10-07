@@ -17,23 +17,22 @@ export function isPopulated(item: Pick<HeatmapAsset | HeatmapVariant, 'change24h
 export function populatedOnly(data: HeatmapData): HeatmapData {
     let assetCount = 0;
     let variantCount = 0;
-    const sectors = data.sectors
-        .map(sector => {
-            const assets: HeatmapAsset[] = [];
-            for (const asset of sector.assets) {
-                if (!isPopulated(asset)) continue;
-                const variants = asset.variants.filter(isPopulated);
-                assets.push(
-                    variants.length === asset.variants.length
-                        ? asset
-                        : { ...asset, variants: variants.length > 1 ? variants : [] },
-                );
-                assetCount += 1;
-                variantCount += variants.length;
-            }
-            return { ...sector, assets };
-        })
-        .filter(sector => sector.assets.length > 0);
+    const sectors: HeatmapData['sectors'] = [];
+    for (const sector of data.sectors) {
+        const assets: HeatmapAsset[] = [];
+        for (const asset of sector.assets) {
+            if (!isPopulated(asset)) continue;
+            const variants = asset.variants.filter(isPopulated);
+            assets.push(
+                variants.length === asset.variants.length
+                    ? asset
+                    : { ...asset, variants: variants.length > 1 ? variants : [] },
+            );
+            assetCount += 1;
+            variantCount += variants.length;
+        }
+        if (assets.length > 0) sectors.push({ ...sector, assets });
+    }
 
     return { ...data, sectors, assetCount, variantCount };
 }

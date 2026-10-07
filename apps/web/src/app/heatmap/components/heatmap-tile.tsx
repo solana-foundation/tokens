@@ -1,32 +1,20 @@
 'use client';
 
-import Image, { getImageProps } from 'next/image';
+import Image from 'next/image';
 import Link from 'next/link';
 import { memo, useState, type CSSProperties, type ReactNode } from 'react';
 
 import { buildCoinHref } from '@/lib/coin-href';
 import { changeBin, NO_DATA_FILL, NO_DATA_HATCH, NO_DATA_INK } from '../lib/color';
 import { formatChange, formatVolume, tileAriaLabel, tileChange } from '../lib/labels';
-import type { HeatmapLayout, LayoutTile } from '../lib/treemap';
+import { detailFor, faceFor, LOGO_SOURCE_SIZE, type TileDetail } from '../lib/tile-face';
+import type { LayoutTile } from '../lib/treemap';
 import type { HeatmapPeriod } from '../lib/types';
 
 // `data-camera-anchor`: the tile a view is zooming out of or into. Its label would be a blurred giant
 // behind that view, so it fades out as the view fades in (the camera drives the variable).
 const TILE_CLASS =
     'absolute overflow-hidden rounded-[3px] text-left outline-none transition-[filter] duration-150 ring-offset-white hover:z-10 hover:brightness-[1.06] hover:ring-2 hover:ring-gray-1400 hover:ring-offset-1 focus-visible:z-10 focus-visible:ring-2 focus-visible:ring-gray-1400 focus-visible:ring-offset-1 [&[data-camera-anchor]>*]:opacity-(--camera-label-opacity)';
-
-/** What a tile has room to say. Below `symbol` it is colour only and relies on the tooltip. */
-type Detail = 'full' | 'change' | 'symbol' | 'none';
-
-/** Requested logo size; the tile scales it to 20–44 px. Shared with the preloader so URLs match. */
-const LOGO_SOURCE_SIZE = 40;
-
-function detailFor(width: number, height: number): Detail {
-    if (width >= 104 && height >= 78) return 'full';
-    if (width >= 56 && height >= 36) return 'change';
-    if (width >= 28 && height >= 15) return 'symbol';
-    return 'none';
-}
 
 /** Rough width of a bold label in em: wide and narrow glyphs differ too much to count characters. */
 function labelWidthEm(label: string): number {
@@ -60,44 +48,6 @@ function TileLogo({ src, alt, size }: { src: string; alt: string; size: number }
     );
 }
 
-const preloaded = new Set<string>();
-const MAX_PRELOADS_PER_LAYOUT = 48;
-
-/**
- * Warm the browser cache with the logos `layout` will draw, using the same
- * optimizer URLs the tiles request, so a view opens with its logos in place.
- */
-export function preloadTileLogos(layout: HeatmapLayout): void {
-    let started = 0;
-    for (const group of layout.groups) {
-        for (const tile of group.tiles) {
-            if (tile.kind === 'more' || detailFor(tile.rect.w, tile.rect.h) !== 'full') continue;
-            const src = faceFor(tile).logoURI;
-            if (!src || preloaded.has(src)) continue;
-            preloaded.add(src);
-
-            const { props } = getImageProps({ src, alt: '', width: LOGO_SOURCE_SIZE, height: LOGO_SOURCE_SIZE });
-            const image = new window.Image();
-            image.decoding = 'async';
-            image.referrerPolicy = 'no-referrer';
-            if (props.srcSet) image.srcset = props.srcSet;
-            image.src = props.src;
-            if (++started >= MAX_PRELOADS_PER_LAYOUT) return;
-        }
-    }
-}
-
-interface TileFace {
-    symbol: string;
-    logoURI?: string;
-    variantCount: number;
-}
-
-function faceFor(tile: Exclude<LayoutTile, { kind: 'more' }>): TileFace {
-    if (tile.kind === 'variant') return { symbol: tile.variant.symbol, logoURI: tile.variant.logoURI, variantCount: 0 };
-    return { symbol: tile.asset.symbol, logoURI: tile.asset.logoURI, variantCount: tile.asset.variants.length };
-}
-
 /** Stacked-layers glyph for the variant count: one path, where an icon component would cost four nodes per tile. */
 function VariantsGlyph() {
     return (
@@ -119,7 +69,7 @@ function VariantsGlyph() {
  * Layout classes for the tile element itself. The tile is the flex container, so a label costs no
  * wrapper element: a big view mounts hundreds of these and style work scales with element count.
  */
-const DETAIL_CLASS: Record<Detail, string> = {
+const DETAIL_CLASS: Record<TileDetail, string> = {
     full: 'flex flex-col items-center justify-center gap-[0.18em] px-1.5 text-center leading-none',
     change: 'flex flex-col items-center justify-center gap-[0.18em] px-1.5 text-center leading-none',
     symbol: 'flex items-center justify-center px-0.5 font-semibold leading-none',
@@ -133,7 +83,7 @@ function TileContent({
     inkMuted,
 }: {
     tile: Exclude<LayoutTile, { kind: 'more' }>;
-    detail: Detail;
+    detail: TileDetail;
     period: HeatmapPeriod;
     inkMuted: string;
 }) {

@@ -1,7 +1,7 @@
 'use client';
 
 import Link from 'next/link';
-import { useCallback, useMemo, useRef, useState, type PointerEvent } from 'react';
+import { useCallback, useLayoutEffect, useMemo, useRef, useState, type PointerEvent } from 'react';
 
 import { ChevronRight } from 'lucide-react';
 
@@ -22,19 +22,19 @@ function HeatmapIcon() {
         <span className="flex size-[18px] shrink-0 items-center justify-center text-text-extra-low" aria-hidden>
             <svg className="size-[18px]" viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg">
                 <path
-                    d="M11.3333 5H8.66667C6.64162 5 5 6.64162 5 8.66667V11.3333C5 13.3584 6.64162 15 8.66667 15H11.3333C13.3584 15 15 13.3584 15 11.3333V8.66667C15 6.64162 13.3584 5 11.3333 5Z"
+                    d="M11.33 5H8.67C6.64 5 5 6.64 5 8.67V11.33C5 13.36 6.64 15 8.67 15H11.33C13.36 15 15 13.36 15 11.33V8.67C15 6.64 13.36 5 11.33 5Z"
                     fill="currentColor"
                 />
                 <path
-                    d="M23.3336 5H20.6669C18.6419 5 17.0002 6.64162 17.0002 8.66667V11.3333C17.0002 13.3584 18.6419 15 20.6669 15H23.3336C25.3586 15 27.0002 13.3584 27.0002 11.3333V8.66667C27.0002 6.64162 25.3586 5 23.3336 5Z"
+                    d="M23.33 5H20.67C18.64 5 17 6.64 17 8.67V11.33C17 13.36 18.64 15 20.67 15H23.33C25.36 15 27 13.36 27 11.33V8.67C27 6.64 25.36 5 23.33 5Z"
                     fill="currentColor"
                 />
                 <path
-                    d="M11.3333 17.0002H8.66667C6.64162 17.0002 5 18.6419 5 20.6669V23.3336C5 25.3586 6.64162 27.0002 8.66667 27.0002H11.3333C13.3584 27.0002 15 25.3586 15 23.3336V20.6669C15 18.6419 13.3584 17.0002 11.3333 17.0002Z"
+                    d="M11.33 17H8.67C6.64 17 5 18.64 5 20.67V23.33C5 25.36 6.64 27 8.67 27H11.33C13.36 27 15 25.36 15 23.33V20.67C15 18.64 13.36 17 11.33 17Z"
                     fill="currentColor"
                 />
                 <path
-                    d="M23.3336 17.0002H20.6669C18.6419 17.0002 17.0002 18.6419 17.0002 20.6669V23.3336C17.0002 25.3586 18.6419 27.0002 20.6669 27.0002H23.3336C25.3586 27.0002 27.0002 25.3586 27.0002 23.3336V20.6669C27.0002 18.6419 25.3586 17.0002 23.3336 17.0002Z"
+                    d="M23.33 17H20.67C18.64 17 17 18.64 17 20.67V23.33C17 25.36 18.64 27 20.67 27H23.33C25.36 27 27 25.36 27 23.33V20.67C27 18.64 25.36 17 23.33 17Z"
                     fill="currentColor"
                 />
             </svg>
@@ -58,19 +58,19 @@ export function HeatmapMini({ data, onCycle, onCycleIntent }: HeatmapMiniProps) 
     const tooltipRef = useRef<HeatmapTooltipHandle>(null);
     const [width, setWidth] = useState(0);
 
-    // Callback ref rather than an effect: the stage element is recreated when the category changes
-    // between link-wrapped and not (Trending), and an observer left on the old element would report
-    // the detached node's width of 0.
-    const stageRef = useCallback((element: HTMLDivElement | null) => {
-        if (!element) return;
+    // The stage element is recreated when the category changes between link-wrapped and not
+    // (Trending), so it is tracked as state and re-observed; a detached node would report width 0.
+    const [stageElement, setStageElement] = useState<HTMLDivElement | null>(null);
+    useLayoutEffect(() => {
+        if (!stageElement) return;
         const measure = () => {
-            if (element.isConnected) setWidth(Math.floor(element.clientWidth));
+            if (stageElement.isConnected) setWidth(Math.floor(stageElement.clientWidth));
         };
         measure();
         const observer = new ResizeObserver(measure);
-        observer.observe(element);
+        observer.observe(stageElement);
         return () => observer.disconnect();
-    }, []);
+    }, [stageElement]);
 
     const sector = data?.sector;
     const tiles = useMemo(() => {
@@ -114,7 +114,7 @@ export function HeatmapMini({ data, onCycle, onCycleIntent }: HeatmapMiniProps) 
     // Trending tiles each open their asset page, so the map is not one link there.
     const stage = (
         <div
-            ref={stageRef}
+            ref={setStageElement}
             className={cn('relative w-full overflow-hidden rounded-[21px] bg-white', !tiles.length && 'animate-pulse')}
             style={{ height: MAP_HEIGHT }}
             onPointerMove={onPointerMove}

@@ -179,9 +179,10 @@ function groupShares(totals: number[], counts: number[], balance: Balance): numb
             if (pinned.has(index)) return floors[index]!;
             return freeWeight > 0 ? (value / freeWeight) * (1 - pinnedShare) : (1 - pinnedShare) / freeCount;
         });
-        const under = shares
-            .map((share, index) => index)
-            .filter(index => !pinned.has(index) && shares[index]! < floors[index]!);
+        const under: number[] = [];
+        for (let index = 0; index < n; index++) {
+            if (!pinned.has(index) && shares[index]! < floors[index]!) under.push(index);
+        }
         if (under.length === 0) break;
         for (const index of under) pinned.add(index);
     }

@@ -22,13 +22,18 @@ export const PAGE_ROW_ORDER: readonly string[] = [TRENDING_SECTOR_ID, 'majors', 
  * then any others as they came.
  */
 export function pageSectors(data: HeatmapData, trending: HeatmapSector | null): HeatmapData {
-    const pool = trending && trending.assets.length > 0 ? [...data.sectors, trending] : [...data.sectors];
+    const pool = trending && trending.assets.length > 0 ? [...data.sectors, trending] : data.sectors;
+    const byId = new Map(pool.map(sector => [sector.id, sector]));
     const ordered: HeatmapSector[] = [];
+    const placed = new Set<string>();
     for (const id of PAGE_ROW_ORDER) {
-        const sector = pool.find(candidate => candidate.id === id);
-        if (sector) ordered.push(sector);
+        const sector = byId.get(id);
+        if (sector) {
+            ordered.push(sector);
+            placed.add(id);
+        }
     }
-    for (const sector of pool) if (!ordered.includes(sector)) ordered.push(sector);
+    for (const sector of pool) if (!placed.has(sector.id)) ordered.push(sector);
     return { ...data, sectors: ordered };
 }
 
