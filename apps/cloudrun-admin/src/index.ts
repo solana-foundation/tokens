@@ -1,4 +1,4 @@
-import { registerGracefulShutdown, wrapFetchWithShutdownGuard } from '@tokens/cloudrun-shutdown';
+import { bearerTokenCandidates, registerGracefulShutdown, wrapFetchWithShutdownGuard } from '@tokens/cloudrun-shutdown';
 import { parseAdminClerkUserIds, parseAdminEmails } from './adminAuth';
 import { getSql, makePostgresAdminRepo } from './db';
 import { makePostgresAdminMutationsRepo } from './db/curatedTokensMutations';
@@ -54,7 +54,7 @@ const app = createApp({
         ? { logoSigner: makeGcsLogoSigner(gcsLogoBucket, process.env.GCS_LOGO_PUBLIC_BASE_URL?.trim()) }
         : {}),
     adminAllowlist,
-    authToken,
+    authToken: bearerTokenCandidates(authToken, process.env.TOKENS_CLOUDRUN_AUTH_TOKEN_PREVIOUS),
     ...(rpcVerifyOidc ? { rpcVerifyOidc } : {}),
     gcpLogs: {
         ...(process.env.LOKI_PUSH_URL?.trim() ? { lokiPushUrl: process.env.LOKI_PUSH_URL.trim() } : {}),

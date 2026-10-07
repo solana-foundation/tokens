@@ -19,6 +19,7 @@ Unlike the other `cloudrun-*` services, `usage` has `ingress = INGRESS_TRAFFIC_A
 | `apiKeysAuthenticate` | query | parity with `convex/apiKeys.ts:authenticate`. Resolves an active key by SHA-256 hash (personal-project fallback for legacy keys, default legacy scopes) and returns the platform auth context `apps/api` uses on every authenticated `/v1` request. |
 | `logApiRequest` | mutation | parity with `convex/auth.ts:logApiRequest`. Best-effort insert into `api_request_events` (same ownership checks + latency clamping) and a deduped `api_keys.last_used_at` bump. Feeds the cloudrun-assets rollup job. |
 | `ingestUsageAggregates` | mutation | parity with `convex/apiUsageRollups.ts:ingestUsageAggregates`. Ingests usage buckets (daily + per-endpoint with latency histograms) into the rollup tables additively, in one transaction. Its original caller (the Upstash drain timer) is retired. Buckets are deltas; not replay-safe. |
+| `apiKeysReencrypt` | mutation | Ops, bearer-only, `{confirm:'reencrypt'}`: rewrites every stored reveal copy that only `TOKENS_API_KEY_ENCRYPTION_SECRET_PREVIOUS` can decrypt under the current secret. Idempotent; returns `{processed, reencrypted, alreadyCurrent, failed, failedIds}`. See `docs/security/secret-rotation.md`. |
 | `syncUsageAggregates` | mutation | Target of the API's self-drain (`apps/api/src/effect/usage-drain.ts`). Same bucket shape, but buckets carry running totals and each column is raised to the larger of stored and incoming, so a replayed batch cannot double-count. |
 
 The dashboard queries and mutations (`users.*`, `projects.*`,
@@ -34,6 +35,9 @@ the maintainers.
 | `TOKENS_IDENTITY_SIGNING_SECRET` | yes\* | HMAC key verifying the signed `x-tokens-identity` token (apps/app signs with the same value). \*May be unset only while `TOKENS_IDENTITY_ACCEPT_UNSIGNED=true`; the process refuses to start with neither. |
 | `TOKENS_IDENTITY_ACCEPT_UNSIGNED` | no | `true` keeps accepting the legacy unsigned identity header during the signed-token rollout. Remove once every caller signs. |
 | `TOKENS_API_KEY_ENCRYPTION_SECRET` | no | Required for key reset/reveal (AES-GCM reveal copy); those handlers error without it |
+| `TOKENS_CLOUDRUN_AUTH_TOKEN_PREVIOUS` | no | Rotation only: previous bearer, accepted alongside the current one until removed |
+| `TOKENS_IDENTITY_SIGNING_SECRET_PREVIOUS` | no | Rotation only: previous signing secret, accepted alongside the current one until removed |
+| `TOKENS_API_KEY_ENCRYPTION_SECRET_PREVIOUS` | no | Rotation only: reveal falls back to it; run `apiKeysReencrypt` then remove it |
 | `PORT` | no | Defaults to 8080 |
 | `PG_POOL_MAX` | no | postgres-js connection pool size, default 10 |
 | `PG_IDLE_TIMEOUT` | no | seconds, default 30 |

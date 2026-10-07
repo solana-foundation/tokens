@@ -1,4 +1,4 @@
-import { registerGracefulShutdown, wrapFetchWithShutdownGuard } from '@tokens/cloudrun-shutdown';
+import { bearerTokenCandidates, registerGracefulShutdown, wrapFetchWithShutdownGuard } from '@tokens/cloudrun-shutdown';
 import { getSql, makePostgresPricesRepo } from './db';
 import { createApp } from './server';
 
@@ -10,7 +10,10 @@ if (!authToken) {
 
 const port = Number(process.env.PORT) || 8080;
 const sql = getSql();
-const app = createApp({ repo: makePostgresPricesRepo(sql), authToken });
+const app = createApp({
+    repo: makePostgresPricesRepo(sql),
+    authToken: bearerTokenCandidates(authToken, process.env.TOKENS_CLOUDRUN_AUTH_TOKEN_PREVIOUS),
+});
 
 registerGracefulShutdown({ sql, serviceName: 'cloudrun-prices' });
 
