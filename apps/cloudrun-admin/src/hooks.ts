@@ -91,8 +91,46 @@ export async function pushToLoki(deps: GcpLogsHookDeps, streams: LokiStream[]): 
     return res.status >= 400 && res.status < 500 ? 'rejected' : 'retryable';
 }
 
+const BATCH_WINDOW_MS = 250;
+const BATCH_MAX_ENTRIES = 500;
+
+function createLokiBatcher(deps: GcpLogsHookDeps): (stream: LokiStream) => Promise<LokiPushResult> {
+    let pending: Array<{ stream: LokiStream; resolve: (result: LokiPushResult) => void }> = [];
+    let timer: ReturnType<typeof setTimeout> | undefined;
+
+    const flush = async (): Promise<void> => {
+        clearTimeout(timer);
+        timer = undefined;
+        const batch = pending;
+        pending = [];
+        if (batch.length === 0) return;
+        try {
+            const result = await pushToLoki(
+                deps,
+                batch.map(p => p.stream),
+            );
+            if (result !== 'rejected' || batch.length === 1) {
+                for (const p of batch) p.resolve(result);
+                return;
+            }
+            await Promise.all(batch.map(async p => p.resolve(await pushToLoki(deps, [p.stream]))));
+        } catch (err) {
+            console.error(`loki: batch flush threw ${err instanceof Error ? err.message : 'unknown'}`);
+            for (const p of batch) p.resolve('retryable');
+        }
+    };
+
+    return stream =>
+        new Promise(resolve => {
+            pending.push({ stream, resolve });
+            if (pending.length >= BATCH_MAX_ENTRIES) void flush();
+            else timer ??= setTimeout(() => void flush(), BATCH_WINDOW_MS);
+        });
+}
+
 export function registerGcpLogsRoute(app: Hono, deps: GcpLogsHookDeps): void {
     const envLabel = deps.envLabel ?? 'prd';
+    const pushBatched = createLokiBatcher(deps);
 
     app.post('/hooks/gcp-logs', async c => {
         const verify = deps.verifyGcpLogsOidc;
@@ -135,12 +173,10 @@ export function registerGcpLogsRoute(app: Hono, deps: GcpLogsHookDeps): void {
                 ? entry.textPayload
                 : JSON.stringify(entry.jsonPayload ?? entry.protoPayload ?? entry.httpRequest ?? entry);
 
-        const result = await pushToLoki(deps, [
-            {
-                stream: { service, env: envLabel, source: 'gcp', severity },
-                values: [[tsNs(tsMs), line]],
-            },
-        ]);
+        const result = await pushBatched({
+            stream: { service, env: envLabel, source: 'gcp', severity },
+            values: [[tsNs(tsMs), line]],
+        });
         // 'rejected' entries are ACKed (204): Loki will never accept them.
         return c.body(null, result === 'retryable' ? 502 : 204);
     });

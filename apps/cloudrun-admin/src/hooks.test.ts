@@ -101,6 +101,34 @@ describe('/hooks/gcp-logs', () => {
         ]);
     });
 
+    it('coalesces concurrent deliveries into one Loki push', async () => {
+        const { app, pushed } = makeApp();
+        const statuses = await Promise.all(
+            ['a', 'b', 'c'].map(async t => (await call(app, envelope({ ...entry, textPayload: t }))).status),
+        );
+        expect(statuses).toEqual([204, 204, 204]);
+        expect(pushed).toHaveLength(1);
+        const body = pushed[0] as { streams: Array<{ values: [string, string][] }> };
+        expect(body.streams.map(s => s.values[0]![1]).sort()).toEqual(['a', 'b', 'c']);
+    });
+
+    it('falls back to per-entry pushes when Loki rejects a batch', async () => {
+        const fetchImpl = (async (_url: string | URL | Request, init?: RequestInit) => {
+            const body = JSON.parse(String(init?.body)) as { streams: Array<{ values: [string, string][] }> };
+            if (body.streams.length > 1 || body.streams[0]!.values[0]![1] === 'bad') {
+                return new Response('nope', { status: 400 });
+            }
+            return new Response('down', { status: 503 });
+        }) as unknown as typeof fetch;
+        const { app } = makeApp({ fetchImpl });
+        const [bad, good] = await Promise.all([
+            call(app, envelope({ ...entry, textPayload: 'bad' })),
+            call(app, envelope({ ...entry, textPayload: 'good' })),
+        ]);
+        expect(bad.status).toBe(204);
+        expect(good.status).toBe(502);
+    });
+
     it('acks unparseable payloads without redelivery', async () => {
         const { app, pushed } = makeApp();
         const res = await call(app, {
