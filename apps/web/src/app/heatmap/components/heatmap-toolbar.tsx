@@ -11,9 +11,14 @@ import { HEATMAP_PERIODS, type HeatmapPeriod } from '../lib/types';
 export interface HeatmapCrumb {
     key: string;
     label: string;
-    /** Absent on the current (last) crumb. */
+    /** A page elsewhere on the site (Explore). */
+    href?: string;
+    /** A view of the heat map. Neither href nor onSelect: the current (last) crumb. */
     onSelect?: () => void;
 }
+
+const CRUMB_CLASS =
+    'rounded-sm font-medium transition-colors hover:text-text-extra-high focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-text-extra-high/30';
 
 interface HeatmapToolbarProps {
     crumbs: HeatmapCrumb[];
@@ -63,12 +68,12 @@ export function HeatmapToolbar({ crumbs, assetHref, period, onPeriodChange }: He
                             <Fragment key={crumb.key}>
                                 {index > 0 ? <BreadcrumbSeparator /> : null}
                                 <BreadcrumbItem>
-                                    {crumb.onSelect ? (
-                                        <button
-                                            type="button"
-                                            className="rounded-sm font-medium transition-colors hover:text-text-extra-high focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-text-extra-high/30"
-                                            onClick={crumb.onSelect}
-                                        >
+                                    {crumb.href ? (
+                                        <Link href={crumb.href} className={CRUMB_CLASS}>
+                                            {crumb.label}
+                                        </Link>
+                                    ) : crumb.onSelect ? (
+                                        <button type="button" className={CRUMB_CLASS} onClick={crumb.onSelect}>
                                             {crumb.label}
                                         </button>
                                     ) : (

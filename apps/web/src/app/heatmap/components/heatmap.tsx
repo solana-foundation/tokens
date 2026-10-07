@@ -552,20 +552,27 @@ export function Heatmap({ data: allData }: { data: HeatmapData }) {
         tooltipRef.current?.hide();
     }, [layerKey]);
 
+    // Explore › Heatmaps › <category> › <asset>: the site's Explore page, then the heat map's levels.
     const crumbs = useMemo<HeatmapCrumb[]>(() => {
         const sector = viewAsset ? index.sectors.get(viewAsset.sectorId) : viewSector;
-        const all: HeatmapCrumb = { key: 'all', label: 'All assets', ...(sector ? { onSelect: openOverview } : {}) };
-        if (!sector) return [all];
+        const explore: HeatmapCrumb = { key: 'explore', label: 'Explore', href: '/' };
+        const root: HeatmapCrumb = {
+            key: 'heatmaps',
+            label: 'Heatmaps',
+            ...(sector ? { onSelect: openOverview } : {}),
+        };
+        if (!sector) return [explore, root];
 
         const sectorCrumb: HeatmapCrumb = {
             key: `sector:${sector.id}`,
             label: sector.label,
             ...(viewAsset ? { onSelect: () => openSector(sector.id) } : {}),
         };
-        if (!viewAsset) return [all, sectorCrumb];
+        if (!viewAsset) return [explore, root, sectorCrumb];
 
         return [
-            all,
+            explore,
+            root,
             sectorCrumb,
             { key: `asset:${viewAsset.assetId}`, label: `${viewAsset.name} (${viewAsset.symbol})` },
         ];
