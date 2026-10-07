@@ -2,14 +2,14 @@
     "uid": "tokens-assets-curated-snapshot-stale",
     "title": "tokens-assets: curated membership snapshot refresh failing",
     "ruleGroup": "tokens-assets-availability",
-    "folderUID": "tokens-xyz",
+    "folderUID": "tokens",
     "noDataState": "OK",
     "execErrState": "OK",
     "for": "10m",
     "data": [
         {
             "refId": "A",
-            "datasourceUid": "grafanacloud-logs",
+            "datasourceUid": "tokens-logs",
             "queryType": "range",
             "relativeTimeRange": {
                 "from": 900,
@@ -84,5 +84,15 @@
         "summary": "tokens-assets: curated membership snapshot refresh is failing (serving stale-forever)",
         "description": "The curated membership snapshot has failed to refresh repeatedly over the last 15 minutes (event: curated_snapshot_refresh_failed, includes staleness_ms and stale_over_30m). The service keeps serving the last good snapshot, so curated lists silently freeze — admin adds/removes stop surfacing and, if this persists, membership drifts from the DB. The log line carries the underlying error (DB unreachable, 0-row refusal, or shrink-guard refusal); a guard refusal means membership rows genuinely vanished or shrank and needs a human before the guard is overridden.",
         "runbook_url": "https://example.com/runbooks/assets-curated-snapshot-refresh-failed"
+    },
+    "notification_settings": {
+        "receiver": "tokens-slack",
+        "group_by": [
+            "grafana_folder",
+            "alertname"
+        ],
+        "group_wait": "30s",
+        "group_interval": "5m",
+        "repeat_interval": "4h"
     }
 }

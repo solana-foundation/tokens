@@ -2,14 +2,14 @@
   "uid": "tokens-external-provider-error-rate-high",
   "title": "Critical external provider error rate > 30% for 10m",
   "ruleGroup": "tokens-external-providers",
-  "folderUID": "tokens-xyz",
+  "folderUID": "tokens",
   "noDataState": "OK",
   "execErrState": "OK",
   "for": "10m",
   "data": [
     {
       "refId": "A",
-      "datasourceUid": "grafanacloud-logs",
+      "datasourceUid": "tokens-logs",
       "queryType": "range",
       "relativeTimeRange": {
         "from": 600,
@@ -89,5 +89,15 @@
     "summary": "Critical external provider {{ $labels.provider }} error rate above 30%",
     "description": "Provider {{ $labels.provider }} has been returning errors for more than 30% of calls sustained over the last 10 minutes (min 0.05 calls/sec floor). Birdeye, CoinGecko, and Jupiter power live market data \u2014 consider activating fallback or surfacing degraded mode to users.",
     "runbook_url": "https://example.com/runbooks/external-critical-provider-error-rate-high"
+  },
+  "notification_settings": {
+    "receiver": "tokens-critical",
+    "group_by": [
+      "grafana_folder",
+      "alertname"
+    ],
+    "group_wait": "30s",
+    "group_interval": "5m",
+    "repeat_interval": "4h"
   }
 }

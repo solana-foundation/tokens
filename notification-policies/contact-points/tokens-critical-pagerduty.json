@@ -1,0 +1,15 @@
+{
+  "uid": "tokens-critical-pagerduty",
+  "name": "tokens-critical",
+  "type": "pagerduty",
+  "settings": {
+    "integrationKey": "${PAGERDUTY_INTEGRATION_KEY}",
+    "severity": "{{ if eq .CommonLabels.severity \"warning\" }}warning{{ else if eq .CommonLabels.severity \"info\" }}info{{ else }}critical{{ end }}",
+    "class": "{{ if .CommonLabels.scope }}{{ .CommonLabels.scope }}{{ else }}tokens{{ end }}",
+    "component": "{{ if .CommonLabels.service }}{{ .CommonLabels.service }}{{ else }}tokens.xyz{{ end }}",
+    "group": "tokens-xyz",
+    "source": "solanafoundation.grafana.net",
+    "summary": "{{ .CommonAnnotations.summary }}{{ if not .CommonAnnotations.summary }}{{ .CommonLabels.alertname }}{{ end }}"
+  },
+  "disableResolveMessage": false
+}

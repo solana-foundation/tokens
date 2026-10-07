@@ -46,7 +46,7 @@ jobs:
         id: secrets
         run: |
           set -euo pipefail
-          for key in GRAFANA_API_URL GRAFANA_API_TOKEN GRAFANA_FOLDER_UID PAGERDUTY_INTEGRATION_KEY SLACK_ALERT_WEBHOOK_URL; do
+          for key in GRAFANA_API_URL GRAFANA_API_TOKEN GRAFANA_FOLDER_UID PAGERDUTY_INTEGRATION_KEY GRAFANA_SLACK_WEBHOOK_URL; do
             value=$(doppler secrets get "$key" --plain --project "$DOPPLER_PROJECT" --config "$DOPPLER_CONFIG")
             echo "::add-mask::$value"
             echo "$key=$value" >> "$GITHUB_OUTPUT"
@@ -126,24 +126,20 @@ jobs:
           GRAFANA_API_URL: ${{ steps.secrets.outputs.GRAFANA_API_URL }}
           GRAFANA_API_TOKEN: ${{ steps.secrets.outputs.GRAFANA_API_TOKEN }}
           PAGERDUTY_INTEGRATION_KEY: ${{ steps.secrets.outputs.PAGERDUTY_INTEGRATION_KEY }}
-          SLACK_ALERT_WEBHOOK_URL: ${{ steps.secrets.outputs.SLACK_ALERT_WEBHOOK_URL }}
+          GRAFANA_SLACK_WEBHOOK_URL: ${{ steps.secrets.outputs.GRAFANA_SLACK_WEBHOOK_URL }}
         run: |
           set -euo pipefail
           shopt -s nullglob
-          existing=$(curl -sS "$GRAFANA_API_URL/api/v1/provisioning/contact-points" \
-            -H "Authorization: Bearer $GRAFANA_API_TOKEN")
           for f in notification-policies/contact-points/*.json; do
-            name=$(jq -r '.name' "$f")
-            payload=$(envsubst < "$f")
-            uid=$(jq -r --arg name "$name" '.[] | select(.name == $name) | .uid // empty' <<<"$existing" | head -1)
-            if [ -n "$uid" ]; then
-              http_code=$(curl -sS -o /tmp/resp.json -w '%{http_code}' \
-                -X PUT "$GRAFANA_API_URL/api/v1/provisioning/contact-points/$uid" \
-                -H "Authorization: Bearer $GRAFANA_API_TOKEN" \
-                -H 'Content-Type: application/json' \
-                -H 'X-Disable-Provenance: true' \
-                --data "$payload")
-            else
+            uid=$(jq -r '.uid' "$f")
+            payload=$(envsubst '${PAGERDUTY_INTEGRATION_KEY} ${GRAFANA_SLACK_WEBHOOK_URL}' < "$f")
+            http_code=$(curl -sS -o /tmp/resp.json -w '%{http_code}' \
+              -X PUT "$GRAFANA_API_URL/api/v1/provisioning/contact-points/$uid" \
+              -H "Authorization: Bearer $GRAFANA_API_TOKEN" \
+              -H 'Content-Type: application/json' \
+              -H 'X-Disable-Provenance: true' \
+              --data "$payload")
+            if [ "$http_code" = "404" ]; then
               http_code=$(curl -sS -o /tmp/resp.json -w '%{http_code}' \
                 -X POST "$GRAFANA_API_URL/api/v1/provisioning/contact-points" \
                 -H "Authorization: Bearer $GRAFANA_API_TOKEN" \
@@ -159,26 +155,6 @@ jobs:
             echo "  $(basename $f): $http_code"
           done
 
-      - name: Push notification policy
-        if: hashFiles('notification-policies/policy.json') != ''
-        env:
-          GRAFANA_API_URL: ${{ steps.secrets.outputs.GRAFANA_API_URL }}
-          GRAFANA_API_TOKEN: ${{ steps.secrets.outputs.GRAFANA_API_TOKEN }}
-        run: |
-          set -euo pipefail
-          http_code=$(curl -sS -o /tmp/resp.json -w '%{http_code}' \
-            -X PUT "$GRAFANA_API_URL/api/v1/provisioning/policies" \
-            -H "Authorization: Bearer $GRAFANA_API_TOKEN" \
-            -H 'Content-Type: application/json' \
-            -H 'X-Disable-Provenance: true' \
-            --data "$(cat notification-policies/policy.json)")
-          if [ "$http_code" -ge 300 ]; then
-            echo "::error::Notification policy push failed ($http_code)"
-            cat /tmp/resp.json
-            exit 1
-          fi
-          echo "  policy: $http_code"
-
       - name: Notify Slack on failure
         if: failure()
         env:
@@ -191,11 +167,11 @@ jobs:
           PAYLOAD=$(jq -n \
             --arg sha "$SHA" --arg actor "$GITHUB_ACTOR" --arg run_url "$RUN_URL" \
             '{
-              text: "*[FAILED] grafana-push* — dashboards/alerts/policies did not sync to Grafana",
+              text: "*[FAILED] grafana-push* — dashboards/alerts/contact points did not sync to Grafana",
               attachments: [{
                 color: "#ff0000",
                 blocks: [
-                  {type:"section", text:{type:"mrkdwn", text:"*[FAILED] grafana-push*\nDashboards / alert rules / contact points / policy did not sync to Grafana. Grafana is now drifted from `main`."}},
+                  {type:"section", text:{type:"mrkdwn", text:"*[FAILED] grafana-push*\nDashboards / alert rules / contact points did not sync to Grafana. Grafana is now drifted from `main`."}},
                   {type:"section", fields:[
                     {type:"mrkdwn", text:("*Commit:*\n`"+$sha+"`")},
                     {type:"mrkdwn", text:("*Triggered by:*\n"+$actor)},

@@ -91,6 +91,9 @@ for (const directory of jsonRoots) {
         if (!/^[A-Za-z0-9_-]+$/.test(uid)) {
             errors.push(`${displayPath}: alert uid contains unsupported characters`);
         }
+        if (!['tokens-critical', 'tokens-slack'].includes(document?.notification_settings?.receiver)) {
+            errors.push(`${displayPath}: notification_settings.receiver must be tokens-critical or tokens-slack`);
+        }
         const previous = alertUids.get(uid);
         if (previous) errors.push(`${displayPath}: alert uid duplicates ${previous}`);
         else alertUids.set(uid, displayPath);

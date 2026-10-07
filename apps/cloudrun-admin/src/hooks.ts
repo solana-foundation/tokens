@@ -31,6 +31,29 @@ function tsNs(ms: number): string {
 
 export type LokiPushResult = 'pushed' | 'rejected' | 'retryable';
 
+function mirrorTargets(url: string, auth: string): { primary: [string, string]; mirrors: Array<[string, string]> } {
+    const urls = url.split(',').map(s => s.trim());
+    const auths = auth.split(',').map(s => s.trim());
+    const mirrors = urls
+        .slice(1)
+        .map((u, i): [string, string] => [u, auths[i + 1] ?? ''])
+        .filter(([u, a]) => u && a);
+    return { primary: [urls[0] ?? '', auths[0] ?? ''], mirrors };
+}
+
+async function pushMirror(fetchImpl: typeof fetch, url: string, auth: string, body: string): Promise<void> {
+    try {
+        const res = await fetchImpl(url, {
+            method: 'POST',
+            headers: { Authorization: auth, 'Content-Type': 'application/json' },
+            body,
+        });
+        if (!res.ok) console.error(`loki: mirror push failed status=${res.status} url=${url}`);
+    } catch (err) {
+        console.error(`loki: mirror push threw ${err instanceof Error ? err.message : 'unknown'} url=${url}`);
+    }
+}
+
 /**
  * 4xx from Loki means the entry is permanently unshippable (too-old
  * timestamp, bad labels) — retrying can never succeed, so callers must ACK.
@@ -46,25 +69,68 @@ export async function pushToLoki(deps: GcpLogsHookDeps, streams: LokiStream[]): 
     }
     if (streams.length === 0 || streams.every(s => s.values.length === 0)) return 'pushed';
     const fetchImpl = deps.fetchImpl ?? fetch;
+    const { primary, mirrors } = mirrorTargets(lokiUrl, lokiAuth);
+    const body = JSON.stringify({ streams });
+    const mirrored = Promise.all(mirrors.map(([url, auth]) => pushMirror(fetchImpl, url, auth, body)));
     let res: Response;
     try {
-        res = await fetchImpl(lokiUrl, {
+        res = await fetchImpl(primary[0], {
             method: 'POST',
-            headers: { Authorization: lokiAuth, 'Content-Type': 'application/json' },
-            body: JSON.stringify({ streams }),
+            headers: { Authorization: primary[1], 'Content-Type': 'application/json' },
+            body,
         });
     } catch (err) {
+        await mirrored;
         console.error(`loki: push threw ${err instanceof Error ? err.message : 'unknown'}`);
         return 'retryable';
     }
+    await mirrored;
     if (res.ok) return 'pushed';
-    const body = await res.text().catch(() => '');
-    console.error(`loki: push failed status=${res.status} body=${body.slice(0, 300)}`);
+    const text = await res.text().catch(() => '');
+    console.error(`loki: push failed status=${res.status} body=${text.slice(0, 300)}`);
     return res.status >= 400 && res.status < 500 ? 'rejected' : 'retryable';
+}
+
+const BATCH_WINDOW_MS = 250;
+const BATCH_MAX_ENTRIES = 500;
+
+function createLokiBatcher(deps: GcpLogsHookDeps): (stream: LokiStream) => Promise<LokiPushResult> {
+    let pending: Array<{ stream: LokiStream; resolve: (result: LokiPushResult) => void }> = [];
+    let timer: ReturnType<typeof setTimeout> | undefined;
+
+    const flush = async (): Promise<void> => {
+        clearTimeout(timer);
+        timer = undefined;
+        const batch = pending;
+        pending = [];
+        if (batch.length === 0) return;
+        try {
+            const result = await pushToLoki(
+                deps,
+                batch.map(p => p.stream),
+            );
+            if (result !== 'rejected' || batch.length === 1) {
+                for (const p of batch) p.resolve(result);
+                return;
+            }
+            await Promise.all(batch.map(async p => p.resolve(await pushToLoki(deps, [p.stream]))));
+        } catch (err) {
+            console.error(`loki: batch flush threw ${err instanceof Error ? err.message : 'unknown'}`);
+            for (const p of batch) p.resolve('retryable');
+        }
+    };
+
+    return stream =>
+        new Promise(resolve => {
+            pending.push({ stream, resolve });
+            if (pending.length >= BATCH_MAX_ENTRIES) void flush();
+            else timer ??= setTimeout(() => void flush(), BATCH_WINDOW_MS);
+        });
 }
 
 export function registerGcpLogsRoute(app: Hono, deps: GcpLogsHookDeps): void {
     const envLabel = deps.envLabel ?? 'prd';
+    const pushBatched = createLokiBatcher(deps);
 
     app.post('/hooks/gcp-logs', async c => {
         const verify = deps.verifyGcpLogsOidc;
@@ -107,12 +173,10 @@ export function registerGcpLogsRoute(app: Hono, deps: GcpLogsHookDeps): void {
                 ? entry.textPayload
                 : JSON.stringify(entry.jsonPayload ?? entry.protoPayload ?? entry.httpRequest ?? entry);
 
-        const result = await pushToLoki(deps, [
-            {
-                stream: { service, env: envLabel, source: 'gcp', severity },
-                values: [[tsNs(tsMs), line]],
-            },
-        ]);
+        const result = await pushBatched({
+            stream: { service, env: envLabel, source: 'gcp', severity },
+            values: [[tsNs(tsMs), line]],
+        });
         // 'rejected' entries are ACKed (204): Loki will never accept them.
         return c.body(null, result === 'retryable' ? 502 : 204);
     });

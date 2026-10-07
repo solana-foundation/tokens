@@ -34,6 +34,29 @@ function tsNs(ms: number): string {
     return `${BigInt(Math.floor(Number.isFinite(ms) ? ms : Date.now())) * 1_000_000n}`;
 }
 
+function mirrorTargets(url: string, auth: string): { primary: [string, string]; mirrors: Array<[string, string]> } {
+    const urls = url.split(',').map(s => s.trim());
+    const auths = auth.split(',').map(s => s.trim());
+    const mirrors = urls
+        .slice(1)
+        .map((u, i): [string, string] => [u, auths[i + 1] ?? ''])
+        .filter(([u, a]) => u && a);
+    return { primary: [urls[0] ?? '', auths[0] ?? ''], mirrors };
+}
+
+async function pushMirror(fetchImpl: typeof fetch, url: string, auth: string, body: string): Promise<void> {
+    try {
+        const res = await fetchImpl(url, {
+            method: 'POST',
+            headers: { Authorization: auth, 'Content-Type': 'application/json' },
+            body,
+        });
+        if (!res.ok) console.error(`loki: mirror push failed status=${res.status} url=${url}`);
+    } catch (err) {
+        console.error(`loki: mirror push threw ${err instanceof Error ? err.message : 'unknown'} url=${url}`);
+    }
+}
+
 async function pushToLoki(deps: HookDeps, streams: LokiStream[]): Promise<boolean> {
     const lokiUrl = deps.lokiPushUrl;
     const lokiAuth = deps.lokiPushAuth;
@@ -43,14 +66,19 @@ async function pushToLoki(deps: HookDeps, streams: LokiStream[]): Promise<boolea
     }
     if (streams.length === 0 || streams.every(s => s.values.length === 0)) return true;
     const fetchImpl = deps.fetchImpl ?? fetch;
-    const res = await fetchImpl(lokiUrl, {
-        method: 'POST',
-        headers: { Authorization: lokiAuth, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ streams }),
-    });
+    const { primary, mirrors } = mirrorTargets(lokiUrl, lokiAuth);
+    const body = JSON.stringify({ streams });
+    const [res] = await Promise.all([
+        fetchImpl(primary[0], {
+            method: 'POST',
+            headers: { Authorization: primary[1], 'Content-Type': 'application/json' },
+            body,
+        }),
+        ...mirrors.map(([url, auth]) => pushMirror(fetchImpl, url, auth, body)),
+    ]);
     if (!res.ok) {
-        const body = await res.text();
-        console.error(`loki: push failed status=${res.status} body=${body.slice(0, 300)}`);
+        const text = await res.text();
+        console.error(`loki: push failed status=${res.status} body=${text.slice(0, 300)}`);
         // Loki 4xx = permanently unshippable (too-old timestamp, bad labels):
         // retrying can never succeed, so report success to stop redelivery.
         return res.status >= 400 && res.status < 500;

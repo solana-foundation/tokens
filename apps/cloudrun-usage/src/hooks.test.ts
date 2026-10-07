@@ -113,6 +113,32 @@ describe('/hooks/log-drain', () => {
         expect(lambda?.values).toHaveLength(2);
     });
 
+    it('mirrors to extra comma-separated targets without letting them affect the result', async () => {
+        const calls: Array<{ url: string; auth: string; body: string }> = [];
+        const fetchImpl = (async (url: string | URL | Request, init?: RequestInit) => {
+            const auth = (init?.headers as Record<string, string>).Authorization!;
+            calls.push({ url: String(url), auth, body: String(init?.body) });
+            if (String(url).includes('mirror')) return new Response('nope', { status: 401 });
+            return new Response(null, { status: 204 });
+        }) as unknown as typeof fetch;
+        const { app } = makeApp({
+            lokiPushUrl: 'https://loki.example/push,https://mirror.example/push',
+            lokiPushAuth: 'Basic abc, Basic def',
+            fetchImpl,
+        });
+        const res = await call(app, '/hooks/log-drain?service=tokens-api&env=prd', {
+            method: 'POST',
+            headers: { 'x-vercel-drain-secret': 'drain-secret' },
+            body: JSON.stringify({ timestamp: 1_750_000_000_000, message: 'hello', source: 'lambda' }),
+        });
+        expect(res.status).toBe(204);
+        expect(calls.map(c => [c.url, c.auth])).toEqual([
+            ['https://loki.example/push', 'Basic abc'],
+            ['https://mirror.example/push', 'Basic def'],
+        ]);
+        expect(calls[1]!.body).toBe(calls[0]!.body);
+    });
+
     it('returns 204 for empty bodies without pushing', async () => {
         const { app, pushed } = makeApp();
         const res = await call(app, '/hooks/log-drain', {

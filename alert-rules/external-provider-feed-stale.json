@@ -2,14 +2,14 @@
   "uid": "tokens-external-provider-feed-stale",
   "title": "External provider feed went silent (no successful calls in 15m)",
   "ruleGroup": "tokens-external-providers",
-  "folderUID": "tokens-xyz",
+  "folderUID": "tokens",
   "noDataState": "Alerting",
   "execErrState": "OK",
   "for": "15m",
   "data": [
     {
       "refId": "A",
-      "datasourceUid": "grafanacloud-logs",
+      "datasourceUid": "tokens-logs",
       "queryType": "range",
       "relativeTimeRange": {
         "from": 900,
@@ -89,5 +89,15 @@
     "summary": "External provider calls have stopped — possible outage",
     "description": "No successful external_call events from any provider in the last 15 minutes. Either tokens.xyz isn't generating any traffic that calls upstreams, or every upstream is failing. Check the External providers dashboard and the API overview dashboard for traffic levels. Excludes logo-sync probes (provider=logo_*) so successful artwork fetches cannot mask a silent data feed.",
     "runbook_url": "https://example.com/runbooks/external-provider-feed-stale"
+  },
+  "notification_settings": {
+    "receiver": "tokens-critical",
+    "group_by": [
+      "grafana_folder",
+      "alertname"
+    ],
+    "group_wait": "30s",
+    "group_interval": "5m",
+    "repeat_interval": "4h"
   }
 }

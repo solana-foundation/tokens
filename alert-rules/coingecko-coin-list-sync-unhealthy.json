@@ -2,14 +2,14 @@
   "uid": "tokens-coin-list-sync-unhealthy",
   "title": "tokens-assets: CoinGecko coin-list sync unhealthy",
   "ruleGroup": "tokens-crons",
-  "folderUID": "tokens-xyz",
+  "folderUID": "tokens",
   "noDataState": "OK",
   "execErrState": "OK",
   "for": "0s",
   "data": [
     {
       "refId": "A",
-      "datasourceUid": "grafanacloud-logs",
+      "datasourceUid": "tokens-logs",
       "queryType": "range",
       "relativeTimeRange": {
         "from": 3600,
@@ -89,5 +89,15 @@
     "summary": "CoinGecko coin-list sync failing or freshness filter failing open",
     "description": "The weekly sync-coingecko-coin-list cron logged batch failures, or a curated refresh hit the coin-list fail-open path (zero fresh rows). This is the upstream canary for the coingecko provider-error alert: a starved freshness filter re-requests delisted coin ids until the 404 storm trips the 30% error-rate page.",
     "runbook_url": "https://example.com/runbooks/coingecko-coin-list-sync-unhealthy"
+  },
+  "notification_settings": {
+    "receiver": "tokens-slack",
+    "group_by": [
+      "grafana_folder",
+      "alertname"
+    ],
+    "group_wait": "30s",
+    "group_interval": "5m",
+    "repeat_interval": "4h"
   }
 }
