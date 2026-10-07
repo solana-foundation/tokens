@@ -2,14 +2,14 @@
   "uid": "tokens-data-provider-error-rate-high",
   "title": "Data-feed provider error rate > 30% for 30m",
   "ruleGroup": "tokens-external-providers",
-  "folderUID": "tokens-xyz",
+  "folderUID": "tokens",
   "noDataState": "OK",
   "execErrState": "OK",
   "for": "30m",
   "data": [
     {
       "refId": "A",
-      "datasourceUid": "grafanacloud-logs",
+      "datasourceUid": "tokens-logs",
       "queryType": "range",
       "relativeTimeRange": {
         "from": 1800,
@@ -89,5 +89,15 @@
     "summary": "Data-feed provider {{ $labels.provider }} error rate above 30%",
     "description": "Provider {{ $labels.provider }} returned errors on >30% of calls for 30m (min 0.05 calls/sec floor). This rule catches everything outside the critical tier (birdeye/coingecko/jupiter) and outside the logo-sync probes (provider=logo_*, which fetch arbitrary third-party artwork URLs where 404s, redirects and blocked gateways are expected outcomes — see tokens-assets-logo-sync-failing for that job's health), so user-facing impact depends on which provider fired — open the External providers dashboard and the runbook before assuming low urgency. No page; Slack only.",
     "runbook_url": "https://example.com/runbooks/external-data-provider-error-rate-high"
+  },
+  "notification_settings": {
+    "receiver": "tokens-slack",
+    "group_by": [
+      "grafana_folder",
+      "alertname"
+    ],
+    "group_wait": "30s",
+    "group_interval": "5m",
+    "repeat_interval": "4h"
   }
 }

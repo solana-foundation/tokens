@@ -2,14 +2,14 @@
   "uid": "tokens-api-p95-latency-high",
   "title": "tokens-api: p95 latency > 3s for 10m",
   "ruleGroup": "tokens-api-availability",
-  "folderUID": "tokens-xyz",
+  "folderUID": "tokens",
   "noDataState": "OK",
   "execErrState": "OK",
   "for": "10m",
   "data": [
     {
       "refId": "A",
-      "datasourceUid": "grafanacloud-logs",
+      "datasourceUid": "tokens-logs",
       "queryType": "range",
       "relativeTimeRange": {
         "from": 600,
@@ -89,5 +89,15 @@
     "summary": "tokens-api p95 latency above 3s",
     "description": "tokens-api p95 latency has been above 3000ms continuously for the last 10 minutes (rule fires after for=10m sustained). Check the Top 5 slowest endpoints panel for the offending paths.",
     "runbook_url": "https://example.com/runbooks/api-p95-latency-high"
+  },
+  "notification_settings": {
+    "receiver": "tokens-critical",
+    "group_by": [
+      "grafana_folder",
+      "alertname"
+    ],
+    "group_wait": "30s",
+    "group_interval": "5m",
+    "repeat_interval": "4h"
   }
 }

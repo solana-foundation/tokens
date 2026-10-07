@@ -2,14 +2,14 @@
   "uid": "tokens-api-smoke-canary-failing",
   "title": "tokens-api: smoke canary failed twice in a row",
   "ruleGroup": "tokens-api",
-  "folderUID": "tokens-xyz",
+  "folderUID": "tokens",
   "noDataState": "OK",
   "execErrState": "OK",
   "for": "0s",
   "data": [
     {
       "refId": "A",
-      "datasourceUid": "grafanacloud-logs",
+      "datasourceUid": "tokens-logs",
       "queryType": "range",
       "relativeTimeRange": {
         "from": 180,
@@ -89,5 +89,15 @@
     "summary": "tokens.xyz API smoke canary failed 2+ times in 3 minutes",
     "description": "The minute-cadence smoke canary on tokens-ci-runner has reported 2 or more failed runs in the last 3 minutes. Tokens API is likely down or degraded \u2014 check the API overview dashboard and the most recent Slack alert for which probes failed.",
     "runbook_url": "https://example.com/runbooks/api-smoke-canary-failing"
+  },
+  "notification_settings": {
+    "receiver": "tokens-critical",
+    "group_by": [
+      "grafana_folder",
+      "alertname"
+    ],
+    "group_wait": "30s",
+    "group_interval": "5m",
+    "repeat_interval": "4h"
   }
 }

@@ -2,14 +2,14 @@
     "uid": "tokens-api-degraded-responses",
     "title": "tokens-api: serving degraded responses",
     "ruleGroup": "tokens-api-availability",
-    "folderUID": "tokens-xyz",
+    "folderUID": "tokens",
     "noDataState": "OK",
     "execErrState": "OK",
     "for": "2m",
     "data": [
         {
             "refId": "A",
-            "datasourceUid": "grafanacloud-logs",
+            "datasourceUid": "tokens-logs",
             "queryType": "range",
             "relativeTimeRange": {
                 "from": 600,
@@ -88,5 +88,15 @@
         "summary": "tokens-api: responses are degrading to fallbacks instead of failing",
         "description": "An operation has hit its tapErrorAndDefault fallback more than 20 times over the last 10 minutes (label: operation). Callers are getting 200s with missing data (registry identity, null markets) instead of 5xx — the backend dependency behind that operation is failing even though no 5xx alert will fire. Check the operation's error messages in Loki for the unwrapped cause.",
         "runbook_url": "https://example.com/runbooks/api-degraded-responses"
+    },
+    "notification_settings": {
+        "receiver": "tokens-slack",
+        "group_by": [
+            "grafana_folder",
+            "alertname"
+        ],
+        "group_wait": "30s",
+        "group_interval": "5m",
+        "repeat_interval": "4h"
     }
 }

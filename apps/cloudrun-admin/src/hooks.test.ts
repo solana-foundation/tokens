@@ -81,6 +81,26 @@ describe('/hooks/gcp-logs', () => {
         expect((await call(app, envelope(entry))).status).toBe(502);
     });
 
+    it('mirrors to extra comma-separated targets without letting them affect the result', async () => {
+        const calls: Array<{ url: string; auth: string }> = [];
+        const fetchImpl = (async (url: string | URL | Request, init?: RequestInit) => {
+            const auth = (init?.headers as Record<string, string>).Authorization!;
+            calls.push({ url: String(url), auth });
+            if (String(url).includes('mirror')) throw new Error('mirror down');
+            return new Response(null, { status: 204 });
+        }) as unknown as typeof fetch;
+        const { app } = makeApp({
+            lokiPushUrl: 'https://loki.example/push, https://mirror.example/push',
+            lokiPushAuth: 'Basic abc,Basic def',
+            fetchImpl,
+        });
+        expect((await call(app, envelope(entry))).status).toBe(204);
+        expect(calls).toEqual([
+            { url: 'https://mirror.example/push', auth: 'Basic def' },
+            { url: 'https://loki.example/push', auth: 'Basic abc' },
+        ]);
+    });
+
     it('acks unparseable payloads without redelivery', async () => {
         const { app, pushed } = makeApp();
         const res = await call(app, {

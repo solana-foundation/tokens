@@ -14,7 +14,7 @@ const HIDDEN_PROJECT_IDS = new Set<string>([
 const grafanaUrl = (process.env.GRAFANA_API_URL ?? '').trim().replace(/\/$/, '');
 const grafanaToken = (process.env.GRAFANA_API_TOKEN ?? '').trim();
 const slackWebhook = (process.env.SLACK_USAGE_DIGEST_WEBHOOK_URL ?? '').trim();
-const datasourceUid = (process.env.LOKI_DATASOURCE_UID ?? 'grafanacloud-logs').trim();
+const datasourceUid = (process.env.LOKI_DATASOURCE_UID ?? 'tokens-logs').trim();
 const projectLookupPath = (process.env.PROJECT_LOOKUP_PATH ?? '').trim();
 
 if (!grafanaUrl || !grafanaToken || !slackWebhook) {

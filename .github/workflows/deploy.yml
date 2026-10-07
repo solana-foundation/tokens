@@ -608,7 +608,7 @@ jobs:
           loki_count() {
             local attempt out
             for attempt in 1 2 3; do
-              out=$(curl -sfG "$GRAFANA_API_URL/api/datasources/proxy/uid/grafanacloud-logs/loki/api/v1/query" \
+              out=$(curl -sfG "$GRAFANA_API_URL/api/datasources/proxy/uid/tokens-logs/loki/api/v1/query" \
                 -H "Authorization: Bearer $GRAFANA_API_TOKEN" \
                 --data-urlencode "query=$1" \
                 | jq -r '.data.result[0].value[1] // "0"') && { echo "$out"; return 0; }

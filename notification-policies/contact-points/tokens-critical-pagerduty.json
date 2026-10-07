@@ -1,5 +1,6 @@
 {
-  "name": "pagerduty",
+  "uid": "tokens-critical-pagerduty",
+  "name": "tokens-critical",
   "type": "pagerduty",
   "settings": {
     "integrationKey": "${PAGERDUTY_INTEGRATION_KEY}",

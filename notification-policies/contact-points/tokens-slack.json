@@ -1,5 +1,6 @@
 {
-  "name": "slack",
+  "uid": "tokens-slack",
+  "name": "tokens-slack",
   "type": "slack",
   "settings": {
     "url": "${SLACK_ALERT_WEBHOOK_URL}",
