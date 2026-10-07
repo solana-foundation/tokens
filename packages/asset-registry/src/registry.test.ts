@@ -16,6 +16,21 @@ describe('asset registry', () => {
         expect(collision?.candidates.length).toBeGreaterThan(1);
     });
 
+    test('does not register issuer labels (Ondo, xStock) as asset aliases', () => {
+        // Variant labels are issuer names shared by hundreds of tokenized assets. Registering them as
+        // aliases made `resolveAlias('ondo')` return an arbitrary WisdomTree fund, which then overrode
+        // the DB-authored ONDO asset's name in the API.
+        expect(resolveAlias('ondo')).toBeNull();
+        expect(resolveAlias('Ondo')).toBeNull();
+        expect(resolveAlias('ONDO')).toBeNull();
+        expect(resolveAlias('xstock')).toBeNull();
+
+        const result = validateRegistry();
+        const collisions = result.ok ? [] : result.issues.filter(issue => issue.kind === 'alias_collision');
+        expect(collisions.some(issue => issue.alias === 'ondo' || issue.alias === 'xstock')).toBe(false);
+        expect(collisions.length).toBeLessThan(20);
+    });
+
     test('keeps bitcoin aliases and variants after immutable construction', () => {
         const bitcoin = getAsset('bitcoin');
 

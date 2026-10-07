@@ -14,11 +14,6 @@ const ORIGINAL_FETCH = globalThis.fetch;
 const ORIGINAL_LOG = console.log;
 
 const BASE_OPTS = {
-    url: 'http://clickhouse.invalid',
-    username: 'u',
-    password: 'p',
-    database: 'default',
-    solanaTradesTable: 'trades_anza_final',
     tradingApiUrl: 'https://trading-api.test/v1/query',
 } as const;
 

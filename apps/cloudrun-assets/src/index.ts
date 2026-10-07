@@ -107,11 +107,6 @@ const rwaApiKey = process.env.RWA_API_KEY?.trim();
 const cronInvokerSa = process.env.TOKENS_CRON_INVOKER_SA?.trim() || undefined;
 const cronAudience = process.env.SCHEDULER_OIDC_AUDIENCE?.trim() || undefined;
 
-const clickhouseUrl = process.env.CLICKHOUSE_URL?.trim();
-const clickhouseUser = process.env.CLICKHOUSE_USER?.trim();
-const clickhousePassword = process.env.CLICKHOUSE_PASSWORD?.trim();
-const clickhouseDatabase = process.env.CLICKHOUSE_DATABASE?.trim();
-
 let cronDeps: CronDeps | undefined;
 let clickhouseCronDeps: (CronDeps & ClickhouseCronDeps) | undefined;
 let miscCronDeps: MiscCronDeps | undefined;
@@ -168,33 +163,12 @@ if (birdeyeApiKey) {
         console.error('[cloudrun-assets] coingecko curated warmup failed', err);
     });
     cronDeps = baseDeps;
-    if (clickhouseUrl && clickhouseUser && clickhousePassword && clickhouseDatabase) {
-        clickhouseCronDeps = {
-            ...baseDeps,
-            clickhouseRepo: makePostgresClickhouseRepo(sql),
-            clickhouse: makeClickhouseClient({
-                url: clickhouseUrl,
-                username: clickhouseUser,
-                password: clickhousePassword,
-                database: clickhouseDatabase,
-                ...(process.env.CLICKHOUSE_STOCK_TRADES_TABLE
-                    ? { stockTradesTable: process.env.CLICKHOUSE_STOCK_TRADES_TABLE.trim() }
-                    : {}),
-                ...(process.env.CLICKHOUSE_STOCK_INSTRUMENTS_TABLE
-                    ? { stockInstrumentsTable: process.env.CLICKHOUSE_STOCK_INSTRUMENTS_TABLE.trim() }
-                    : {}),
-                ...(process.env.CLICKHOUSE_SOLANA_TRADES_TABLE
-                    ? { solanaTradesTable: process.env.CLICKHOUSE_SOLANA_TRADES_TABLE.trim() }
-                    : {}),
-                ...(process.env.CLICKHOUSE_STOCK_PRICE_SCALE
-                    ? { priceScale: Number(process.env.CLICKHOUSE_STOCK_PRICE_SCALE) }
-                    : {}),
-            }),
-            env: () => process.env,
-        };
-    } else {
-        console.warn('[cloudrun-assets] CLICKHOUSE_* not fully set — clickhouse /jobs/* disabled');
-    }
+    clickhouseCronDeps = {
+        ...baseDeps,
+        clickhouseRepo: makePostgresClickhouseRepo(sql),
+        clickhouse: makeClickhouseClient({}),
+        env: () => process.env,
+    };
     miscCronDeps = {
         base: cronDeps,
         repo: makePostgresMiscJobsRepo(sql),
@@ -271,32 +245,13 @@ if (birdeyeApiKey) {
     if (!webacyApiKey) {
         console.warn('[cloudrun-assets] WEBACY_API_KEY not set: Webacy depeg jobs disabled (peg guard still runs)');
     }
-    if (clickhouseUrl && clickhouseUser && clickhousePassword && clickhouseDatabase) {
-        clickhouseExtrasCronDeps = {
-            clickhouse: makeClickhouseClient({
-                url: clickhouseUrl,
-                username: clickhouseUser,
-                password: clickhousePassword,
-                database: clickhouseDatabase,
-                ...(process.env.CLICKHOUSE_STOCK_TRADES_TABLE
-                    ? { stockTradesTable: process.env.CLICKHOUSE_STOCK_TRADES_TABLE.trim() }
-                    : {}),
-                ...(process.env.CLICKHOUSE_STOCK_INSTRUMENTS_TABLE
-                    ? { stockInstrumentsTable: process.env.CLICKHOUSE_STOCK_INSTRUMENTS_TABLE.trim() }
-                    : {}),
-                ...(process.env.CLICKHOUSE_SOLANA_TRADES_TABLE
-                    ? { solanaTradesTable: process.env.CLICKHOUSE_SOLANA_TRADES_TABLE.trim() }
-                    : {}),
-                ...(process.env.CLICKHOUSE_STOCK_PRICE_SCALE
-                    ? { priceScale: Number(process.env.CLICKHOUSE_STOCK_PRICE_SCALE) }
-                    : {}),
-            }),
-            repo: makePostgresClickhouseExtrasRepo(sql),
-            curated,
-            now: () => Date.now(),
-            env: () => process.env,
-        };
-    }
+    clickhouseExtrasCronDeps = {
+        clickhouse: makeClickhouseClient({}),
+        repo: makePostgresClickhouseExtrasRepo(sql),
+        curated,
+        now: () => Date.now(),
+        env: () => process.env,
+    };
     seedCronDeps = {
         repo: makePostgresSeedRepo(sql),
         now: () => Date.now(),

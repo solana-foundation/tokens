@@ -5,7 +5,7 @@ import { NextResponse } from 'next/server';
 
 import { runAfterResponse } from './after-response';
 
-import { authenticateApiKey, logApiRequest } from '@/lib/cloudrun';
+import { authenticateApiKey, limitsEnforce, logApiRequest } from '@/lib/cloudrun';
 import { loadEnv } from '@/lib/env';
 import { getRedisClient, type RedisClient } from '@/lib/redis';
 import { slidingWindowLimit } from './sliding-window-rate-limit';
@@ -244,7 +244,7 @@ function enforceUpstashLimits(auth: PlatformAuthContext, redisOverride?: RedisCl
                         .incr(quotaKey)
                         .expire(quotaKey, secondsUntilNextMonthUtc(now), 'NX')
                         .exec<[number, 0 | 1]>(),
-                ),
+                ).pipe(Effect.timeout('1 second')),
             ],
             { concurrency: 'unbounded' },
         );
@@ -295,6 +295,43 @@ function enforceUpstashLimits(auth: PlatformAuthContext, redisOverride?: RedisCl
             },
         };
     });
+}
+
+function enforceCloudRunLimits(auth: PlatformAuthContext, callOverride?: typeof limitsEnforce) {
+    return Effect.gen(function* () {
+        const env = loadEnv();
+        const call = callOverride ?? limitsEnforce;
+        const result = yield* call({
+            apiKeyId: auth.apiKeyId,
+            rateLimit: auth.limits?.rateLimit ?? env.defaultRateLimit,
+            sustainedRateLimit: auth.limits?.sustainedRateLimit ?? env.defaultSustainedRateLimit,
+            quota: auth.limits?.quota ?? env.defaultQuota,
+        });
+        if (!result.allowed) {
+            return yield* Effect.fail(
+                new RateLimitedError({
+                    service: result.service,
+                    message: result.service === 'quota' ? 'Monthly quota exceeded' : 'Rate limited',
+                    retryAfterMs: result.retryAfterMs,
+                }),
+            );
+        }
+        return { rateLimit: result.rateLimit, quota: result.quota };
+    });
+}
+
+function enforceLimits(
+    auth: PlatformAuthContext,
+    callOverride?: typeof limitsEnforce,
+): Effect.Effect<
+    {
+        rateLimit: { limit: number; remaining: number; resetMs: number };
+        quota: { limit: number; used: number; remaining: number; resetMs: number };
+    },
+    unknown
+> {
+    const backend = process.env.TOKENS_LIMITS_BACKEND?.trim().toLowerCase();
+    return backend === 'usage' ? enforceCloudRunLimits(auth, callOverride) : enforceUpstashLimits(auth);
 }
 
 function getRequestId(request: Request): string {
@@ -495,7 +532,7 @@ export function route<T, Ctx = unknown>(
                       }),
                   ),
                   Effect.flatMap(auth =>
-                      enforceUpstashLimits(auth).pipe(
+                      enforceLimits(auth).pipe(
                           Effect.tap(meta =>
                               Effect.sync(() => {
                                   limitMeta = meta as unknown as { rateLimit: unknown; quota: unknown };
@@ -725,6 +762,8 @@ export function route<T, Ctx = unknown>(
 export const __internals = {
     requirePlatformAuth,
     enforceUpstashLimits,
+    enforceCloudRunLimits,
+    enforceLimits,
     getCachedPlatformAuth,
     cachePlatformAuth,
 };

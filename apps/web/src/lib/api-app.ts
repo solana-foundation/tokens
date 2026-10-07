@@ -110,6 +110,7 @@ function logApiAppFailure(path: string, error: ApiAppFailure): void {
             tag: error._tag,
             ...(error._tag === 'ApiResponseError' ? { status: error.status, errorTag: error.error._tag } : {}),
             message: error.message,
+            ...('cause' in error && error.cause ? { cause: String(error.cause) } : {}),
         }),
     );
 }

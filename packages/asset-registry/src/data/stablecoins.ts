@@ -251,7 +251,7 @@ export const STABLECOIN_ASSETS: CanonicalAsset[] = (() => {
                 'usd',
                 'USD',
                 'US Dollar',
-                ...usdVariants.flatMap(v => [v.mint, v.symbol ?? '', v.name ?? '', v.label ?? '', v.variantId]),
+                ...usdVariants.flatMap(v => [v.mint, v.symbol ?? '', v.name ?? '', v.variantId]),
             ]),
             variants: usdVariants,
         });
@@ -267,7 +267,7 @@ export const STABLECOIN_ASSETS: CanonicalAsset[] = (() => {
                 'eur',
                 'EUR',
                 'Euro',
-                ...eurVariants.flatMap(v => [v.mint, v.symbol ?? '', v.name ?? '', v.label ?? '', v.variantId]),
+                ...eurVariants.flatMap(v => [v.mint, v.symbol ?? '', v.name ?? '', v.variantId]),
             ]),
             variants: eurVariants,
         });

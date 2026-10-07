@@ -859,72 +859,8 @@ export class ClickhouseApiError extends Error {
 const GATEWAY_TIMEOUT_MS = 30_000;
 
 export interface MakeClickhouseOptions {
-    url: string;
-    username: string;
-    password: string;
-    database: string;
-    stockTradesTable?: string;
-    stockInstrumentsTable?: string;
-    solanaTradesTable?: string;
-    priceScale?: number;
     fetchImpl?: typeof fetch;
     tradingApiUrl?: string;
-}
-
-function quoteIdent(value: string): string {
-    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(value)) {
-        throw new Error(`Invalid ClickHouse identifier: ${value}`);
-    }
-    return `\`${value}\``;
-}
-
-interface ClickhouseQueryRequest {
-    sql: string;
-    params?: Record<string, string | number>;
-}
-
-function buildClickhouseUrl(baseUrl: string, params: Record<string, string | number>): URL {
-    const url = new URL(baseUrl);
-    for (const [k, v] of Object.entries(params)) url.searchParams.set(k, String(v));
-    return url;
-}
-
-async function runClickhouseQuery<T>(opts: MakeClickhouseOptions, request: ClickhouseQueryRequest): Promise<T[]> {
-    const f = opts.fetchImpl ?? fetch;
-    const params: Record<string, string | number> = {
-        database: opts.database,
-        default_format: 'JSONEachRow',
-    };
-    for (const [k, v] of Object.entries(request.params ?? {})) params[`param_${k}`] = v;
-    const url = buildClickhouseUrl(opts.url, params);
-    const auth = `Basic ${Buffer.from(`${opts.username}:${opts.password}`).toString('base64')}`;
-    const res = await withExternalTiming('clickhouse', url.toString(), () =>
-        f(url.toString(), {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'text/plain',
-                Accept: 'application/json',
-                Authorization: auth,
-            },
-            body: request.sql,
-        }),
-    );
-    if (!res.ok) {
-        const text = await res.text().catch(() => '');
-        throw new Error(`ClickHouse HTTP ${res.status}: ${text.slice(0, 500)}`);
-    }
-    const body = await res.text();
-    if (!body) return [];
-    const lines = body.split('\n').filter(Boolean);
-    const out: T[] = [];
-    for (const line of lines) {
-        try {
-            out.push(JSON.parse(line) as T);
-        } catch {
-            continue;
-        }
-    }
-    return out;
 }
 
 function toFiniteOrNull(value: unknown): number | null {
@@ -942,11 +878,6 @@ function pctChange(current: number | null, previous: number | null): number | nu
 }
 
 export function makeClickhouseClient(opts: MakeClickhouseOptions): ClickhouseClient {
-    const database = quoteIdent(opts.database);
-    const stockTradesTable = opts.stockTradesTable ? quoteIdent(opts.stockTradesTable) : null;
-    const stockInstrumentsTable = opts.stockInstrumentsTable ? quoteIdent(opts.stockInstrumentsTable) : null;
-    const solanaTradesTable = opts.solanaTradesTable ? quoteIdent(opts.solanaTradesTable) : null;
-    const priceScale = opts.priceScale && opts.priceScale > 0 ? opts.priceScale : 1;
     const tradingApiUrl = (opts.tradingApiUrl ?? DEFAULT_TRADING_API_URL).replace(/\/+$/, '');
 
     async function queryPreset<T>(name: string, params: Record<string, unknown>): Promise<T[]> {
@@ -972,52 +903,8 @@ export function makeClickhouseClient(opts: MakeClickhouseOptions): ClickhouseCli
         queryPreset,
 
         async fetchStockInstruments(params: { limit: number }): Promise<ClickhouseStockInstrumentRow[]> {
-            if (!stockInstrumentsTable && !stockTradesTable) return [];
             const lim = Math.min(Math.max(Math.floor(params.limit), 1), 10_000);
-            if (stockInstrumentsTable) {
-                interface InstrumentRow {
-                    symbol?: string;
-                    name?: string | null;
-                    assetId?: string | null;
-                    instrumentId?: number | string | null;
-                    dataset?: string | null;
-                }
-                const rows = await runClickhouseQuery<InstrumentRow>(opts, {
-                    sql: `
-                        SELECT toString(symbol) AS symbol,
-                               NULL AS name,
-                               NULL AS assetId,
-                               NULL AS instrumentId,
-                               NULL AS dataset
-                        FROM ${database}.${stockInstrumentsTable}
-                        WHERE length(trim(toString(symbol))) > 0
-                        LIMIT {limit:UInt32}
-                    `,
-                    params: { limit: lim },
-                });
-                return rows
-                    .filter(r => typeof r.symbol === 'string' && r.symbol.trim().length > 0)
-                    .map(r => ({
-                        symbol: String(r.symbol).trim().toUpperCase(),
-                        name: typeof r.name === 'string' && r.name.trim() ? r.name.trim() : null,
-                        assetId: typeof r.assetId === 'string' && r.assetId.trim() ? r.assetId.trim() : null,
-                        instrumentId: toFiniteOrNull(r.instrumentId),
-                        dataset: typeof r.dataset === 'string' && r.dataset.trim() ? r.dataset.trim() : null,
-                    }));
-            }
-            interface TradeSymbolRow {
-                symbol?: string;
-            }
-            const rows = await runClickhouseQuery<TradeSymbolRow>(opts, {
-                sql: `
-                    SELECT DISTINCT toString(symbol) AS symbol
-                    FROM ${database}.${stockTradesTable}
-                    WHERE length(trim(toString(symbol))) > 0
-                    ORDER BY symbol ASC
-                    LIMIT {limit:UInt32}
-                `,
-                params: { limit: lim },
-            });
+            const rows = await queryPreset<{ symbol?: string }>('stock_trade_symbols', { limit: lim });
             return rows
                 .filter(r => typeof r.symbol === 'string' && r.symbol.trim().length > 0)
                 .map(r => ({
@@ -1030,7 +917,6 @@ export function makeClickhouseClient(opts: MakeClickhouseOptions): ClickhouseCli
         },
 
         async fetchStockSnapshot(symbol: string): Promise<ClickhouseStockSnapshot | null> {
-            if (!stockTradesTable) return null;
             interface LatestRow {
                 time?: number | string;
                 price?: number | string;
@@ -1050,20 +936,10 @@ export function makeClickhouseClient(opts: MakeClickhouseOptions): ClickhouseCli
                 asOfSec: Math.max(0, Math.floor(asOf - 24 * 60 * 60)),
             });
             const prevPrice = toFiniteOrNull(prevRows[0]?.price);
-            const volumeRows = await runClickhouseQuery<VolumeRow>(opts, {
-                sql: `
-                    SELECT sum((toFloat64(price) / {priceScale:Float64}) * toFloat64(size)) AS volume
-                    FROM ${database}.${stockTradesTable}
-                    WHERE symbol = {symbol:String}
-                      AND ts_event >= toDateTime({from:UInt32})
-                      AND ts_event <= toDateTime({to:UInt32})
-                `,
-                params: {
-                    symbol: normSymbol,
-                    priceScale,
-                    from: Math.max(0, Math.floor(asOf - 24 * 60 * 60)),
-                    to: Math.floor(asOf),
-                },
+            const volumeRows = await queryPreset<VolumeRow>('stock_volume', {
+                symbol: normSymbol,
+                fromSec: Math.max(0, Math.floor(asOf - 24 * 60 * 60)),
+                toSec: Math.floor(asOf),
             });
             const volume24hUsd = toFiniteOrNull(volumeRows[0]?.volume);
             const priceChange24hPercent =
@@ -1104,7 +980,6 @@ export function makeClickhouseClient(opts: MakeClickhouseOptions): ClickhouseCli
             stableMints: readonly string[];
             asOfMs?: number;
         }): Promise<ClickhouseMintSnapshot[]> {
-            if (!solanaTradesTable) return [];
             if (args.mints.length === 0) return [];
             interface MintSnapshotRow {
                 mint?: string;
@@ -1147,19 +1022,6 @@ export function makeClickhouseClient(opts: MakeClickhouseOptions): ClickhouseCli
                 });
         },
 
-        async query(args) {
-            return runClickhouseQuery(opts, { sql: args.sql, ...(args.params ? { params: args.params } : {}) });
-        },
-
-        tables() {
-            return {
-                database: opts.database,
-                stockTradesTable: opts.stockTradesTable ?? null,
-                stockInstrumentsTable: opts.stockInstrumentsTable ?? null,
-                solanaTradesTable: opts.solanaTradesTable ?? null,
-                priceScale,
-            };
-        },
     };
 }
 
@@ -1473,22 +1335,39 @@ function preStocksNonEmptyString(value: unknown): string | null {
     return typeof value === 'string' && value.trim() ? value.trim() : null;
 }
 
+function parsePreStocksEntry(value: unknown): PreStocksApiSnapshot | null {
+    if (typeof value !== 'object' || value === null) return null;
+    const raw = value as Record<string, unknown>;
+    const mint = preStocksNonEmptyString(raw.contract_address);
+    const symbol = preStocksNonEmptyString(raw.symbol);
+    if (!mint || !symbol) return null;
+    return {
+        symbol,
+        name: preStocksNonEmptyString(raw.name),
+        mint,
+        markPriceUsd: preStocksFiniteNumber(raw.markPrice),
+        markValuationUsd: preStocksFiniteNumber(raw.markValuation),
+        tokenPriceUsd: preStocksFiniteNumber(raw.tokenPrice),
+        impliedValuationUsd: preStocksFiniteNumber(raw.impliedValuation),
+        supply: preStocksFiniteNumber(raw.supply),
+        imageUrl: preStocksNonEmptyString(raw.image),
+        externalUrl: preStocksNonEmptyString(raw.external_url),
+    };
+}
+
 export function makePreStocksClient(opts: MakePreStocksOptions = {}): PreStocksClient {
     const baseUrl = (opts.baseUrl ?? 'https://prestocks.com').replace(/\/+$/, '');
     const fetchImpl = opts.fetchImpl ?? fetch;
 
     return {
-        async fetchBySymbol(symbol: string): Promise<PreStocksApiSnapshot | null> {
-            const cleaned = symbol.trim().toUpperCase();
-            if (!/^[A-Z0-9]+$/.test(cleaned)) return null;
-            const url = `${baseUrl}/api/${cleaned}`;
+        async fetchAll(): Promise<PreStocksApiSnapshot[]> {
+            const url = `${baseUrl}/api/prestocks`;
             const res = await withExternalTiming('prestocks', url, () =>
                 fetchImpl(url, {
                     headers: { Accept: 'application/json' },
                     signal: AbortSignal.timeout(PRESTOCKS_TIMEOUT_MS),
                 }),
             );
-            if (res.status === 404) return null;
             const text = await res.text().catch(() => '');
             if (!res.ok || !text) {
                 throw new Error(`PreStocks request failed: HTTP ${res.status} ${res.statusText}`);
@@ -1500,25 +1379,10 @@ export function makePreStocksClient(opts: MakePreStocksOptions = {}): PreStocksC
                 // eslint-disable-next-line no-control-regex
                 json = JSON.parse(text.replace(/[\u0000-\u001f]/g, ' '));
             } catch {
-                throw new Error(`PreStocks response is not valid JSON for ${cleaned}`);
+                throw new Error('PreStocks response is not valid JSON');
             }
-            if (typeof json !== 'object' || json === null) return null;
-            const raw = json as Record<string, unknown>;
-            const mint = preStocksNonEmptyString(raw.contract_address);
-            const symbolOut = preStocksNonEmptyString(raw.symbol);
-            if (!mint || !symbolOut) return null;
-            return {
-                symbol: symbolOut,
-                name: preStocksNonEmptyString(raw.name),
-                mint,
-                markPriceUsd: preStocksFiniteNumber(raw.markPrice),
-                markValuationUsd: preStocksFiniteNumber(raw.markValuation),
-                tokenPriceUsd: preStocksFiniteNumber(raw.tokenPrice),
-                impliedValuationUsd: preStocksFiniteNumber(raw.impliedValuation),
-                supply: preStocksFiniteNumber(raw.supply),
-                imageUrl: preStocksNonEmptyString(raw.image),
-                externalUrl: preStocksNonEmptyString(raw.external_url),
-            };
+            if (!Array.isArray(json)) throw new Error('PreStocks response is not an array');
+            return json.flatMap(entry => parsePreStocksEntry(entry) ?? []);
         },
     };
 }
