@@ -4,6 +4,7 @@ import Link from 'next/link';
 import { useCallback, useMemo, useRef, useState, type PointerEvent } from 'react';
 
 import { cn } from '@tokens/ui/cn';
+import { buildCoinHref } from '@/lib/coin-href';
 import { trackEvent } from '@/lib/posthog-client';
 import { changeBin, NO_DATA_FILL } from '../lib/color';
 import { formatChange } from '../lib/labels';
@@ -139,11 +140,11 @@ export function HeatmapMini({ data, onCycle, onCycleIntent }: HeatmapMiniProps) 
                 const tileClass =
                     'absolute flex flex-col items-center justify-center overflow-hidden rounded-[2px] leading-none transition-[filter] duration-150 hover:brightness-[1.08]';
                 const style = { ...box, background: bin?.fill ?? NO_DATA_FILL, color: bin?.ink };
-                if (isTrending && tile.asset.href) {
+                if (isTrending) {
                     return (
                         <Link
                             key={tile.key}
-                            href={tile.asset.href}
+                            href={buildCoinHref(tile.asset.assetId, tile.asset.mint)}
                             prefetch={false}
                             data-tile={tile.key}
                             aria-label={`${tile.asset.name} (${tile.asset.symbol}), ${formatChange(tile.asset.change24h)} 24h. Open asset page.`}

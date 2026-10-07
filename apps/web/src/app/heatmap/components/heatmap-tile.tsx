@@ -232,17 +232,17 @@ export const HeatmapTile = memo(function HeatmapTile({ tile, period, onOpenAsset
         <TileContent tile={tile} detail={detail} period={period} inkMuted={bin?.inkMuted ?? NO_DATA_INK} />
     );
 
+    // Variant and single-variant asset tiles open the asset page, on the tile's own token where it has
+    // one: `/<assetId>?solana=<mint>`, the same links the home page builds.
     if (tile.kind === 'variant') {
-        if (!tile.variant.hasTokenPage) {
-            return (
-                <div {...shared} role="img" tabIndex={0} className={className} style={style}>
-                    {content}
-                </div>
-            );
-        }
-
         return (
-            <Link href={`/token/${tile.variant.mint}`} prefetch={false} {...shared} className={className} style={style}>
+            <Link
+                href={buildCoinHref(tile.assetId, tile.variant.mint)}
+                prefetch={false}
+                {...shared}
+                className={className}
+                style={style}
+            >
                 {content}
             </Link>
         );
@@ -264,7 +264,7 @@ export const HeatmapTile = memo(function HeatmapTile({ tile, period, onOpenAsset
 
     return (
         <Link
-            href={buildCoinHref(tile.asset.assetId, undefined)}
+            href={buildCoinHref(tile.asset.assetId, tile.asset.mint)}
             prefetch={false}
             {...shared}
             className={className}

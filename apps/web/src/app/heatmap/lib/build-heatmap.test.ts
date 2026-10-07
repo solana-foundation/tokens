@@ -158,7 +158,7 @@ describe('buildHeatmapData', () => {
         expect(multi!.variants[1]!.symbol).toBe('wb…');
     });
 
-    test('keeps one address on two chains as two variants, and only links Solana mints', () => {
+    test('keeps one address on two chains as two variants; the asset carries its primary mint', () => {
         const evm = '0xcbb7c0000ab88b473b1f5afd9ef808440eed33bf';
         const solana = 'cbbtcf3aa214zXHbiAZQwf4122FBYbraNdFqgw4iMij';
         const [bitcoin] = build([
@@ -172,11 +172,9 @@ describe('buildHeatmapData', () => {
             }),
         ]).sectors[0]!.assets;
 
-        expect(bitcoin!.variants.map(v => [v.id, v.hasTokenPage])).toEqual([
-            [`base:${evm}`, false],
-            [`ethereum:${evm}`, false],
-            ['bitcoin:cbBTC', true],
-        ]);
+        expect(bitcoin!.variants.map(v => v.id)).toEqual([`base:${evm}`, `ethereum:${evm}`, 'bitcoin:cbBTC']);
+        // The asset page link carries the primary variant's mint.
+        expect(bitcoin!.mint).toBe(evm);
     });
 
     test('drops duplicates and assets with no variants at all', () => {

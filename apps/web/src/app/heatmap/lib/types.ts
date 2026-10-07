@@ -69,8 +69,6 @@ export interface HeatmapVariant {
     /** Unique within the asset. The mint alone is not: one address can be a variant on two chains. */
     id: string;
     mint: string;
-    /** False for addresses the token page cannot show (anything that is not a Solana mint). */
-    hasTokenPage: boolean;
     symbol: string;
     name: string;
     logoURI?: string;
@@ -103,8 +101,8 @@ export interface HeatmapAsset {
     variantCount: number;
     /** Only populated for assets with more than one variant; those are the ones that drill down. */
     variants: HeatmapVariant[];
-    /** Where a tile goes when it is a direct link rather than a drill-down (trending tiles). */
-    href?: string;
+    /** Primary variant's mint; the asset page link is `buildCoinHref(assetId, mint)`, as on the home page. */
+    mint?: string;
 }
 
 export interface HeatmapSector {

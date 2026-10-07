@@ -7,7 +7,6 @@ function variant(id: string, volume24h: number | null, change24h: number | null)
     return {
         id,
         mint: id,
-        hasTokenPage: true,
         symbol: id,
         name: id,
         groupId: 'wrapped',

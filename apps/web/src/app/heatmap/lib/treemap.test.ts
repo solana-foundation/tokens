@@ -18,7 +18,6 @@ function variant(mint: string, volume24h: number | null, group = 'wrapped'): Hea
     return {
         id: mint,
         mint,
-        hasTokenPage: true,
         symbol: mint,
         name: mint,
         groupId: group,

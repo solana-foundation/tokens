@@ -135,7 +135,7 @@ function TooltipBody({ tile }: { tile: LayoutTile }) {
                     name={variant.name}
                     symbol={variant.symbol}
                     tag={variant.groupLabel}
-                    opensPage={variant.hasTokenPage}
+                    opensPage
                 />
                 <Stats>
                     <Row label="Price" value={formatPrice(variant.price)} />

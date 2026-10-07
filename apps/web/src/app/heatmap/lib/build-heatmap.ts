@@ -1,7 +1,6 @@
 import { getAssetVariantCategory } from '@/lib/asset-variant-categories';
 import { getTokenLogoURLWithSecondarySymbol } from '@/lib/logo-overrides';
 import { normalizeLogoSrc } from '@/lib/normalize-logo-src';
-import { looksLikeSolanaMintAddress } from '@/lib/solana-address';
 import type {
     HeatmapAsset,
     HeatmapData,
@@ -75,7 +74,6 @@ function buildVariant(assetId: string, variant: RawVariant): HeatmapVariant {
     return {
         id: variant.variantId?.trim() || variant.mint,
         mint: variant.mint,
-        hasTokenPage: looksLikeSolanaMintAddress(variant.mint),
         symbol,
         name,
         ...(logoURI ? { logoURI } : {}),
@@ -138,6 +136,7 @@ function buildAsset(raw: RawAsset, sectorOf: ReadonlyMap<string, string>): Heatm
 
     return {
         assetId,
+        ...(primary?.mint ? { mint: primary.mint } : {}),
         symbol,
         name,
         sectorId: sectorOf.get(assetId) ?? OTHER_SECTOR.id,

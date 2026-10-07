@@ -1,4 +1,3 @@
-import { buildCoinHref } from '@/lib/coin-href';
 import { normalizeLogoSrc } from '@/lib/normalize-logo-src';
 import { isPopulated, populatedOnly } from './populated';
 import type { HeatmapAsset, HeatmapData, HeatmapSector } from './types';
@@ -36,8 +35,9 @@ function finite(value: number | null | undefined): number | null {
 
 /**
  * The trending list as a heat map category: same tiles (sized by 24h volume, coloured by 24h change),
- * one per asset, each linking to its asset page the way the home page's Trending tab does. An asset
- * trending through several of its tokens keeps its best-ranked one.
+ * one per asset, carrying the trending token's mint so the tile links to that token's asset page, as
+ * the home page's Trending tab does. An asset trending through several of its tokens keeps its
+ * best-ranked one.
  */
 export function trendingSector(rows: readonly RawTrendingAsset[]): HeatmapSector {
     const seen = new Set<string>();
@@ -48,8 +48,10 @@ export function trendingSector(rows: readonly RawTrendingAsset[]): HeatmapSector
         seen.add(assetId);
         const symbol = (row.symbol ?? '').trim() || '—';
         const logoURI = normalizeLogoSrc((row.imageUrl ?? '').trim() || undefined);
+        const mint = (row.mint ?? '').trim();
         const asset: HeatmapAsset = {
             assetId,
+            ...(mint ? { mint } : {}),
             symbol,
             name: (row.name ?? '').trim() || symbol,
             sectorId: TRENDING_SECTOR_ID,
@@ -62,7 +64,6 @@ export function trendingSector(rows: readonly RawTrendingAsset[]): HeatmapSector
             volume24h: finite(row.market?.volume24hUSD),
             variantCount: 0,
             variants: [],
-            href: buildCoinHref(assetId, (row.mint ?? '').trim() || undefined),
         };
         if (isPopulated(asset)) assets.push(asset);
     }

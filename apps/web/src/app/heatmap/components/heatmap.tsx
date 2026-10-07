@@ -551,7 +551,7 @@ export function Heatmap({ data: allData }: { data: HeatmapData }) {
         <div>
             <HeatmapToolbar
                 crumbs={crumbs}
-                assetHref={viewAsset ? buildCoinHref(viewAsset.assetId, undefined) : undefined}
+                assetHref={viewAsset ? buildCoinHref(viewAsset.assetId, viewAsset.mint) : undefined}
                 tableHref={tableSectorId ? `/?category=${encodeURIComponent(tableSectorId)}` : '/'}
                 period={period}
                 onPeriodChange={setPeriod}

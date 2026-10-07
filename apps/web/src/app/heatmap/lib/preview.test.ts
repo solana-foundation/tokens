@@ -7,7 +7,6 @@ function variant(id: string): HeatmapVariant {
     return {
         id,
         mint: id,
-        hasTokenPage: true,
         symbol: id,
         name: id,
         groupId: 'wrapped',
@@ -119,7 +118,7 @@ describe('trendingSector', () => {
             name: 'NEAR (Bridged)',
             price: 5,
             marketCap: null,
-            href: '/near?solana=3ZLekZYq2qkZiSpnSvabjit34tUkjSwD1JFuW9as9wBG',
+            mint: '3ZLekZYq2qkZiSpnSvabjit34tUkjSwD1JFuW9as9wBG',
         });
     });
 });

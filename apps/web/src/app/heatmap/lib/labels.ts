@@ -35,7 +35,7 @@ export function tileAriaLabel(tile: LayoutTile, period: HeatmapPeriod): string {
     const change = `${formatChange(tileChange(tile, period))} ${period}`;
     const volume = `24h volume ${formatVolume(tile.value)}`;
     if (tile.kind === 'variant') {
-        return `${tile.variant.name} (${tile.variant.symbol}), ${change}, ${volume}.${tile.variant.hasTokenPage ? ' Open token page.' : ''}`;
+        return `${tile.variant.name} (${tile.variant.symbol}), ${change}, ${volume}. Open asset page.`;
     }
 
     const action = tile.asset.variants.length > 1 ? `Show ${tile.asset.variants.length} variants.` : 'Open asset page.';
