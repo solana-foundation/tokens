@@ -1,4 +1,4 @@
-import { registerGracefulShutdown, wrapFetchWithShutdownGuard } from '@tokens/cloudrun-shutdown';
+import { bearerTokenCandidates, registerGracefulShutdown, wrapFetchWithShutdownGuard } from '@tokens/cloudrun-shutdown';
 import { getSql, makePostgresPlatformAuthRepo, makePostgresUsageIngestRepo } from './db';
 import { makePostgresDashboardRepo, makePostgresIdentityRepo } from './db/dashboard';
 import { makePostgresUsageDashboardRepo } from './db/usageDashboard';
@@ -19,6 +19,7 @@ if (!authToken) {
 //   secret unset, flag off → misconfigured; refuse to start so the previous
 //                            revision keeps serving.
 const identitySigningSecret = process.env.TOKENS_IDENTITY_SIGNING_SECRET?.trim();
+const identitySigningSecretPrevious = process.env.TOKENS_IDENTITY_SIGNING_SECRET_PREVIOUS?.trim();
 const acceptUnsignedIdentity = process.env.TOKENS_IDENTITY_ACCEPT_UNSIGNED?.trim() === 'true';
 if (!identitySigningSecret && !acceptUnsignedIdentity) {
     console.error(
@@ -33,8 +34,12 @@ if (!identitySigningSecret) {
 }
 
 const apiKeyEncryptionSecret = process.env.TOKENS_API_KEY_ENCRYPTION_SECRET?.trim();
+const apiKeyEncryptionSecretPrevious = process.env.TOKENS_API_KEY_ENCRYPTION_SECRET_PREVIOUS?.trim();
 if (!apiKeyEncryptionSecret) {
     console.warn('TOKENS_API_KEY_ENCRYPTION_SECRET is not set — API key reset/reveal will be unavailable');
+}
+if (apiKeyEncryptionSecretPrevious || identitySigningSecretPrevious || process.env.TOKENS_CLOUDRUN_AUTH_TOKEN_PREVIOUS?.trim()) {
+    console.warn('secret rotation in progress — *_PREVIOUS values are accepted; remove them once the rotation completes');
 }
 
 const port = Number(process.env.PORT) || 8080;
@@ -51,6 +56,7 @@ const app = createApp({
     usageDashboard: makePostgresUsageDashboardRepo(sql),
     identity: makePostgresIdentityRepo(sql),
     ...(apiKeyEncryptionSecret ? { apiKeyEncryptionSecret } : {}),
+    ...(apiKeyEncryptionSecretPrevious ? { apiKeyEncryptionSecretPrevious } : {}),
     ...(redisHost ? { limitsRedis: makeLimitsRedis({ host: redisHost, port: redisPort }) } : {}),
     hooks: {
         ...(process.env.LOKI_PUSH_URL?.trim() ? { lokiPushUrl: process.env.LOKI_PUSH_URL.trim() } : {}),
@@ -66,8 +72,9 @@ const app = createApp({
             : {}),
         ...(process.env.TOKENS_ENV?.trim() ? { envLabel: process.env.TOKENS_ENV.trim() } : {}),
     },
-    authToken,
+    authToken: bearerTokenCandidates(authToken, process.env.TOKENS_CLOUDRUN_AUTH_TOKEN_PREVIOUS),
     ...(identitySigningSecret ? { identitySigningSecret } : {}),
+    ...(identitySigningSecretPrevious ? { identitySigningSecretPrevious } : {}),
     ...(acceptUnsignedIdentity ? { acceptUnsignedIdentity } : {}),
 });
 

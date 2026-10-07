@@ -49,6 +49,8 @@ const noopDashboard: DashboardRepo = {
     getApiKeyByHash: async () => null,
     revokeApiKey: async () => {},
     insertApiKeyRevokingActive: async () => 'key_test',
+    listEncryptedApiKeys: async () => [],
+    updateApiKeyEncryption: async () => {},
 };
 
 const noopUsageDashboard: UsageDashboardRepo = {
@@ -94,6 +96,7 @@ function makeApp(
         authToken?: string;
         /** Defaults to SIGNING_SECRET; pass null to simulate an unconfigured verifier. */
         identitySigningSecret?: string | null;
+        identitySigningSecretPrevious?: string;
         acceptUnsignedIdentity?: boolean;
     } = {},
 ) {
@@ -107,6 +110,9 @@ function makeApp(
         ...(overrides.apiKeyEncryptionSecret ? { apiKeyEncryptionSecret: overrides.apiKeyEncryptionSecret } : {}),
         authToken: overrides.authToken ?? 'tok',
         ...(signingSecret ? { identitySigningSecret: signingSecret } : {}),
+        ...(overrides.identitySigningSecretPrevious
+            ? { identitySigningSecretPrevious: overrides.identitySigningSecretPrevious }
+            : {}),
         ...(overrides.acceptUnsignedIdentity ? { acceptUnsignedIdentity: true } : {}),
     });
 }
@@ -413,6 +419,15 @@ describe('createApp', () => {
                 secret: 'not-the-secret',
             });
             await expectIdentityInvalid(await getMe(makeApp({ dashboard }), header), 'bad_signature');
+        });
+
+        it('accepts a token signed with the previous secret during a rotation', async () => {
+            const header = await signedIdentityHeader({ clerkUserId: 'user_1' }, 'query', 'usersGetMe', '{}', {
+                secret: 'old-secret',
+            });
+            await expectIdentityInvalid(await getMe(makeApp({ dashboard }), header), 'bad_signature');
+            const res = await getMe(makeApp({ dashboard, identitySigningSecretPrevious: 'old-secret' }), header);
+            expect(res.status).toBe(200);
         });
 
         it('rejects a signed token when no signing secret is configured', async () => {

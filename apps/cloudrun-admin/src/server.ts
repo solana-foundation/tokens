@@ -43,7 +43,8 @@ export interface ServerDeps {
     logoSigner?: LogoUploadSigner;
     /** Admin allowlist (TOKENS_ADMIN_CLERK_USER_IDS ∪ TOKENS_ADMIN_EMAILS). */
     adminAllowlist: AdminAllowlist;
-    authToken: string;
+    /** Current shared bearer, or [current, previous] during a rotation. */
+    authToken: string | readonly string[];
     /**
      * When set, RPC routes also accept a Google OIDC ID token (audience/SA
      * pinned) as the bearer — the Vercel admin app's WIF-minted token. The

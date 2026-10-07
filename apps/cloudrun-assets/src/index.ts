@@ -1,4 +1,4 @@
-import { registerGracefulShutdown, wrapFetchWithShutdownGuard } from '@tokens/cloudrun-shutdown';
+import { bearerTokenCandidates, registerGracefulShutdown, wrapFetchWithShutdownGuard } from '@tokens/cloudrun-shutdown';
 import { computeMarketScore, type MarketScoreInput } from '@tokens/token-risk-helpers';
 import {
     makeBirdeyeClient,
@@ -346,7 +346,7 @@ const app = createApp({
     ohlcvReadsRepo: makePostgresOhlcvReadsRepo(sql),
     prestocksReadsRepo: makePostgresPrestocksReadsRepo(sql),
     launchpadReadsRepo: makePostgresLaunchpadReadsRepo(sql),
-    authToken,
+    authToken: bearerTokenCandidates(authToken, process.env.TOKENS_CLOUDRUN_AUTH_TOKEN_PREVIOUS),
     serviceRole,
     checkDatabase: async () => {
         await sql`SELECT 1`;

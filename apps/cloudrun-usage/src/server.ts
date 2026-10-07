@@ -33,15 +33,20 @@ export interface ServerDeps {
     identity: IdentityRepo;
     /** Required for key reset/reveal; those handlers throw if absent. */
     apiKeyEncryptionSecret?: string;
+    /** Previous encryption secret: reveal falls back to it; `apiKeysReencrypt` migrates rows off it. */
+    apiKeyEncryptionSecretPrevious?: string;
     limitsRedis?: LimitsRedis;
     /** Vercel log-drain + Clerk webhook ingest (app-level auth, not bearer). */
     hooks?: HookDeps;
-    authToken: string;
+    /** Current shared bearer, or [current, previous] during a rotation. */
+    authToken: string | readonly string[];
     /**
      * HMAC key for the signed `x-tokens-identity` token. When unset, signed
      * headers are rejected (never verified against an empty secret).
      */
     identitySigningSecret?: string;
+    /** Previous signing secret, accepted alongside the current one during rotation. */
+    identitySigningSecretPrevious?: string;
     /**
      * Transitional: also accept the legacy unsigned base64 identity header.
      * Must be false once every caller signs. See `decodeIdentityHeader`.
@@ -119,7 +124,10 @@ export function createApp(deps: ServerDeps) {
         if (!raw) return { ok: true, identity: null };
         if (isSignedIdentityHeader(raw)) {
             if (!deps.identitySigningSecret) return { ok: false, reason: 'signing_not_configured' };
-            const result = await verifyIdentityToken(raw, binding, deps.identitySigningSecret);
+            let result = await verifyIdentityToken(raw, binding, deps.identitySigningSecret);
+            if (!result.ok && result.reason === 'bad_signature' && deps.identitySigningSecretPrevious) {
+                result = await verifyIdentityToken(raw, binding, deps.identitySigningSecretPrevious);
+            }
             return result.ok ? { ok: true, identity: result.identity } : { ok: false, reason: result.reason };
         }
         if (!deps.acceptUnsignedIdentity) return { ok: false, reason: 'unsigned' };
@@ -131,6 +139,9 @@ export function createApp(deps: ServerDeps) {
         repo: deps.dashboard,
         identity: deps.identity,
         ...(deps.apiKeyEncryptionSecret ? { apiKeyEncryptionSecret: deps.apiKeyEncryptionSecret } : {}),
+        ...(deps.apiKeyEncryptionSecretPrevious
+            ? { apiKeyEncryptionSecretPrevious: deps.apiKeyEncryptionSecretPrevious }
+            : {}),
     };
     const usageDeps: usageDashboard.UsageDashboardDeps = {
         repo: deps.usageDashboard,
@@ -181,6 +192,9 @@ export function createApp(deps: ServerDeps) {
     mutations.apiKeysRevoke = (args, identity) => dashboard.apiKeysRevoke(dashDeps, args, identity);
     mutations.apiKeysReset = (args, identity) => dashboard.apiKeysReset(dashDeps, args, identity);
     mutations.projectsSetRateLimit = args => dashboard.projectsSetRateLimit(dashDeps, args);
+    // Ops: encryption-secret rotation (bearer-gated, explicit confirm). See
+    // docs/security/secret-rotation.md.
+    mutations.apiKeysReencrypt = args => dashboard.apiKeysReencrypt(dashDeps, args);
 
     app.get('/health', c => c.json({ ok: true }));
 

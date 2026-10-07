@@ -15,10 +15,32 @@ export function timingSafeEqualString(a: string, b: string): boolean {
 
 /**
  * Validates an `Authorization: Bearer <token>` header against the expected
- * shared token in constant time. Pass the raw header value (may be undefined).
+ * shared token(s) in constant time. Pass the raw header value (may be
+ * undefined). Accepting a list lets a service honour both the current and the
+ * previous token during a rotation (`TOKENS_CLOUDRUN_AUTH_TOKEN_PREVIOUS`);
+ * each candidate is compared in constant time and empty candidates never match.
  */
-export function isValidBearerToken(authHeader: string | undefined, expectedToken: string): boolean {
-    return timingSafeEqualString(authHeader ?? '', `Bearer ${expectedToken}`);
+export function isValidBearerToken(
+    authHeader: string | undefined,
+    expectedToken: string | readonly string[],
+): boolean {
+    const header = authHeader ?? '';
+    const candidates = typeof expectedToken === 'string' ? [expectedToken] : expectedToken;
+    let valid = false;
+    for (const token of candidates) {
+        if (!token) continue;
+        if (timingSafeEqualString(header, `Bearer ${token}`)) valid = true;
+    }
+    return valid;
+}
+
+/**
+ * Builds the bearer candidate list from the current token and an optional
+ * previous one (set only during rotation). Shared by every service entrypoint.
+ */
+export function bearerTokenCandidates(current: string, previous?: string | null): string | readonly string[] {
+    const prev = previous?.trim();
+    return prev ? [current, prev] : current;
 }
 
 let shuttingDown = false;
