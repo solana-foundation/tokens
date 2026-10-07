@@ -19,14 +19,10 @@ export default function HeatmapPage() {
     return (
         <main className="min-h-dvh bg-white relative overflow-x-hidden">
             {/* The floating feed would sit on top of the map's bottom-right tiles. */}
-            <FloatingMarketFeedPageContext displayName="Heat map" suppressFeed />
-            <section className="relative mx-auto max-w-[1680px] px-4 md:px-6 pt-24 pb-10">
-                <div className="mb-4 flex flex-wrap items-baseline gap-x-3 gap-y-1">
-                    <h1 className="text-[26px] leading-[1.1] font-medium text-text-extra-high">Heat map</h1>
-                    <p className="text-[14px] text-text-low">
-                        Sized by 24h volume on Solana, coloured by price change. Click an asset to see its variants.
-                    </p>
-                </div>
+            <FloatingMarketFeedPageContext displayName="Heatmap" suppressFeed />
+            {/* Same column as the home page's sections. Title, then the breadcrumb, then the map. */}
+            <section className="relative mx-auto max-w-7xl px-6 pt-24 pb-10">
+                <h1 className="mb-3 text-[26px] leading-[1.1] font-medium text-text-extra-high">Heatmap</h1>
 
                 <Suspense fallback={<HeatmapFallback />}>
                     <HeatmapLoader />

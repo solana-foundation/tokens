@@ -528,7 +528,6 @@ export function Heatmap({ data: allData }: { data: HeatmapData }) {
         ];
     }, [index, viewAsset, viewSector, openOverview, openSector]);
 
-    const tableSectorId = viewAsset?.sectorId ?? viewSectorId;
     // Recolouring every tile can trail the toggle by a frame; the toggle itself must not.
     const tilePeriod = useDeferredValue(period);
     const destination = scene ? destinationOf(scene) : null;
@@ -552,7 +551,6 @@ export function Heatmap({ data: allData }: { data: HeatmapData }) {
             <HeatmapToolbar
                 crumbs={crumbs}
                 assetHref={viewAsset ? buildCoinHref(viewAsset.assetId, viewAsset.mint) : undefined}
-                tableHref={tableSectorId ? `/?category=${encodeURIComponent(tableSectorId)}` : '/'}
                 period={period}
                 onPeriodChange={setPeriod}
             />

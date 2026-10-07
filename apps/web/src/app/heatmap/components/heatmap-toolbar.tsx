@@ -2,7 +2,7 @@
 
 import Link from 'next/link';
 import { Fragment, memo } from 'react';
-import { ArrowUpRight, List } from 'lucide-react';
+import { ArrowUpRight } from 'lucide-react';
 import { SegmentedControl } from '@solana/design-system/segmented-control';
 import { Breadcrumb, BreadcrumbItem, BreadcrumbList, BreadcrumbPage, BreadcrumbSeparator } from '@tokens/ui/breadcrumb';
 
@@ -19,8 +19,6 @@ interface HeatmapToolbarProps {
     crumbs: HeatmapCrumb[];
     /** Asset page for the asset being viewed, when drilled into one. */
     assetHref?: string;
-    /** The home page table for the category in view. */
-    tableHref: string;
     period: HeatmapPeriod;
     onPeriodChange: (period: HeatmapPeriod) => void;
 }
@@ -55,12 +53,12 @@ const PeriodSwitch = memo(function PeriodSwitch({
     );
 });
 
-export function HeatmapToolbar({ crumbs, assetHref, tableHref, period, onPeriodChange }: HeatmapToolbarProps) {
+export function HeatmapToolbar({ crumbs, assetHref, period, onPeriodChange }: HeatmapToolbarProps) {
     return (
         <div className="mb-3 flex flex-wrap items-center justify-between gap-x-6 gap-y-3">
             <div className="flex min-h-9 flex-wrap items-center gap-x-4 gap-y-1">
                 <Breadcrumb>
-                    <BreadcrumbList className="text-[14px] text-text-low">
+                    <BreadcrumbList className="text-[15px] text-text-low">
                         {crumbs.map((crumb, index) => (
                             <Fragment key={crumb.key}>
                                 {index > 0 ? <BreadcrumbSeparator /> : null}
@@ -91,13 +89,7 @@ export function HeatmapToolbar({ crumbs, assetHref, tableHref, period, onPeriodC
                 ) : null}
             </div>
 
-            <div className="flex max-w-full flex-wrap items-center gap-x-5 gap-y-2">
-                <Link href={tableHref} className={LINK_CLASS}>
-                    <List aria-hidden="true" className="size-3.5" />
-                    View as table
-                </Link>
-                <PeriodSwitch period={period} onPeriodChange={onPeriodChange} />
-            </div>
+            <PeriodSwitch period={period} onPeriodChange={onPeriodChange} />
         </div>
     );
 }
