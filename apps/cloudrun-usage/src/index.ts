@@ -15,22 +15,21 @@ if (!authToken) {
 // flag = TOKENS_IDENTITY_ACCEPT_UNSIGNED):
 //   secret set,   flag off → signed only (target state)
 //   secret set,   flag on  → signed + legacy (rollout window)
-//   secret unset, flag on  → legacy only (pre-rollout)
-//   secret unset, flag off → misconfigured; refuse to start so the previous
-//                            revision keeps serving.
+//   secret unset           → legacy only, logged as an error on every boot
+//                            (pre-rollout; the flag is implied so a deploy
+//                            that lands before the secret is wired keeps the
+//                            dashboard working instead of failing to start)
+// Rollout order per env: wire the secret + flag here → set the secret on the
+// dashboard (it signs as soon as it has one) → remove the flag.
 const identitySigningSecret = process.env.TOKENS_IDENTITY_SIGNING_SECRET?.trim();
 const identitySigningSecretPrevious = process.env.TOKENS_IDENTITY_SIGNING_SECRET_PREVIOUS?.trim();
-const acceptUnsignedIdentity = process.env.TOKENS_IDENTITY_ACCEPT_UNSIGNED?.trim() === 'true';
-if (!identitySigningSecret && !acceptUnsignedIdentity) {
-    console.error(
-        'TOKENS_IDENTITY_SIGNING_SECRET must be set (or TOKENS_IDENTITY_ACCEPT_UNSIGNED=true during rollout)',
-    );
-    process.exit(1);
-}
+const acceptUnsignedIdentity = !identitySigningSecret || process.env.TOKENS_IDENTITY_ACCEPT_UNSIGNED?.trim() === 'true';
 if (!identitySigningSecret) {
-    console.warn('TOKENS_IDENTITY_SIGNING_SECRET is not set — accepting legacy unsigned identity headers only');
+    console.error(
+        'TOKENS_IDENTITY_SIGNING_SECRET is not set — accepting legacy unsigned identity headers only; wire the secret (see docs/security/secret-rotation.md)',
+    );
 } else if (acceptUnsignedIdentity) {
-    console.warn('TOKENS_IDENTITY_ACCEPT_UNSIGNED=true — legacy unsigned identity headers are still accepted');
+    console.warn('TOKENS_IDENTITY_ACCEPT_UNSIGNED is on — legacy unsigned identity headers are still accepted');
 }
 
 const apiKeyEncryptionSecret = process.env.TOKENS_API_KEY_ENCRYPTION_SECRET?.trim();

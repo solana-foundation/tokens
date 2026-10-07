@@ -32,8 +32,8 @@ the maintainers.
 | --- | --- | --- |
 | `DATABASE_URL` | yes | Cloud SQL Postgres connection string |
 | `TOKENS_CLOUDRUN_AUTH_TOKEN` | yes | Shared bearer token with the `CloudRunClient` caller for `/query/*` + `/mutation/*` |
-| `TOKENS_IDENTITY_SIGNING_SECRET` | yes\* | HMAC key verifying the signed `x-tokens-identity` token (apps/app signs with the same value). \*May be unset only while `TOKENS_IDENTITY_ACCEPT_UNSIGNED=true`; the process refuses to start with neither. |
-| `TOKENS_IDENTITY_ACCEPT_UNSIGNED` | no | `true` keeps accepting the legacy unsigned identity header during the signed-token rollout. Remove once every caller signs. |
+| `TOKENS_IDENTITY_SIGNING_SECRET` | yes | HMAC key verifying the signed `x-tokens-identity` token (apps/app signs with the same value). While unset the service accepts only the legacy unsigned header and logs an error at boot. |
+| `TOKENS_IDENTITY_ACCEPT_UNSIGNED` | no | `true` keeps accepting the legacy unsigned identity header alongside signed ones during the rollout. Remove once every caller signs. |
 | `TOKENS_API_KEY_ENCRYPTION_SECRET` | no | Required for key reset/reveal (AES-GCM reveal copy); those handlers error without it |
 | `TOKENS_CLOUDRUN_AUTH_TOKEN_PREVIOUS` | no | Rotation only: previous bearer, accepted alongside the current one until removed |
 | `TOKENS_IDENTITY_SIGNING_SECRET_PREVIOUS` | no | Rotation only: previous signing secret, accepted alongside the current one until removed |
