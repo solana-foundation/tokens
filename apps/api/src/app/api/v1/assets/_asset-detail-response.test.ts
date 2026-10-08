@@ -97,6 +97,63 @@ describe('buildAssetDetailResponse', () => {
         expect(canonicalMarket.marketCap).toBe(90 * 1_129_393_151);
     });
 
+    it('passes canonical supply through on a coingecko canonicalMarket, independent of on-chain stats', () => {
+        const result = buildAssetDetailResponse({
+            asset: {
+                assetId: 'bitcoin',
+                name: 'Bitcoin',
+                symbol: 'BTC',
+                category: 'crypto',
+                aliases: ['btc'],
+                coingeckoId: 'bitcoin',
+                variants: [],
+            },
+            assetDescription: null,
+            primaryVariant: null,
+            token: undefined,
+            tokenByMint: new Map(),
+            fillQualityByMint: new Map(),
+            marketMeta: undefined,
+            marketMetaByMint: new Map(),
+            effectiveStats: null,
+            imageUrl: null,
+            symbols: ['BTC'],
+            stockSymbol: null,
+            canonicalMarket: {
+                source: 'coingecko',
+                coinId: 'bitcoin',
+                price: 81_307,
+                marketCap: 1.63e12,
+                volume24hUSD: 3.8e10,
+                priceChange24hPercent: -2.65,
+                lastFetchedAt: 1_234_500,
+                providerLastUpdatedAt: 999_999,
+                circulatingSupply: 20_049_703,
+                totalSupply: 20_049_721,
+                maxSupply: 21_000_000,
+            },
+            mintRank: new Map(),
+            sanctumActiveMints: null,
+            includeMint: null,
+            variantsMode: '',
+            includesOut: {},
+            hasIncludes: false,
+        });
+
+        const canonicalMarket = result.asset.canonicalMarket as {
+            source: string;
+            circulatingSupply: number | null;
+            totalSupply: number | null;
+            maxSupply: number | null;
+        };
+        expect(canonicalMarket.source).toBe('coingecko');
+        expect(canonicalMarket.circulatingSupply).toBe(20_049_703);
+        expect(canonicalMarket.totalSupply).toBe(20_049_721);
+        expect(canonicalMarket.maxSupply).toBe(21_000_000);
+        // stats stay the on-chain block (null here: no variants, no aggregate).
+        expect(result.asset.stats).toBeNull();
+    });
+
     it('includes resolution metadata when present', () => {
         const result = buildAssetDetailResponse({
             asset: {

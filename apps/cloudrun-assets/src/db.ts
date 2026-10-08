@@ -45,7 +45,7 @@ import type {
     LogoSyncSuccess,
 } from './handlers/crons.logoSync';
 import type { LaunchpadReadsRepo, LaunchpadTokenRow } from './handlers/launchpadReads';
-import type { TokenUpsertFromBirdeye } from './handlers/crons.misc';
+import type { TokenUpsertFromBirdeye } from './handlers/tokenUpsert';
 import type {
     AssetsApiAssetMarketRow,
     AssetsApiAssetRow,
@@ -763,6 +763,10 @@ async function findRwaXyzTokenLatestByNetworkAndAddressImpl(
 
 export function makePostgresJobsRepo(sql: Sql): JobsRepo {
     return {
+        async upsertTokenFromBirdeye(args) {
+            await upsertTokenFromBirdeyeSql(sql, args);
+        },
+
         async upsertVariantMarketFromBirdeye(args) {
             const birdeyeJson = {
                 source: 'birdeye',
@@ -1749,6 +1753,31 @@ export function makePostgresJobsRepo(sql: Sql): JobsRepo {
             };
         },
 
+        async listStaleOhlcvMints(interval, candidates, attemptedBeforeMs, limit) {
+            if (candidates.length === 0) return [];
+            const rows = await sql<{ address: string }[]>`
+                SELECT c.address
+                FROM unnest(${sql.array([...candidates])}::text[]) WITH ORDINALITY AS c(address, ord)
+                LEFT JOIN ohlcv_refresh_state s
+                       ON s.address = c.address AND s.interval = ${interval}
+                WHERE s.last_attempted_at IS NULL OR s.last_attempted_at < ${attemptedBeforeMs}
+                ORDER BY s.last_attempted_at ASC NULLS FIRST, c.ord ASC
+                LIMIT ${Math.min(Math.max(limit, 1), 250)}
+            `;
+            return rows.map(r => r.address);
+        },
+
+        async touchOhlcvRefreshState(args) {
+            await sql`
+                INSERT INTO ohlcv_refresh_state (address, interval, last_attempted_at, last_refreshed_at, last_candle_time)
+                VALUES (${args.address}, ${args.interval}, ${args.attemptedAt}, ${args.refreshedAt}, ${args.lastCandleTime})
+                ON CONFLICT (address, interval) DO UPDATE
+                SET last_attempted_at = EXCLUDED.last_attempted_at,
+                    last_refreshed_at = COALESCE(EXCLUDED.last_refreshed_at, ohlcv_refresh_state.last_refreshed_at),
+                    last_candle_time  = COALESCE(EXCLUDED.last_candle_time, ohlcv_refresh_state.last_candle_time)
+            `;
+        },
+
         async upsertOhlcvCandles(address, interval, candles): Promise<OhlcvUpsertResult> {
             if (candles.length === 0) return { inserted: 0, updated: 0, skipped: 0 };
             const byTime = new Map<number, OhlcvCandle>();
@@ -2032,7 +2061,8 @@ export function makePostgresCoingeckoRepo(sql: Sql): CoingeckoRepo {
             await sql`
                 INSERT INTO coingecko_prices_latest (
                     id, coin_id, price_usd, market_cap_usd, volume_24h_usd,
-                    price_change_24h_percent, provider_last_updated_at, last_fetched_at
+                    price_change_24h_percent, provider_last_updated_at, last_fetched_at,
+                    circulating_supply, total_supply, max_supply, fdv_usd
                 )
                 VALUES (
                     ${randomId('cgprice')},
@@ -2042,7 +2072,11 @@ export function makePostgresCoingeckoRepo(sql: Sql): CoingeckoRepo {
                     ${args.volume24hUsd},
                     ${args.priceChange24hPercent},
                     ${args.providerLastUpdatedAt},
-                    ${args.lastFetchedAt}
+                    ${args.lastFetchedAt},
+                    ${args.circulatingSupply ?? null},
+                    ${args.totalSupply ?? null},
+                    ${args.maxSupply ?? null},
+                    ${args.fdvUsd ?? null}
                 )
                 ON CONFLICT (coin_id) DO UPDATE
                 SET price_usd                = EXCLUDED.price_usd,
@@ -2050,7 +2084,13 @@ export function makePostgresCoingeckoRepo(sql: Sql): CoingeckoRepo {
                     volume_24h_usd           = EXCLUDED.volume_24h_usd,
                     price_change_24h_percent = EXCLUDED.price_change_24h_percent,
                     provider_last_updated_at = EXCLUDED.provider_last_updated_at,
-                    last_fetched_at          = EXCLUDED.last_fetched_at
+                    last_fetched_at          = EXCLUDED.last_fetched_at,
+                    -- Supply changes slowly and only /coins/markets carries it; a
+                    -- /simple/price fallback tick must not wipe a known value.
+                    circulating_supply       = COALESCE(EXCLUDED.circulating_supply, coingecko_prices_latest.circulating_supply),
+                    total_supply             = COALESCE(EXCLUDED.total_supply, coingecko_prices_latest.total_supply),
+                    max_supply               = COALESCE(EXCLUDED.max_supply, coingecko_prices_latest.max_supply),
+                    fdv_usd                  = COALESCE(EXCLUDED.fdv_usd, coingecko_prices_latest.fdv_usd)
             `;
         },
 
@@ -3052,7 +3092,8 @@ export function makePostgresCoingeckoReadsRepo(sql: Sql): CoingeckoReadsRepo {
         async findPriceLatestByCoinId(coinId) {
             const rows = await sql<CoingeckoPriceLatestRow[]>`
                 SELECT coin_id, price_usd, market_cap_usd, volume_24h_usd,
-                       price_change_24h_percent, provider_last_updated_at, last_fetched_at
+                       price_change_24h_percent, provider_last_updated_at, last_fetched_at,
+                       circulating_supply, total_supply, max_supply, fdv_usd
                 FROM coingecko_prices_latest
                 WHERE coin_id = ${coinId}
                 LIMIT 1
@@ -3063,7 +3104,8 @@ export function makePostgresCoingeckoReadsRepo(sql: Sql): CoingeckoReadsRepo {
             if (coinIds.length === 0) return [];
             const rows = await sql<CoingeckoPriceLatestRow[]>`
                 SELECT coin_id, price_usd, market_cap_usd, volume_24h_usd,
-                       price_change_24h_percent, provider_last_updated_at, last_fetched_at
+                       price_change_24h_percent, provider_last_updated_at, last_fetched_at,
+                       circulating_supply, total_supply, max_supply, fdv_usd
                 FROM coingecko_prices_latest
                 WHERE coin_id IN ${sql(coinIds)}
             `;

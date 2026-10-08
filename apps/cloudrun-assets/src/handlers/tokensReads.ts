@@ -1,5 +1,10 @@
 import { InvalidArgsError } from './assets';
 import { resolveLogoUri } from './logoUrl';
+import {
+    getLatestByMints as variantMarketsGetLatestByMints,
+    type VariantMarketSnapshotResult,
+    type VariantMarketsRepo,
+} from './variantMarkets';
 
 export interface TokenRow {
     id: string;
@@ -93,6 +98,25 @@ export interface TokenSearchToken {
     priceChange24hPercent: number;
     priceChange1hPercent?: number;
     marketCap: number;
+    /**
+     * Present when the row was built from the variant-market snapshot (the
+     * table every curated mint is refreshed into) rather than the legacy
+     * `tokens` table. Same shape the `variant-markets` batch route exposes.
+     */
+    source?: 'birdeye' | 'rwa_xyz' | 'clickhouse_trades';
+    metricsSource?: 'birdeye' | 'rwa_xyz' | 'clickhouse_trades';
+    fdv?: number;
+    holder?: number;
+    totalSupply?: number;
+    circulatingSupply?: number;
+    volume1hUSD?: number;
+    trade1h?: number;
+    trade24h?: number;
+    uniqueWallet1h?: number;
+    uniqueWallet24h?: number;
+    lastTradeAt?: number;
+    asOf?: number;
+    lastFetchedAt?: number;
 }
 
 export interface GetSearchTokensByAddressesEntry {
@@ -212,8 +236,149 @@ export async function searchTokens(repo: TokensReadsRepo, args: unknown): Promis
     return results;
 }
 
+/**
+ * A variant-market snapshot carries identity when the provider overview
+ * succeeded; a `touch`-only row (overview failed or lacked symbol/name) has
+ * none and must not shadow a legacy row that does. Mirrors the API's
+ * `_load-variant-markets` rule.
+ */
+function variantSnapshotHasIdentity(
+    market: VariantMarketSnapshotResult | null | undefined,
+): market is VariantMarketSnapshotResult & { symbol: string; name: string; decimals: number } {
+    return (
+        !!market &&
+        typeof market.symbol === 'string' &&
+        market.symbol.trim().length > 0 &&
+        typeof market.name === 'string' &&
+        market.name.trim().length > 0 &&
+        typeof market.decimals === 'number' &&
+        Number.isFinite(market.decimals)
+    );
+}
+
+function finiteOrUndefined(value: number | null | undefined): number | undefined {
+    return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+}
+
+/** Shared `hasMarket` rule for both sources: a real price plus 24h volume and change. */
+function computeHasMarket(args: {
+    price: number | undefined;
+    volume24hUSD: number | undefined;
+    priceChange24hPercent: number | undefined;
+}): boolean {
+    return (
+        args.price !== undefined &&
+        args.price > 0 &&
+        args.volume24hUSD !== undefined &&
+        args.priceChange24hPercent !== undefined
+    );
+}
+
+function variantSnapshotMetricFields(market: VariantMarketSnapshotResult): Partial<TokenSearchToken> {
+    const out: Partial<TokenSearchToken> = { source: market.source, lastFetchedAt: market.lastFetchedAt };
+    if (market.metricsSource !== undefined) out.metricsSource = market.metricsSource;
+    const fdv = finiteOrUndefined(market.fdv);
+    if (fdv !== undefined) out.fdv = fdv;
+    const holder = finiteOrUndefined(market.holder);
+    if (holder !== undefined) out.holder = holder;
+    const totalSupply = finiteOrUndefined(market.totalSupply);
+    if (totalSupply !== undefined) out.totalSupply = totalSupply;
+    const circulatingSupply = finiteOrUndefined(market.circulatingSupply);
+    if (circulatingSupply !== undefined) out.circulatingSupply = circulatingSupply;
+    const volume1hUSD = finiteOrUndefined(market.volume1hUSD);
+    if (volume1hUSD !== undefined) out.volume1hUSD = volume1hUSD;
+    const trade1h = finiteOrUndefined(market.trade1h);
+    if (trade1h !== undefined) out.trade1h = trade1h;
+    const trade24h = finiteOrUndefined(market.trade24h);
+    if (trade24h !== undefined) out.trade24h = trade24h;
+    const uniqueWallet1h = finiteOrUndefined(market.uniqueWallet1h);
+    if (uniqueWallet1h !== undefined) out.uniqueWallet1h = uniqueWallet1h;
+    const uniqueWallet24h = finiteOrUndefined(market.uniqueWallet24h);
+    if (uniqueWallet24h !== undefined) out.uniqueWallet24h = uniqueWallet24h;
+    const lastTradeAt = finiteOrUndefined(market.lastTradeAt);
+    if (lastTradeAt !== undefined) out.lastTradeAt = lastTradeAt;
+    const asOf = finiteOrUndefined(market.asOf);
+    if (asOf !== undefined) out.asOf = asOf;
+    return out;
+}
+
+/**
+ * Build a search row from a variant-market snapshot, filling any metric the
+ * snapshot lacks from the legacy `tokens` row when one exists.
+ */
+function variantSnapshotToSearchToken(
+    address: string,
+    market: VariantMarketSnapshotResult & { symbol: string; name: string; decimals: number },
+    row: TokenRow | undefined,
+): { token: TokenSearchToken; hasMarket: boolean } {
+    const price = finiteOrUndefined(market.price) ?? finiteOrUndefined(row?.price);
+    const volume24hUSD = finiteOrUndefined(market.volume24hUSD) ?? finiteOrUndefined(row?.volume_24h_usd);
+    const priceChange24hPercent =
+        finiteOrUndefined(market.priceChange24hPercent) ?? finiteOrUndefined(row?.price_change_24h_percent);
+    const priceChange1hPercent =
+        finiteOrUndefined(market.priceChange1hPercent) ?? finiteOrUndefined(row?.price_change_1h_percent);
+    const liquidity = finiteOrUndefined(market.liquidity) ?? finiteOrUndefined(row?.liquidity);
+    const marketCap = finiteOrUndefined(market.marketCap) ?? finiteOrUndefined(row?.market_cap);
+    const logoURI = market.logoURI ?? (row ? resolveLogoUri(row) : null);
+
+    const out: TokenSearchToken = {
+        address,
+        symbol: market.symbol,
+        name: market.name,
+        decimals: market.decimals,
+        liquidity: liquidity ?? 0,
+        volume24hUSD: volume24hUSD ?? 0,
+        price: price ?? 0,
+        priceChange24hPercent: priceChange24hPercent ?? 0,
+        marketCap: marketCap ?? 0,
+        ...variantSnapshotMetricFields(market),
+    };
+    if (logoURI) out.logoURI = logoURI;
+    if (priceChange1hPercent !== undefined) out.priceChange1hPercent = priceChange1hPercent;
+
+    return { token: out, hasMarket: computeHasMarket({ price, volume24hUSD, priceChange24hPercent }) };
+}
+
+/**
+ * Legacy-row search token, with finite metrics from a touch-only or
+ * identity-less variant snapshot layered on top when present.
+ */
+function legacyRowToSearchToken(
+    row: TokenRow,
+    market: VariantMarketSnapshotResult | null | undefined,
+): { token: TokenSearchToken; hasMarket: boolean } {
+    const out = rowToSearchToken(row);
+    const price = finiteOrUndefined(market?.price) ?? finiteOrUndefined(row.price);
+    const volume24hUSD = finiteOrUndefined(market?.volume24hUSD) ?? finiteOrUndefined(row.volume_24h_usd);
+    const priceChange24hPercent =
+        finiteOrUndefined(market?.priceChange24hPercent) ?? finiteOrUndefined(row.price_change_24h_percent);
+    const priceChange1hPercent =
+        finiteOrUndefined(market?.priceChange1hPercent) ?? finiteOrUndefined(row.price_change_1h_percent);
+    const liquidity = finiteOrUndefined(market?.liquidity) ?? finiteOrUndefined(row.liquidity);
+    const marketCap = finiteOrUndefined(market?.marketCap) ?? finiteOrUndefined(row.market_cap);
+
+    if (price !== undefined) out.price = price;
+    if (volume24hUSD !== undefined) out.volume24hUSD = volume24hUSD;
+    if (priceChange24hPercent !== undefined) out.priceChange24hPercent = priceChange24hPercent;
+    if (priceChange1hPercent !== undefined) out.priceChange1hPercent = priceChange1hPercent;
+    if (liquidity !== undefined) out.liquidity = liquidity;
+    if (marketCap !== undefined) out.marketCap = marketCap;
+    if (market) Object.assign(out, variantSnapshotMetricFields(market));
+
+    return { token: out, hasMarket: computeHasMarket({ price, volume24hUSD, priceChange24hPercent }) };
+}
+
+/**
+ * Batch token metadata + market snapshot by mint.
+ *
+ * Reads the variant-market snapshot first (`variant_markets_latest`, refreshed
+ * for every curated mint) and falls back to the legacy `tokens` table, which
+ * only ever refreshes rows that already exist — mints curated after that
+ * table's write path was retired have no row there at all.
+ */
 export async function getSearchTokensByAddresses(
     repo: TokensReadsRepo,
+    variantMarketsRepo: VariantMarketsRepo | null,
     args: unknown,
 ): Promise<GetSearchTokensByAddressesEntry[]> {
     if (typeof args !== 'object' || args === null) {
@@ -231,19 +396,26 @@ export async function getSearchTokensByAddresses(
     const addresses = (a.addresses as string[]).slice(0, 250);
     if (addresses.length === 0) return [];
 
-    const rows = await repo.findTokensByAddresses(addresses);
+    const [rows, marketEntries] = await Promise.all([
+        repo.findTokensByAddresses(addresses),
+        variantMarketsRepo ? variantMarketsGetLatestByMints(variantMarketsRepo, { mints: addresses }) : [],
+    ]);
     const byAddress = new Map(rows.map(r => [r.address, r] as const));
+    const marketByMint = new Map(marketEntries.map(entry => [entry.mint, entry.market] as const));
 
     return addresses.map(address => {
         const row = byAddress.get(address);
-        if (!row) return { address, token: null, hasMarket: false };
-        const hasMarket =
-            row.price !== null &&
-            Number.isFinite(row.price) &&
-            row.price > 0 &&
-            row.volume_24h_usd !== null &&
-            row.price_change_24h_percent !== null;
-        return { address, token: rowToSearchToken(row), hasMarket };
+        const market = marketByMint.get(address) ?? null;
+
+        if (variantSnapshotHasIdentity(market)) {
+            const built = variantSnapshotToSearchToken(address, market, row);
+            return { address, token: built.token, hasMarket: built.hasMarket };
+        }
+        if (row) {
+            const built = legacyRowToSearchToken(row, market);
+            return { address, token: built.token, hasMarket: built.hasMarket };
+        }
+        return { address, token: null, hasMarket: false };
     });
 }
 

@@ -592,18 +592,24 @@ module "scheduler_jobs" {
       })
       attempt_deadline = "540s"
     },
+    # refresh-curated-ohlcv-15m: every curated mint, not just the top 50. 250
+    # rotating + 50 priority per run covers ~700 mints in 3 runs, so a 15m candle
+    # is never more than ~45 min behind. Was maxMints=1 every 30 min (13-day
+    # rotation), which left less-traded mints' 1D charts hours to days stale
+    # (customer report 2026-10-07).
     {
       name      = "refresh-curated-ohlcv-15m"
-      schedule  = "6,36 * * * *"
+      schedule  = "*/15 * * * *"
       http_path = "/jobs/refresh-curated-ohlcv-15m"
       body_json = jsonencode({
+        selection         = "stale"
         interval          = "15m"
         days              = 1
         priorityCount     = 50
-        maxMints          = 1
-        concurrency       = 2
+        maxMints          = 250
+        concurrency       = 3
         delayMs           = 200
-        selectionWindowMs = 1800000
+        selectionWindowMs = 900000
         upsertChunkSize   = 1000
         budgetMs          = 500000
       })
@@ -614,11 +620,12 @@ module "scheduler_jobs" {
       schedule  = "12,42 * * * *"
       http_path = "/jobs/refresh-curated-ohlcv-1h"
       body_json = jsonencode({
+        selection         = "stale"
         interval          = "1H"
         days              = 90
         priorityCount     = 25
-        maxMints          = 150
-        concurrency       = 2
+        maxMints          = 250
+        concurrency       = 3
         delayMs           = 200
         selectionWindowMs = 1800000
         budgetMs          = 500000
@@ -630,6 +637,7 @@ module "scheduler_jobs" {
       schedule  = var.env == "stg" ? "5 3 * * *" : "40 */6 * * *"
       http_path = "/jobs/refresh-curated-ohlcv-4h"
       body_json = jsonencode({
+        selection         = "stale"
         interval          = "4H"
         days              = 365
         priorityCount     = 25

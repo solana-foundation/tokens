@@ -52,6 +52,10 @@ export interface CoingeckoPriceLatestRow {
     price_change_24h_percent: number | null;
     provider_last_updated_at: number | null;
     last_fetched_at: number;
+    circulating_supply?: number | null;
+    total_supply?: number | null;
+    max_supply?: number | null;
+    fdv_usd?: number | null;
 }
 
 export interface CoingeckoTickersLatestRow {
@@ -111,6 +115,7 @@ export interface CoingeckoCoinDoc {
         total_volume?: Record<string, number | undefined>;
         circulating_supply?: number;
         total_supply?: number;
+        max_supply?: number | null;
         price_change_percentage_24h?: number;
         ath?: Record<string, number | undefined>;
         ath_date?: Record<string, string | undefined>;
@@ -148,6 +153,11 @@ export interface CoingeckoPriceSnapshot {
     priceChange24hPercent: number | null;
     providerLastUpdatedAt: number | null;
     lastFetchedAt: number;
+    /** Canonical (cross-chain) supply from CoinGecko; `null` when unknown or, for `maxSupply`, uncapped. */
+    circulatingSupply: number | null;
+    totalSupply: number | null;
+    maxSupply: number | null;
+    fdvUsd: number | null;
 }
 
 export interface CoingeckoPriceBatchEntry {
@@ -248,6 +258,10 @@ function priceRowToSnapshot(row: CoingeckoPriceLatestRow): CoingeckoPriceSnapsho
         priceChange24hPercent: row.price_change_24h_percent,
         providerLastUpdatedAt: row.provider_last_updated_at,
         lastFetchedAt: row.last_fetched_at,
+        circulatingSupply: row.circulating_supply ?? null,
+        totalSupply: row.total_supply ?? null,
+        maxSupply: row.max_supply ?? null,
+        fdvUsd: row.fdv_usd ?? null,
     };
 }
 

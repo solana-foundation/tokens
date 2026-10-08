@@ -69,6 +69,7 @@ interface RecordingRepoState {
 
 function makeRecordingRepo(state: RecordingRepoState): JobsRepo {
     return {
+        async upsertTokenFromBirdeye() {},
         async upsertVariantMarketFromBirdeye(args) {
             state.upsertedBirdeye.push({ mint: args.mint });
         },
@@ -115,6 +116,10 @@ function makeRecordingRepo(state: RecordingRepoState): JobsRepo {
         async applyRollupBatchAtomic() { return true; },
         async listAllProjectIds() { return []; },
         async pruneApiRequestEventsForProject() { return 0; },
+        async listStaleOhlcvMints() {
+            return [];
+        },
+        async touchOhlcvRefreshState() {},
         async getOhlcvBounds() { return { minTime: null, maxTime: null }; },
         async upsertOhlcvCandles() { return { inserted: 0, updated: 0, skipped: 0 }; },
     };

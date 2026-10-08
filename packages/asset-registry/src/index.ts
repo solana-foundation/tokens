@@ -101,6 +101,8 @@ export {
 
 export { getCanonicalFallbackLogoPath } from './canonical-logo-fallbacks';
 
+export { buildRegistryTombstoneRefs } from './tombstone-refs';
+
 export type { PreStockListing } from './data/equities';
 export { PRE_STOCKS } from './data/equities';
 

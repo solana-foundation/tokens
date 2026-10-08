@@ -18,6 +18,7 @@ import {
     type CoingeckoPriceUpsert,
     type CoingeckoRepo,
     type CoingeckoTickersUpsert,
+    type CoingeckoCoinsMarketsRow,
 } from './crons.coingecko';
 
 const FIXED_NOW = 1_780_000_000_000;
@@ -41,6 +42,10 @@ interface CGState {
     tickerPagesThrows?: Record<string, boolean>;
     upsertedTickers?: CoingeckoTickersUpsert[];
     touchedTickers?: { coinId: string; lastFetchedAt: number }[];
+    simplePriceCalls?: string[][];
+    coinsMarketsCalls?: string[][];
+    coinsMarketsThrows?: boolean;
+    coinsMarketsResult?: CoingeckoCoinsMarketsRow[];
     simplePriceResult?: Record<string, {
         usd?: unknown;
         usd_market_cap?: unknown;
@@ -150,9 +155,15 @@ function makeClient(state: CGState = {}): CoingeckoClient {
             const pages = state.tickerPagesByCoinId?.[coinId] ?? [];
             return pages[page - 1] ?? { tickers: [] };
         },
-        async fetchSimplePrice() {
+        async fetchSimplePrice(coinIds) {
+            (state.simplePriceCalls ??= []).push([...coinIds]);
             if (state.simplePriceThrows) throw new Error('simple/price http failed');
             return state.simplePriceResult ?? {};
+        },
+        async fetchCoinsMarkets(coinIds) {
+            (state.coinsMarketsCalls ??= []).push([...coinIds]);
+            if (state.coinsMarketsThrows) throw new Error('coins/markets http failed');
+            return (state.coinsMarketsResult ?? []).filter(row => coinIds.includes(row.id));
         },
         async fetchMarketChartRange({ coinId }) {
             (state.marketChartCalls ??= []).push(coinId);
@@ -482,6 +493,106 @@ describe('refreshCuratedCoingeckoPrices', () => {
         const res = await refreshCuratedCoingeckoPrices(deps, { maxCoins: 2, delayMs: 0 });
         expect(res.failed).toBe(1);
         expect(res.refreshed).toBe(1);
+    });
+
+    it('takes price, supply and FDV from coins/markets and only asks simple/price for ids it omitted', async () => {
+        const { deps, state } = makeDeps({
+            curated: ['bitcoin', 'ethereum'],
+            state: {
+                coinsMarketsResult: [
+                    {
+                        id: 'bitcoin',
+                        current_price: 81_307,
+                        market_cap: 1.63e12,
+                        fully_diluted_valuation: 1.71e12,
+                        total_volume: 3.8e10,
+                        price_change_percentage_24h: -2.65,
+                        circulating_supply: 20_049_703,
+                        total_supply: 20_049_721,
+                        max_supply: 21_000_000,
+                        last_updated: '2026-10-08T16:30:21.000Z',
+                    },
+                ],
+                simplePriceResult: {
+                    ethereum: { usd: 3000, usd_market_cap: 4e11, usd_24h_vol: 5e8, usd_24h_change: -0.5, last_updated_at: 1_791_477_000 },
+                },
+            },
+        });
+        const res = await refreshCuratedCoingeckoPrices(deps, { maxCoins: 2, chunkSize: 200, delayMs: 0 });
+        expect(res.ok).toBe(true);
+        expect(res.refreshed).toBe(2);
+        expect(res.failed).toBe(0);
+        expect(state.coinsMarketsCalls).toEqual([['bitcoin', 'ethereum']]);
+        expect(state.simplePriceCalls).toEqual([['ethereum']]);
+
+        const byId = new Map(state.upsertedPrices!.map(p => [p.coinId, p] as const));
+        expect(byId.get('bitcoin')).toMatchObject({
+            priceUsd: 81_307,
+            marketCapUsd: 1.63e12,
+            volume24hUsd: 3.8e10,
+            priceChange24hPercent: -2.65,
+            providerLastUpdatedAt: 1_791_477_021,
+            circulatingSupply: 20_049_703,
+            totalSupply: 20_049_721,
+            maxSupply: 21_000_000,
+            fdvUsd: 1.71e12,
+        });
+        // Fallback rows carry no supply (COALESCE in SQL keeps the stored value).
+        expect(byId.get('ethereum')).toMatchObject({ priceUsd: 3000, providerLastUpdatedAt: 1_791_477_000 });
+        expect(byId.get('ethereum')!.circulatingSupply ?? null).toBeNull();
+    });
+
+    it('uncapped assets store maxSupply null', async () => {
+        const { deps, state } = makeDeps({
+            curated: ['solana'],
+            state: {
+                coinsMarketsResult: [
+                    { id: 'solana', current_price: 108.7, circulating_supply: 580_767_381, total_supply: 629_334_221, max_supply: null },
+                ],
+            },
+        });
+        await refreshCuratedCoingeckoPrices(deps, { maxCoins: 1, delayMs: 0 });
+        expect(state.upsertedPrices![0]).toMatchObject({ coinId: 'solana', circulatingSupply: 580_767_381, maxSupply: null });
+        expect(state.simplePriceCalls ?? []).toEqual([]);
+    });
+
+    it('falls back to simple/price for the whole chunk when coins/markets fails', async () => {
+        const { deps, state } = makeDeps({
+            curated: ['bitcoin', 'ethereum'],
+            state: {
+                coinsMarketsThrows: true,
+                simplePriceResult: { bitcoin: { usd: 1 }, ethereum: { usd: 2 } },
+            },
+        });
+        const res = await refreshCuratedCoingeckoPrices(deps, { maxCoins: 2, delayMs: 0 });
+        expect(res.ok).toBe(true);
+        expect(res.refreshed).toBe(2);
+        expect(state.simplePriceCalls).toEqual([['bitcoin', 'ethereum']]);
+    });
+
+    it('counts the chunk as failed when both provider calls fail, without touching stored rows', async () => {
+        const { deps, state } = makeDeps({
+            curated: ['bitcoin', 'ethereum'],
+            state: { coinsMarketsThrows: true, simplePriceThrows: true },
+        });
+        const res = await refreshCuratedCoingeckoPrices(deps, { maxCoins: 2, delayMs: 0 });
+        expect(res.ok).toBe(false);
+        expect(res.failed).toBe(2);
+        expect(state.upsertedPrices ?? []).toEqual([]);
+    });
+
+    it('does not blank out ids missing from coins/markets when the simple/price fallback fails', async () => {
+        const { deps, state } = makeDeps({
+            curated: ['bitcoin', 'ethereum'],
+            state: {
+                coinsMarketsResult: [{ id: 'bitcoin', current_price: 1 }],
+                simplePriceThrows: true,
+            },
+        });
+        const res = await refreshCuratedCoingeckoPrices(deps, { maxCoins: 2, delayMs: 0 });
+        expect(res.refreshed).toBe(1);
+        expect(res.failed).toBe(1);
+        expect(state.upsertedPrices!.map(p => p.coinId)).toEqual(['bitcoin']);
     });
 });
 

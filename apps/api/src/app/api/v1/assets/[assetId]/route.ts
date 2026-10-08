@@ -13,7 +13,6 @@ import {
     coingeckoGetCoinById,
     coingeckoGetPriceLatestByCoinId,
     sanctumListActive,
-    tokensGetByAddress,
     variantFillQualityGetLatestByMints,
     stockInstrumentsGetByAssetId,
     stockPricesGetLatestByAssetId,
@@ -37,7 +36,6 @@ import {
     listSymbols,
     matchRegistryAssetForDbAsset,
     mergeAssetStatsWithAggregates,
-    optionalSymbol,
     optionalText,
     parsePrimaryVariantStrategy,
     pickPrimaryVariant,
@@ -51,6 +49,7 @@ import {
 } from '../_asset-helpers';
 import { resolveAssetRefContext } from '../_resolve-asset-ref';
 import { singletonAssetIdToMint } from '../_singleton-asset-id';
+import { loadSingletonIdentity } from '../_singleton-identity';
 import { canonicalizeAsset, canonicalizeAssetVariants } from '../_canonical-overrides';
 import { normalizeCoinGeckoCoinIdForAsset } from '../_coingecko-id';
 import { resolveCoinGeckoCoinIdForAsset } from '../_resolve-coingecko-coin-id';
@@ -140,17 +139,11 @@ export const GET = route(
                 const singletonMint = singletonAssetIdToMint(assetId);
                 const registryAsset = singletonMint ? null : resolveRegistryAlias(assetId);
                 const resolvedAsset: CanonicalAsset | null = singletonMint
-                    ? yield* tokensGetByAddress({ address: singletonMint })
+                    ? yield* loadSingletonIdentity(singletonMint)
                           .pipe(
-                              tapErrorAndDefault('assets.detail.singletonToken', null, {
-                                  assetId,
-                                  mint: singletonMint,
-                              }),
-                          )
-                          .pipe(
-                              Effect.map(token => {
-                                  const symbol = optionalSymbol(token?.symbol);
-                                  const name = optionalText(token?.name);
+                              Effect.map(identity => {
+                                  const symbol = identity?.symbol ?? null;
+                                  const name = identity?.name ?? null;
                                   return {
                                       assetId,
                                       ...(name ? { name } : {}),
@@ -453,6 +446,9 @@ export const GET = route(
                       priceChange24hPercent: number | null;
                       lastFetchedAt: number | null;
                       providerLastUpdatedAt: number | null;
+                      circulatingSupply: number | null;
+                      totalSupply: number | null;
+                      maxSupply: number | null;
                   }
                 | {
                       source: 'clickhouse_stock';
@@ -489,6 +485,9 @@ export const GET = route(
                 priceChange24hPercent?: number | null;
                 lastFetchedAt?: number | null;
                 providerLastUpdatedAt?: number | null;
+                circulatingSupply?: number | null;
+                totalSupply?: number | null;
+                maxSupply?: number | null;
             } | null = null;
 
             const companyMarketCap = computeCompanyMarketCapUsd(asset, stockSnapshot);
@@ -523,6 +522,9 @@ export const GET = route(
                     priceChange24hPercent: coinSnapshot?.priceChange24hPercent ?? null,
                     lastFetchedAt,
                     providerLastUpdatedAt: coinSnapshot?.providerLastUpdatedAt ?? null,
+                    circulatingSupply: coinSnapshot?.circulatingSupply ?? null,
+                    totalSupply: coinSnapshot?.totalSupply ?? null,
+                    maxSupply: coinSnapshot?.maxSupply ?? null,
                 };
             }
 

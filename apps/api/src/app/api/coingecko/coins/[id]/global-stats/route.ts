@@ -67,8 +67,9 @@ export const GET = route(
             return {
                 marketCap: md?.market_cap?.usd ?? 0,
                 fdv: md?.fully_diluted_valuation?.usd ?? 0,
-                circulatingSupply: md?.circulating_supply ?? 0,
-                totalSupply: md?.total_supply ?? 0,
+                circulatingSupply: md?.circulating_supply ?? null,
+                totalSupply: md?.total_supply ?? null,
+                maxSupply: md?.max_supply ?? null,
                 price,
                 priceChange24h: md?.price_change_percentage_24h ?? 0,
                 volume24h: md?.total_volume?.usd ?? 0,

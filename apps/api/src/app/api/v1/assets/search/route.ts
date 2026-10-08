@@ -38,6 +38,7 @@ import {
 
 import type { AssetCategory, CanonicalAsset } from '@tokens/asset-registry';
 import {
+    buildRegistryTombstoneRefs,
     getVariantByMint,
     isHiddenAdvisory,
     listCategories,
@@ -301,15 +302,11 @@ export const GET = route(
             // `registrySearchMatches` was already computed above the composite
             // call so its universes could be handed to the server. Reuse it.
             if (registrySearchMatches.length > 0) {
-                const registryRefs = uniqueStrings(
-                    registrySearchMatches.flatMap(asset => [
-                        asset.assetId,
-                        asset.name ?? '',
-                        asset.symbol ?? '',
-                        asset.coingeckoId ?? '',
-                        ...asset.aliases,
-                    ]),
-                );
+                // Same ref set the nightly seed checks (incl. variant mints and
+                // `solana-<mint>` ids): a hard-deleted variant mint blocks the
+                // seed, so it must hide the registry fallback here too, or the
+                // asset is searchable but 404s on detail.
+                const registryRefs = uniqueStrings(registrySearchMatches.flatMap(buildRegistryTombstoneRefs));
                 const deletedRegistryRefs = new Set(
                     registryRefs.length > 0
                         ? yield* listDeletedRefs({
@@ -320,14 +317,7 @@ export const GET = route(
 
                 for (const asset of registrySearchMatches) {
                     if (canonicalDocsById.has(asset.assetId)) continue;
-                    const refs = [
-                        asset.assetId,
-                        asset.name ?? '',
-                        asset.symbol ?? '',
-                        asset.coingeckoId ?? '',
-                        ...asset.aliases,
-                    ];
-                    if (refs.some(ref => deletedRegistryRefs.has(ref.trim().toLowerCase()))) continue;
+                    if (buildRegistryTombstoneRefs(asset).some(ref => deletedRegistryRefs.has(ref))) continue;
 
                     canonicalDocsById.set(asset.assetId, {
                         assetId: asset.assetId,
@@ -965,6 +955,9 @@ export const GET = route(
                     priceChange24hPercent: snapshot?.priceChange24hPercent ?? null,
                     lastFetchedAt: snapshot?.lastFetchedAt ?? null,
                     providerLastUpdatedAt: snapshot?.providerLastUpdatedAt ?? null,
+                    circulatingSupply: snapshot?.circulatingSupply ?? null,
+                    totalSupply: snapshot?.totalSupply ?? null,
+                    maxSupply: snapshot?.maxSupply ?? null,
                 };
             }
 

@@ -17,7 +17,8 @@ import type {
     WebacyClient,
 } from './handlers/crons';
 import type { CoingeckoClient, CoingeckoCoinListItem, CoingeckoMarketChartRange } from './handlers/crons.coingecko';
-import { parseCoinListPayload } from './handlers/crons.coingecko';
+import {
+    type CoingeckoCoinsMarketsRow, parseCoinListPayload } from './handlers/crons.coingecko';
 import type {
     ClickhouseClient,
     ClickhouseMintSnapshot,
@@ -801,6 +802,26 @@ export function makeCoingeckoClient(opts: MakeCoingeckoOptions): CoingeckoClient
                     last_updated_at?: unknown;
                 }
             >;
+        },
+
+        async fetchCoinsMarkets(coinIds) {
+            const ids = Array.from(new Set(coinIds.map(s => s.trim()).filter(Boolean)));
+            if (ids.length === 0) return [];
+            const url = new URL(`${baseUrl}/coins/markets`);
+            url.searchParams.set('vs_currency', 'usd');
+            url.searchParams.set('ids', ids.join(','));
+            url.searchParams.set('per_page', '250');
+            url.searchParams.set('page', '1');
+            url.searchParams.set('sparkline', 'false');
+            url.searchParams.set('precision', 'full');
+            const json = await fetchJson(url);
+            if (!Array.isArray(json)) {
+                throw new Error(`CoinGecko coins/markets returned unexpected payload`);
+            }
+            return json.filter(
+                (row): row is CoingeckoCoinsMarketsRow =>
+                    !!row && typeof row === 'object' && typeof (row as { id?: unknown }).id === 'string',
+            );
         },
 
         async fetchMarketChartRange(args): Promise<CoingeckoMarketChartRange> {

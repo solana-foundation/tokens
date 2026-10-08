@@ -80,6 +80,7 @@ function makeState(overrides: Partial<FakeState> = {}): FakeState {
 
 function makeJobsRepo(state: FakeState): JobsRepo {
     return {
+        async upsertTokenFromBirdeye() {},
         async upsertVariantMarketFromBirdeye(args) {
             state.upsertedBirdeye.push(args.mint);
         },
@@ -160,6 +161,10 @@ function makeJobsRepo(state: FakeState): JobsRepo {
         async pruneApiRequestEventsForProject() {
             return 0;
         },
+        async listStaleOhlcvMints() {
+            return [];
+        },
+        async touchOhlcvRefreshState() {},
         async getOhlcvBounds(address, interval) {
             return state.ohlcvBoundsByKey?.[`${address}\n${interval}`] ?? { minTime: null, maxTime: null };
         },
@@ -265,6 +270,9 @@ function makeCronDeps(state: FakeState): CronDeps {
                 const out: Record<string, { usd?: unknown }> = {};
                 for (const id of coinIds) out[id] = { usd: 1 };
                 return out;
+            },
+            async fetchCoinsMarkets() {
+                return [];
             },
             async fetchMarketChartRange(args) {
                 state.cgMarketChartFetches.push(args.coinId);

@@ -462,7 +462,8 @@ export function createApp(deps: ServerDeps) {
     queries.assetVariantsListSolanaVariantsForApi = args => listSolanaVariantsForApi(deps.assetVariantsRepo, args);
     queries.tokensGetByAddress = args => tokensGetByAddress(deps.tokensReadsRepo, args);
     queries.tokensSearchTokens = args => tokensSearchTokens(deps.tokensReadsRepo, args);
-    queries.tokensGetSearchTokensByAddresses = args => tokensGetSearchTokensByAddresses(deps.tokensReadsRepo, args);
+    queries.tokensGetSearchTokensByAddresses = args =>
+        tokensGetSearchTokensByAddresses(deps.tokensReadsRepo, deps.variantMarketsRepo, args);
     queries.tokenMarketsGetLatestByMint = args => tokenMarketsGetLatestByMint(deps.tokensReadsRepo, args);
     queries.tokenMarketsGetLatestByMints = args => tokenMarketsGetLatestByMints(deps.tokensReadsRepo, args);
     queries.tokenMarketsGetTopMarketsByMints = args => tokenMarketsGetTopMarketsByMints(deps.tokensReadsRepo, args);

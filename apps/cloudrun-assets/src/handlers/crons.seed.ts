@@ -4,7 +4,7 @@ import { Effect } from 'effect';
 import { isShuttingDown } from '@tokens/cloudrun-shutdown';
 import { runJobPool } from '@tokens/effect/job-runner';
 import type { CanonicalAsset, TrustTier } from '@tokens/asset-registry';
-import { listAssets } from '@tokens/asset-registry';
+import { buildRegistryTombstoneRefs, listAssets } from '@tokens/asset-registry';
 import { ALL_PSEUDO_SLUG, CURATED_LIST_SLUGS, isCuratedListSlug } from '@tokens/asset-registry/curated-lists';
 import { CURATED_TOKEN_ADDED_AT } from '@tokens/asset-registry/compat';
 
@@ -212,29 +212,6 @@ export async function loadAssetIdRenames(repo: SeedRepo, assetIds: readonly stri
 
 function renamedAssetId(renames: ReadonlyMap<string, string>, assetId: string): string {
     return renames.get(assetId.trim().toLowerCase()) ?? assetId;
-}
-
-/**
- * Candidate tombstone refs for a registry asset, mirroring the normalization
- * in cloudrun-admin's `buildDeletionTombstoneRows` (lowercased assetId, name,
- * symbol, coingeckoId, aliases, mints, and `solana-<mint>` singleton ids).
- */
-export function buildRegistryTombstoneRefs(asset: CanonicalAsset): string[] {
-    const refs = new Set<string>();
-    const add = (value: string | undefined | null) => {
-        const normalized = value?.trim().toLowerCase();
-        if (normalized) refs.add(normalized);
-    };
-    add(asset.assetId);
-    add(asset.name);
-    add(asset.symbol);
-    add(asset.coingeckoId);
-    for (const alias of asset.aliases) add(alias);
-    for (const variant of asset.variants) {
-        add(variant.mint);
-        add(`solana-${variant.mint}`);
-    }
-    return [...refs];
 }
 
 export async function seedCanonicalAssetsRegistry(

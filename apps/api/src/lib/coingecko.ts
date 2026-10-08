@@ -40,8 +40,10 @@ export interface TokenLinks {
 export interface GlobalTokenStats {
     marketCap: number;
     fdv: number;
-    circulatingSupply: number;
-    totalSupply: number;
+    /** Canonical supply; `null` when the provider has no value (`maxSupply` also for uncapped assets). */
+    circulatingSupply: number | null;
+    totalSupply: number | null;
+    maxSupply: number | null;
     price: number;
     priceChange24h: number;
     volume24h: number;
@@ -71,8 +73,9 @@ interface CoinGeckoResponse {
         market_cap: { usd: number };
         fully_diluted_valuation: { usd: number };
         total_volume: { usd: number };
-        circulating_supply: number;
-        total_supply: number;
+        circulating_supply: number | null;
+        total_supply: number | null;
+        max_supply?: number | null;
         price_change_percentage_24h: number;
         ath: { usd: number };
         ath_date: { usd: string };
@@ -127,8 +130,9 @@ async function getGlobalTokenStatsImpl(coingeckoId: string): Promise<GlobalToken
                 return {
                     marketCap: market_data.market_cap?.usd ?? 0,
                     fdv: market_data.fully_diluted_valuation?.usd ?? 0,
-                    circulatingSupply: market_data.circulating_supply ?? 0,
-                    totalSupply: market_data.total_supply ?? 0,
+                    circulatingSupply: market_data.circulating_supply ?? null,
+                    totalSupply: market_data.total_supply ?? null,
+                    maxSupply: market_data.max_supply ?? null,
                     price: market_data.current_price?.usd ?? 0,
                     priceChange24h: market_data.price_change_percentage_24h ?? 0,
                     volume24h: market_data.total_volume?.usd ?? 0,
