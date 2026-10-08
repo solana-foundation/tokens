@@ -1833,12 +1833,13 @@ function parseOhlcvSelection(value: unknown): OhlcvSelection {
 }
 
 /**
- * A priority mint whose newest candle is more than two full intervals old
- * after the run is lagging (the current, incomplete bucket plus one complete
- * bucket is the normal steady state).
+ * A priority mint whose newest candle is more than two intervals old after the
+ * run is lagging. Steady state right after a refresh is the in-progress bucket
+ * (lag < 1 interval) or, when the provider omits it, the last complete bucket
+ * (lag < 2 intervals); anything older means a complete bucket was missed.
  */
 function ohlcvLagThresholdSeconds(intervalSeconds: number): number {
-    return 3 * intervalSeconds;
+    return 2 * intervalSeconds;
 }
 
 export async function refreshCuratedOhlcv(deps: CronDeps, rawArgs: unknown): Promise<CronResult> {
