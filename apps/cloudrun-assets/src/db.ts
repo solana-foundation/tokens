@@ -45,7 +45,7 @@ import type {
     LogoSyncSuccess,
 } from './handlers/crons.logoSync';
 import type { LaunchpadReadsRepo, LaunchpadTokenRow } from './handlers/launchpadReads';
-import type { TokenUpsertFromBirdeye } from './handlers/crons.misc';
+import type { TokenUpsertFromBirdeye } from './handlers/tokenUpsert';
 import type {
     AssetsApiAssetMarketRow,
     AssetsApiAssetRow,
@@ -763,6 +763,10 @@ async function findRwaXyzTokenLatestByNetworkAndAddressImpl(
 
 export function makePostgresJobsRepo(sql: Sql): JobsRepo {
     return {
+        async upsertTokenFromBirdeye(args) {
+            await upsertTokenFromBirdeyeSql(sql, args);
+        },
+
         async upsertVariantMarketFromBirdeye(args) {
             const birdeyeJson = {
                 source: 'birdeye',

@@ -30,6 +30,7 @@ import {
     type WebacyClient,
 } from './crons';
 import type { CuratedMembershipSource } from './curatedMembershipReads';
+import type { TokenUpsertFromBirdeye } from './tokenUpsert';
 
 const FIXED_NOW = 1_780_000_000_000;
 
@@ -37,6 +38,7 @@ interface MockRepoState {
     overviewLastByMint?: Record<string, number>;
     staleMints?: string[];
     upsertedBirdeye?: VariantMarketUpsertFromBirdeye[];
+    upsertedTokens?: TokenUpsertFromBirdeye[];
     touched?: { mint: string; lastFetchedAt: number }[];
     curatedAssetIds?: string[];
     variantsForRollup?: Record<string, {
@@ -85,6 +87,7 @@ interface MockRepoState {
 
 function makeRepo(state: MockRepoState = {}): JobsRepo {
     state.upsertedBirdeye ??= [];
+    state.upsertedTokens ??= [];
     state.touched ??= [];
     state.upsertedAggregates ??= [];
     state.upsertedSanctumLsts ??= [];
@@ -99,6 +102,9 @@ function makeRepo(state: MockRepoState = {}): JobsRepo {
     state.upsertedOhlcvBatches ??= [];
     state.pruneCalls ??= [];
     return {
+        async upsertTokenFromBirdeye(args) {
+            state.upsertedTokens!.push(args);
+        },
         async upsertVariantMarketFromBirdeye(args) {
             state.upsertedBirdeye!.push(args);
         },
@@ -330,6 +336,24 @@ describe('refreshCuratedVariantMarkets', () => {
         expect(res.refreshed).toBe(1);
         expect(res.skipped).toBe(1);
         expect(state.upsertedBirdeye!.map(u => u.mint)).toEqual(['mintB']);
+        // Same overview is written through to the legacy `tokens` row so the
+        // batch snapshot / singleton lookups see curated mints.
+        expect(state.upsertedTokens!.map(u => ({ address: u.address, symbol: u.symbol, name: u.name }))).toEqual([
+            { address: 'mintB', symbol: 'JUP', name: 'Jupiter' },
+        ]);
+    });
+
+    it('does not fail the variant refresh when the legacy tokens write-through throws', async () => {
+        const overview: BirdeyeOverview = { symbol: 'JUP', name: 'Jupiter', decimals: 6, price: 1 };
+        const { deps, state } = makeDeps({ curatedMints: ['mintA'], birdeye: makeBirdeye({ mintA: overview }) });
+        deps.repo.upsertTokenFromBirdeye = async () => {
+            throw new Error('tokens table unavailable');
+        };
+        const res = await refreshCuratedVariantMarkets(deps, { delayMs: 0 });
+        expect(res.ok).toBe(true);
+        expect(res.refreshed).toBe(1);
+        expect(res.failed).toBe(0);
+        expect(state.upsertedBirdeye!.map(u => u.mint)).toEqual(['mintA']);
     });
 
     it('touches the row when birdeye returns null and counts it as failed', async () => {

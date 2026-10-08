@@ -10,7 +10,6 @@ import {
     assetVariantsGetByMint,
     assetVariantsListByAssetIds,
     listDeletedRefs,
-    tokensGetByAddress,
     stockInstrumentsGetByAssetId,
     variantMarketsGetLatestByMints,
 } from '@/lib/cloudrun';
@@ -33,6 +32,7 @@ import {
 import { canonicalizeAsset, canonicalizeAssetVariants } from '../_canonical-overrides';
 import { resolveAssetRefContext, type AssetRefResolutionContext } from '../_resolve-asset-ref';
 import { looksLikeSolanaMintAddress, mintToSingletonAssetId, singletonAssetIdToMint } from '../_singleton-asset-id';
+import { loadSingletonIdentity } from '../_singleton-identity';
 
 function registryAssetFromRef(ref: string): CanonicalAsset | null {
     const trimmed = ref.trim();
@@ -97,12 +97,13 @@ export const GET = route(
             ) {
                 const singletonAssetId = mintToSingletonAssetId(mint);
                 return Effect.gen(function* () {
-                    const token = yield* tokensGetByAddress({ address: mint }).pipe(tapErrorAndDefault('assets.resolve.singletonToken', null, { mint }));
                     const marketRows = yield* variantMarketsGetLatestByMints({ mints: [mint] }).pipe(tapErrorAndDefault('assets.resolve.singletonMarket', [], { mint }));
                     const market = marketRows[0]?.market ?? null;
+                    // Identity: legacy tokens row → this snapshot → live provider metadata.
+                    const identity = yield* loadSingletonIdentity(mint, { variantMarket: market });
 
-                    const symbol = optionalSymbol(token?.symbol);
-                    const name = optionalText(token?.name);
+                    const symbol = identity?.symbol ?? null;
+                    const name = identity?.name ?? null;
 
                     return {
                         assetId: singletonAssetId,

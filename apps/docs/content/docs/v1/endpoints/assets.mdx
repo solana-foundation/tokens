@@ -761,7 +761,7 @@ curl -sS "$API_BASE_URL/v1/assets/curated?list=stocks&variants=all&limit=100&off
 
 ## `POST /v1/assets/market-snapshots`
 
-Batch lookup cached market snapshots for up to 250 mints.
+Batch lookup cached market snapshots for up to 250 Solana mints.
 
 - **Auth**: `x-api-key`
 - **Scope**: `assets:read`
@@ -777,18 +777,51 @@ Either `mints` or `addresses` (both treated the same).
 
 ### Notes
 
-- Input is de-duped and capped at **250** addresses.
-- Returns an array (Convex-backed) of token search rows for those addresses.
+- Input is de-duped and capped at **250** addresses. The response preserves input order, one entry per address.
+- **Scope: Solana mints only.** Each entry describes one on-chain token (a variant). Canonical, cross-chain figures — CoinGecko price and market cap for BTC itself, canonical supply, grouped variants — live on `GET /v1/assets/:assetId` (`asset.canonicalMarket`, `asset.stats`, `asset.variantGroups`).
+- **Source order.** The per-mint variant market snapshot (refreshed for every curated mint) is used first; the legacy token table is the fallback. `token.source` tells you which provider produced the row when it came from the snapshot.
+- **`hasMarket`** is `true` only when the row carries a positive `price`, a `volume24hUSD` and a `priceChange24hPercent`. `hasMarket: false` with a non-null `token` means identity only (symbol, name, decimals, logo) — treat the numeric fields as unknown, not zero.
+- A mint that is neither curated nor in the legacy table returns `token: null`. For arbitrary Solana mints use `GET /v2/search` / `GET /v2/resolve` (identity + live market) or compose a list with `GET /v2/lists/tokens`.
+- When a row has `metricsSource="clickhouse_trades"`, cached direct-stable Solana trade fields may include `volume1hUSD`, `trade1h`, `trade24h`, `uniqueWallet1h`, `uniqueWallet24h`, `lastTradeAt`, and `asOf` in addition to existing price/volume/change fields.
 
 ### Response
 
-This endpoint returns an array of token rows. The exact row shape can evolve, but it is safe to treat each entry as “token metadata + market snapshot data” keyed by the requested address.
-
-When a row has `metricsSource="clickhouse_trades"`, cached direct-stable Solana trade fields may include `volume1hUSD`, `trade1h`, `trade24h`, `uniqueWallet1h`, `uniqueWallet24h`, `lastTradeAt`, and `asOf` in addition to existing price/volume/change fields.
-
 ```ts
-type AssetsMarketSnapshotsResponse = Array<unknown>;
+type AssetsMarketSnapshotsResponse = Array<{
+  address: string;
+  token: {
+    address: string;
+    symbol: string;
+    name: string;
+    decimals: number;
+    logoURI?: string;
+    price: number;
+    liquidity: number;
+    volume24hUSD: number;
+    marketCap: number;
+    priceChange24hPercent: number;
+    priceChange1hPercent?: number;
+    // Present when the row came from the variant market snapshot:
+    source?: "birdeye" | "rwa_xyz" | "clickhouse_trades";
+    metricsSource?: "birdeye" | "rwa_xyz" | "clickhouse_trades";
+    fdv?: number;
+    holder?: number;
+    totalSupply?: number;        // on-chain supply of this mint
+    circulatingSupply?: number;  // on-chain supply of this mint
+    volume1hUSD?: number;
+    trade1h?: number;
+    trade24h?: number;
+    uniqueWallet1h?: number;
+    uniqueWallet24h?: number;
+    lastTradeAt?: number;        // ms epoch
+    asOf?: number;
+    lastFetchedAt?: number;      // ms epoch
+  } | null;
+  hasMarket: boolean;
+}>;
 ```
+
+Numeric fields default to `0` when the source has no value; check `hasMarket` before using them.
 
 ### Example
 

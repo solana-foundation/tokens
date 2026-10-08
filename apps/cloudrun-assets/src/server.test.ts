@@ -3886,6 +3886,159 @@ describe('tokensGetSearchTokensByAddresses', () => {
         expect(body[1]!.hasMarket).toBe(false);
     });
 
+    it('builds the row from the variant-market snapshot when the legacy tokens table has no row', async () => {
+        const mint = 'taoC6xjhzJq3pbCjs2bVFYgRi8Z2cFjgnFZBbKjWSTHp';
+        const vmRepo: VariantMarketsRepo = {
+            async findLatestByMints(mints) {
+                return mints.includes(mint)
+                    ? [
+                          sampleVariantMarketRow({
+                              mint,
+                              symbol: 'TAO',
+                              name: 'Bittensor',
+                              decimals: 9,
+                              logo_uri: 'https://example.test/tao-raw.png',
+                              logo_cdn_url: 'https://cdn.test/tao.webp',
+                              price: 450.5,
+                              liquidity: 1_000_000,
+                              volume_24h_usd: 250_000,
+                              market_cap: 3_000_000,
+                              fdv: 3_100_000,
+                              holder: 1234,
+                              total_supply: 6_700,
+                              circulating_supply: 6_650,
+                              price_change_24h_percent: -1.25,
+                              price_change_1h_percent: 0.4,
+                              last_fetched_at: 1_700_000_100_000,
+                          }),
+                      ]
+                    : [];
+            },
+        };
+        const app = createApp(deps({ tokensReadsRepo: emptyTokensReadsRepo(), variantMarketsRepo: vmRepo }));
+        const res = await call(app, '/query/tokensGetSearchTokensByAddresses', authed({ addresses: [mint] }));
+        const body = (await res.json()) as Array<{
+            address: string;
+            token: Record<string, unknown> | null;
+            hasMarket: boolean;
+        }>;
+        expect(body).toHaveLength(1);
+        expect(body[0]!.hasMarket).toBe(true);
+        expect(body[0]!.token).toMatchObject({
+            address: mint,
+            symbol: 'TAO',
+            name: 'Bittensor',
+            decimals: 9,
+            logoURI: 'https://cdn.test/tao.webp',
+            price: 450.5,
+            liquidity: 1_000_000,
+            volume24hUSD: 250_000,
+            marketCap: 3_000_000,
+            priceChange24hPercent: -1.25,
+            priceChange1hPercent: 0.4,
+            source: 'birdeye',
+            fdv: 3_100_000,
+            holder: 1234,
+            totalSupply: 6_700,
+            circulatingSupply: 6_650,
+            lastFetchedAt: 1_700_000_100_000,
+        });
+    });
+
+    it('prefers the variant-market snapshot over a stale legacy row for the same mint', async () => {
+        const row = sampleTokenRow({ symbol: 'OLD', price: 0.5, volume_24h_usd: 10, market_cap: 1 });
+        const repo: TokensReadsRepo = {
+            ...emptyTokensReadsRepo(),
+            async findTokensByAddresses(addrs) {
+                return addrs.includes(row.address) ? [row] : [];
+            },
+        };
+        const vmRepo: VariantMarketsRepo = {
+            async findLatestByMints() {
+                return [
+                    sampleVariantMarketRow({
+                        mint: row.address,
+                        symbol: 'USDC',
+                        name: 'USD Coin',
+                        decimals: 6,
+                        price: 1.0,
+                        volume_24h_usd: 5_000_000,
+                        market_cap: null,
+                        price_change_24h_percent: 0.01,
+                    }),
+                ];
+            },
+        };
+        const app = createApp(deps({ tokensReadsRepo: repo, variantMarketsRepo: vmRepo }));
+        const res = await call(app, '/query/tokensGetSearchTokensByAddresses', authed({ addresses: [row.address] }));
+        const body = (await res.json()) as Array<{ token: Record<string, unknown>; hasMarket: boolean }>;
+        expect(body[0]!.hasMarket).toBe(true);
+        expect(body[0]!.token.symbol).toBe('USDC');
+        expect(body[0]!.token.price).toBe(1.0);
+        expect(body[0]!.token.volume24hUSD).toBe(5_000_000);
+        // Metric the snapshot lacks falls back to the legacy row.
+        expect(body[0]!.token.marketCap).toBe(1);
+    });
+
+    it('keeps legacy identity when the variant-market row is touch-only (no symbol/name)', async () => {
+        const row = sampleTokenRow();
+        const repo: TokensReadsRepo = {
+            ...emptyTokensReadsRepo(),
+            async findTokensByAddresses(addrs) {
+                return addrs.includes(row.address) ? [row] : [];
+            },
+        };
+        const vmRepo: VariantMarketsRepo = {
+            async findLatestByMints() {
+                return [
+                    sampleVariantMarketRow({
+                        mint: row.address,
+                        source: 'touch',
+                        symbol: null,
+                        name: null,
+                        decimals: null,
+                        price: null,
+                        liquidity: null,
+                        volume_24h_usd: null,
+                        market_cap: null,
+                        price_change_24h_percent: null,
+                    }),
+                ];
+            },
+        };
+        const app = createApp(deps({ tokensReadsRepo: repo, variantMarketsRepo: vmRepo }));
+        const res = await call(app, '/query/tokensGetSearchTokensByAddresses', authed({ addresses: [row.address] }));
+        const body = (await res.json()) as Array<{ token: Record<string, unknown>; hasMarket: boolean }>;
+        expect(body[0]!.token.symbol).toBe('USDC');
+        expect(body[0]!.token.price).toBe(1.0);
+        expect(body[0]!.hasMarket).toBe(true);
+    });
+
+    it('reports hasMarket=false for an identity-only snapshot without price or volume', async () => {
+        const mint = 'JUPyiwrYJFskUPiHa7hkeR8VUtAeFoSYbKedZNsDvCN';
+        const vmRepo: VariantMarketsRepo = {
+            async findLatestByMints() {
+                return [
+                    sampleVariantMarketRow({
+                        mint,
+                        symbol: 'JUP',
+                        name: 'Jupiter',
+                        decimals: 6,
+                        price: null,
+                        volume_24h_usd: null,
+                        price_change_24h_percent: null,
+                    }),
+                ];
+            },
+        };
+        const app = createApp(deps({ variantMarketsRepo: vmRepo }));
+        const res = await call(app, '/query/tokensGetSearchTokensByAddresses', authed({ addresses: [mint] }));
+        const body = (await res.json()) as Array<{ token: Record<string, unknown> | null; hasMarket: boolean }>;
+        expect(body[0]!.token?.symbol).toBe('JUP');
+        expect(body[0]!.token?.price).toBe(0);
+        expect(body[0]!.hasMarket).toBe(false);
+    });
+
     it('returns 400 when addresses is not an array', async () => {
         const app = createApp(deps());
         const res = await call(app, '/query/tokensGetSearchTokensByAddresses', {

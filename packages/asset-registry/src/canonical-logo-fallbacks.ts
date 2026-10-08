@@ -139,8 +139,6 @@ const POPULAR_LOGO_BY_SYMBOL: Record<string, string> = {
     WBTC: '/logos/popular/bitcoin.png',
     ETH: '/logos/popular/ethereum.png',
     WETH: '/logos/popular/ethereum.png',
-    XRP: '/logos/popular/xrp.png',
-    WXRP: '/logos/popular/xrp.png',
     BNB: '/logos/popular/bnb.png',
     HYPE: '/logos/popular/hyperliquid.png',
     HYPERLIQUID: '/logos/popular/hyperliquid.png',
@@ -164,12 +162,10 @@ const CANONICAL_LOGO_BY_ASSET_ID: Record<string, string> = {
     hyperliquid: '/logos/popular/hyperliquid.png',
     monad: '/logos/popular/monad.png',
     solana: '/logos/popular/solana.png',
-    ripple: '/logos/popular/xrp.png',
     sui: '/logos/currencies/sui.png',
     tether: '/logos/popular/tether.png',
     uniswap: '/logos/popular/uniswap.png',
     usd: '/logos/currencies/usd.png',
-    xrp: '/logos/popular/xrp.png',
 };
 
 const PRESTOCK_LOGO_SLUGS = new Set([

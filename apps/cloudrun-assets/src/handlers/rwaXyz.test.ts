@@ -69,6 +69,7 @@ interface RecordingRepoState {
 
 function makeRecordingRepo(state: RecordingRepoState): JobsRepo {
     return {
+        async upsertTokenFromBirdeye() {},
         async upsertVariantMarketFromBirdeye(args) {
             state.upsertedBirdeye.push({ mint: args.mint });
         },
