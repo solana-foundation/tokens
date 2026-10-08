@@ -339,11 +339,14 @@ export interface JobsRepo {
 
     /**
      * `candidates` (in rank order) not attempted for `interval` since
-     * `attemptedBeforeMs`, never-attempted first, then longest-untouched,
-     * ties broken by rank. Backed by `ohlcv_refresh_state`.
+     * `attemptedBeforeMs` AND with trades newer than their newest stored
+     * candle bucket (per the variant market snapshot's last trade time);
+     * never-attempted first, then longest-untouched, ties broken by rank.
+     * Backed by `ohlcv_refresh_state` + `variant_markets_latest`.
      */
     listStaleOhlcvMints(
         interval: string,
+        intervalSeconds: number,
         candidates: readonly string[],
         attemptedBeforeMs: number,
         limit: number,
@@ -1883,7 +1886,9 @@ export async function refreshCuratedOhlcv(deps: CronDeps, rawArgs: unknown): Pro
     const interval = parseOhlcvInterval(args.interval);
     const days = clampInt(args.days, 90, 1, 3650);
     const priorityCount = clampInt(args.priorityCount, 25, 0, 100);
-    const maxMints = clampInt(args.maxMints, 25, 1, 250);
+    // 500: the curated rotation is ~1.5k mints (every LST/yield variant counts),
+    // and a 250-mint 15m run only re-reached a mint every ~90 minutes.
+    const maxMints = clampInt(args.maxMints, 25, 1, 500);
     const concurrency = clampInt(args.concurrency, 2, 1, 5);
     const delayMs = clampInt(args.delayMs, 200, 0, 5_000);
     const selectionWindowMs = clampInt(args.selectionWindowMs, 60_000, 10_000, 24 * 60 * 60_000);
@@ -1914,6 +1919,7 @@ export async function refreshCuratedOhlcv(deps: CronDeps, rawArgs: unknown): Pro
                 // for the stale slots (they would win every run as "stalest").
                 const stale = await deps.repo.listStaleOhlcvMints(
                     interval,
+                    intervalSeconds,
                     allMints.slice(priorityMints.length),
                     start - intervalSeconds * 1000,
                     maxMints,
@@ -1929,7 +1935,7 @@ export async function refreshCuratedOhlcv(deps: CronDeps, rawArgs: unknown): Pro
             }
         }
         rotating ??= pickDeterministicBatch(allMints, maxMints, selectionWindowMs, start);
-        mints = uniqueStrings([...priorityMints, ...rotating]).slice(0, 250);
+        mints = uniqueStrings([...priorityMints, ...rotating]).slice(0, 600);
     }
 
     let refreshed = 0;

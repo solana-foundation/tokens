@@ -592,11 +592,12 @@ module "scheduler_jobs" {
       })
       attempt_deadline = "540s"
     },
-    # refresh-curated-ohlcv-15m: every curated mint, not just the top 50. 250
-    # rotating + 50 priority per run covers ~700 mints in 3 runs, so a 15m candle
-    # is never more than ~45 min behind. Was maxMints=1 every 30 min (13-day
-    # rotation), which left less-traded mints' 1D charts hours to days stale
-    # (customer report 2026-10-07).
+    # refresh-curated-ohlcv-15m: every curated mint, not just the top 50. The
+    # rotation is ~1.5k mints (every LST/yield variant counts); selection=stale
+    # skips mints with no trades since their newest candle, and 500 per run
+    # re-reaches an actively trading mint within one or two runs. Was maxMints=1
+    # every 30 min (13-day rotation), which left less-traded mints' 1D charts
+    # hours to days stale (customer report 2026-10-07).
     {
       name      = "refresh-curated-ohlcv-15m"
       schedule  = "*/15 * * * *"
@@ -606,8 +607,8 @@ module "scheduler_jobs" {
         interval          = "15m"
         days              = 1
         priorityCount     = 50
-        maxMints          = 250
-        concurrency       = 3
+        maxMints          = 500
+        concurrency       = 4
         delayMs           = 200
         selectionWindowMs = 900000
         upsertChunkSize   = 1000
@@ -624,8 +625,8 @@ module "scheduler_jobs" {
         interval          = "1H"
         days              = 90
         priorityCount     = 25
-        maxMints          = 250
-        concurrency       = 3
+        maxMints          = 500
+        concurrency       = 4
         delayMs           = 200
         selectionWindowMs = 1800000
         budgetMs          = 500000

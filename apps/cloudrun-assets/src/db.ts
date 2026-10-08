@@ -1753,16 +1753,27 @@ export function makePostgresJobsRepo(sql: Sql): JobsRepo {
             };
         },
 
-        async listStaleOhlcvMints(interval, candidates, attemptedBeforeMs, limit) {
+        async listStaleOhlcvMints(interval, intervalSeconds, candidates, attemptedBeforeMs, limit) {
             if (candidates.length === 0) return [];
+            // A mint whose last trade (variant market snapshot, ms epoch) falls
+            // inside the bucket of its newest stored candle has nothing newer to
+            // fetch — skip it so the slots go to mints that actually traded.
+            // Unknown last trade or no stored candle ⇒ eligible.
             const rows = await sql<{ address: string }[]>`
                 SELECT c.address
                 FROM unnest(${sql.array([...candidates])}::text[]) WITH ORDINALITY AS c(address, ord)
                 LEFT JOIN ohlcv_refresh_state s
                        ON s.address = c.address AND s.interval = ${interval}
-                WHERE s.last_attempted_at IS NULL OR s.last_attempted_at < ${attemptedBeforeMs}
+                LEFT JOIN variant_markets_latest vm
+                       ON vm.mint = c.address
+                WHERE (s.last_attempted_at IS NULL OR s.last_attempted_at < ${attemptedBeforeMs})
+                  AND (
+                        s.last_candle_time IS NULL
+                     OR vm.last_trade_at IS NULL
+                     OR (vm.last_trade_at / 1000.0) >= (s.last_candle_time + ${intervalSeconds})::double precision
+                  )
                 ORDER BY s.last_attempted_at ASC NULLS FIRST, c.ord ASC
-                LIMIT ${Math.min(Math.max(limit, 1), 250)}
+                LIMIT ${Math.min(Math.max(limit, 1), 500)}
             `;
             return rows.map(r => r.address);
         },
