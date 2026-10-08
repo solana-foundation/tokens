@@ -3460,6 +3460,10 @@ describe('coingeckoReadsGetPriceLatestByCoinId', () => {
         price_change_24h_percent: 1.5,
         provider_last_updated_at: 1_700_000_000,
         last_fetched_at: 1_700_000_000_000,
+        circulating_supply: 580_767_381,
+        total_supply: 629_334_221,
+        max_supply: null,
+        fdv_usd: 54_000_000_000,
     };
 
     it('returns the mapped snapshot', async () => {
@@ -3477,6 +3481,10 @@ describe('coingeckoReadsGetPriceLatestByCoinId', () => {
             priceChange24hPercent: 1.5,
             providerLastUpdatedAt: 1_700_000_000,
             lastFetchedAt: 1_700_000_000_000,
+            circulatingSupply: 580_767_381,
+            totalSupply: 629_334_221,
+            maxSupply: null,
+            fdvUsd: 54_000_000_000,
         });
     });
 
@@ -3525,6 +3533,10 @@ describe('coingeckoReadsGetPriceLatestByCoinIds', () => {
                     priceChange24hPercent: null,
                     providerLastUpdatedAt: null,
                     lastFetchedAt: 1_700_000_000_000,
+                    circulatingSupply: null,
+                    totalSupply: null,
+                    maxSupply: null,
+                    fdvUsd: null,
                 },
             },
             { coinId: 'jupiter-exchange-solana', snapshot: null },

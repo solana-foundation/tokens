@@ -2036,7 +2036,8 @@ export function makePostgresCoingeckoRepo(sql: Sql): CoingeckoRepo {
             await sql`
                 INSERT INTO coingecko_prices_latest (
                     id, coin_id, price_usd, market_cap_usd, volume_24h_usd,
-                    price_change_24h_percent, provider_last_updated_at, last_fetched_at
+                    price_change_24h_percent, provider_last_updated_at, last_fetched_at,
+                    circulating_supply, total_supply, max_supply, fdv_usd
                 )
                 VALUES (
                     ${randomId('cgprice')},
@@ -2046,7 +2047,11 @@ export function makePostgresCoingeckoRepo(sql: Sql): CoingeckoRepo {
                     ${args.volume24hUsd},
                     ${args.priceChange24hPercent},
                     ${args.providerLastUpdatedAt},
-                    ${args.lastFetchedAt}
+                    ${args.lastFetchedAt},
+                    ${args.circulatingSupply ?? null},
+                    ${args.totalSupply ?? null},
+                    ${args.maxSupply ?? null},
+                    ${args.fdvUsd ?? null}
                 )
                 ON CONFLICT (coin_id) DO UPDATE
                 SET price_usd                = EXCLUDED.price_usd,
@@ -2054,7 +2059,13 @@ export function makePostgresCoingeckoRepo(sql: Sql): CoingeckoRepo {
                     volume_24h_usd           = EXCLUDED.volume_24h_usd,
                     price_change_24h_percent = EXCLUDED.price_change_24h_percent,
                     provider_last_updated_at = EXCLUDED.provider_last_updated_at,
-                    last_fetched_at          = EXCLUDED.last_fetched_at
+                    last_fetched_at          = EXCLUDED.last_fetched_at,
+                    -- Supply changes slowly and only /coins/markets carries it; a
+                    -- /simple/price fallback tick must not wipe a known value.
+                    circulating_supply       = COALESCE(EXCLUDED.circulating_supply, coingecko_prices_latest.circulating_supply),
+                    total_supply             = COALESCE(EXCLUDED.total_supply, coingecko_prices_latest.total_supply),
+                    max_supply               = COALESCE(EXCLUDED.max_supply, coingecko_prices_latest.max_supply),
+                    fdv_usd                  = COALESCE(EXCLUDED.fdv_usd, coingecko_prices_latest.fdv_usd)
             `;
         },
 
@@ -3056,7 +3067,8 @@ export function makePostgresCoingeckoReadsRepo(sql: Sql): CoingeckoReadsRepo {
         async findPriceLatestByCoinId(coinId) {
             const rows = await sql<CoingeckoPriceLatestRow[]>`
                 SELECT coin_id, price_usd, market_cap_usd, volume_24h_usd,
-                       price_change_24h_percent, provider_last_updated_at, last_fetched_at
+                       price_change_24h_percent, provider_last_updated_at, last_fetched_at,
+                       circulating_supply, total_supply, max_supply, fdv_usd
                 FROM coingecko_prices_latest
                 WHERE coin_id = ${coinId}
                 LIMIT 1
@@ -3067,7 +3079,8 @@ export function makePostgresCoingeckoReadsRepo(sql: Sql): CoingeckoReadsRepo {
             if (coinIds.length === 0) return [];
             const rows = await sql<CoingeckoPriceLatestRow[]>`
                 SELECT coin_id, price_usd, market_cap_usd, volume_24h_usd,
-                       price_change_24h_percent, provider_last_updated_at, last_fetched_at
+                       price_change_24h_percent, provider_last_updated_at, last_fetched_at,
+                       circulating_supply, total_supply, max_supply, fdv_usd
                 FROM coingecko_prices_latest
                 WHERE coin_id IN ${sql(coinIds)}
             `;

@@ -267,6 +267,9 @@ function makeCronDeps(state: FakeState): CronDeps {
                 for (const id of coinIds) out[id] = { usd: 1 };
                 return out;
             },
+            async fetchCoinsMarkets() {
+                return [];
+            },
             async fetchMarketChartRange(args) {
                 state.cgMarketChartFetches.push(args.coinId);
                 return { prices: [], totalVolumes: [] };

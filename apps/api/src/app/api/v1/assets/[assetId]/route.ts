@@ -446,6 +446,9 @@ export const GET = route(
                       priceChange24hPercent: number | null;
                       lastFetchedAt: number | null;
                       providerLastUpdatedAt: number | null;
+                      circulatingSupply: number | null;
+                      totalSupply: number | null;
+                      maxSupply: number | null;
                   }
                 | {
                       source: 'clickhouse_stock';
@@ -482,6 +485,9 @@ export const GET = route(
                 priceChange24hPercent?: number | null;
                 lastFetchedAt?: number | null;
                 providerLastUpdatedAt?: number | null;
+                circulatingSupply?: number | null;
+                totalSupply?: number | null;
+                maxSupply?: number | null;
             } | null = null;
 
             const companyMarketCap = computeCompanyMarketCapUsd(asset, stockSnapshot);
@@ -516,6 +522,9 @@ export const GET = route(
                     priceChange24hPercent: coinSnapshot?.priceChange24hPercent ?? null,
                     lastFetchedAt,
                     providerLastUpdatedAt: coinSnapshot?.providerLastUpdatedAt ?? null,
+                    circulatingSupply: coinSnapshot?.circulatingSupply ?? null,
+                    totalSupply: coinSnapshot?.totalSupply ?? null,
+                    maxSupply: coinSnapshot?.maxSupply ?? null,
                 };
             }
 

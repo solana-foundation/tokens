@@ -82,6 +82,26 @@ export interface CoingeckoPriceUpsert {
     priceChange24hPercent: number | null;
     providerLastUpdatedAt: number | null;
     lastFetchedAt: number;
+    /** Canonical supply from `/coins/markets`; `null` leaves the stored value untouched (COALESCE). */
+    circulatingSupply?: number | null;
+    totalSupply?: number | null;
+    /** `null` for uncapped assets as well as when unknown — CoinGecko has no separate "uncapped" signal. */
+    maxSupply?: number | null;
+    fdvUsd?: number | null;
+}
+
+/** Raw `/coins/markets` row; leaves are `unknown` until validated. */
+export interface CoingeckoCoinsMarketsRow {
+    id: string;
+    current_price?: unknown;
+    market_cap?: unknown;
+    fully_diluted_valuation?: unknown;
+    total_volume?: unknown;
+    price_change_percentage_24h?: unknown;
+    circulating_supply?: unknown;
+    total_supply?: unknown;
+    max_supply?: unknown;
+    last_updated?: unknown;
 }
 
 export interface CoingeckoOhlcvCandle {
@@ -195,6 +215,13 @@ export interface CoingeckoClient {
         usd_24h_change?: unknown;
         last_updated_at?: unknown;
     }>>;
+    /**
+     * `/coins/markets` — same price/market-cap/volume/change as `/simple/price`
+     * in one call per 250 ids, plus circulating/total/max supply and FDV.
+     * CoinGecko omits some ids from this endpoint; callers fall back to
+     * `fetchSimplePrice` for those.
+     */
+    fetchCoinsMarkets(coinIds: readonly string[]): Promise<CoingeckoCoinsMarketsRow[]>;
     fetchMarketChartRange(args: {
         coinId: string;
         from: number;
@@ -795,6 +822,33 @@ export async function refreshCuratedCoingeckoTickers(
     };
 }
 
+/** ISO-8601 `last_updated` → unix seconds, matching `/simple/price`'s `last_updated_at`. */
+function isoToUnixSeconds(value: unknown): number | null {
+    if (typeof value !== 'string' || !value) return null;
+    const ms = Date.parse(value);
+    return Number.isFinite(ms) ? Math.floor(ms / 1000) : null;
+}
+
+export function coinsMarketsRowToUpsert(
+    coinId: string,
+    row: CoingeckoCoinsMarketsRow,
+    lastFetchedAt: number,
+): CoingeckoPriceUpsert {
+    return {
+        coinId,
+        priceUsd: toFiniteNumberOrNull(row.current_price ?? null),
+        marketCapUsd: toFiniteNumberOrNull(row.market_cap ?? null),
+        volume24hUsd: toFiniteNumberOrNull(row.total_volume ?? null),
+        priceChange24hPercent: toFiniteNumberOrNull(row.price_change_percentage_24h ?? null),
+        providerLastUpdatedAt: isoToUnixSeconds(row.last_updated),
+        lastFetchedAt,
+        circulatingSupply: toFiniteNumberOrNull(row.circulating_supply ?? null),
+        totalSupply: toFiniteNumberOrNull(row.total_supply ?? null),
+        maxSupply: toFiniteNumberOrNull(row.max_supply ?? null),
+        fdvUsd: toFiniteNumberOrNull(row.fully_diluted_valuation ?? null),
+    };
+}
+
 export async function refreshCuratedCoingeckoPrices(
     rawDeps: import('./crons').CronDeps,
     rawArgs: unknown,
@@ -847,35 +901,71 @@ export async function refreshCuratedCoingeckoPrices(
     for (let i = 0; i < chunks.length; i++) {
         if (i > 0) await sleep(delayMs);
         const chunk = chunks[i] ?? [];
+
+        // `/coins/markets` carries supply + FDV; `/simple/price` is the fallback
+        // for ids it omits (and for the whole chunk if it fails outright).
+        const marketsById = new Map<string, CoingeckoCoinsMarketsRow>();
+        let marketsFailed = false;
         try {
-            const data = await deps.coingecko.fetchSimplePrice(chunk);
-            for (const coinId of chunk) {
-                const row = data[coinId] ?? null;
-                try {
-                    await deps.coingeckoRepo.upsertPriceLatest({
-                        coinId,
-                        priceUsd: toFiniteNumberOrNull(row?.usd ?? null),
-                        marketCapUsd: toFiniteNumberOrNull(row?.usd_market_cap ?? null),
-                        volume24hUsd: toFiniteNumberOrNull(row?.usd_24h_vol ?? null),
-                        priceChange24hPercent: toFiniteNumberOrNull(row?.usd_24h_change ?? null),
-                        providerLastUpdatedAt: toFiniteNumberOrNull(row?.last_updated_at ?? null),
-                        lastFetchedAt: start,
-                    });
-                    refreshed += 1;
-                } catch (err) {
-                    failed += 1;
-                    console.error(
-                        `[refreshCuratedCoingeckoPrices] upsert ${coinId}`,
-                        err instanceof Error ? err.message : String(err),
-                    );
-                }
-            }
+            for (const row of await deps.coingecko.fetchCoinsMarkets(chunk)) marketsById.set(row.id, row);
         } catch (err) {
-            failed += chunk.length;
+            marketsFailed = true;
             console.error(
-                '[refreshCuratedCoingeckoPrices] chunk failed',
+                '[refreshCuratedCoingeckoPrices] coins/markets chunk failed',
                 err instanceof Error ? err.message : String(err),
             );
+        }
+
+        const missing = chunk.filter(coinId => !marketsById.has(coinId));
+        let simple: Awaited<ReturnType<CoingeckoClient['fetchSimplePrice']>> = {};
+        let simpleFailed = false;
+        if (missing.length > 0) {
+            try {
+                simple = await deps.coingecko.fetchSimplePrice(missing);
+            } catch (err) {
+                simpleFailed = true;
+                console.error(
+                    '[refreshCuratedCoingeckoPrices] simple/price chunk failed',
+                    err instanceof Error ? err.message : String(err),
+                );
+            }
+        }
+
+        if (marketsFailed && simpleFailed) {
+            failed += chunk.length;
+            continue;
+        }
+
+        for (const coinId of chunk) {
+            const market = marketsById.get(coinId) ?? null;
+            if (!market && simpleFailed) {
+                // Neither response covered this id; don't blank out the stored row.
+                failed += 1;
+                continue;
+            }
+            const row = market ? null : (simple[coinId] ?? null);
+            try {
+                await deps.coingeckoRepo.upsertPriceLatest(
+                    market
+                        ? coinsMarketsRowToUpsert(coinId, market, start)
+                        : {
+                              coinId,
+                              priceUsd: toFiniteNumberOrNull(row?.usd ?? null),
+                              marketCapUsd: toFiniteNumberOrNull(row?.usd_market_cap ?? null),
+                              volume24hUsd: toFiniteNumberOrNull(row?.usd_24h_vol ?? null),
+                              priceChange24hPercent: toFiniteNumberOrNull(row?.usd_24h_change ?? null),
+                              providerLastUpdatedAt: toFiniteNumberOrNull(row?.last_updated_at ?? null),
+                              lastFetchedAt: start,
+                          },
+                );
+                refreshed += 1;
+            } catch (err) {
+                failed += 1;
+                console.error(
+                    `[refreshCuratedCoingeckoPrices] upsert ${coinId}`,
+                    err instanceof Error ? err.message : String(err),
+                );
+            }
         }
     }
 
