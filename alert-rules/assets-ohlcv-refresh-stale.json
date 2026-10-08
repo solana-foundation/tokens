@@ -82,7 +82,7 @@
     },
     "annotations": {
         "summary": "tokens-assets: curated OHLCV refresh left priority mints more than 2 intervals behind",
-        "description": "A refresh-curated-ohlcv-* run finished with at least one priority (top-ranked) mint whose newest stored candle is older than two intervals (event: ohlcv_refresh_stale; carries interval, laggingCount, sample mints and maxLagSeconds). Sub-daily charts for those mints are serving stale candles. Check the run's ohlcv_refresh_summary (failed/partial counts), Birdeye OHLCV errors, and whether the Cloud Scheduler job is firing on schedule. Illiquid non-priority mints with no trades are excluded from this signal.",
+        "description": "A refresh-curated-ohlcv-* run finished with at least one priority (top-ranked) mint whose provider fetch FAILED while its newest stored candle is more than two intervals old (event: ohlcv_refresh_stale; carries interval, laggingCount, sample mints and maxLagSeconds). Mints that refreshed successfully are never flagged, even with no recent trades — after a successful fetch the stored candles are what the provider has. Check the run's ohlcv_refresh_summary (failed/partial counts) and Birdeye OHLCV errors; if every run is failing for the same mint, the mint may be delisted from the provider.",
         "runbook_url": "https://example.com/runbooks/assets-ohlcv-refresh-stale"
     },
     "notification_settings": {

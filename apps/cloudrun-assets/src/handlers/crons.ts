@@ -1866,10 +1866,13 @@ function parseOhlcvSelection(value: unknown): OhlcvSelection {
 }
 
 /**
- * A priority mint whose newest candle is more than two intervals old after the
- * run is lagging. Steady state right after a refresh is the in-progress bucket
- * (lag < 1 interval) or, when the provider omits it, the last complete bucket
- * (lag < 2 intervals); anything older means a complete bucket was missed.
+ * Lag that matters: a priority mint whose refresh FAILED this run and whose
+ * newest stored candle is more than two intervals old. After a successful
+ * fetch up to `now` the stored candles are exactly what the provider has, so a
+ * mint with no recent candle is merely not trading, not lagging — flagging
+ * those made the signal fire on every dead/illiquid mint in the priority set.
+ * Steady state after a refresh is the in-progress bucket (lag < 1 interval) or
+ * the last complete one (lag < 2 intervals).
  */
 function ohlcvLagThresholdSeconds(intervalSeconds: number): number {
     return 2 * intervalSeconds;
@@ -1952,8 +1955,10 @@ export async function refreshCuratedOhlcv(deps: CronDeps, rawArgs: unknown): Pro
     const requestedFrom = Math.floor(start / 1000) - days * 24 * 60 * 60;
     const requestedTo = Math.floor(start / 1000);
 
-    // Newest candle time per processed mint, for the priority-lag signal below.
+    // Newest candle time per processed mint (as stored before the fetch, then
+    // after it) plus the mints whose fetch failed, for the lag signal below.
     const latestCandleTimeByMint = new Map<string, number | null>();
+    const failedMints = new Set<string>();
     let touchWarned = false;
     const touchState = async (address: string, refreshedAt: number | null, lastCandleTime: number | null) => {
         try {
@@ -1982,6 +1987,7 @@ export async function refreshCuratedOhlcv(deps: CronDeps, rawArgs: unknown): Pro
                 Effect.tryPromise(async () => {
                     const bounds = await deps.repo.getOhlcvBounds(address, interval);
                     let latest = bounds.maxTime;
+                    latestCandleTimeByMint.set(address, latest);
                     const segments: Array<{ from: number; to: number }> = [];
                     if (bounds.minTime === null || bounds.maxTime === null) {
                         segments.push({ from: requestedFrom, to: requestedTo });
@@ -2023,7 +2029,11 @@ export async function refreshCuratedOhlcv(deps: CronDeps, rawArgs: unknown): Pro
                     await touchState(address, start, latest);
                     refreshed += 1;
                 }),
-            onItemError: address => Effect.tryPromise(() => touchState(address, null, null)),
+            onItemError: address =>
+                Effect.tryPromise(async () => {
+                    failedMints.add(address);
+                    await touchState(address, null, null);
+                }),
         }),
     );
 
@@ -2031,7 +2041,7 @@ export async function refreshCuratedOhlcv(deps: CronDeps, rawArgs: unknown): Pro
     const lagThreshold = ohlcvLagThresholdSeconds(intervalSeconds);
     const lagging: Array<{ mint: string; lagSeconds: number | null }> = [];
     for (const mint of priorityMints) {
-        if (!latestCandleTimeByMint.has(mint)) continue;
+        if (!failedMints.has(mint)) continue;
         const latest = latestCandleTimeByMint.get(mint) ?? null;
         const lagSeconds = latest === null ? null : nowSeconds - latest;
         if (lagSeconds === null || lagSeconds > lagThreshold) lagging.push({ mint, lagSeconds });
