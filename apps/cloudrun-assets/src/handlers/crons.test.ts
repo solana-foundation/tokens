@@ -83,6 +83,8 @@ interface MockRepoState {
     pruneCalls?: { projectId: string; cutoffTs: number; beforeCreationTime: number }[];
     ohlcvBoundsByKey?: Record<string, { minTime: number | null; maxTime: number | null }>;
     ohlcvAttemptedAtByKey?: Record<string, number>;
+    ohlcvLastCandleTimeByKey?: Record<string, number>;
+    lastTradeAtMsByMint?: Record<string, number>;
     ohlcvTouches?: OhlcvRefreshStateTouch[];
     staleOhlcvThrows?: boolean;
     upsertedOhlcvBatches?: { address: string; interval: string; candles: OhlcvCandle[] }[];
@@ -236,12 +238,18 @@ function makeRepo(state: MockRepoState = {}): JobsRepo {
         async getOhlcvBounds(address, interval) {
             return state.ohlcvBoundsByKey?.[`${address}\n${interval}`] ?? { minTime: null, maxTime: null };
         },
-        async listStaleOhlcvMints(interval, candidates, attemptedBeforeMs, limit) {
+        async listStaleOhlcvMints(interval, intervalSeconds, candidates, attemptedBeforeMs, limit) {
             if (state.staleOhlcvThrows) throw new Error('relation "ohlcv_refresh_state" does not exist');
             const attemptedAt = (mint: string) => state.ohlcvAttemptedAtByKey?.[`${mint}\n${interval}`];
+            const hasNewTrades = (mint: string) => {
+                const lastTradeMs = state.lastTradeAtMsByMint?.[mint];
+                const lastCandle = state.ohlcvLastCandleTimeByKey?.[`${mint}\n${interval}`];
+                if (lastTradeMs === undefined || lastCandle === undefined) return true;
+                return lastTradeMs / 1000 >= lastCandle + intervalSeconds;
+            };
             return candidates
                 .map((mint, ord) => ({ mint, ord, at: attemptedAt(mint) }))
-                .filter(x => x.at === undefined || x.at < attemptedBeforeMs)
+                .filter(x => (x.at === undefined || x.at < attemptedBeforeMs) && hasNewTrades(x.mint))
                 .sort((a, b) => {
                     if (a.at === undefined && b.at !== undefined) return -1;
                     if (a.at !== undefined && b.at === undefined) return 1;
@@ -1022,6 +1030,43 @@ describe('refreshCuratedOhlcv', () => {
         expect(res.staleCandidates).toBe(2);
         // priority p1,p2 first; then d (never attempted) and b (stalest attempted); a is cut by maxMints, c excluded.
         expect(state.ohlcvTouches!.map(t => t.address)).toEqual(['p1', 'p2', 'd', 'b']);
+    });
+
+    it('selection=stale skips mints with no trades since their newest candle bucket', async () => {
+        const fixedNow = 1_780_000_000_000;
+        const nowSec = Math.floor(fixedNow / 1000);
+        const { deps, state } = makeDeps({
+            curatedMints: ['active', 'quiet', 'unknown'],
+            now: () => fixedNow,
+            birdeyeOhlcv: makeBirdeyeOhlcv({ active: [], quiet: [], unknown: [] }),
+            state: {
+                ohlcvAttemptedAtByKey: {
+                    'active\n15m': fixedNow - 60 * 60_000,
+                    'quiet\n15m': fixedNow - 60 * 60_000,
+                    'unknown\n15m': fixedNow - 60 * 60_000,
+                },
+                ohlcvLastCandleTimeByKey: {
+                    'active\n15m': nowSec - 3 * 900,
+                    'quiet\n15m': nowSec - 3 * 900,
+                    // unknown: no stored candle → always eligible
+                },
+                lastTradeAtMsByMint: {
+                    active: (nowSec - 600) * 1000, // traded after its last bucket
+                    quiet: (nowSec - 3 * 900 + 60) * 1000, // last trade inside the last stored bucket
+                },
+            },
+        });
+        const res = await refreshCuratedOhlcv(deps, {
+            interval: '15m',
+            days: 1,
+            delayMs: 0,
+            concurrency: 1,
+            priorityCount: 0,
+            maxMints: 10,
+            selection: 'stale',
+        });
+        expect(res.staleCandidates).toBe(2);
+        expect(state.ohlcvTouches!.map(t => t.address).sort()).toEqual(['active', 'unknown']);
     });
 
     it('selection=stale falls back to the rotating window when the state table is unavailable', async () => {
