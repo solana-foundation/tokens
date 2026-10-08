@@ -26,6 +26,14 @@ type CanonicalMarket =
           priceChange24hPercent: number | null;
           lastFetchedAt: number | null;
           providerLastUpdatedAt: number | null;
+          /**
+           * Canonical (cross-chain) supply for the asset itself — NOT the
+           * on-Solana tokenized supply in `stats`. `maxSupply` is `null` for
+           * uncapped assets (SOL) as well as when the provider has no value.
+           */
+          circulatingSupply: number | null;
+          totalSupply: number | null;
+          maxSupply: number | null;
       }
     | {
           source: 'clickhouse_stock';

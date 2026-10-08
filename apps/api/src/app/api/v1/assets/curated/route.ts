@@ -956,6 +956,9 @@ export const GET = route(
                     priceChange24hPercent: snapshot?.priceChange24hPercent ?? null,
                     lastFetchedAt: snapshot?.lastFetchedAt ?? null,
                     providerLastUpdatedAt: snapshot?.providerLastUpdatedAt ?? null,
+                    circulatingSupply: snapshot?.circulatingSupply ?? null,
+                    totalSupply: snapshot?.totalSupply ?? null,
+                    maxSupply: snapshot?.maxSupply ?? null,
                 };
             }
 
