@@ -161,6 +161,10 @@ function makeJobsRepo(state: FakeState): JobsRepo {
         async pruneApiRequestEventsForProject() {
             return 0;
         },
+        async listStaleOhlcvMints() {
+            return [];
+        },
+        async touchOhlcvRefreshState() {},
         async getOhlcvBounds(address, interval) {
             return state.ohlcvBoundsByKey?.[`${address}\n${interval}`] ?? { minTime: null, maxTime: null };
         },

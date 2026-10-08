@@ -1753,6 +1753,31 @@ export function makePostgresJobsRepo(sql: Sql): JobsRepo {
             };
         },
 
+        async listStaleOhlcvMints(interval, candidates, attemptedBeforeMs, limit) {
+            if (candidates.length === 0) return [];
+            const rows = await sql<{ address: string }[]>`
+                SELECT c.address
+                FROM unnest(${sql.array([...candidates])}::text[]) WITH ORDINALITY AS c(address, ord)
+                LEFT JOIN ohlcv_refresh_state s
+                       ON s.address = c.address AND s.interval = ${interval}
+                WHERE s.last_attempted_at IS NULL OR s.last_attempted_at < ${attemptedBeforeMs}
+                ORDER BY s.last_attempted_at ASC NULLS FIRST, c.ord ASC
+                LIMIT ${Math.min(Math.max(limit, 1), 250)}
+            `;
+            return rows.map(r => r.address);
+        },
+
+        async touchOhlcvRefreshState(args) {
+            await sql`
+                INSERT INTO ohlcv_refresh_state (address, interval, last_attempted_at, last_refreshed_at, last_candle_time)
+                VALUES (${args.address}, ${args.interval}, ${args.attemptedAt}, ${args.refreshedAt}, ${args.lastCandleTime})
+                ON CONFLICT (address, interval) DO UPDATE
+                SET last_attempted_at = EXCLUDED.last_attempted_at,
+                    last_refreshed_at = COALESCE(EXCLUDED.last_refreshed_at, ohlcv_refresh_state.last_refreshed_at),
+                    last_candle_time  = COALESCE(EXCLUDED.last_candle_time, ohlcv_refresh_state.last_candle_time)
+            `;
+        },
+
         async upsertOhlcvCandles(address, interval, candles): Promise<OhlcvUpsertResult> {
             if (candles.length === 0) return { inserted: 0, updated: 0, skipped: 0 };
             const byTime = new Map<number, OhlcvCandle>();
