@@ -2,7 +2,6 @@ import { Effect } from 'effect';
 
 import { route } from '@/effect/next-route';
 import { BadRequestError, NotFoundError } from '@tokens/effect';
-import { tapErrorAndDefault } from '@tokens/effect';
 import {
     decodeUnknownOrBadRequest,
     NonNegativeIntFromString,
@@ -11,7 +10,7 @@ import {
 } from '@tokens/effect';
 import { scheduleCacheWarm } from '@/lib/cloudrun/cacheWarm';
 import { getByAssetId as cloudRunGetByAssetId } from '@/lib/cloudrun/assets';
-import { assetVariantsListByAssetIds, ohlcvList, tokensGetByAddress } from '@/lib/cloudrun';
+import { assetVariantsListByAssetIds, ohlcvList } from '@/lib/cloudrun';
 import { buildCuratedMintRank, pickPrimaryVariant } from '../../_asset-helpers';
 import { loadTokensByMints } from '../../_load-variant-markets';
 import { resolveAssetIdFromRef } from '../../_resolve-asset-ref';
@@ -20,6 +19,7 @@ import { intervalToSeconds, validateOhlcvRange } from '@/lib/ohlcv-bounds';
 import type { CanonicalAsset } from '@tokens/asset-registry';
 import { resolveAlias as resolveRegistryAlias } from '@tokens/asset-registry';
 import { singletonAssetIdToMint } from '../../_singleton-asset-id';
+import { loadSingletonIdentity } from '../../_singleton-identity';
 
 type AssetVariantRow = {
     variantId: string;
@@ -86,18 +86,13 @@ export const GET = route(
             } else {
                 const singletonMint = singletonAssetIdToMint(assetId);
                 if (singletonMint) {
-                    const token = yield* tokensGetByAddress({ address: singletonMint }).pipe(
-                        tapErrorAndDefault('assets.ohlcv.singletonTokenLookup', null, {
-                            assetId,
-                            mint: singletonMint,
-                        }),
-                    );
+                    const identity = yield* loadSingletonIdentity(singletonMint);
 
-                    if (token) {
+                    if (identity) {
                         canonical = {
                             assetId,
-                            ...(token.name ? { name: token.name } : {}),
-                            ...(token.symbol ? { symbol: token.symbol } : {}),
+                            ...(identity.name ? { name: identity.name } : {}),
+                            ...(identity.symbol ? { symbol: identity.symbol } : {}),
                             category: 'crypto',
                             aliases: [singletonMint],
                             variants: [
@@ -107,8 +102,8 @@ export const GET = route(
                                     kind: 'native',
                                     trustTier: 'tier3',
                                     tags: [],
-                                    ...(token.symbol ? { symbol: token.symbol } : {}),
-                                    ...(token.name ? { name: token.name } : {}),
+                                    ...(identity.symbol ? { symbol: identity.symbol } : {}),
+                                    ...(identity.name ? { name: identity.name } : {}),
                                 },
                             ],
                         };

@@ -24,7 +24,6 @@ export const MAJORS_MINTS: readonly string[] = [
     'HsRpHQn6VbyMs5b5j5SV6xQ2VvpvvCCzu19GjytVSCoz', // STARKNET
     'avaxGHCq3T7hoxd73oY2KY9hJSTaeMibXvHy5KNzh5D', // AVAX (Wormhole)
     'suifhC9gU1VbJAPYPTBkHJyyyStKGLLYPVDTmPoqbvA', // SUI
-    '6UpQcMAb5xMzxc7ZfPaVMgx3KqsvKZdT5U718BzD5We2', // wXRP (Hex Trust)
     'chipCAT7vi5CZtbZsn9z7iMPXvFwyAnKz3QFu8XVuHm', // CHIP
     '6eftxVbSAunVEoxUWdGhPdxg5UdsJ8Wkwy5w5YFuxouw', // CHZ
     'AavE1kKKnesPw4MuRJmJ9jZs9QzEE8CPxQ3ViczUDfc1', // AAVE

@@ -20,6 +20,7 @@ export { InvalidArgsError } from '@tokens/cloudrun-shutdown/http-errors';
 import { InvalidArgsError } from '@tokens/cloudrun-shutdown/http-errors';
 // Type-only: no runtime cycle with curatedMembershipReads.
 import type { CuratedMembershipSource } from './curatedMembershipReads';
+import { birdeyeOverviewToTokenUpsert, type TokenUpsertFromBirdeye } from './tokenUpsert';
 
 export interface VariantMarketUpsertFromBirdeye {
     mint: string;
@@ -328,6 +329,13 @@ export interface JobsRepo {
         interval: string,
         candles: readonly OhlcvCandle[],
     ): Promise<OhlcvUpsertResult>;
+
+    /**
+     * Legacy `tokens` row write-through. The token-price cron only refreshes
+     * rows that already exist, so curated mints only ever reach `tokens` via
+     * this write from the variant-market refresh.
+     */
+    upsertTokenFromBirdeye(args: TokenUpsertFromBirdeye): Promise<void>;
 }
 
 export interface CuratedMintsSource {
@@ -776,6 +784,28 @@ async function tryShadowWriteFromRwaXyz(
     }
 }
 
+/**
+ * Keep the legacy `tokens` row for a curated mint in step with the variant
+ * market snapshot (same Birdeye overview, zero extra provider calls). Never
+ * fails the variant refresh: the snapshot is the source of truth, `tokens`
+ * is a compatibility surface.
+ */
+async function writeThroughLegacyToken(
+    deps: CronDeps,
+    mint: string,
+    overview: BirdeyeOverview,
+    nowMs: number,
+    label: string,
+): Promise<void> {
+    const upsert = birdeyeOverviewToTokenUpsert(mint, overview, nowMs);
+    if (!upsert) return;
+    try {
+        await deps.repo.upsertTokenFromBirdeye(upsert);
+    } catch (err) {
+        console.error(`[${label}] tokens write-through mint=${mint}`, err instanceof Error ? err.message : String(err));
+    }
+}
+
 export async function refreshCuratedVariantMarkets(deps: CronDeps, rawArgs: unknown): Promise<CronResult> {
     const args = asObject(rawArgs);
     const priorityCount = clampInt(args.priorityCount, 50, 0, 100);
@@ -836,6 +866,7 @@ export async function refreshCuratedVariantMarkets(deps: CronDeps, rawArgs: unkn
                         return;
                     }
                     await deps.repo.upsertVariantMarketFromBirdeye(upsert);
+                    await writeThroughLegacyToken(deps, mint, overview, start, 'refreshCuratedVariantMarkets');
                     await tryShadowWriteFromRwaXyz(deps, mint, start, 'refreshCuratedVariantMarkets');
                     refreshed += 1;
                 }),
@@ -901,6 +932,7 @@ export async function refreshStaleVariantMarkets(deps: CronDeps, rawArgs: unknow
                         return;
                     }
                     await deps.repo.upsertVariantMarketFromBirdeye(upsert);
+                    await writeThroughLegacyToken(deps, mint, overview, start, 'refreshStaleVariantMarkets');
                     await tryShadowWriteFromRwaXyz(deps, mint, start, 'refreshStaleVariantMarkets');
                     refreshed += 1;
                 }),

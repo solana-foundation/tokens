@@ -383,6 +383,7 @@ function emptyCronDeps(): CronDeps {
     return {
         repo: {
             async upsertVariantMarketFromBirdeye() {},
+            async upsertTokenFromBirdeye() {},
             async touchVariantMarket() {},
             async getOverviewLastFetchedAtByMint() {
                 return null;

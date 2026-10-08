@@ -80,6 +80,7 @@ function makeState(overrides: Partial<FakeState> = {}): FakeState {
 
 function makeJobsRepo(state: FakeState): JobsRepo {
     return {
+        async upsertTokenFromBirdeye() {},
         async upsertVariantMarketFromBirdeye(args) {
             state.upsertedBirdeye.push(args.mint);
         },

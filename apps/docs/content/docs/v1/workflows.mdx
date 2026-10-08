@@ -74,6 +74,8 @@ curl -sS "$API_BASE_URL/v1/assets/variant-markets?mints=$MINT1,$MINT2,$MINT3" \
 
 ### Option B: `market-snapshots` (JSON body, max 250)
 
+Both options return per-mint (Solana variant) snapshots; the `market-snapshots` rows come from the same variant market table, falling back to the legacy token table. Canonical figures for the grouping asset (CoinGecko price/market cap, canonical supply) are on `GET /v1/assets/:assetId`.
+
 ```bash
 curl -sS "$API_BASE_URL/v1/assets/market-snapshots" \
   -H "x-api-key: $API_KEY" \

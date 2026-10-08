@@ -207,6 +207,7 @@ function makeSeedRepo(state: FakeState): SeedRepo {
 
 function makeJobsRepo(state: FakeState): JobsRepo {
     return {
+        async upsertTokenFromBirdeye() {},
         async upsertVariantMarketFromBirdeye(args) {
             state.upsertedVariantMarkets.push(args);
         },
