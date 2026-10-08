@@ -93,8 +93,15 @@ bun dev
 bun run check:repo-hygiene
 bun run verify:api-health-routes
 bun run lint
+bun run typecheck
+bun run test
 bun run build
 ```
+
+CI runs the same commands in the `build-and-lint` check, plus `secret-scan`,
+`dependency-audit`, and `CodeQL`; all four must pass before a PR can merge
+(see [TESTING.md](TESTING.md)). Paths listed in `.github/CODEOWNERS` also
+require a code-owner review.
 
 If you touched dependency versions or security-sensitive paths, also run:
 
