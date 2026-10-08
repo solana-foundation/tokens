@@ -1,7 +1,8 @@
-import type { CanonicalAsset, PrimaryVariantStrategy, VariantKind } from '@tokens/asset-registry';
+import type { CanonicalAsset, PrimaryVariantStrategy, StablecoinHealth, VariantKind } from '@tokens/asset-registry';
 import { liquidityTierPriority } from '@tokens/asset-registry';
 
 import type { AssetAdvisorySummaryEntry } from '@/lib/advisories';
+import { toCompactPegHealth } from '@/lib/stablecoin-health';
 import {
     computePreStocksDerived,
     optionalText,
@@ -75,6 +76,13 @@ export interface BuildAssetDetailResponseParams {
      * ones a caller hid. Defaults to `[]`; the key is always emitted.
      */
     advisories?: AssetAdvisorySummaryEntry[];
+    /**
+     * Mint -> Webacy stablecoin health. Only read when `asset.category ===
+     * 'stablecoin'`; those assets always emit `pegHealth` (compact, `null` when
+     * the mint has no entry) on every variant row and on `primaryVariant`.
+     * Non-stablecoin assets never carry the key.
+     */
+    stablecoinHealthByMint?: ReadonlyMap<string, StablecoinHealth>;
     assetDescription?: string | null;
     primaryVariant: CanonicalAsset['variants'][number] | null;
     token: TokenMarketSnapshot | undefined;
@@ -124,6 +132,14 @@ export function buildAssetDetailResponse(params: BuildAssetDetailResponseParams)
     const responseSymbols = params.stockSymbol
         ? Array.from(new Set([params.stockSymbol, ...params.symbols].map(symbol => symbol.trim()).filter(Boolean)))
         : params.symbols;
+
+    // Stablecoin identity is the canonical category (never `variant.kind`: the
+    // `usd` group's variants are `native` / `yield`).
+    const isStablecoinAsset = params.asset.category === 'stablecoin';
+    const pegHealthBlock = (mint: string) =>
+        isStablecoinAsset
+            ? { pegHealth: toCompactPegHealth(params.stablecoinHealthByMint?.get(mint)?.pegHealth ?? null) }
+            : {};
 
     const variantsWithMarket = params.asset.variants.map(variant => {
         const token = params.tokenByMint.get(variant.mint);
@@ -175,6 +191,7 @@ export function buildAssetDetailResponse(params: BuildAssetDetailResponseParams)
                 ...(variantName ? { name: variantName } : {}),
                 market,
                 executionQuality,
+                ...pegHealthBlock(variant.mint),
                 ...(preStocks ? { preStocks } : {}),
             },
             market?.liquidity,
@@ -322,6 +339,7 @@ export function buildAssetDetailResponse(params: BuildAssetDetailResponseParams)
                           ...(primaryVariantName ? { name: primaryVariantName } : {}),
                           market: primaryMarket,
                           executionQuality: params.fillQualityByMint.get(params.primaryVariant.mint) ?? null,
+                          ...pegHealthBlock(params.primaryVariant.mint),
                           ...(primaryPreStocks ? { preStocks: primaryPreStocks } : {}),
                       },
                       primaryMarket?.liquidity,

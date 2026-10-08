@@ -162,6 +162,16 @@ export {
 } from './fillQualityReads';
 
 export {
+    stablecoinHealthGetByMints,
+    type PegHealthRead,
+    type StablecoinHealthEntry,
+    type StablecoinHealthGetByMintsArgs,
+    type StablecoinHealthGetByMintsResult,
+    type StructuralHealthCategoryRead,
+    type StructuralHealthRead,
+} from './stablecoinHealthReads';
+
+export {
     assetCollectionsGetMembers,
     type AssetCollectionsGetMembersArgs,
     type AssetCollectionsGetMembersResult,

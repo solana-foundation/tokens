@@ -4,6 +4,8 @@ import {
     ADVISORY_BLOCKED_EVENT,
     ADVISORY_COPY,
     ASSET_ADVISORY_STATUSES,
+    DEPEG_ADVISORY_SOURCES,
+    DEPEG_ADVISORY_TITLE,
     advisoryBannerTitle,
     advisoryEventProps,
     advisoryLabel,
@@ -190,10 +192,40 @@ describe('copy helpers', () => {
     test('banner title and metadata prefix use the symbol when present', () => {
         expect(advisoryBannerTitle(advisory(), 'SILV')).toBe('SILV has been flagged as compromised');
         expect(advisoryBannerTitle(advisory(), '')).toBe('This token has been flagged as compromised');
+        expect(advisoryBannerTitle(advisory({ status: 'caution', source: 'admin' }), 'USX')).toBe(
+            'USX has an active caution advisory',
+        );
         expect(advisoryMetadataPrefix(advisory(), 'silv')).toBe('Warning: SILV has been flagged as compromised.');
         expect(advisoryMetadataPrefix(advisory({ status: 'blocked' }), null)).toBe(
             'Warning: This token has been flagged as blocked.',
         );
+    });
+
+    test('depeg-monitor advisories get the off-peg title while keeping caution tone', () => {
+        const depeg = advisory({ status: 'caution', source: 'webacy_depeg', url: null });
+        expect(DEPEG_ADVISORY_TITLE).toBe('is trading off its peg');
+        expect(advisoryBannerTitle(depeg, 'USX')).toBe('USX is trading off its peg');
+        expect(advisoryBannerTitle(depeg, null)).toBe('This token is trading off its peg');
+        expect(advisoryTone(depeg.status)).toBe('warning');
+        expect(advisoryLabel(depeg.status)).toBe('Caution');
+        expect(isTradeBlocked(depeg)).toBe(false);
+        // The in-house peg monitor writes the same predicate.
+        const pegGuard = advisory({ status: 'caution', source: 'peg_guard', url: null });
+        expect(advisoryBannerTitle(pegGuard, 'USX')).toBe('USX is trading off its peg');
+        expect(DEPEG_ADVISORY_SOURCES).toEqual(new Set(['webacy_depeg', 'peg_guard']));
+        // Only the source changes the predicate; a human caution keeps the generic copy.
+        expect(advisoryBannerTitle(advisory({ status: 'caution' }), 'USX')).toBe('USX has an active caution advisory');
+        expect(advisoryBannerTitle(advisory({ status: 'caution', source: 'admin' }), 'USX')).toBe(
+            'USX has an active caution advisory',
+        );
+    });
+
+    test('normalizeAdvisory keeps a known source and drops unknown ones', () => {
+        expect(normalizeAdvisory(advisory({ source: 'webacy_depeg' }))?.source).toBe('webacy_depeg');
+        expect(normalizeAdvisory(advisory({ source: 'peg_guard' }))?.source).toBe('peg_guard');
+        expect(normalizeAdvisory(advisory({ source: 'admin' }))?.source).toBe('admin');
+        expect(normalizeAdvisory({ ...advisory(), source: 'robot' })?.source).toBe(undefined);
+        expect(normalizeAdvisory(advisory())?.source).toBe(undefined);
     });
 
     test('formatAdvisorySince renders a UTC date and empty for invalid input', () => {

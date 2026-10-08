@@ -11,7 +11,12 @@
  * validated into InvalidArgsError, one repo call per handler.
  */
 
-import { ADVISORY_STATUSES, isAdvisoryStatus, type AdvisoryStatus } from '@tokens/asset-registry';
+import {
+    ADVISORY_STATUSES,
+    isAdvisoryStatus,
+    type AdvisorySource,
+    type AdvisoryStatus,
+} from '@tokens/asset-registry';
 
 import { requireAdmin, type AdminAllowlist } from '../adminAuth';
 import type { CallerIdentity } from '../server';
@@ -42,6 +47,10 @@ export interface VariantAdvisoryRow {
     setAt: number;
     /** Unix ms of the last write. */
     updatedAt: number;
+    /** `admin` for human writes; `webacy_depeg` when the depeg reconciler set it. */
+    source: AdvisorySource;
+    /** True only while the automation owns the row; any admin write flips it false. */
+    managedBySystem: boolean;
 }
 
 export interface VariantAdvisoryEventRow {
@@ -57,6 +66,7 @@ export interface VariantAdvisoryEventRow {
     actorEmail: string | null;
     /** Unix ms. */
     createdAt: number;
+    source: AdvisorySource;
 }
 
 export interface AdvisoryActor {

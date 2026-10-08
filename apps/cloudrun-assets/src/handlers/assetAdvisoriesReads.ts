@@ -1,4 +1,4 @@
-import { isAdvisoryStatus, type AdvisoryStatus } from '@tokens/asset-registry';
+import { isAdvisorySource, isAdvisoryStatus, type AdvisorySource, type AdvisoryStatus } from '@tokens/asset-registry';
 
 /** Raw row from asset_variant_advisories; bigint columns may arrive as string or bigint. */
 export interface AssetAdvisoryRow {
@@ -8,6 +8,8 @@ export interface AssetAdvisoryRow {
     url: string | null;
     set_at: number | string | bigint;
     updated_at: number | string | bigint;
+    /** Absent before migration 0019 is applied. */
+    source?: string | null;
 }
 
 export interface AssetAdvisoriesRepo {
@@ -21,6 +23,8 @@ export interface AssetAdvisoryListEntry {
     url: string | null;
     /** Unix ms; the advisory's set_at (reset when status changes). */
     since: number;
+    /** `admin` for human writes, `webacy_depeg` for the depeg reconciler. */
+    source: AdvisorySource;
 }
 
 export interface AssetAdvisoriesListResult {
@@ -56,6 +60,7 @@ export async function listAdvisories(repo: AssetAdvisoriesRepo): Promise<AssetAd
             reason: row.reason,
             url: row.url ?? null,
             since: toEpochMs(row.set_at),
+            source: isAdvisorySource(row.source) ? row.source : 'admin',
         });
     }
     return { revision, advisories };
