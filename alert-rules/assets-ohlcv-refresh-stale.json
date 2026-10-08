@@ -1,0 +1,98 @@
+{
+    "uid": "tokens-assets-ohlcv-refresh-stale",
+    "title": "tokens-assets: curated OHLCV candles lagging for priority mints",
+    "ruleGroup": "tokens-assets-availability",
+    "folderUID": "tokens",
+    "noDataState": "OK",
+    "execErrState": "OK",
+    "for": "30m",
+    "data": [
+        {
+            "refId": "A",
+            "datasourceUid": "tokens-logs",
+            "queryType": "range",
+            "relativeTimeRange": {
+                "from": 1800,
+                "to": 0
+            },
+            "model": {
+                "expr": "sum(count_over_time({service=\"tokens-assets-prd-us\"} |= \"ohlcv_refresh_stale\" [30m]))",
+                "queryType": "range",
+                "refId": "A"
+            }
+        },
+        {
+            "refId": "B",
+            "datasourceUid": "__expr__",
+            "queryType": "",
+            "relativeTimeRange": {
+                "from": 0,
+                "to": 0
+            },
+            "model": {
+                "type": "reduce",
+                "refId": "B",
+                "expression": "A",
+                "reducer": "last",
+                "settings": {
+                    "mode": "replaceNN",
+                    "replaceWithValue": 0
+                }
+            }
+        },
+        {
+            "refId": "C",
+            "datasourceUid": "__expr__",
+            "queryType": "",
+            "relativeTimeRange": {
+                "from": 0,
+                "to": 0
+            },
+            "model": {
+                "type": "threshold",
+                "refId": "C",
+                "expression": "B",
+                "conditions": [
+                    {
+                        "evaluator": {
+                            "type": "gt",
+                            "params": [0]
+                        },
+                        "operator": {
+                            "type": "and"
+                        },
+                        "query": {
+                            "params": ["B"]
+                        },
+                        "reducer": {
+                            "type": "last",
+                            "params": []
+                        },
+                        "type": "query"
+                    }
+                ]
+            }
+        }
+    ],
+    "condition": "C",
+    "labels": {
+        "service": "tokens-assets",
+        "severity": "warning",
+        "slack": "true"
+    },
+    "annotations": {
+        "summary": "tokens-assets: curated OHLCV refresh left priority mints more than 2 intervals behind",
+        "description": "A refresh-curated-ohlcv-* run finished with at least one priority (top-ranked) mint whose newest stored candle is older than two intervals (event: ohlcv_refresh_stale; carries interval, laggingCount, sample mints and maxLagSeconds). Sub-daily charts for those mints are serving stale candles. Check the run's ohlcv_refresh_summary (failed/partial counts), Birdeye OHLCV errors, and whether the Cloud Scheduler job is firing on schedule. Illiquid non-priority mints with no trades are excluded from this signal.",
+        "runbook_url": "https://example.com/runbooks/assets-ohlcv-refresh-stale"
+    },
+    "notification_settings": {
+        "receiver": "tokens-slack",
+        "group_by": [
+            "grafana_folder",
+            "alertname"
+        ],
+        "group_wait": "30s",
+        "group_interval": "5m",
+        "repeat_interval": "4h"
+    }
+}

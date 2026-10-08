@@ -601,6 +601,7 @@ module "scheduler_jobs" {
       schedule  = "*/15 * * * *"
       http_path = "/jobs/refresh-curated-ohlcv-15m"
       body_json = jsonencode({
+        selection         = "stale"
         interval          = "15m"
         days              = 1
         priorityCount     = 50
@@ -618,6 +619,7 @@ module "scheduler_jobs" {
       schedule  = "12,42 * * * *"
       http_path = "/jobs/refresh-curated-ohlcv-1h"
       body_json = jsonencode({
+        selection         = "stale"
         interval          = "1H"
         days              = 90
         priorityCount     = 25
@@ -634,6 +636,7 @@ module "scheduler_jobs" {
       schedule  = var.env == "stg" ? "5 3 * * *" : "40 */6 * * *"
       http_path = "/jobs/refresh-curated-ohlcv-4h"
       body_json = jsonencode({
+        selection         = "stale"
         interval          = "4H"
         days              = 365
         priorityCount     = 25

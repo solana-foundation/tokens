@@ -23,6 +23,7 @@ import {
     type EndpointDailyRollupDelta,
     type JobsRepo,
     type OhlcvCandle,
+    type OhlcvRefreshStateTouch,
     type OhlcvUpsertResult,
     type SanctumClient,
     type SanctumFetchResult,
@@ -79,6 +80,9 @@ interface MockRepoState {
     prunedByProject?: Record<string, number>;
     pruneCalls?: { projectId: string; cutoffTs: number; beforeCreationTime: number }[];
     ohlcvBoundsByKey?: Record<string, { minTime: number | null; maxTime: number | null }>;
+    ohlcvAttemptedAtByKey?: Record<string, number>;
+    ohlcvTouches?: OhlcvRefreshStateTouch[];
+    staleOhlcvThrows?: boolean;
     upsertedOhlcvBatches?: { address: string; interval: string; candles: OhlcvCandle[] }[];
     ohlcvUpsertResult?: OhlcvUpsertResult;
 }
@@ -97,6 +101,7 @@ function makeRepo(state: MockRepoState = {}): JobsRepo {
     state.appliedDailyDeltas ??= [];
     state.appliedEndpointDeltas ??= [];
     state.upsertedOhlcvBatches ??= [];
+    state.ohlcvTouches ??= [];
     state.pruneCalls ??= [];
     return {
         async upsertVariantMarketFromBirdeye(args) {
@@ -224,6 +229,24 @@ function makeRepo(state: MockRepoState = {}): JobsRepo {
         },
         async getOhlcvBounds(address, interval) {
             return state.ohlcvBoundsByKey?.[`${address}\n${interval}`] ?? { minTime: null, maxTime: null };
+        },
+        async listStaleOhlcvMints(interval, candidates, attemptedBeforeMs, limit) {
+            if (state.staleOhlcvThrows) throw new Error('relation "ohlcv_refresh_state" does not exist');
+            const attemptedAt = (mint: string) => state.ohlcvAttemptedAtByKey?.[`${mint}\n${interval}`];
+            return candidates
+                .map((mint, ord) => ({ mint, ord, at: attemptedAt(mint) }))
+                .filter(x => x.at === undefined || x.at < attemptedBeforeMs)
+                .sort((a, b) => {
+                    if (a.at === undefined && b.at !== undefined) return -1;
+                    if (a.at !== undefined && b.at === undefined) return 1;
+                    if (a.at !== undefined && b.at !== undefined && a.at !== b.at) return a.at - b.at;
+                    return a.ord - b.ord;
+                })
+                .slice(0, limit)
+                .map(x => x.mint);
+        },
+        async touchOhlcvRefreshState(args) {
+            state.ohlcvTouches!.push(args);
         },
         async upsertOhlcvCandles(address, interval, candles) {
             state.upsertedOhlcvBatches!.push({ address, interval, candles: [...candles] });
@@ -907,6 +930,115 @@ describe('refreshCuratedOhlcv', () => {
     it('rejects unknown interval with InvalidArgsError', async () => {
         const { deps } = makeDeps();
         await expect(refreshCuratedOhlcv(deps, { interval: '3m', days: 1 })).rejects.toThrow(/interval/);
+    });
+
+    it('records a refresh-state touch for every processed mint, including fetches that return no candles', async () => {
+        const fixedNow = 1_780_000_000_000;
+        const nowSec = Math.floor(fixedNow / 1000);
+        const candles: OhlcvCandle[] = [{ time: nowSec - 900, open: 1, high: 1, low: 1, close: 1, volume: 1 }];
+        const { deps, state } = makeDeps({
+            curatedMints: ['liquid', 'illiquid', 'covered'],
+            now: () => fixedNow,
+            birdeyeOhlcv: makeBirdeyeOhlcv({ liquid: candles, illiquid: [], covered: [] }),
+            state: {
+                ohlcvBoundsByKey: {
+                    // Already covers the requested range → nothing to fetch.
+                    'covered\n15m': { minTime: nowSec - 86_400 + 10, maxTime: nowSec - 600 },
+                },
+            },
+        });
+        const res = await refreshCuratedOhlcv(deps, { interval: '15m', days: 1, delayMs: 0, concurrency: 1 });
+        expect(res.refreshed).toBe(2);
+        expect(res.skipped).toBe(1);
+        const touches = new Map(state.ohlcvTouches!.map(t => [t.address, t] as const));
+        expect([...touches.keys()].sort()).toEqual(['covered', 'illiquid', 'liquid']);
+        expect(touches.get('liquid')).toMatchObject({ interval: '15m', attemptedAt: fixedNow, refreshedAt: fixedNow, lastCandleTime: nowSec - 900 });
+        // Empty fetch is still a completed refresh (no candle to store, nothing to backfill).
+        expect(touches.get('illiquid')).toMatchObject({ attemptedAt: fixedNow, refreshedAt: fixedNow, lastCandleTime: null });
+        expect(touches.get('covered')).toMatchObject({ attemptedAt: fixedNow, refreshedAt: fixedNow, lastCandleTime: nowSec - 600 });
+    });
+
+    it('touches attempted-at but not refreshed-at when the provider fails', async () => {
+        const { deps, state } = makeDeps({
+            curatedMints: ['mintA'],
+            birdeyeOhlcv: makeFailingBirdeyeOhlcv(),
+        });
+        const res = await refreshCuratedOhlcv(deps, { interval: '15m', days: 1, delayMs: 0, concurrency: 1 });
+        expect(res.failed).toBe(1);
+        expect(state.ohlcvTouches!).toEqual([
+            { address: 'mintA', interval: '15m', attemptedAt: FIXED_NOW, refreshedAt: null, lastCandleTime: null },
+        ]);
+    });
+
+    it('selection=stale picks never-attempted mints first, then the longest-untouched, after the priority set', async () => {
+        const fixedNow = 1_780_000_000_000;
+        const { deps, state } = makeDeps({
+            curatedMints: ['p1', 'p2', 'a', 'b', 'c', 'd'],
+            now: () => fixedNow,
+            birdeyeOhlcv: makeBirdeyeOhlcv({ p1: [], p2: [], a: [], b: [], c: [], d: [] }),
+            state: {
+                ohlcvAttemptedAtByKey: {
+                    'a\n15m': fixedNow - 10 * 60_000, // attempted 10 min ago
+                    'b\n15m': fixedNow - 60 * 60_000, // 1 h ago
+                    'c\n15m': fixedNow - 5 * 60_000, // 5 min ago → within one interval, excluded
+                    // d never attempted
+                },
+            },
+        });
+        const res = await refreshCuratedOhlcv(deps, {
+            interval: '15m',
+            days: 1,
+            delayMs: 0,
+            concurrency: 1,
+            priorityCount: 2,
+            maxMints: 2,
+            selection: 'stale',
+        });
+        expect(res.selection).toBe('stale');
+        expect(res.staleCandidates).toBe(2);
+        // priority p1,p2 first; then d (never attempted) and b (stalest attempted); a is cut by maxMints, c excluded.
+        expect(state.ohlcvTouches!.map(t => t.address)).toEqual(['p1', 'p2', 'd', 'b']);
+    });
+
+    it('selection=stale falls back to the rotating window when the state table is unavailable', async () => {
+        const { deps, state } = makeDeps({
+            curatedMints: ['a', 'b'],
+            birdeyeOhlcv: makeBirdeyeOhlcv({ a: [], b: [] }),
+            state: { staleOhlcvThrows: true },
+        });
+        const res = await refreshCuratedOhlcv(deps, {
+            interval: '1H',
+            days: 90,
+            delayMs: 0,
+            priorityCount: 0,
+            maxMints: 2,
+            selection: 'stale',
+        });
+        expect(res.ok).toBe(true);
+        expect(res.selection).toBe('rotating');
+        expect(res.processed).toBe(2);
+        expect(state.ohlcvTouches!.map(t => t.address).sort()).toEqual(['a', 'b']);
+    });
+
+    it('rejects an unknown selection', async () => {
+        const { deps } = makeDeps();
+        await expect(refreshCuratedOhlcv(deps, { interval: '1H', selection: 'random' })).rejects.toThrow(/selection/);
+    });
+
+    it('defaults to the rotating window and reports lagging priority mints', async () => {
+        const fixedNow = 1_780_000_000_000;
+        const nowSec = Math.floor(fixedNow / 1000);
+        const { deps } = makeDeps({
+            curatedMints: ['fresh', 'lagging'],
+            now: () => fixedNow,
+            birdeyeOhlcv: makeBirdeyeOhlcv({
+                fresh: [{ time: nowSec - 900, open: 1, high: 1, low: 1, close: 1, volume: 1 }],
+                lagging: [{ time: nowSec - 4 * 3600, open: 1, high: 1, low: 1, close: 1, volume: 1 }],
+            }),
+        });
+        const res = await refreshCuratedOhlcv(deps, { interval: '15m', days: 1, delayMs: 0, priorityCount: 2, maxMints: 1, concurrency: 1 });
+        expect(res.selection).toBe('rotating');
+        expect(res.laggingPriorityMints).toBe(1);
     });
 });
 

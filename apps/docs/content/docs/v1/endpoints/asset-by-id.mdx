@@ -240,27 +240,47 @@ Return OHLCV candles for a specific mint (variant).
 
 ### Query params
 
-- `mint` (optional): defaults to primary variant mint
+- `mint` (optional): defaults to the asset's primary variant mint. Pass it explicitly when the asset groups several tokens and you want a particular one — e.g. `paxg` resolves to the `gold` asset, whose primary variant is Tether Gold, so the PAXG token itself is `/v1/assets/gold/ohlcv?mint=5GgRAEmv8ZxF2PR5hY72Qs5x1bnQ6UK2RbTPoqJ3wSwW`.
 - `interval` (default `1H`): one of `1m`, `5m`, `15m`, `1H`, `4H`, `1D`, `1W`
-- `from` / `to` (unix seconds): default to last 7 days
+- `from` / `to` (unix **seconds**): default to the last 7 days. There are no named ranges — **always pass `from` for anything other than a week**.
+
+### Limits and history
+
+- At most **10,000 candles per request** (`from`, `to`, `interval` together). One year fits at `4H`, `1D` or `1W`; `1H` over a year (≈8,760) also fits, but `15m` does not — use a wider interval or page by `from`/`to`.
+- Candle time is the bucket start, in seconds. Illiquid mints have **no candle for buckets with no trades**, so gaps are normal; do not treat a missing bucket as a zero.
+- Stored history per interval (per mint, when the mint has traded that long):
+
+| Interval | History kept | Refresh cadence |
+|---|---|---|
+| `15m` | 1 day | every 15 min, stalest curated mints first |
+| `1H` | 90 days | every 30 min |
+| `4H` | 365 days | every 6 h |
+| `1D` | 365 days | every 6 h |
+| `1W` | 365 days | daily |
+
+- **One-year chart**: `interval=1D&from=<now - 365*86400>&to=<now>` returns up to 365 daily candles (fewer for tokens younger than a year).
 
 ### Notes
 
-- When stale/missing, the server may trigger cache warming.
+- When stale/missing, the server may trigger cache warming after responding; retry a few minutes later for a mint you have never requested.
 - Candles are served from Convex/cache only. When `source="clickhouse_trades"` exists on cached candles internally, the candle was materialized from successful direct USD-stable Solana trades.
 - Cached ClickHouse-derived candles can also carry a per-candle `tradeCount` internally. The public OHLCV response remains backward compatible with the existing OHLCV fields.
 
 ## Price chart (canonical): `GET /v1/assets/:assetId/price-chart`
 
-Return canonical price candles.
+Return canonical price candles for the asset as a whole (not one mint).
 
 - **Auth**: `x-api-key`
 - **Scope**: `assets:read`
 
+### Query params
+
+Same as `/ohlcv`: `interval` (default `1H`), `from` / `to` (unix seconds, default last 7 days), optional `mint` for the on-chain fallback. The 10,000-candle cap applies.
+
 ### Behavior
 
-- If the asset has an external listing ID, this endpoint serves **external provider candles** (and may warm cache).
-- For mapped public equities, this endpoint serves canonical ClickHouse stock candles first.
+- If the asset has an external listing ID, this endpoint serves **external provider candles** (and may warm cache). Daily history goes back a year for established assets.
+- For mapped public equities and commodities, this endpoint serves canonical stock-market candles first (e.g. `spacex` → SPCX, `gold` → the GLD ETF benchmark, so it is a share price, not a per-ounce token price — use `/ohlcv?mint=` for a specific gold token).
 - Otherwise it falls back to mint-based OHLCV using the primary variant (or `mint` query param).
 
 ## Profile: `GET /v1/assets/:assetId/profile`

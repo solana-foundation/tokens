@@ -455,6 +455,10 @@ function emptyCronDeps(): CronDeps {
             async pruneApiRequestEventsForProject() {
                 return 0;
             },
+            async listStaleOhlcvMints() {
+                return [];
+            },
+            async touchOhlcvRefreshState() {},
             async getOhlcvBounds() {
                 return { minTime: null, maxTime: null };
             },
