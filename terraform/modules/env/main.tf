@@ -592,12 +592,13 @@ module "scheduler_jobs" {
       })
       attempt_deadline = "540s"
     },
+    # refresh-curated-ohlcv-15m: every curated mint, not just the top 50. 250
+    # rotating + 50 priority per run covers ~700 mints in 3 runs, so a 15m candle
+    # is never more than ~45 min behind. Was maxMints=1 every 30 min (13-day
+    # rotation), which left less-traded mints' 1D charts hours to days stale
+    # (customer report 2026-10-07).
     {
       name      = "refresh-curated-ohlcv-15m"
-      # Every curated mint, not just the top 50: 250 rotating + 50 priority per
-      # run covers ~700 mints in 3 runs, so a 15m candle is never more than
-      # ~45 min behind. Was maxMints=1 every 30 min (13-day rotation), which left
-      # less-traded mints' 1D charts hours to days stale (customer report 2026-10-07).
       schedule  = "*/15 * * * *"
       http_path = "/jobs/refresh-curated-ohlcv-15m"
       body_json = jsonencode({
