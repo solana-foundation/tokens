@@ -1935,7 +1935,9 @@ export async function refreshCuratedOhlcv(deps: CronDeps, rawArgs: unknown): Pro
             }
         }
         rotating ??= pickDeterministicBatch(allMints, maxMints, selectionWindowMs, start);
-        mints = uniqueStrings([...priorityMints, ...rotating]).slice(0, 600);
+        // Priority mints are always included on top of the `maxMints` stale /
+        // rotating picks, so the run size is bounded by their sum.
+        mints = uniqueStrings([...priorityMints, ...rotating]).slice(0, priorityMints.length + maxMints);
     }
 
     let refreshed = 0;
