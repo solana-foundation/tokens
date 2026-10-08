@@ -1049,19 +1049,43 @@ describe('refreshCuratedOhlcv', () => {
         await expect(refreshCuratedOhlcv(deps, { interval: '1H', selection: 'random' })).rejects.toThrow(/selection/);
     });
 
-    it('defaults to the rotating window and reports lagging priority mints', async () => {
+    it('does not flag a priority mint whose refresh succeeded, even if it has no recent candles', async () => {
         const fixedNow = 1_780_000_000_000;
         const nowSec = Math.floor(fixedNow / 1000);
         const { deps } = makeDeps({
-            curatedMints: ['fresh', 'lagging'],
+            curatedMints: ['fresh', 'illiquid', 'dead'],
             now: () => fixedNow,
             birdeyeOhlcv: makeBirdeyeOhlcv({
                 fresh: [{ time: nowSec - 900, open: 1, high: 1, low: 1, close: 1, volume: 1 }],
-                lagging: [{ time: nowSec - 4 * 3600, open: 1, high: 1, low: 1, close: 1, volume: 1 }],
+                // Traded 4h ago and not since: the provider has nothing newer, so this is current.
+                illiquid: [{ time: nowSec - 4 * 3600, open: 1, high: 1, low: 1, close: 1, volume: 1 }],
+                dead: [],
             }),
         });
-        const res = await refreshCuratedOhlcv(deps, { interval: '15m', days: 1, delayMs: 0, priorityCount: 2, maxMints: 1, concurrency: 1 });
+        const res = await refreshCuratedOhlcv(deps, { interval: '15m', days: 1, delayMs: 0, priorityCount: 3, maxMints: 1, concurrency: 1 });
         expect(res.selection).toBe('rotating');
+        expect(res.refreshed).toBe(3);
+        expect(res.laggingPriorityMints).toBeUndefined();
+    });
+
+    it('flags a priority mint whose refresh failed while its stored candles are more than two intervals old', async () => {
+        const fixedNow = 1_780_000_000_000;
+        const nowSec = Math.floor(fixedNow / 1000);
+        const { deps } = makeDeps({
+            curatedMints: ['stuck', 'recent', 'other'],
+            now: () => fixedNow,
+            birdeyeOhlcv: makeFailingBirdeyeOhlcv(),
+            state: {
+                ohlcvBoundsByKey: {
+                    'stuck\n15m': { minTime: nowSec - 86_400, maxTime: nowSec - 3 * 900 },
+                    // Fetches (gap > 1 interval) and fails too, but its stored candles are still within two intervals.
+                    'recent\n15m': { minTime: nowSec - 86_400, maxTime: nowSec - 1_200 },
+                },
+            },
+        });
+        const res = await refreshCuratedOhlcv(deps, { interval: '15m', days: 1, delayMs: 0, priorityCount: 2, maxMints: 3, concurrency: 1 });
+        expect(res.failed).toBe(3);
+        // `stuck` lags; `recent` is within threshold; `other` is not a priority mint.
         expect(res.laggingPriorityMints).toBe(1);
     });
 });
