@@ -337,12 +337,10 @@ function makeHarness(fx: Fixture = {}): Harness {
         async listLatest() {
             return [...latest.values()];
         },
-        async upsertLatest(rows) {
+        async writeObservations(rows, events) {
             rec.upserts.push([...rows]);
             for (const row of rows) latest.set(row.address, row);
-        },
-        async insertTierEvents(rows) {
-            rec.tierEvents.push([...rows]);
+            if (events.length > 0) rec.tierEvents.push([...events]);
         },
         async listCurrencyVariants(mints) {
             rec.variantCalls.push([...mints]);
@@ -1602,7 +1600,7 @@ describe('refresh-peg-guard bounded run (stage deadline, failure log, stall watc
 
     test('a stage that outlives the budget fails the run with its stage and no summary', async () => {
         const h = makeHarness();
-        h.deps.pegGuard!.repo = { ...h.deps.pegGuard!.repo, upsertLatest: () => never<void>() };
+        h.deps.pegGuard!.repo = { ...h.deps.pegGuard!.repo, writeObservations: () => never<void>() };
         const result = await run(h, { trigger: 'sweep', budgetMs: 20 });
         expect(result.ok).toBe(false);
         expect(result.partial).toBe(true);
@@ -1669,7 +1667,7 @@ describe('refresh-peg-guard bounded run (stage deadline, failure log, stall watc
         const repo = h.deps.pegGuard!.repo;
         h.deps.pegGuard!.repo = {
             ...repo,
-            upsertLatest: rows => after(15, undefined).then(() => repo.upsertLatest(rows)),
+            writeObservations: (rows, evs) => after(15, undefined).then(() => repo.writeObservations(rows, evs)),
         };
         const result = await run(h, { trigger: 'sweep', budgetMs: 0 });
         expect(result.ok).toBe(true);
@@ -1686,7 +1684,7 @@ describe('refresh-peg-guard bounded run (stage deadline, failure log, stall watc
         h.deps.pegGuard!.stallLogFallbackMs = 5;
         h.deps.pegGuard!.repo = {
             ...repo,
-            upsertLatest: rows => after(40, undefined).then(() => repo.upsertLatest(rows)),
+            writeObservations: (rows, evs) => after(40, undefined).then(() => repo.writeObservations(rows, evs)),
         };
         const result = await run(h, { trigger: 'sweep', budgetMs: 0 });
         expect(result.ok).toBe(true);

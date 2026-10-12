@@ -799,8 +799,9 @@ export function createApp(deps: ServerDeps) {
         },
     ];
 
-    /** Start times of in-flight runs per job name (this process only). */
-    const inFlightJobs = new Map<string, number[]>();
+    /** In-flight runs per job name (this process only), each with a unique id. */
+    const inFlightJobs = new Map<string, Array<{ id: number; startedAt: number }>>();
+    let jobRunSeq = 0;
 
     app.post('/jobs/:name', async (c: Context) => {
         if (serviceRole === 'api') return c.json({ error: 'not_found' }, 404);
@@ -833,16 +834,17 @@ export function createApp(deps: ServerDeps) {
             // logged, never enforced: Cloud Run owns concurrency, and a stalled
             // run must keep going so a late finish is recorded too.
             const startedAt = Date.now();
+            const runId = ++jobRunSeq;
             const running = inFlightJobs.get(name) ?? [];
             if (running.length > 0) {
                 logJson('warn', {
                     event: 'cloudrun_assets_job_overlap',
                     job: name,
                     in_flight: running.length,
-                    previous_elapsed_ms: startedAt - Math.min(...running),
+                    previous_elapsed_ms: startedAt - Math.min(...running.map(run => run.startedAt)),
                 });
             }
-            running.push(startedAt);
+            running.push({ id: runId, startedAt });
             inFlightJobs.set(name, running);
             const declaredBudgetMs = readJobBudgetMs(args);
             const budgetMs = declaredBudgetMs ?? JOB_STALL_DEFAULT_MS;
@@ -875,7 +877,7 @@ export function createApp(deps: ServerDeps) {
                 return jobErrorResponse(c, name, err, startedAt);
             } finally {
                 clearTimeout(stallTimer);
-                const stillRunning = (inFlightJobs.get(name) ?? []).filter(at => at !== startedAt);
+                const stillRunning = (inFlightJobs.get(name) ?? []).filter(run => run.id !== runId);
                 if (stillRunning.length > 0) inFlightJobs.set(name, stillRunning);
                 else inFlightJobs.delete(name);
             }

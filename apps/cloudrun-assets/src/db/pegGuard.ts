@@ -101,8 +101,14 @@ export interface PegGuardMarketFallback {
 
 export interface PegGuardRepo {
     listLatest(chain: string): Promise<PegGuardLatestRow[]>;
-    upsertLatest(rows: readonly PegGuardLatestRow[]): Promise<void>;
-    insertTierEvents(rows: readonly PegGuardTierEventRow[]): Promise<void>;
+    /**
+     * One transaction: the `peg_guard_latest` upserts and the tier events
+     * they produced. A run that abandons the write on its stage deadline
+     * (crons.pegGuard.ts) must not leave new tiers saved without their
+     * events, or the next run would see them as unchanged and the
+     * transitions would never be recorded.
+     */
+    writeObservations(rows: readonly PegGuardLatestRow[], events: readonly PegGuardTierEventRow[]): Promise<void>;
     /** Canonical Solana variant per mint (lowest id), with the token's symbol. */
     listCurrencyVariants(mints: readonly string[]): Promise<Map<string, PegGuardCurrencyVariant>>;
     /** Last price the markets refresh stored per mint; a fallback only. */
@@ -224,65 +230,65 @@ export function makePostgresPegGuardRepo(sql: Sql): PegGuardRepo {
             return rows.map(mapLatest);
         },
 
-        async upsertLatest(rows) {
-            for (const row of rows) {
-                await sql`
-                    INSERT INTO peg_guard_latest (
-                        id, chain, address, symbol, peg_currency, peg_usd, price_usd, liquidity_usd, deviation_pct,
-                        tier, prev_tier, tier_since_at, bad_since_at, observations, ok, error_message,
-                        price_source, price_updated_at, reference_kind, reference_usd, reference_updated_at,
-                        last_fetched_at, last_ok_at
-                    )
-                    VALUES (
-                        ${randomId('pgl')}, ${row.chain}, ${row.address}, ${row.symbol}, ${row.pegCurrency},
-                        ${row.pegUsd}, ${row.priceUsd}, ${row.liquidityUsd}, ${row.deviationPct},
-                        ${row.tier}, ${row.prevTier}, ${row.tierSinceAt}, ${row.badSinceAt}, ${row.observations},
-                        ${row.ok}, ${row.errorMessage}, ${row.priceSource}, ${row.priceUpdatedAt},
-                        ${row.referenceKind}, ${row.referenceUsd}, ${row.referenceUpdatedAt},
-                        ${row.lastFetchedAt}, ${row.lastOkAt}
-                    )
-                    ON CONFLICT (chain, address) DO UPDATE SET
-                        symbol = EXCLUDED.symbol,
-                        peg_currency = EXCLUDED.peg_currency,
-                        peg_usd = EXCLUDED.peg_usd,
-                        price_usd = EXCLUDED.price_usd,
-                        liquidity_usd = EXCLUDED.liquidity_usd,
-                        deviation_pct = EXCLUDED.deviation_pct,
-                        tier = EXCLUDED.tier,
-                        prev_tier = EXCLUDED.prev_tier,
-                        tier_since_at = EXCLUDED.tier_since_at,
-                        bad_since_at = EXCLUDED.bad_since_at,
-                        observations = EXCLUDED.observations,
-                        ok = EXCLUDED.ok,
-                        error_message = EXCLUDED.error_message,
-                        price_source = EXCLUDED.price_source,
-                        price_updated_at = EXCLUDED.price_updated_at,
-                        -- A run that could not resolve the reference (NULL) must not drop the
-                        -- high-water mark or forget what kind of reference the mint uses.
-                        reference_kind = COALESCE(EXCLUDED.reference_kind, peg_guard_latest.reference_kind),
-                        reference_usd = COALESCE(EXCLUDED.reference_usd, peg_guard_latest.reference_usd),
-                        reference_updated_at = COALESCE(EXCLUDED.reference_updated_at, peg_guard_latest.reference_updated_at),
-                        last_fetched_at = EXCLUDED.last_fetched_at,
-                        -- A failed evaluation (NULL last_ok_at) must not erase the last success.
-                        last_ok_at = COALESCE(EXCLUDED.last_ok_at, peg_guard_latest.last_ok_at)
-                `;
-            }
-        },
-
-        async insertTierEvents(rows) {
-            for (const row of rows) {
-                await sql`
-                    INSERT INTO peg_guard_tier_events (
-                        id, chain, address, old_tier, new_tier, deviation_pct, price_usd, peg_usd, liquidity_usd,
-                        reference_kind, source, observed_at
-                    )
-                    VALUES (
-                        ${randomId('pgte')}, ${row.chain}, ${row.address}, ${row.oldTier}, ${row.newTier},
-                        ${row.deviationPct}, ${row.priceUsd}, ${row.pegUsd}, ${row.liquidityUsd},
-                        ${row.referenceKind}, ${row.source}, ${row.observedAt}
-                    )
-                `;
-            }
+        async writeObservations(rows, events) {
+            if (rows.length === 0 && events.length === 0) return;
+            await sql.begin(async tx => {
+                for (const row of rows) {
+                    await tx`
+                        INSERT INTO peg_guard_latest (
+                            id, chain, address, symbol, peg_currency, peg_usd, price_usd, liquidity_usd, deviation_pct,
+                            tier, prev_tier, tier_since_at, bad_since_at, observations, ok, error_message,
+                            price_source, price_updated_at, reference_kind, reference_usd, reference_updated_at,
+                            last_fetched_at, last_ok_at
+                        )
+                        VALUES (
+                            ${randomId('pgl')}, ${row.chain}, ${row.address}, ${row.symbol}, ${row.pegCurrency},
+                            ${row.pegUsd}, ${row.priceUsd}, ${row.liquidityUsd}, ${row.deviationPct},
+                            ${row.tier}, ${row.prevTier}, ${row.tierSinceAt}, ${row.badSinceAt}, ${row.observations},
+                            ${row.ok}, ${row.errorMessage}, ${row.priceSource}, ${row.priceUpdatedAt},
+                            ${row.referenceKind}, ${row.referenceUsd}, ${row.referenceUpdatedAt},
+                            ${row.lastFetchedAt}, ${row.lastOkAt}
+                        )
+                        ON CONFLICT (chain, address) DO UPDATE SET
+                            symbol = EXCLUDED.symbol,
+                            peg_currency = EXCLUDED.peg_currency,
+                            peg_usd = EXCLUDED.peg_usd,
+                            price_usd = EXCLUDED.price_usd,
+                            liquidity_usd = EXCLUDED.liquidity_usd,
+                            deviation_pct = EXCLUDED.deviation_pct,
+                            tier = EXCLUDED.tier,
+                            prev_tier = EXCLUDED.prev_tier,
+                            tier_since_at = EXCLUDED.tier_since_at,
+                            bad_since_at = EXCLUDED.bad_since_at,
+                            observations = EXCLUDED.observations,
+                            ok = EXCLUDED.ok,
+                            error_message = EXCLUDED.error_message,
+                            price_source = EXCLUDED.price_source,
+                            price_updated_at = EXCLUDED.price_updated_at,
+                            -- A run that could not resolve the reference (NULL) must not drop the
+                            -- high-water mark or forget what kind of reference the mint uses.
+                            reference_kind = COALESCE(EXCLUDED.reference_kind, peg_guard_latest.reference_kind),
+                            reference_usd = COALESCE(EXCLUDED.reference_usd, peg_guard_latest.reference_usd),
+                            reference_updated_at = COALESCE(EXCLUDED.reference_updated_at, peg_guard_latest.reference_updated_at),
+                            last_fetched_at = EXCLUDED.last_fetched_at,
+                            -- A failed evaluation (NULL last_ok_at) must not erase the last success.
+                            last_ok_at = COALESCE(EXCLUDED.last_ok_at, peg_guard_latest.last_ok_at)
+                    `;
+                }
+                for (const row of events) {
+                    await tx`
+                        INSERT INTO peg_guard_tier_events (
+                            id, chain, address, old_tier, new_tier, deviation_pct, price_usd, peg_usd, liquidity_usd,
+                            reference_kind, source, observed_at
+                        )
+                        VALUES (
+                            ${randomId('pgte')}, ${row.chain}, ${row.address}, ${row.oldTier}, ${row.newTier},
+                            ${row.deviationPct}, ${row.priceUsd}, ${row.pegUsd}, ${row.liquidityUsd},
+                            ${row.referenceKind}, ${row.source}, ${row.observedAt}
+                        )
+                    `;
+                }
+            });
         },
 
         async listCurrencyVariants(mints) {

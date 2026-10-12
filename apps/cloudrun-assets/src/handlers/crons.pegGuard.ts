@@ -24,7 +24,7 @@
  * bounds every awaited stage, not only the advisory-action loop. The run
  * tracks a `stage` (load_targets → load_state → fetch_prices / fx_upsert /
  * fx_list → load_fallback → evaluate → write_observations →
- * write_tier_events → load_reconcile_state → apply_actions → summary); a
+ * load_reconcile_state → apply_actions → summary); a
  * stage that outlives the remaining budget fails the run with
  * `peg_guard_run_failed{stage, reason: 'stage_deadline'}` and `ok: false`
  * (HTTP 500 to Cloud Scheduler) instead of hanging past the deadline with no
@@ -100,7 +100,7 @@ export type PegGuardCircuit = 'mass_tier_flip' | 'price_fetch_failed' | 'mass_ac
  *   the stage returns to fetch_prices once fx is done and only Birdeye is pending
  * - load_fallback: variant_markets_latest read
  * - evaluate: pure computation
- * - write_observations / write_tier_events: peg_guard_latest / peg_guard_tier_events writes
+ * - write_observations: peg_guard_latest upserts + peg_guard_tier_events inserts, one transaction
  * - load_reconcile_state: webacy_depeg_latest + asset_variant_advisories(+events) reads
  * - apply_actions: advisory writes (dry run: log only)
  * - summary: the final log line
@@ -114,7 +114,6 @@ export type PegGuardStage =
     | 'load_fallback'
     | 'evaluate'
     | 'write_observations'
-    | 'write_tier_events'
     | 'load_reconcile_state'
     | 'apply_actions'
     | 'summary';
@@ -788,8 +787,12 @@ export async function refreshPegGuard(deps: DepegCronDeps, rawArgs: unknown): Pr
             }
         }
 
-        if (nextRows.length > 0) await bounded('write_observations', () => pegGuard.repo.upsertLatest(nextRows));
-        if (events.length > 0) await bounded('write_tier_events', () => pegGuard.repo.insertTierEvents(events));
+        // One transaction for rows + events: if the stage deadline abandons
+        // this write and it later commits, the tiers never land without
+        // their transitions (only the depeg_tier_changed log lines are lost).
+        if (nextRows.length > 0) {
+            await bounded('write_observations', () => pegGuard.repo.writeObservations(nextRows, events));
+        }
         for (const event of events) {
             const row = nextRows.find(r => r.address === event.address);
             log({
