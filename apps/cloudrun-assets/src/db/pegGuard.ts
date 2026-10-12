@@ -216,6 +216,10 @@ function mapFxRate(row: PgFxRateRow): FxRateRow | null {
     };
 }
 
+function compareByChainAddress(a: { chain: string; address: string }, b: { chain: string; address: string }): number {
+    return a.chain < b.chain ? -1 : a.chain > b.chain ? 1 : a.address < b.address ? -1 : a.address > b.address ? 1 : 0;
+}
+
 export function makePostgresPegGuardRepo(sql: Sql): PegGuardRepo {
     return {
         async listLatest(chain) {
@@ -232,8 +236,13 @@ export function makePostgresPegGuardRepo(sql: Sql): PegGuardRepo {
 
         async writeObservations(rows, events) {
             if (rows.length === 0 && events.length === 0) return;
+            // Stable lock order: a manual run and a sweep can overlap with the
+            // same mints in different orders; writing both in (chain, address)
+            // order means they wait on each other instead of deadlocking.
+            const orderedRows = [...rows].sort(compareByChainAddress);
+            const orderedEvents = [...events].sort(compareByChainAddress);
             await sql.begin(async tx => {
-                for (const row of rows) {
+                for (const row of orderedRows) {
                     await tx`
                         INSERT INTO peg_guard_latest (
                             id, chain, address, symbol, peg_currency, peg_usd, price_usd, liquidity_usd, deviation_pct,
@@ -275,7 +284,7 @@ export function makePostgresPegGuardRepo(sql: Sql): PegGuardRepo {
                             last_ok_at = COALESCE(EXCLUDED.last_ok_at, peg_guard_latest.last_ok_at)
                     `;
                 }
-                for (const row of events) {
+                for (const row of orderedEvents) {
                     await tx`
                         INSERT INTO peg_guard_tier_events (
                             id, chain, address, old_tier, new_tier, deviation_pct, price_usd, peg_usd, liquidity_usd,

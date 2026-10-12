@@ -189,6 +189,32 @@ describe('makePostgresPegGuardRepo', () => {
         expect(queries[1]!.text).toContain('INSERT INTO peg_guard_tier_events');
     });
 
+    it('writeObservations locks rows in (chain, address) order regardless of caller order', async () => {
+        const { sql, queries } = makeFakeSql();
+        const repo = makePostgresPegGuardRepo(sql);
+        const event = (address: string): PegGuardTierEventRow => ({
+            chain: 'solana',
+            address,
+            oldTier: 'ok',
+            newTier: 'warning',
+            deviationPct: -1.5,
+            priceUsd: 0.985,
+            pegUsd: 1,
+            liquidityUsd: 2_000_000,
+            referenceKind: 'fixed',
+            source: 'manual',
+            observedAt: NOW,
+        });
+        await repo.writeObservations(
+            [latestRow({ address: 'Zmint' }), latestRow({ address: 'Amint' }), latestRow({ address: 'Mmint' })],
+            [event('Zmint'), event('Amint')],
+        );
+        expect(queries).toHaveLength(5);
+        // address is the third value of the latest upsert and the third of the event insert (after id, chain).
+        expect(queries.slice(0, 3).map(q => q.params[2])).toEqual(['Amint', 'Mmint', 'Zmint']);
+        expect(queries.slice(3).map(q => q.params[2])).toEqual(['Amint', 'Zmint']);
+    });
+
     it('writeObservations ids tier event rows pgte_* and stores liquidity and the trigger source', async () => {
         const { sql, queries } = makeFakeSql();
         const repo = makePostgresPegGuardRepo(sql);
