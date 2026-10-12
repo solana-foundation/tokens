@@ -19,6 +19,21 @@
  * Every log line is single-line JSON with `event`, `job`, `trigger`,
  * `dry_run`, `observer: 'peg_guard'`; alert-rules/stablecoin-peg-guard-*.json
  * key off `event`.
+ *
+ * Bounded run: `budgetMs` (60s from the scheduler, 90s attempt deadline)
+ * bounds every awaited stage, not only the advisory-action loop. The run
+ * tracks a `stage` (load_targets → load_state → fetch_prices / fx_upsert /
+ * fx_list → load_fallback → evaluate → write_observations →
+ * write_tier_events → load_reconcile_state → apply_actions → summary); a
+ * stage that outlives the remaining budget fails the run with
+ * `peg_guard_run_failed{stage, reason: 'stage_deadline'}` and `ok: false`
+ * (HTTP 500 to Cloud Scheduler) instead of hanging past the deadline with no
+ * log line. Any other exception logs the same event with
+ * `reason: 'exception'` before propagating. A watchdog logs
+ * `peg_guard_run_stalled{stage}` once if the run is still going past the
+ * budget (plus grace), which only happens when the deadline is off
+ * (`budgetMs: 0`) or the event loop itself is wedged. Incident 2026-10-12:
+ * runs went silent after the price fetch with no error for 50 minutes.
  */
 
 import { Effect } from 'effect';
@@ -75,6 +90,81 @@ const REFERENCE_MAX_DAILY_RISE_PCT_CAP = 5;
 
 export type PegGuardCircuit = 'mass_tier_flip' | 'price_fetch_failed' | 'mass_action';
 
+/**
+ * Where a run is. Logged on `peg_guard_run_failed` / `peg_guard_run_stalled`
+ * so a silent stall names the table or provider it is waiting on:
+ * - load_targets: curated membership snapshot (asset_collection_members)
+ * - load_state: asset_variants/assets/tokens + peg_guard_latest reads
+ * - fetch_prices: Birdeye multi_price (and CoinGecko fx until it marks a sub-stage)
+ * - fx_upsert / fx_list: peg_fx_rates_latest write / read inside the fx branch;
+ *   the stage returns to fetch_prices once fx is done and only Birdeye is pending
+ * - load_fallback: variant_markets_latest read
+ * - evaluate: pure computation
+ * - write_observations / write_tier_events: peg_guard_latest / peg_guard_tier_events writes
+ * - load_reconcile_state: webacy_depeg_latest + asset_variant_advisories(+events) reads
+ * - apply_actions: advisory writes (dry run: log only)
+ * - summary: the final log line
+ */
+export type PegGuardStage =
+    | 'load_targets'
+    | 'load_state'
+    | 'fetch_prices'
+    | 'fx_upsert'
+    | 'fx_list'
+    | 'load_fallback'
+    | 'evaluate'
+    | 'write_observations'
+    | 'write_tier_events'
+    | 'load_reconcile_state'
+    | 'apply_actions'
+    | 'summary';
+
+/** Watchdog delay when `budgetMs` is 0 (no stage deadline). */
+const STALL_LOG_FALLBACK_MS = 60_000;
+/** Watchdog grace past the budget; with the deadline active it should never fire. */
+const STALL_LOG_GRACE_MS = 5_000;
+
+class PegGuardStageDeadlineError extends Error {
+    readonly _tag = 'PegGuardStageDeadlineError';
+    constructor(
+        readonly stage: PegGuardStage,
+        readonly remainingMs: number,
+    ) {
+        super(`peg guard stage ${stage} exceeded the remaining budget (${remainingMs}ms)`);
+        this.name = 'PegGuardStageDeadlineError';
+    }
+}
+
+/**
+ * Rejects when `promise` has not settled within `remainingMs`. `null` means
+ * no deadline (pass-through). The abandoned promise keeps its rejection
+ * handler through the `.then` below, so a late failure of the underlying
+ * query cannot surface as an unhandled rejection.
+ */
+export function withStageDeadline<T>(
+    promise: Promise<T>,
+    stage: PegGuardStage,
+    remainingMs: number | null,
+): Promise<T> {
+    if (remainingMs === null) return promise;
+    return new Promise<T>((resolve, reject) => {
+        const timer = setTimeout(
+            () => reject(new PegGuardStageDeadlineError(stage, remainingMs)),
+            Math.max(0, remainingMs),
+        );
+        promise.then(
+            value => {
+                clearTimeout(timer);
+                resolve(value);
+            },
+            error => {
+                clearTimeout(timer);
+                reject(error);
+            },
+        );
+    });
+}
+
 export interface PegGuardFxRatesSummary {
     /** CoinGecko answered this run (stored rates were refreshed). */
     fetched: boolean;
@@ -88,7 +178,10 @@ export interface PegGuardRefreshResult extends CronResult, AdvisoryActionCounter
     dryRun: boolean;
     trigger: PegGuardTrigger;
     disabled?: boolean;
+    /** `peg_guard_not_configured` / `peg_guard_disabled` when disabled; `stage_deadline` when a stage outlived the budget. */
     reason?: string;
+    /** Stage the run was in when it failed on a deadline. */
+    stage?: PegGuardStage;
     /** Curated currencies mints (or explicit targets) evaluated this run. */
     tracked: number;
     /** Mints priced by Birdeye. */
@@ -368,6 +461,8 @@ async function loadFxRates(
     now: number,
     base: Record<string, unknown>,
     log: (line: Record<string, unknown>) => void,
+    /** Stage marker: the fx branch runs in parallel with Birdeye, so it names its own DB steps. */
+    mark: (stage: PegGuardStage) => void,
 ): Promise<FxRateState> {
     let fetched = false;
     const fresh = new Map<string, FxRate>();
@@ -382,7 +477,10 @@ async function loadFxRates(
                 lastFetchedAt: now,
                 lastOkAt: now,
             }));
-            if (rows.length > 0) await pegGuard.repo.upsertFxRates(rows);
+            if (rows.length > 0) {
+                mark('fx_upsert');
+                await pegGuard.repo.upsertFxRates(rows);
+            }
             for (const row of rows) fresh.set(row.currency, { usdPerUnit: row.usdPerUnit, lastOkAt: now });
             fetched = true;
             log({
@@ -402,6 +500,7 @@ async function loadFxRates(
         }
     }
     const rates = new Map<string, FxRate>();
+    mark('fx_list');
     for (const row of await pegGuard.repo.listFxRates()) {
         // A row that never succeeded reads as infinitely stale rather than absent.
         rates.set(row.currency, { usdPerUnit: row.usdPerUnit, lastOkAt: row.lastOkAt ?? 0 });
@@ -457,336 +556,399 @@ export async function refreshPegGuard(deps: DepegCronDeps, rawArgs: unknown): Pr
         return { ...finish(), disabled: true, reason: 'peg_guard_disabled' };
     }
 
-    const snapshot = await deps.curated.getSnapshot();
-    const targets = args.mints ? unique(args.mints) : unique(snapshot.mintsByList[CURRENCIES_SLUG] ?? []);
-    result.tracked = targets.length;
-
-    const [variants, prevRows] = await Promise.all([
-        pegGuard.repo.listCurrencyVariants(targets),
-        pegGuard.repo.listLatest(DEPEG_CHAIN),
-    ]);
-    const prevByAddress = new Map(prevRows.map(row => [row.address, row] as const));
-    const pegByMint = new Map<string, PegReference | null>();
-    for (const mint of targets) {
-        const variant = variants.get(mint);
-        pegByMint.set(mint, variant ? pegForStablecoinVariant(variant) : null);
-    }
-    const needsFxRates = [...pegByMint.values()].some(peg => peg?.reference === 'fx');
-
-    // One Birdeye call for every target; mints it omits (and every mint when
-    // the call fails) fall back to the last price the markets refresh stored.
-    // Fiat rates are fetched alongside, once, only when an fx-pegged mint is
-    // in the run (a targeted USD-only run never touches CoinGecko).
-    const [multi, fx] = await Promise.all([
-        targets.length > 0 ? pegGuard.birdeye.fetchMultiPrice(targets) : Promise.resolve(null),
-        needsFxRates
-            ? loadFxRates(pegGuard, deps.now(), base, log)
-            : Promise.resolve<FxRateState>({ fetched: false, rates: new Map() }),
-    ]);
-    const birdeyeFailed = multi !== null && !multi.ok;
-    if (multi && !multi.ok) {
-        log({ ...base, event: 'peg_guard_price_fetch_failed', status: multi.status, message: multi.message });
-    }
-    const needsFallback = targets.filter(mint => !(multi && multi.ok && multi.byMint.has(mint)));
-    const fallback = await pegGuard.repo.listVariantMarketFallback(needsFallback);
-
-    const now = deps.now();
-    result.fxRates.fetched = fx.fetched;
-    // A stored row that never succeeded (`lastOkAt` 0) is not a usable rate, so
-    // it is neither a currency we have nor a stale one.
-    for (const rate of fx.rates.values()) {
-        if (rate.lastOkAt <= 0) continue;
-        result.fxRates.currencies += 1;
-        if (now - rate.lastOkAt > args.fxStaleMs) result.fxRates.stale += 1;
-    }
-
-    const nextRows: PegGuardLatestRow[] = [];
-    const events: PegGuardTierEventRow[] = [];
-    // Mints the reconciler may act on: those whose reference resolved this run,
-    // plus those with a previous successful evaluation, so a mint whose fx rate
-    // is momentarily unavailable is still cleared or kept rather than dropped.
-    const trackedMints: string[] = [];
-    const inRegistryByMint = new Map<string, boolean>();
-    let flips = 0;
-    let previouslyTiered = 0;
-    let freshFallbackTracked = 0;
-
-    for (const mint of targets) {
-        const variant = variants.get(mint) ?? null;
-        const peg = pegByMint.get(mint) ?? null;
-        const prev = prevByAddress.get(mint) ?? null;
-        if (peg) result.referenceKinds[peg.reference] += 1;
-        inRegistryByMint.set(mint, variant?.isActive ?? false);
-
-        let price: PegPriceSample | null = null;
-        let freshFallback = false;
-        const entry = multi && multi.ok ? multi.byMint.get(mint) : undefined;
-        if (entry) {
-            price = birdeyeSample(entry);
-            result.priced += 1;
-        } else {
-            const row = fallback.get(mint);
-            if (row && row.price !== null) {
-                price = {
-                    priceUsd: row.price,
-                    updatedAt: row.lastFetchedAt,
-                    liquidityUsd: row.liquidity,
-                    source: 'variant_markets_latest',
-                };
-                result.fallbackPriced += 1;
-                freshFallback = now - row.lastFetchedAt <= args.priceStaleMs;
-            }
-        }
-
-        // Yield-bearing variants: advance the high-water mark before resolving
-        // so the seeding observation is judged against it straight away. Only
-        // a liquid observation counts as evidence the mark should move.
-        const liquidityOk =
-            price?.liquidityUsd !== null &&
-            price?.liquidityUsd !== undefined &&
-            Number.isFinite(price.liquidityUsd) &&
-            price.liquidityUsd >= args.minLiquidityUsd;
-        const reference =
-            peg?.reference === 'high_water'
-                ? advanceHighWaterReference({
-                      prev:
-                          prev?.referenceUsd !== null && prev?.referenceUsd !== undefined
-                              ? {
-                                    referenceUsd: prev.referenceUsd,
-                                    referenceUpdatedAt: prev.referenceUpdatedAt ?? prev.lastFetchedAt,
-                                }
-                              : null,
-                      priceUsd: price?.priceUsd ?? null,
-                      liquidityOk,
-                      now,
-                      maxDailyRisePct: referenceMaxDailyRisePct,
-                  })
-                : null;
-        const resolvedPeg = resolvePegUsd({ peg, fxRates: fx.rates, reference, now, fxStaleMs: args.fxStaleMs });
-        const pegUsd = 'pegUsd' in resolvedPeg ? resolvedPeg.pegUsd : null;
-        // `resolvePegUsd` only yields a value when `peg` is set; the fallback kind is unreachable.
-        const resolved: EvaluatePegObservationInput['resolved'] =
-            'issue' in resolvedPeg ? resolvedPeg : { pegUsd: resolvedPeg.pegUsd, reference: peg?.reference ?? 'fixed' };
-
-        const evaluation = evaluatePegObservation({
-            resolved,
-            priceUsd: price?.priceUsd ?? null,
-            priceUpdatedAt: price?.updatedAt ?? null,
-            liquidityUsd: price?.liquidityUsd ?? null,
-            now,
-            priceStaleMs: args.priceStaleMs,
-            minLiquidityUsd: args.minLiquidityUsd,
-        });
-        if (!evaluation.ok) {
-            result.issues[evaluation.issue] += 1;
-            if (evaluation.issue === 'unsupported_peg') result.unsupported += 1;
-        }
-        if (pegUsd !== null || prev?.ok === true) {
-            trackedMints.push(mint);
-            if (freshFallback) freshFallbackTracked += 1;
-        }
-
-        if (prev && prev.tier !== null) previouslyTiered += 1;
-        const { row, event } = buildPegGuardRow({
-            prev,
-            address: mint,
-            symbol: variant?.symbol ?? snapshot.entriesByMint[mint]?.symbol ?? null,
-            peg,
-            pegUsd,
-            reference,
-            price,
-            evaluation,
-            source: trigger,
-            now,
-        });
-        nextRows.push(row);
-        result.tierCounts[row.tier ?? 'null'] += 1;
-        if (event) {
-            events.push(event);
-            if (prev && prev.tier !== null) flips += 1;
-        }
-    }
-    result.processed = nextRows.length;
-    result.tierChanges = events.length;
-    // Total failure only when Birdeye is down and nothing stored is usable either.
-    if (birdeyeFailed && result.fallbackPriced === 0) result.ok = false;
-
-    // Circuit: a large share of previously tiered mints flipping in one run is a
-    // price-feed incident (or a market-wide event). Persist, but do not act.
-    let skipReconcile = false;
-    if (previouslyTiered >= FLIP_GUARD_MIN_TRACKED) {
-        const sharePct = (flips / previouslyTiered) * 100;
-        if (sharePct > args.maxTierFlipSharePct) {
-            log({
-                ...base,
-                event: 'depeg_circuit_open',
-                reason: 'mass_tier_flip',
-                flips,
-                tracked: previouslyTiered,
-                share_pct: Math.round(sharePct * 10) / 10,
-                max_share_pct: args.maxTierFlipSharePct,
-                ignored: args.ignoreCircuitBreaker,
-            });
-            if (!args.ignoreCircuitBreaker) {
-                result.circuit = 'mass_tier_flip';
-                skipReconcile = true;
-            }
-        }
-    }
-    // Circuit: Birdeye failed and the fallback covers too few tracked mints
-    // with a fresh price to trust any tier this run produced.
-    if (birdeyeFailed && freshFallbackTracked < trackedMints.length * FALLBACK_MIN_FRESH_SHARE) {
+    // Stage tracking + deadline: every awaited step goes through `bounded`,
+    // which names the stage and races it against the remaining budget.
+    let stage: PegGuardStage = 'load_targets';
+    const mark = (next: PegGuardStage) => {
+        stage = next;
+    };
+    const remaining = (): number | null =>
+        args.budgetMs > 0 ? Math.max(0, args.budgetMs - (deps.now() - start)) : null;
+    const bounded = <T>(next: PegGuardStage, make: () => Promise<T>): Promise<T> => {
+        mark(next);
+        return withStageDeadline(make(), next, remaining());
+    };
+    let settled = false;
+    const stallAfterMs =
+        args.budgetMs > 0 ? args.budgetMs + STALL_LOG_GRACE_MS : (pegGuard.stallLogFallbackMs ?? STALL_LOG_FALLBACK_MS);
+    const stallTimer = setTimeout(() => {
+        if (settled) return;
         log({
             ...base,
-            event: 'depeg_circuit_open',
-            reason: 'price_fetch_failed',
-            // `usd_mints` predates fx and high-water references; it now counts
-            // every tracked mint and stays for alert-rule compatibility.
-            usd_mints: trackedMints.length,
-            tracked_mints: trackedMints.length,
-            fresh_fallback: freshFallbackTracked,
-            ignored: args.ignoreCircuitBreaker,
+            event: 'peg_guard_run_stalled',
+            stage,
+            elapsed_ms: deps.now() - start,
+            budget_ms: args.budgetMs,
+            tracked: result.tracked,
         });
-        if (!args.ignoreCircuitBreaker) {
-            result.circuit = result.circuit ?? 'price_fetch_failed';
-            skipReconcile = true;
+    }, stallAfterMs);
+
+    try {
+        const snapshot = await bounded('load_targets', () => deps.curated.getSnapshot());
+        const targets = args.mints ? unique(args.mints) : unique(snapshot.mintsByList[CURRENCIES_SLUG] ?? []);
+        result.tracked = targets.length;
+
+        const [variants, prevRows] = await bounded('load_state', () =>
+            Promise.all([pegGuard.repo.listCurrencyVariants(targets), pegGuard.repo.listLatest(DEPEG_CHAIN)]),
+        );
+        const prevByAddress = new Map(prevRows.map(row => [row.address, row] as const));
+        const pegByMint = new Map<string, PegReference | null>();
+        for (const mint of targets) {
+            const variant = variants.get(mint);
+            pegByMint.set(mint, variant ? pegForStablecoinVariant(variant) : null);
         }
-    }
+        const needsFxRates = [...pegByMint.values()].some(peg => peg?.reference === 'fx');
 
-    if (nextRows.length > 0) await pegGuard.repo.upsertLatest(nextRows);
-    if (events.length > 0) await pegGuard.repo.insertTierEvents(events);
-    for (const event of events) {
-        const row = nextRows.find(r => r.address === event.address);
-        log({
-            ...base,
-            event: 'depeg_tier_changed',
-            source: event.source,
-            mint: event.address,
-            symbol: row?.symbol ?? null,
-            old_tier: event.oldTier,
-            new_tier: event.newTier,
-            deviation_pct: event.deviationPct,
-            price_usd: event.priceUsd,
-            peg_usd: event.pegUsd,
-            liquidity_usd: event.liquidityUsd,
-            price_source: row?.priceSource ?? null,
-            peg_currency: row?.pegCurrency ?? null,
-            reference_kind: event.referenceKind,
-        });
-    }
+        // One Birdeye call for every target; mints it omits (and every mint when
+        // the call fails) fall back to the last price the markets refresh stored.
+        // Fiat rates are fetched alongside, once, only when an fx-pegged mint is
+        // in the run (a targeted USD-only run never touches CoinGecko).
+        const [multi, fx] = await bounded('fetch_prices', () =>
+            Promise.all([
+                targets.length > 0 ? pegGuard.birdeye.fetchMultiPrice(targets) : Promise.resolve(null),
+                needsFxRates
+                    ? // Once the fx branch is done only Birdeye can still be pending.
+                      loadFxRates(pegGuard, deps.now(), base, log, mark).then(state => {
+                          mark('fetch_prices');
+                          return state;
+                      })
+                    : Promise.resolve<FxRateState>({ fetched: false, rates: new Map() }),
+            ]),
+        );
+        const birdeyeFailed = multi !== null && !multi.ok;
+        if (multi && !multi.ok) {
+            log({ ...base, event: 'peg_guard_price_fetch_failed', status: multi.status, message: multi.message });
+        }
+        const needsFallback = targets.filter(mint => !(multi && multi.ok && multi.byMint.has(mint)));
+        const fallback = await bounded('load_fallback', () => pegGuard.repo.listVariantMarketFallback(needsFallback));
+        mark('evaluate');
 
-    if (!skipReconcile && trackedMints.length > 0) {
-        const [webacyRows, advisories, lastAdminClearAtByMint] = await Promise.all([
-            deps.repo.listDepegLatest(DEPEG_CHAIN),
-            deps.repo.listAdvisoriesForReconcile(trackedMints),
-            deps.repo.listLastAdminClearAtByMints(trackedMints),
-        ]);
-        const webacyByAddress = new Map(webacyRows.map(row => [row.address, row] as const));
-        const advisoryByMint = new Map(advisories.map(a => [a.mint, a] as const));
-        const rowByAddress = new Map(nextRows.map(row => [row.address, row] as const));
+        const now = deps.now();
+        result.fxRates.fetched = fx.fetched;
+        // A stored row that never succeeded (`lastOkAt` 0) is not a usable rate, so
+        // it is neither a currency we have nor a stale one.
+        for (const rate of fx.rates.values()) {
+            if (rate.lastOkAt <= 0) continue;
+            result.fxRates.currencies += 1;
+            if (now - rate.lastOkAt > args.fxStaleMs) result.fxRates.stale += 1;
+        }
 
-        const observations: ReconcilerObservation[] = [];
-        for (const mint of trackedMints) {
-            const row = rowByAddress.get(mint)!;
-            const webacyRow = webacyByAddress.get(mint);
-            const covered = webacyCoversMint(webacyRow, now, args.webacyCoverageMs);
-            // Two observers with a tier each, disagreeing on healthy vs bad:
-            // worth a look either way (feed skew, or one of them is early).
-            if (
-                webacyRow &&
-                webacyRow.tier !== null &&
-                row.tier !== null &&
-                isBadTier(webacyRow.tier) !== isBadTier(row.tier)
-            ) {
-                log({
-                    ...base,
-                    event: 'peg_guard_disagreement',
-                    mint,
-                    symbol: row.symbol,
-                    webacy_tier: webacyRow.tier,
-                    webacy_last_ok_at: webacyRow.lastOkAt,
-                    webacy_covers: covered,
-                    peg_guard_tier: row.tier,
-                    deviation_pct: row.deviationPct,
-                });
+        const nextRows: PegGuardLatestRow[] = [];
+        const events: PegGuardTierEventRow[] = [];
+        // Mints the reconciler may act on: those whose reference resolved this run,
+        // plus those with a previous successful evaluation, so a mint whose fx rate
+        // is momentarily unavailable is still cleared or kept rather than dropped.
+        const trackedMints: string[] = [];
+        const inRegistryByMint = new Map<string, boolean>();
+        let flips = 0;
+        let previouslyTiered = 0;
+        let freshFallbackTracked = 0;
+
+        for (const mint of targets) {
+            const variant = variants.get(mint) ?? null;
+            const peg = pegByMint.get(mint) ?? null;
+            const prev = prevByAddress.get(mint) ?? null;
+            if (peg) result.referenceKinds[peg.reference] += 1;
+            inRegistryByMint.set(mint, variant?.isActive ?? false);
+
+            let price: PegPriceSample | null = null;
+            let freshFallback = false;
+            const entry = multi && multi.ok ? multi.byMint.get(mint) : undefined;
+            if (entry) {
+                price = birdeyeSample(entry);
+                result.priced += 1;
+            } else {
+                const row = fallback.get(mint);
+                if (row && row.price !== null) {
+                    price = {
+                        priceUsd: row.price,
+                        updatedAt: row.lastFetchedAt,
+                        liquidityUsd: row.liquidity,
+                        source: 'variant_markets_latest',
+                    };
+                    result.fallbackPriced += 1;
+                    freshFallback = now - row.lastFetchedAt <= args.priceStaleMs;
+                }
             }
-            // Webacy owns the mint while fresh; the peg guard still reconciles a
-            // row it set itself (during a Webacy outage) so it can be cleared.
-            const ownsAdvisory = advisoryByMint.get(mint)?.source === 'peg_guard';
-            if (!covered || ownsAdvisory) observations.push(toObservation(row, inRegistryByMint.get(mint) ?? false));
-            else result.ownedByWebacy += 1;
-        }
-        result.reconciled = observations.length;
 
-        if (observations.length > 0) {
-            const clearTiers: PegTier[] = args.clearOnWatch ? ['ok', 'premium', 'watch'] : ['ok', 'premium'];
-            const decision = reconcileDepegAdvisories({
-                observations,
-                advisories,
-                lastAdminClearAtByMint,
-                now: deps.now(),
-                config: {
-                    setTiers: ['warning', 'critical'],
-                    criticalImmediate: args.criticalImmediate,
-                    criticalConfirmMs: args.criticalConfirmMs,
-                    warningConfirmMs: args.warningConfirmMs,
-                    clearTiers,
-                    clearCooldownMs: args.clearCooldownMs,
-                    staleObservationMs: args.staleObservationMs,
-                    maxActionsPerRun: args.maxActionsPerRun,
-                },
+            // Yield-bearing variants: advance the high-water mark before resolving
+            // so the seeding observation is judged against it straight away. Only
+            // a liquid observation counts as evidence the mark should move.
+            const liquidityOk =
+                price?.liquidityUsd !== null &&
+                price?.liquidityUsd !== undefined &&
+                Number.isFinite(price.liquidityUsd) &&
+                price.liquidityUsd >= args.minLiquidityUsd;
+            const reference =
+                peg?.reference === 'high_water'
+                    ? advanceHighWaterReference({
+                          prev:
+                              prev?.referenceUsd !== null && prev?.referenceUsd !== undefined
+                                  ? {
+                                        referenceUsd: prev.referenceUsd,
+                                        referenceUpdatedAt: prev.referenceUpdatedAt ?? prev.lastFetchedAt,
+                                    }
+                                  : null,
+                          priceUsd: price?.priceUsd ?? null,
+                          liquidityOk,
+                          now,
+                          maxDailyRisePct: referenceMaxDailyRisePct,
+                      })
+                    : null;
+            const resolvedPeg = resolvePegUsd({ peg, fxRates: fx.rates, reference, now, fxStaleMs: args.fxStaleMs });
+            const pegUsd = 'pegUsd' in resolvedPeg ? resolvedPeg.pegUsd : null;
+            // `resolvePegUsd` only yields a value when `peg` is set; the fallback kind is unreachable.
+            const resolved: EvaluatePegObservationInput['resolved'] =
+                'issue' in resolvedPeg
+                    ? resolvedPeg
+                    : { pegUsd: resolvedPeg.pegUsd, reference: peg?.reference ?? 'fixed' };
+
+            const evaluation = evaluatePegObservation({
+                resolved,
+                priceUsd: price?.priceUsd ?? null,
+                priceUpdatedAt: price?.updatedAt ?? null,
+                liquidityUsd: price?.liquidityUsd ?? null,
+                now,
+                priceStaleMs: args.priceStaleMs,
+                minLiquidityUsd: args.minLiquidityUsd,
             });
-            for (const skip of decision.skips) {
-                countSkip(skip.why);
-                // `unchanged` is the steady state for every healthy mint.
-                if (skip.why === 'unchanged') continue;
-                log({ ...base, event: 'depeg_advisory_skipped', mint: skip.mint, why: skip.why });
+            if (!evaluation.ok) {
+                result.issues[evaluation.issue] += 1;
+                if (evaluation.issue === 'unsupported_peg') result.unsupported += 1;
             }
-            if (decision.overflow > 0) {
-                result.circuit = result.circuit ?? 'mass_action';
+            if (pegUsd !== null || prev?.ok === true) {
+                trackedMints.push(mint);
+                if (freshFallback) freshFallbackTracked += 1;
+            }
+
+            if (prev && prev.tier !== null) previouslyTiered += 1;
+            const { row, event } = buildPegGuardRow({
+                prev,
+                address: mint,
+                symbol: variant?.symbol ?? snapshot.entriesByMint[mint]?.symbol ?? null,
+                peg,
+                pegUsd,
+                reference,
+                price,
+                evaluation,
+                source: trigger,
+                now,
+            });
+            nextRows.push(row);
+            result.tierCounts[row.tier ?? 'null'] += 1;
+            if (event) {
+                events.push(event);
+                if (prev && prev.tier !== null) flips += 1;
+            }
+        }
+        result.processed = nextRows.length;
+        result.tierChanges = events.length;
+        // Total failure only when Birdeye is down and nothing stored is usable either.
+        if (birdeyeFailed && result.fallbackPriced === 0) result.ok = false;
+
+        // Circuit: a large share of previously tiered mints flipping in one run is a
+        // price-feed incident (or a market-wide event). Persist, but do not act.
+        let skipReconcile = false;
+        if (previouslyTiered >= FLIP_GUARD_MIN_TRACKED) {
+            const sharePct = (flips / previouslyTiered) * 100;
+            if (sharePct > args.maxTierFlipSharePct) {
                 log({
                     ...base,
                     event: 'depeg_circuit_open',
-                    reason: 'mass_action',
-                    actions: decision.actions.length + decision.overflow,
-                    applied: decision.actions.length,
-                    dropped: decision.overflow,
-                    max_actions_per_run: args.maxActionsPerRun,
+                    reason: 'mass_tier_flip',
+                    flips,
+                    tracked: previouslyTiered,
+                    share_pct: Math.round(sharePct * 10) / 10,
+                    max_share_pct: args.maxTierFlipSharePct,
+                    ignored: args.ignoreCircuitBreaker,
                 });
-            }
-            for (const action of decision.actions) {
-                if (overBudget()) {
-                    result.partial = true;
-                    countSkip('budget_exhausted');
-                    continue;
+                if (!args.ignoreCircuitBreaker) {
+                    result.circuit = 'mass_tier_flip';
+                    skipReconcile = true;
                 }
-                await applyAction(deps, action, dryRun, base, log, result);
             }
         }
-    }
+        // Circuit: Birdeye failed and the fallback covers too few tracked mints
+        // with a fresh price to trust any tier this run produced.
+        if (birdeyeFailed && freshFallbackTracked < trackedMints.length * FALLBACK_MIN_FRESH_SHARE) {
+            log({
+                ...base,
+                event: 'depeg_circuit_open',
+                reason: 'price_fetch_failed',
+                // `usd_mints` predates fx and high-water references; it now counts
+                // every tracked mint and stays for alert-rule compatibility.
+                usd_mints: trackedMints.length,
+                tracked_mints: trackedMints.length,
+                fresh_fallback: freshFallbackTracked,
+                ignored: args.ignoreCircuitBreaker,
+            });
+            if (!args.ignoreCircuitBreaker) {
+                result.circuit = result.circuit ?? 'price_fetch_failed';
+                skipReconcile = true;
+            }
+        }
 
-    log({
-        ...base,
-        event: 'peg_guard_summary',
-        ok: result.ok,
-        tracked: result.tracked,
-        priced: result.priced,
-        fallback_priced: result.fallbackPriced,
-        unsupported: result.unsupported,
-        issues: result.issues,
-        reference_kinds: result.referenceKinds,
-        fx_rates: result.fxRates,
-        tier_counts: result.tierCounts,
-        tier_changes: result.tierChanges,
-        owned_by_webacy: result.ownedByWebacy,
-        reconciled: result.reconciled,
-        actions_set: result.actionsSet,
-        actions_updated: result.actionsUpdated,
-        actions_cleared: result.actionsCleared,
-        skipped: result.skipped,
-        circuit: result.circuit,
-        partial: result.partial ?? false,
-        duration_ms: deps.now() - start,
-    });
-    return finish();
+        if (nextRows.length > 0) await bounded('write_observations', () => pegGuard.repo.upsertLatest(nextRows));
+        if (events.length > 0) await bounded('write_tier_events', () => pegGuard.repo.insertTierEvents(events));
+        for (const event of events) {
+            const row = nextRows.find(r => r.address === event.address);
+            log({
+                ...base,
+                event: 'depeg_tier_changed',
+                source: event.source,
+                mint: event.address,
+                symbol: row?.symbol ?? null,
+                old_tier: event.oldTier,
+                new_tier: event.newTier,
+                deviation_pct: event.deviationPct,
+                price_usd: event.priceUsd,
+                peg_usd: event.pegUsd,
+                liquidity_usd: event.liquidityUsd,
+                price_source: row?.priceSource ?? null,
+                peg_currency: row?.pegCurrency ?? null,
+                reference_kind: event.referenceKind,
+            });
+        }
+
+        if (!skipReconcile && trackedMints.length > 0) {
+            const [webacyRows, advisories, lastAdminClearAtByMint] = await bounded('load_reconcile_state', () =>
+                Promise.all([
+                    deps.repo.listDepegLatest(DEPEG_CHAIN),
+                    deps.repo.listAdvisoriesForReconcile(trackedMints),
+                    deps.repo.listLastAdminClearAtByMints(trackedMints),
+                ]),
+            );
+            const webacyByAddress = new Map(webacyRows.map(row => [row.address, row] as const));
+            const advisoryByMint = new Map(advisories.map(a => [a.mint, a] as const));
+            const rowByAddress = new Map(nextRows.map(row => [row.address, row] as const));
+
+            const observations: ReconcilerObservation[] = [];
+            for (const mint of trackedMints) {
+                const row = rowByAddress.get(mint)!;
+                const webacyRow = webacyByAddress.get(mint);
+                const covered = webacyCoversMint(webacyRow, now, args.webacyCoverageMs);
+                // Two observers with a tier each, disagreeing on healthy vs bad:
+                // worth a look either way (feed skew, or one of them is early).
+                if (
+                    webacyRow &&
+                    webacyRow.tier !== null &&
+                    row.tier !== null &&
+                    isBadTier(webacyRow.tier) !== isBadTier(row.tier)
+                ) {
+                    log({
+                        ...base,
+                        event: 'peg_guard_disagreement',
+                        mint,
+                        symbol: row.symbol,
+                        webacy_tier: webacyRow.tier,
+                        webacy_last_ok_at: webacyRow.lastOkAt,
+                        webacy_covers: covered,
+                        peg_guard_tier: row.tier,
+                        deviation_pct: row.deviationPct,
+                    });
+                }
+                // Webacy owns the mint while fresh; the peg guard still reconciles a
+                // row it set itself (during a Webacy outage) so it can be cleared.
+                const ownsAdvisory = advisoryByMint.get(mint)?.source === 'peg_guard';
+                if (!covered || ownsAdvisory)
+                    observations.push(toObservation(row, inRegistryByMint.get(mint) ?? false));
+                else result.ownedByWebacy += 1;
+            }
+            result.reconciled = observations.length;
+
+            if (observations.length > 0) {
+                const clearTiers: PegTier[] = args.clearOnWatch ? ['ok', 'premium', 'watch'] : ['ok', 'premium'];
+                const decision = reconcileDepegAdvisories({
+                    observations,
+                    advisories,
+                    lastAdminClearAtByMint,
+                    now: deps.now(),
+                    config: {
+                        setTiers: ['warning', 'critical'],
+                        criticalImmediate: args.criticalImmediate,
+                        criticalConfirmMs: args.criticalConfirmMs,
+                        warningConfirmMs: args.warningConfirmMs,
+                        clearTiers,
+                        clearCooldownMs: args.clearCooldownMs,
+                        staleObservationMs: args.staleObservationMs,
+                        maxActionsPerRun: args.maxActionsPerRun,
+                    },
+                });
+                for (const skip of decision.skips) {
+                    countSkip(skip.why);
+                    // `unchanged` is the steady state for every healthy mint.
+                    if (skip.why === 'unchanged') continue;
+                    log({ ...base, event: 'depeg_advisory_skipped', mint: skip.mint, why: skip.why });
+                }
+                if (decision.overflow > 0) {
+                    result.circuit = result.circuit ?? 'mass_action';
+                    log({
+                        ...base,
+                        event: 'depeg_circuit_open',
+                        reason: 'mass_action',
+                        actions: decision.actions.length + decision.overflow,
+                        applied: decision.actions.length,
+                        dropped: decision.overflow,
+                        max_actions_per_run: args.maxActionsPerRun,
+                    });
+                }
+                for (const action of decision.actions) {
+                    if (overBudget()) {
+                        result.partial = true;
+                        countSkip('budget_exhausted');
+                        continue;
+                    }
+                    await bounded('apply_actions', () => applyAction(deps, action, dryRun, base, log, result));
+                }
+            }
+        }
+
+        mark('summary');
+        log({
+            ...base,
+            event: 'peg_guard_summary',
+            ok: result.ok,
+            tracked: result.tracked,
+            priced: result.priced,
+            fallback_priced: result.fallbackPriced,
+            unsupported: result.unsupported,
+            issues: result.issues,
+            reference_kinds: result.referenceKinds,
+            fx_rates: result.fxRates,
+            tier_counts: result.tierCounts,
+            tier_changes: result.tierChanges,
+            owned_by_webacy: result.ownedByWebacy,
+            reconciled: result.reconciled,
+            actions_set: result.actionsSet,
+            actions_updated: result.actionsUpdated,
+            actions_cleared: result.actionsCleared,
+            skipped: result.skipped,
+            circuit: result.circuit,
+            partial: result.partial ?? false,
+            duration_ms: deps.now() - start,
+        });
+        return finish();
+    } catch (err) {
+        const failure = {
+            ...base,
+            event: 'peg_guard_run_failed',
+            stage,
+            elapsed_ms: deps.now() - start,
+            budget_ms: args.budgetMs,
+            tracked: result.tracked,
+        };
+        if (err instanceof PegGuardStageDeadlineError) {
+            log({ ...failure, reason: 'stage_deadline' });
+            result.ok = false;
+            result.partial = true;
+            result.reason = 'stage_deadline';
+            result.stage = stage;
+            return finish();
+        }
+        log({ ...failure, reason: 'exception', error: err instanceof Error ? err.message : String(err) });
+        throw err;
+    } finally {
+        settled = true;
+        clearTimeout(stallTimer);
+    }
 }

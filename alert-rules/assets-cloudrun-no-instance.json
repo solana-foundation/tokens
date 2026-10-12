@@ -16,7 +16,7 @@
         "to": 0
       },
       "model": {
-        "expr": "sum by (service) (rate({service=~\"tokens-(assets|prices|usage|admin)-prd-us\"} |= \"no available instance\" [5m]))",
+        "expr": "sum by (service) (rate({service=~\"tokens-(assets|assets-jobs|prices|usage|admin)-prd-us\"} |= \"no available instance\" [5m]))",
         "queryType": "range",
         "refId": "A"
       }
@@ -87,7 +87,7 @@
   },
   "annotations": {
     "summary": "Cloud Run is aborting requests: instance cap reached (label: service)",
-    "description": "A Cloud Run service is rejecting requests with 'no available instance' (HTTP 429 to its callers) at more than ~6/min sustained — it is pegged at its max-instances cap or instances are failing to start. This is the earliest saturation signal: tokens-api degrades to fallbacks and returns 429/504 to users while this fires. Check instance count vs maxScale on the named service, then look for a traffic burst (per-key request rates on the API overview dashboard) or a stuck revision. Raising cloud_run_assets_max_instances in terraform is the capacity lever.",
+    "description": "A Cloud Run service is rejecting requests with 'no available instance' (HTTP 429 to its callers) at more than ~6/min sustained — it is pegged at its max-instances cap or instances are failing to start. This is the earliest saturation signal: tokens-api degrades to fallbacks and returns 429/504 to users while this fires. On tokens-assets-jobs (the cron worker: 2 instances x request concurrency 2 = 4 slots for ~15 crons per 5 minutes, several with 540s deadlines) a saturated worker silently drops short-deadline crons such as refresh-peg-guard (90s, no retry): the scheduler records DEADLINE_EXCEEDED and the handler never runs, so job-level stale alerts fire with no job-level error. Check instance count vs maxScale on the named service, then look for a traffic burst (per-key request rates on the API overview dashboard), a stuck revision, or on the worker a pile-up of long crons at the same minute offset. Raising cloud_run_assets_max_instances (API) or the assets-jobs max_instances / request_concurrency in terraform is the capacity lever.",
     "runbook_url": "https://example.com/runbooks/assets-cloudrun-no-instance"
   },
   "notification_settings": {

@@ -179,7 +179,7 @@ import {
     type CacheWarmDeps,
 } from './handlers/cacheWarm';
 import { OidcAuthError, parseBearer, type VerifyOidc } from './oidc';
-import { runAtomicReadWithRetry, structuredDatabaseFailure } from './transientDb';
+import { databaseErrorCode, runAtomicReadWithRetry, structuredDatabaseFailure } from './transientDb';
 
 export type ServiceRole = 'api' | 'worker' | 'hybrid';
 
@@ -212,6 +212,8 @@ export interface ServerDeps {
     checkDatabase?: () => Promise<void>;
     /** Test seam; production leaves the database-aware startup timeout at 2.8s. */
     startupDatabaseTimeoutMs?: number;
+    /** Test seam; production logs `cloudrun_assets_job_stalled` 30s past a job's `budgetMs`. */
+    jobStallGraceMs?: number;
     cronDeps?: CronDeps;
     clickhouseCronDeps?: CronDeps & ClickhouseCronDeps;
     miscCronDeps?: MiscCronDeps;
@@ -322,15 +324,53 @@ function cronJobResponse(c: Context, result: CronResult) {
 }
 
 /**
+ * Stall threshold for a job whose body declares no `budgetMs`: under the
+ * worker's 540s Cloud Run request timeout so the line lands before the
+ * request is killed.
+ */
+const JOB_STALL_DEFAULT_MS = 480_000;
+/** Grace past the declared budget before an in-flight job counts as stalled. */
+const JOB_STALL_GRACE_MS = 30_000;
+
+/**
+ * One JSON line per call, tagged with the revision and instance like the
+ * database-failure events, so the job lifecycle events
+ * (`cloudrun_assets_job_*`) join the same dashboards and Loki filters.
+ */
+function logJson(level: 'log' | 'warn' | 'error', line: Record<string, unknown>): void {
+    console[level](
+        JSON.stringify({
+            ...line,
+            revision: process.env.K_REVISION?.trim() || 'local',
+            instanceId: process.env.HOSTNAME?.trim() || 'local',
+        }),
+    );
+}
+
+/** `budgetMs` from a job body when it is a positive finite number; every scheduler body declares one. */
+function readJobBudgetMs(args: unknown): number | null {
+    const value = args && typeof args === 'object' ? (args as Record<string, unknown>).budgetMs : undefined;
+    return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : null;
+}
+
+/**
  * Shared error mapping for job handlers: invalid args (either the legacy
  * CronInvalidArgsError or @tokens/effect's BadRequestError from decodeJobArgs)
- * map to 400; everything else logs the full error (stack preserved) and 500s.
+ * map to 400; everything else logs the full error (stack preserved), one
+ * structured `cloudrun_assets_job_failed` line for alerting, and 500s.
  */
-function jobErrorResponse(c: Context, name: string, err: unknown) {
+function jobErrorResponse(c: Context, name: string, err: unknown, startedAt: number) {
     if (err instanceof CronInvalidArgsError || err instanceof BadRequestError) {
         return c.json({ error: 'invalid_args', message: err.message }, 400);
     }
     console.error(`[cloudrun-assets] job ${name} threw`, err);
+    logJson('error', {
+        event: 'cloudrun_assets_job_failed',
+        job: name,
+        duration_ms: Date.now() - startedAt,
+        errorCode: databaseErrorCode(err) ?? 'UNKNOWN',
+        errorMessage: (err instanceof Error ? err.message : String(err)).slice(0, 500),
+    });
     return c.json({ error: 'handler_error' }, 500);
 }
 
@@ -759,6 +799,9 @@ export function createApp(deps: ServerDeps) {
         },
     ];
 
+    /** Start times of in-flight runs per job name (this process only). */
+    const inFlightJobs = new Map<string, number[]>();
+
     app.post('/jobs/:name', async (c: Context) => {
         if (serviceRole === 'api') return c.json({ error: 'not_found' }, 404);
         const verifyOidc = deps.verifyOidc;
@@ -785,10 +828,56 @@ export function createApp(deps: ServerDeps) {
             if (!group.run) {
                 return c.json({ error: group.disabledError ?? 'jobs_disabled' }, 404);
             }
+            // Lifecycle visibility (incident 2026-10-12: peg guard runs went
+            // silent mid-flight with no line anywhere). Overlap and stall are
+            // logged, never enforced: Cloud Run owns concurrency, and a stalled
+            // run must keep going so a late finish is recorded too.
+            const startedAt = Date.now();
+            const running = inFlightJobs.get(name) ?? [];
+            if (running.length > 0) {
+                logJson('warn', {
+                    event: 'cloudrun_assets_job_overlap',
+                    job: name,
+                    in_flight: running.length,
+                    previous_elapsed_ms: startedAt - Math.min(...running),
+                });
+            }
+            running.push(startedAt);
+            inFlightJobs.set(name, running);
+            const declaredBudgetMs = readJobBudgetMs(args);
+            const budgetMs = declaredBudgetMs ?? JOB_STALL_DEFAULT_MS;
+            const stallTimer = setTimeout(
+                () =>
+                    logJson('warn', {
+                        event: 'cloudrun_assets_job_stalled',
+                        job: name,
+                        elapsed_ms: Date.now() - startedAt,
+                        budget_ms: budgetMs,
+                        budget_declared: declaredBudgetMs !== null,
+                    }),
+                budgetMs + (deps.jobStallGraceMs ?? JOB_STALL_GRACE_MS),
+            );
             try {
-                return cronJobResponse(c, await group.run(name, args));
+                const result = await group.run(name, args);
+                const durationMs = Date.now() - startedAt;
+                if (durationMs > budgetMs) {
+                    logJson('warn', {
+                        event: 'cloudrun_assets_job_finished_late',
+                        job: name,
+                        duration_ms: durationMs,
+                        budget_ms: budgetMs,
+                        budget_declared: declaredBudgetMs !== null,
+                        ok: result.ok !== false,
+                    });
+                }
+                return cronJobResponse(c, result);
             } catch (err) {
-                return jobErrorResponse(c, name, err);
+                return jobErrorResponse(c, name, err, startedAt);
+            } finally {
+                clearTimeout(stallTimer);
+                const stillRunning = (inFlightJobs.get(name) ?? []).filter(at => at !== startedAt);
+                if (stillRunning.length > 0) inFlightJobs.set(name, stillRunning);
+                else inFlightJobs.delete(name);
             }
         }
         return c.json({ error: `unknown job: ${name}` }, 404);
