@@ -3,6 +3,7 @@ import { getAsset, getVariantByMint, resolveAlias, validateRegistry } from './re
 import { getHub, getHubByMint, listHubs } from './hubs';
 import { getVariantHubByAssetId, getVariantHubById } from './variant-hubs';
 import { getCuratedTokenAddresses, getCuratedTokenList } from './compat';
+import { PRE_STOCKS } from './data/equities';
 
 describe('asset registry', () => {
     test('reports alias collisions with clear candidates', () => {
@@ -137,5 +138,24 @@ describe('asset registry', () => {
         expect(silver?.symbol).toBe('SLV');
         expect(resolveAlias('xag')?.assetId).toBe('silver');
         expect(resolveAlias('slv')?.assetId).toBe('silver');
+    });
+});
+
+describe('PreStocks allowlist', () => {
+    test('lists every live feed symbol and keeps the delisted SpaceX mint as a variant only', () => {
+        const byMint = new Map(PRE_STOCKS.map(listing => [listing.mint, listing]));
+        expect(byMint.get('Pre9atBqkocK1QngFy7Q7zvyQictEFpXdLi6bZ2qnYy')).toEqual({
+            mint: 'Pre9atBqkocK1QngFy7Q7zvyQictEFpXdLi6bZ2qnYy',
+            symbol: 'OURA',
+            name: 'Oura',
+            assetId: 'oura',
+        });
+        // SpaceX went public; PreStocks delisted SPACEX from the feed on 2026-10-08.
+        const spacexPrestocksMint = 'PreANxuXjsy2pvisWWMNB6YaJNzr7681wJJr2rHsfTh';
+        expect(byMint.has(spacexPrestocksMint)).toBe(false);
+        expect(getVariantByMint(spacexPrestocksMint)?.variant.variantId).toBe('spacex:prestocks');
+        // Symbols are unique and every listing has a mint-shaped address.
+        expect(new Set(PRE_STOCKS.map(l => l.symbol)).size).toBe(PRE_STOCKS.length);
+        for (const listing of PRE_STOCKS) expect(listing.mint).toMatch(/^Pre[1-9A-HJ-NP-Za-km-z]{40,44}$/);
     });
 });

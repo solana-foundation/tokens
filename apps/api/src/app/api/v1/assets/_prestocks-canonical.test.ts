@@ -7,6 +7,9 @@ import { buildPreStocksCanonicalMarket, freshPreStocksByMint, selectPreStocksMin
 const ANDURIL_MINT = 'PresTj4Yc2bAR197Er7wz4UUKSfqt6FryBEdAriBoQB';
 const FIGURE_AI_MINT = 'PreZad18qfPtbxNpMtMuAuX2zVpvkEU8DnJx56faCWd';
 const TESSERA_OPENAI_MINT = 'oPAiAikWTaFj9RYoRFD35ccfwhnMcB3ThgBZRHSkjTZ';
+const OURA_MINT = 'Pre9atBqkocK1QngFy7Q7zvyQictEFpXdLi6bZ2qnYy';
+/** Delisted from the PreStocks feed on 2026-10-08 (SpaceX IPO); still a registry variant. */
+const SPACEX_PRESTOCKS_MINT = 'PreANxuXjsy2pvisWWMNB6YaJNzr7681wJJr2rHsfTh';
 const NOW = 1_791_300_000_000;
 
 function row(mint: string, overrides: Partial<PrestocksPriceResult> = {}): PrestocksPriceResult {
@@ -27,10 +30,13 @@ function row(mint: string, overrides: Partial<PrestocksPriceResult> = {}): Prest
 
 describe('selectPreStocksMints', () => {
     it('keeps only PreStocks mints, deduped, including admin-created listings', () => {
-        expect(selectPreStocksMints([TESSERA_OPENAI_MINT, ANDURIL_MINT, FIGURE_AI_MINT, ANDURIL_MINT])).toEqual([
-            ANDURIL_MINT,
-            FIGURE_AI_MINT,
-        ]);
+        expect(
+            selectPreStocksMints([TESSERA_OPENAI_MINT, ANDURIL_MINT, FIGURE_AI_MINT, ANDURIL_MINT, OURA_MINT]),
+        ).toEqual([ANDURIL_MINT, FIGURE_AI_MINT, OURA_MINT]);
+    });
+
+    it('ignores the delisted SpaceX PreStocks mint so its stale snapshot is never consulted', () => {
+        expect(selectPreStocksMints([SPACEX_PRESTOCKS_MINT, ANDURIL_MINT])).toEqual([ANDURIL_MINT]);
     });
 });
 

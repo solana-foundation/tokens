@@ -171,6 +171,7 @@ const PRESTOCK_LOGO_SLUGS = new Set([
     'neuralink',
     'openai',
     'polymarket',
+    'oura',
     'spacex',
 ]);
 

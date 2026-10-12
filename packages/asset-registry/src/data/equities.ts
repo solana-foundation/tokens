@@ -632,9 +632,15 @@ export interface PreStockListing {
     assetId: string;
 }
 
-/** All PreStocks mints with their reference-API symbols, for the PreStocks price pipeline. */
+/**
+ * All PreStocks mints with their reference-API symbols, for the PreStocks price pipeline.
+ *
+ * SpaceX is deliberately absent: PreStocks delisted SPACEX from the feed on
+ * 2026-10-08 (SpaceX went public; holders must swap into SPCXx before
+ * 2027-03-12 23:59 UTC). The `spacex:prestocks` variant stays in the registry
+ * for the transition so the admin caution advisory has a variant to render on.
+ */
 export const PRE_STOCKS: readonly PreStockListing[] = [
-    { mint: SPACEX_PRESTOCK_MINT, symbol: 'SPACEX', name: 'SpaceX', assetId: 'spacex' },
     { mint: OPENAI_PRESTOCK_MINT, symbol: 'OPENAI', name: 'OpenAI', assetId: 'openai' },
     ...Object.entries(PRE_STOCK_METADATA).map(([mint, metadata]) => ({
         mint,
@@ -645,6 +651,7 @@ export const PRE_STOCKS: readonly PreStockListing[] = [
     // Admin-created assets: identity lives in the database, not this registry.
     { mint: 'PreZad18qfPtbxNpMtMuAuX2zVpvkEU8DnJx56faCWd', symbol: 'FIGUREAI', name: 'Figure AI', assetId: 'figure-ai' },
     { mint: 'PrekqLJvJ3qVdXmBGDiexvwUTF4rLFDa6HWS4HJbw9S', symbol: 'NEURALINK', name: 'Neuralink', assetId: 'neuralink' },
+    { mint: 'Pre9atBqkocK1QngFy7Q7zvyQictEFpXdLi6bZ2qnYy', symbol: 'OURA', name: 'Oura', assetId: 'oura' },
 ];
 
 function unlistedStockAssetId(mint: string): string {
