@@ -62,10 +62,15 @@ export function makePostgresHardDeleteRepo(sql: Sql): HardDeleteRepo {
                         ref: row.ref,
                         kind: row.kind,
                     }));
+                    // `tx.json(...)`, never `JSON.stringify(...)`: postgres-js
+                    // serializes every parameter the server types as json/jsonb
+                    // with JSON.stringify, so a pre-stringified value is encoded
+                    // twice and arrives as a JSON *string* ("cannot call
+                    // jsonb_to_recordset on a non-array").
                     const inserted = await tx`
                         INSERT INTO asset_deletion_tombstones (id, asset_id, normalized_ref, ref, kind, created_at)
                         SELECT r.id, ${assetId}, r.normalized_ref, r.ref, r.kind, ${new Date(nowMs)}
-                        FROM jsonb_to_recordset(${JSON.stringify(payload)}::jsonb)
+                        FROM jsonb_to_recordset(${tx.json(payload)}::jsonb)
                              AS r(id text, normalized_ref text, ref text, kind text)
                         WHERE NOT EXISTS (
                             SELECT 1 FROM asset_deletion_tombstones t WHERE t.normalized_ref = r.normalized_ref
