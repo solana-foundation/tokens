@@ -81,6 +81,8 @@ function toRegistryRow(item: V2RegistryItem): RegistryRow {
         rwaValueUsd: item.rwaValueUsd,
         alliumValueUsd: item.alliumValueUsd,
         marketCapUsd: item.marketCapUsd,
+        providerValueUsd: item.alliumValueUsd ?? item.rwaValueUsd,
+        providerValueSource: item.alliumValueUsd !== null ? 'allium' : item.rwaValueUsd !== null ? 'rwa' : null,
         valueUsd: item.alliumValueUsd ?? item.rwaValueUsd ?? item.marketCapUsd,
     };
 }

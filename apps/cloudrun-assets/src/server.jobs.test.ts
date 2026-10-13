@@ -181,6 +181,9 @@ const noopSolanaDataReadsRepo: SolanaDataReadsRepo = {
     async listActive() {
         return [];
     },
+    async findActiveByMint() {
+        return null;
+    },
 };
 
 const noopPrestocksReadsRepo: PrestocksReadsRepo = {

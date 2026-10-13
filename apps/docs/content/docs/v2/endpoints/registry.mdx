@@ -65,6 +65,40 @@ cached for 5 minutes, so expect `generatedAt` to lag the upstream by up to about
 registry backend is unavailable the endpoint serves the last good payload (up to an hour old) with
 a `200` rather than a `5xx`; treat `syncedAt` as the freshness signal.
 
+## `GET /v2/registry/{mint}`
+
+One registry asset by mint: the same item as the list plus the data team's row **verbatim** and the
+sync metadata. This is what the "Response" button on [tokens.xyz/registry](https://tokens.xyz/registry)
+shows.
+
+- **Scope**: `assets:read`
+- **Path**: `mint` — base58 Solana mint address. `400` when malformed, `404` (`"Asset not in registry"`)
+  when the mint is not an active registry row.
+
+```ts
+interface RegistryAssetResponse extends RegistryResponse['items'][number] {
+    upstream: Record<string, unknown>; // the data.solana.com row exactly as delivered
+    generatedAt: string | null;        // upstream snapshot timestamp of this row (ISO 8601)
+    syncedAt: number | null;           // our last sync that saw the row, unix ms
+    provider: {                        // Birdeye meta-data fallback we stored for mints our index lacks
+        name: string | null;
+        logoURI: string | null;
+        fetchedAt: number | null;
+    };
+}
+```
+
+`upstream` keeps the data team's contract untouched: snake_case keys (`token`, `mint_address`, `group`,
+`category`, `class`, `allium_asset_class`, `rwa_asset_class`, `allium_asset_value_usd`,
+`rwa_asset_value_usd`, `coingecko_market_cap`), numerics as strings such as `"6.686697914433202E9"`,
+and it may gain fields without notice. Prefer the typed top-level fields for anything you build on;
+read `upstream` when you need the source of record.
+
+```bash
+curl -s "https://api.tokens.xyz/v2/registry/EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v" \
+  -H "x-api-key: $TOKENS_API_KEY" | jq '.upstream'
+```
+
 ### Attribution
 
 `alliumClass` / `alliumValueUsd` are Allium's classifications and values; `rwaClass` /

@@ -19,6 +19,15 @@ export interface V2RegistryItem {
     rank: number;
 }
 
+/** One item of `GET /api/v2/registry/{mint}`: the list item plus the raw upstream row and sync metadata. */
+export interface V2RegistryAssetResponse extends V2RegistryItem {
+    /** The data.solana.com row exactly as delivered (snake_case keys, numerics as strings). */
+    upstream: Record<string, unknown>;
+    generatedAt: string | null;
+    syncedAt: number | null;
+    provider: { name: string | null; logoURI: string | null; fetchedAt: number | null };
+}
+
 export interface V2RegistryResponse {
     /** Upstream data.solana.com `generatedAt` (ISO 8601); null before the first sync. */
     generatedAt: string | null;
@@ -48,6 +57,13 @@ export interface RegistryRow {
     rwaValueUsd: number | null;
     alliumValueUsd: number | null;
     marketCapUsd: number | null;
+    /**
+     * The on-chain value shown in the table's single "Value" column: Allium first,
+     * RWA.xyz otherwise (the two providers measure the same thing; when both report,
+     * the median ratio is ~1.01). Null when neither provider covers the asset.
+     */
+    providerValueUsd: number | null;
+    providerValueSource: 'allium' | 'rwa' | null;
     /** Ranking value: Allium > RWA.xyz > CoinGecko mcap (data-team ordering). */
     valueUsd: number | null;
 }

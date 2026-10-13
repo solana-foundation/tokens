@@ -83,7 +83,7 @@ Successful `GET` responses carry `Cache-Control` and may be served from an edge 
 | Endpoint | `max-age` |
 |---|---|
 | `GET /v2/lists` | 300 s |
-| `GET /v2/registry` | 300 s |
+| `GET /v2/registry`, `GET /v2/registry/{mint}` | 300 s |
 | `GET /v2/lists/{slug}`, `GET /v2/lists/tokens` | 60 s |
 | `GET /v2/search`, `GET /v2/resolve`, `GET /v2/lists/search-tokens` | 30 s |
 | `GET /v2/lists/check-slug`, all writes | not cached |

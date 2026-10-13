@@ -90,8 +90,11 @@ export {
 } from './launchpadReads';
 
 export {
+    solanaDataAssetsGetByMint,
     solanaDataAssetsList,
+    type SolanaDataAssetDetailResult,
     type SolanaDataAssetResult,
+    type SolanaDataAssetsGetByMintArgs,
     type SolanaDataAssetsListArgs,
     type SolanaDataAssetsListResult,
 } from './solanaDataReads';

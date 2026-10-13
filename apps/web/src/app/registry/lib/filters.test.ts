@@ -27,6 +27,8 @@ function row(overrides: Partial<RegistryRow>): RegistryRow {
         rwaValueUsd: null,
         alliumValueUsd: null,
         marketCapUsd: null,
+        providerValueUsd: null,
+        providerValueSource: null,
         valueUsd: null,
         ...overrides,
     };
@@ -201,8 +203,14 @@ describe('sort url codec', () => {
     test('round-trips sortable columns only', () => {
         expect(decodeSort(encodeSort({ id: 'marketCapUsd', desc: true }))).toEqual({ id: 'marketCapUsd', desc: true });
         expect(decodeSort('token.asc')).toEqual({ id: 'token', desc: false });
+        expect(decodeSort('providerValueUsd.desc')).toEqual({ id: 'providerValueUsd', desc: true });
         expect(decodeSort('valueUsd.desc')).toBeNull();
         expect(decodeSort('marketCapUsd.sideways')).toBeNull();
         expect(decodeSort('')).toBeNull();
+    });
+
+    test('maps the retired per-provider sort ids onto the merged Value column', () => {
+        expect(decodeSort('alliumValueUsd.desc')).toEqual({ id: 'providerValueUsd', desc: true });
+        expect(decodeSort('rwaValueUsd.asc')).toEqual({ id: 'providerValueUsd', desc: false });
     });
 });

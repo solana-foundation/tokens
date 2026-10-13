@@ -32,6 +32,19 @@ export interface SolanaDataAssetReadRow {
     meta_source_generated_at: Date | string | null;
 }
 
+/** One asset for the detail read: the page row plus the stored upstream snapshot and provider fallback. */
+export interface SolanaDataAssetDetailRow extends Omit<
+    SolanaDataAssetReadRow,
+    'total' | 'meta_last_synced_at' | 'meta_source_generated_at'
+> {
+    raw_json: string;
+    source_generated_at: Date | string | null;
+    last_synced_at: number | string | bigint | null;
+    provider_name: string | null;
+    provider_logo_uri: string | null;
+    provider_fetched_at: number | string | bigint | null;
+}
+
 export interface SolanaDataAssetsListFilters {
     limit: number;
     offset: number;
@@ -47,6 +60,8 @@ export interface SolanaDataReadsRepo {
      * only, `mint = null`) so an out-of-range offset still reports `total`.
      */
     listActive(filters: SolanaDataAssetsListFilters): Promise<SolanaDataAssetReadRow[]>;
+    /** One active row by mint with `raw_json` and the provider fallback; null when unknown or inactive. */
+    findActiveByMint(mint: string): Promise<SolanaDataAssetDetailRow | null>;
 }
 
 export interface SolanaDataAssetResult {
@@ -75,6 +90,17 @@ export interface SolanaDataAssetsListResult {
     generatedAt: string | null;
     /** Our newest successful sync, unix ms; null before the first sync. */
     syncedAt: number | null;
+}
+
+export interface SolanaDataAssetDetailResult extends SolanaDataAssetResult {
+    /** The data.solana.com row exactly as delivered (parsed `raw_json`, their snake_case keys and string numerics). */
+    upstream: Record<string, unknown>;
+    /** Upstream `generatedAt` (ISO 8601) of the snapshot this row came from. */
+    generatedAt: string | null;
+    /** Our last sync that saw the row, unix ms. */
+    syncedAt: number | null;
+    /** Birdeye meta-data fallback actually stored for the mint (null fields when never looked up or a miss). */
+    provider: { name: string | null; logoURI: string | null; fetchedAt: number | null };
 }
 
 export const SOLANA_DATA_LIST_DEFAULT_LIMIT = 500;
@@ -117,6 +143,59 @@ export function rowToSolanaDataAssetResult(row: SolanaDataAssetReadRow): SolanaD
         marketCapUsd: toFiniteOrNull(row.coingecko_market_cap_usd),
         rank: row.source_rank,
     };
+}
+
+function looksLikeSolanaMintAddress(value: string): boolean {
+    return /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(value);
+}
+
+function parseUpstream(rawJson: string): Record<string, unknown> {
+    try {
+        const parsed: unknown = JSON.parse(rawJson);
+        return parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)
+            ? (parsed as Record<string, unknown>)
+            : {};
+    } catch {
+        return {};
+    }
+}
+
+export function rowToSolanaDataAssetDetailResult(row: SolanaDataAssetDetailRow): SolanaDataAssetDetailResult | null {
+    const item = rowToSolanaDataAssetResult({
+        ...row,
+        total: 0,
+        meta_last_synced_at: null,
+        meta_source_generated_at: null,
+    });
+    if (!item) return null;
+    return {
+        ...item,
+        upstream: parseUpstream(row.raw_json),
+        generatedAt: toIsoOrNull(row.source_generated_at),
+        syncedAt: toEpochMs(row.last_synced_at),
+        provider: {
+            name: row.provider_name,
+            logoURI: row.provider_logo_uri,
+            fetchedAt: toEpochMs(row.provider_fetched_at),
+        },
+    };
+}
+
+export function parseSolanaDataGetByMintArgs(args: unknown): string {
+    if (typeof args !== 'object' || args === null) {
+        throw new InvalidArgsError('args must be an object');
+    }
+    const mint = (args as { mint?: unknown }).mint;
+    if (typeof mint !== 'string') throw new InvalidArgsError('mint must be a string');
+    const trimmed = mint.trim();
+    if (!looksLikeSolanaMintAddress(trimmed)) throw new InvalidArgsError('mint must be a base58 mint address');
+    return trimmed;
+}
+
+export async function getByMint(repo: SolanaDataReadsRepo, args: unknown): Promise<SolanaDataAssetDetailResult | null> {
+    const mint = parseSolanaDataGetByMintArgs(args);
+    const row = await repo.findActiveByMint(mint);
+    return row ? rowToSolanaDataAssetDetailResult(row) : null;
 }
 
 function readOptionalInt(args: Record<string, unknown>, key: string): number | undefined {

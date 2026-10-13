@@ -308,6 +308,25 @@ async function verifyRegistry(baseUrl: string, apiKey: string): Promise<void> {
 
     const res = await fetch(new URL('api/v2/registry?limit=abc', baseUrl), { headers: { 'x-api-key': apiKey } });
     assert(res.status === 400, `non-numeric limit must 400, got ${res.status}`);
+
+    // Detail: same item shape plus the upstream row verbatim.
+    const detail = await getJson(baseUrl, apiKey, `api/v2/registry/${USDC_MINT}`);
+    assertObject(detail, 'registry detail');
+    const detailItem = assertRegistryItem(detail, 'registry detail');
+    assert(detailItem.mint === USDC_MINT, 'detail.mint must echo the path mint');
+    assertObject(detail.upstream, 'registry detail.upstream');
+    assert(detail.upstream.mint_address === USDC_MINT, 'detail.upstream.mint_address must be the raw upstream mint');
+    assert(typeof detail.upstream.token === 'string', 'detail.upstream.token must be the raw upstream symbol');
+    assertNullableString(detail.generatedAt, 'registry detail.generatedAt');
+    assert(detail.syncedAt === null || typeof detail.syncedAt === 'number', 'detail.syncedAt must be a number or null');
+    assertObject(detail.provider, 'registry detail.provider');
+
+    const missing = await fetch(new URL('api/v2/registry/11111111111111111111111111111111', baseUrl), {
+        headers: { 'x-api-key': apiKey },
+    });
+    assert(missing.status === 404, `unknown mint must 404, got ${missing.status}`);
+    const malformed = await fetch(new URL('api/v2/registry/not-a-mint', baseUrl), { headers: { 'x-api-key': apiKey } });
+    assert(malformed.status === 400, `malformed mint must 400, got ${malformed.status}`);
 }
 
 async function main(): Promise<void> {

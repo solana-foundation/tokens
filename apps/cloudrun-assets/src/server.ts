@@ -150,7 +150,11 @@ import {
 } from './handlers/launchpadAdminActions';
 import { listByQuoteMints as launchpadListByQuoteMints, type LaunchpadReadsRepo } from './handlers/launchpadReads';
 import { solanaDataJobs, type SolanaDataCronDeps, type SolanaDataJobHandler } from './handlers/crons.solanaData';
-import { listAssets as solanaDataAssetsList, type SolanaDataReadsRepo } from './handlers/solanaDataReads';
+import {
+    getByMint as solanaDataAssetsGetByMint,
+    listAssets as solanaDataAssetsList,
+    type SolanaDataReadsRepo,
+} from './handlers/solanaDataReads';
 import { depegJobs, type DepegCronDeps, type DepegJobHandler } from './handlers/crons.depeg';
 import { trendingJobs, type TrendingCronDeps, type TrendingJobHandler } from './handlers/crons.trending';
 import {
@@ -316,6 +320,7 @@ const ATOMIC_RETRY_QUERY_NAMES = new Set([
     'prestocksGetLatestByMints',
     'launchpadListByQuoteMints',
     'solanaDataAssetsList',
+    'solanaDataAssetsGetByMint',
     'stockOhlcvList',
     'ohlcvBounds',
     'ohlcvList',
@@ -547,6 +552,7 @@ export function createApp(deps: ServerDeps) {
     queries.prestocksGetLatestByMints = args => prestocksGetLatestByMints(deps.prestocksReadsRepo, args);
     queries.launchpadListByQuoteMints = args => launchpadListByQuoteMints(deps.launchpadReadsRepo, args);
     queries.solanaDataAssetsList = args => solanaDataAssetsList(deps.solanaDataReadsRepo, args);
+    queries.solanaDataAssetsGetByMint = args => solanaDataAssetsGetByMint(deps.solanaDataReadsRepo, args);
     queries.stockOhlcvList = args => listStockOhlcv(deps.ohlcvReadsRepo, args);
     queries.ohlcvBounds = args => getOhlcvBounds(deps.ohlcvReadsRepo, args);
     queries.ohlcvList = args => listOhlcv(deps.ohlcvReadsRepo, args);

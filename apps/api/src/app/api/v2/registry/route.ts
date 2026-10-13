@@ -3,7 +3,9 @@ import { Effect } from 'effect';
 import { route } from '@/effect/next-route';
 import { withStaleFallback } from '@/effect/stale-response-cache';
 import { BadRequestError, decodeLimit, decodeOffset } from '@tokens/effect';
-import { solanaDataAssetsList, type SolanaDataAssetResult } from '@/lib/cloudrun';
+import { solanaDataAssetsList } from '@/lib/cloudrun';
+
+import { toRegistryItem, type V2RegistryResponse } from './_shared';
 
 /**
  * GET /api/v2/registry — the Project Canon asset registry: every Solana asset the
@@ -20,56 +22,6 @@ const DEFAULT_LIMIT = '500';
 const MAX_LIMIT = 5000;
 const FILTER_MAX_LENGTH = 80;
 const STALE_TTL_SECONDS = 60 * 60;
-
-export interface V2RegistryItem {
-    mint: string;
-    symbol: string;
-    name: string | null;
-    logoURI: string | null;
-    /** True when tokens.xyz has a token page for the mint (`/token/{mint}`). */
-    hasTokenPage: boolean;
-    /** Foundation taxonomy, top to leaf. */
-    group: string | null;
-    category: string | null;
-    assetClass: string | null;
-    alliumClass: string | null;
-    alliumValueUsd: number | null;
-    rwaClass: string | null;
-    rwaValueUsd: number | null;
-    marketCapUsd: number | null;
-    /** Upstream row order, 0-based; stable across pages. */
-    rank: number;
-}
-
-// Type alias (not interface) so the payload satisfies withStaleFallback's
-// Record<string, unknown> bound via the implicit index signature.
-export type V2RegistryResponse = {
-    /** Upstream `generatedAt` (ISO 8601) of the synced snapshot; null before the first sync. */
-    generatedAt: string | null;
-    /** Our last successful sync, unix ms; null before the first sync. */
-    syncedAt: number | null;
-    total: number;
-    items: V2RegistryItem[];
-};
-
-function toItem(row: SolanaDataAssetResult): V2RegistryItem {
-    return {
-        mint: row.mint,
-        symbol: row.symbol,
-        name: row.name,
-        logoURI: row.logoURI,
-        hasTokenPage: row.hasTokenPage,
-        group: row.group,
-        category: row.category,
-        assetClass: row.assetClass,
-        alliumClass: row.alliumClass,
-        alliumValueUsd: row.alliumValueUsd,
-        rwaClass: row.rwaClass,
-        rwaValueUsd: row.rwaValueUsd,
-        marketCapUsd: row.marketCapUsd,
-        rank: row.rank,
-    };
-}
 
 function decodeFilter(url: URL, key: string): Effect.Effect<string | undefined, BadRequestError> {
     const raw = url.searchParams.get(key);
@@ -108,7 +60,7 @@ export const GET = route(
                     generatedAt: result.generatedAt,
                     syncedAt: result.syncedAt,
                     total: result.total,
-                    items: result.items.map(toItem),
+                    items: result.items.map(toRegistryItem),
                 };
                 return response;
             });

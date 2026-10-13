@@ -51,6 +51,7 @@ import type {
     SolanaDataProviderMetadataUpdate,
 } from './handlers/crons.solanaData';
 import type {
+    SolanaDataAssetDetailRow,
     SolanaDataAssetReadRow,
     SolanaDataAssetsListFilters,
     SolanaDataReadsRepo,
@@ -5879,6 +5880,34 @@ export function makePostgresSolanaDataReadsRepo(sql: Sql): SolanaDataReadsRepo {
                 LEFT JOIN page ON true
                 ORDER BY page.source_rank ASC NULLS LAST
             `;
+        },
+
+        async findActiveByMint(mint: string) {
+            // Same identity resolution as the page query, for one row, plus the
+            // stored upstream snapshot (`raw_json`) and the provider fallback.
+            const rows = await sql<SolanaDataAssetDetailRow[]>`
+                SELECT r.mint, r.symbol,
+                       COALESCE(NULLIF(vm.name, ''), NULLIF(t.name, ''), r.provider_name) AS name,
+                       COALESCE(NULLIF(vm.logo_uri, ''), NULLIF(t.logo_uri, ''), r.provider_logo_uri) AS logo_uri,
+                       ${sql.unsafe(logoCdnColumn('r.mint'))},
+                       (
+                           t.address IS NOT NULL
+                           OR vm.mint IS NOT NULL
+                           OR EXISTS (SELECT 1 FROM asset_variants av WHERE av.mint = r.mint AND av.is_active = true)
+                       ) AS has_token_page,
+                       r.group_name, r.category, r.asset_class,
+                       r.allium_asset_class, r.rwa_asset_class,
+                       r.allium_asset_value_usd, r.rwa_asset_value_usd, r.coingecko_market_cap_usd,
+                       r.source_rank,
+                       r.raw_json, r.source_generated_at, r.last_synced_at,
+                       r.provider_name, r.provider_logo_uri, r.provider_fetched_at
+                FROM solana_data_assets_latest r
+                LEFT JOIN variant_markets_latest vm ON vm.mint = r.mint
+                LEFT JOIN tokens t ON t.address = r.mint
+                WHERE r.mint = ${mint} AND r.is_active = true
+                LIMIT 1
+            `;
+            return rows[0] ?? null;
         },
     };
 }

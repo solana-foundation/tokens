@@ -295,13 +295,18 @@ export function decodeFilters(raw: string): RegistryFilter[] {
 
 // ---- Sort codec: `sort` = "<columnId>.asc|desc" over the sortable table columns ----
 
-export const SORTABLE_COLUMN_IDS = ['token', 'rwaValueUsd', 'alliumValueUsd', 'marketCapUsd'] as const;
+export const SORTABLE_COLUMN_IDS = ['token', 'providerValueUsd', 'marketCapUsd'] as const;
 export type SortableColumnId = (typeof SORTABLE_COLUMN_IDS)[number];
+
+/** The two provider value columns merged into "Value"; bookmarked sort URLs keep working. */
+const LEGACY_SORT_ALIASES: Readonly<Record<string, SortableColumnId>> = {
+    alliumValueUsd: 'providerValueUsd',
+    rwaValueUsd: 'providerValueUsd',
+};
 
 export const SORT_COLUMN_LABELS: Readonly<Record<SortableColumnId, string>> = {
     token: 'Token',
-    rwaValueUsd: 'RWA.xyz value',
-    alliumValueUsd: 'Allium value',
+    providerValueUsd: 'Value',
     marketCapUsd: 'Market cap',
 };
 
@@ -315,8 +320,10 @@ export function encodeSort(sort: RegistrySort): string {
 }
 
 export function decodeSort(raw: string): RegistrySort | null {
-    const [id, direction] = raw.split('.');
-    if (!id || !(SORTABLE_COLUMN_IDS as readonly string[]).includes(id)) return null;
+    const [rawId, direction] = raw.split('.');
+    if (!rawId) return null;
+    const id = LEGACY_SORT_ALIASES[rawId] ?? rawId;
+    if (!(SORTABLE_COLUMN_IDS as readonly string[]).includes(id)) return null;
     if (direction !== 'asc' && direction !== 'desc') return null;
     return { id: id as SortableColumnId, desc: direction === 'desc' };
 }
