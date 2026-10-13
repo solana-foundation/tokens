@@ -19,7 +19,8 @@ export function RegistryGroupTabs({
 }: {
     /** Distinct `group` values in upstream order; "All" is prepended here. */
     groups: readonly string[];
-    value: string;
+    /** Selected tab, or null when the group chips do not map to one pill (none is highlighted). */
+    value: string | null;
     onValueChange: (next: string) => void;
 }) {
     const items = useMemo(
@@ -35,10 +36,12 @@ export function RegistryGroupTabs({
                 '[&_span.absolute.inset-0]:!bg-black/[0.04] dark:[&_span.absolute.inset-0]:!bg-white/[0.08] [&_span.absolute.inset-0]:!shadow-none',
             )}
             items={items}
-            value={value}
+            // An empty value matches no item, so nothing is highlighted while the
+            // chips hold a combination the pills cannot express.
+            value={value ?? ''}
             onValueChange={next => {
                 if (next === value) return;
-                trackEvent('registry_group_switched', { group: next, previous_group: value });
+                trackEvent('registry_group_switched', { group: next, previous_group: value ?? 'none' });
                 onValueChange(next);
             }}
             aria-label="Registry group"
