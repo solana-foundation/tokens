@@ -417,7 +417,7 @@ export function makePostgresAdminMutationsRepo(sql: Sql): AdminMutationsRepo {
                     VALUES (
                         ${randomId('avr')}, ${args.assetId}, 'solana', ${args.mint}, ${args.variantId},
                         ${args.kind}, ${args.trustTier}, ${args.stockVariantTier},
-                        ${JSON.stringify(args.tags)}::jsonb,
+                        ${tx.json(args.tags as never)}::jsonb, -- tx.json, not JSON.stringify: see db/hardDelete.ts
                         ${args.issuer}, ${args.issuerUrl}, ${args.label},
                         ${args.isActive}, ${now}, ${now}
                     )
@@ -486,7 +486,7 @@ export function makePostgresAdminMutationsRepo(sql: Sql): AdminMutationsRepo {
                         variant_id = ${nextVariantId},
                         kind = ${args.kind !== undefined ? args.kind : current.kind},
                         trust_tier = ${args.trustTier !== undefined ? args.trustTier : current.trust_tier},
-                        tags = ${JSON.stringify(nextTags)}::jsonb,
+                        tags = ${tx.json(nextTags as never)}::jsonb,
                         label = ${args.label !== undefined ? args.label : current.label},
                         issuer = ${args.issuer !== undefined ? args.issuer : current.issuer},
                         issuer_url = ${args.issuerUrl !== undefined ? args.issuerUrl : current.issuer_url},
