@@ -1,54 +1,39 @@
-/** One row of `GET data.solana.com/v1/assets` (solana-data DAT-553 contract). */
-export interface AssetRegistryApiRow {
-    token: string;
-    mint_address: string;
-    /** Foundation taxonomy, top to leaf: group > category > class. */
+/**
+ * One item of `GET /api/v2/registry` (apps/api/src/app/api/v2/registry/route.ts).
+ * Mirrored here rather than imported: apps/web only talks to the API over HTTP.
+ */
+export interface V2RegistryItem {
+    mint: string;
+    symbol: string;
+    name: string | null;
+    logoURI: string | null;
+    hasTokenPage: boolean;
     group: string | null;
     category: string | null;
-    class: string | null;
-    allium_asset_class: string | null;
-    rwa_asset_class: string | null;
-    allium_asset_value_usd: string | null;
-    rwa_asset_value_usd: string | null;
-    coingecko_market_cap: string | null;
+    assetClass: string | null;
+    alliumClass: string | null;
+    alliumValueUsd: number | null;
+    rwaClass: string | null;
+    rwaValueUsd: number | null;
+    marketCapUsd: number | null;
+    rank: number;
 }
 
-export interface AssetRegistryApiResponse {
-    source: string;
-    data: {
-        generatedAt: string;
-        truncated: boolean;
-        rows: AssetRegistryApiRow[];
-    };
-}
-
-/** One entry of `POST /api/v1/assets/market-snapshots`, in request order. */
-export interface MarketSnapshotEntry {
-    address: string;
-    token: {
-        address: string;
-        symbol: string;
-        name: string;
-        logoURI?: string | null;
-    } | null;
-    hasMarket: boolean;
-}
-
-/** One row of `GET /api/v1/assets/curated?groupBy=mint`; only the fields we read. */
-export interface CuratedMintEntry {
-    primaryVariant: {
-        mint: string;
-        name?: string | null;
-        market?: { logoURI?: string | null } | null;
-    } | null;
+export interface V2RegistryResponse {
+    /** Upstream data.solana.com `generatedAt` (ISO 8601); null before the first sync. */
+    generatedAt: string | null;
+    /** Our last successful sync, unix ms; null before the first sync. */
+    syncedAt: number | null;
+    total: number;
+    items: V2RegistryItem[];
 }
 
 export interface RegistryRow {
     symbol: string;
     mintAddress: string;
-    /** Display name from the Tokens platform API, else Birdeye metadata; null when unknown to both. */
+    /** Display name resolved by the platform (its index first, Birdeye fallback); null when unknown to both. */
     name: string | null;
-    /** Per-mint logo: platform index first, then Birdeye token metadata; never a symbol-level override. */
+    /** Per-mint logo: first-party CDN copy, platform index, then the Birdeye fallback; never a symbol-level override. */
     logoURI: string | null;
     /** True when the Tokens API knows this mint, so `/token/<mint>` resolves. */
     hasTokenPage: boolean;

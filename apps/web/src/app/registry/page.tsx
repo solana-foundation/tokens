@@ -44,9 +44,9 @@ export default function RegistryPage() {
 
 /**
  * `connection()` keeps the registry fetch out of the build-time prerender so
- * the static shell never depends on SOLANA_DATA_API_KEY or the upstream
- * being reachable; the hourly `use cache` inside fetchRegistry still applies
- * across requests.
+ * the static shell never depends on the platform API being reachable; the
+ * `use cache` inside fetchRegistry (one GET /api/v2/registry read) still
+ * applies across requests.
  */
 async function RegistryLoader() {
     await connection();

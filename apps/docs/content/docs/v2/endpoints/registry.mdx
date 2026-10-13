@@ -1,0 +1,76 @@
+---
+title: Asset Registry
+description: The Solana Foundation's canonical asset registry — every classified Solana asset with its taxonomy, Allium and RWA.xyz classifications, and values.
+---
+
+`GET /v2/registry` is a Platform API endpoint authenticated with `x-api-key`
+(base URL `https://api.tokens.xyz/v2`; see the [Quickstart](/docs/v2/quickstart)). It requires
+only the default `assets:read` scope. Error codes and cache windows are on
+[Rate limits & errors](/docs/v2/rate-limits-and-errors).
+
+The registry is the Solana Foundation data team's **Project Canon**: one row per Solana mint they
+classify, in a three-tier taxonomy (`group` › `category` › `assetClass`, e.g. `RWA` › `Equities` ›
+`Stocks`) alongside the independent [Allium](https://www.allium.so) and [RWA.xyz](https://www.rwa.xyz)
+asset classes and on-chain values, plus the CoinGecko market cap. It is the dataset behind
+[tokens.xyz/registry](https://tokens.xyz/registry).
+
+We sync it hourly from the data team's feed into our index and serve it from there, so a call
+here never waits on an upstream. Identity (`name`, `logoURI`, `hasTokenPage`) is resolved from our
+own token index at read time; the taxonomy and values are the data team's as delivered.
+
+## `GET /v2/registry`
+
+- **Scope**: `assets:read`
+- **Query params**:
+  - `limit` (1–5000, default 500), `offset` — pagination over the full ordered registry. The whole
+    registry fits in one page (`limit=5000`).
+  - `group`, `category`, `class` — optional exact-match filters on the taxonomy tiers (case-sensitive,
+    as returned). Combine freely; `total` reflects the filtered set.
+
+```ts
+interface RegistryResponse {
+    generatedAt: string | null; // upstream snapshot timestamp (ISO 8601); null before the first sync
+    syncedAt: number | null;    // our last successful sync, unix ms
+    total: number;              // rows matching the filters (not the page length)
+    items: Array<{
+        mint: string;
+        symbol: string;
+        name: string | null;
+        logoURI: string | null;
+        hasTokenPage: boolean;  // tokens.xyz/token/{mint} resolves with identity
+        group: string | null;      // e.g. "RWA", "Crypto Native", "Stablecoins"
+        category: string | null;   // e.g. "Equities", "Fixed Income", "Fiat-Backed"
+        assetClass: string | null; // e.g. "Stocks", "US Treasuries", "USD Stablecoins"
+        alliumClass: string | null;
+        alliumValueUsd: number | null;
+        rwaClass: string | null;
+        rwaValueUsd: number | null;
+        marketCapUsd: number | null; // CoinGecko
+        rank: number;                // upstream row order, 0-based, stable across pages
+    }>;
+}
+```
+
+### Ordering
+
+Rows come back in the data team's order and `rank` preserves it across pages: by
+`coalesce(alliumValueUsd, rwaValueUsd)` descending with empties last, then by market cap. Do not
+re-sort by a three-way coalesce including market cap if you want to match tokens.xyz — that floats
+market-cap-only assets (WBTC, LINK, …) above the valued RWAs.
+
+### Freshness
+
+The data team regenerates the registry periodically; we pull it every hour and the response is
+cached for 5 minutes, so expect `generatedAt` to lag the upstream by up to about an hour. If the
+registry backend is unavailable the endpoint serves the last good payload (up to an hour old) with
+a `200` rather than a `5xx`; treat `syncedAt` as the freshness signal.
+
+### Attribution
+
+`alliumClass` / `alliumValueUsd` are Allium's classifications and values; `rwaClass` /
+`rwaValueUsd` are RWA.xyz's. Credit the provider when you display them.
+
+```bash
+curl -s "https://api.tokens.xyz/v2/registry?group=Stablecoins&limit=5" \
+  -H "x-api-key: $TOKENS_API_KEY" | jq '.total, .items[0]'
+```

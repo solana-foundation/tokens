@@ -1,0 +1,95 @@
+{
+    "uid": "tokens-assets-solana-data-sync-stale",
+    "title": "tokens-assets: no asset registry sync summary in 3h",
+    "ruleGroup": "tokens-assets-availability",
+    "folderUID": "tokens",
+    "noDataState": "Alerting",
+    "execErrState": "OK",
+    "for": "0s",
+    "data": [
+        {
+            "refId": "A",
+            "datasourceUid": "grafanacloud-logs",
+            "queryType": "range",
+            "relativeTimeRange": {
+                "from": 10800,
+                "to": 0
+            },
+            "model": {
+                "expr": "sum(count_over_time({service=~\"tokens-assets(-jobs)?-prd-us\"} | json | job=\"sync-solana-data-assets\" | event=\"solana_data_assets_sync\" [3h]))",
+                "queryType": "range",
+                "refId": "A"
+            }
+        },
+        {
+            "refId": "B",
+            "datasourceUid": "__expr__",
+            "queryType": "",
+            "relativeTimeRange": {
+                "from": 0,
+                "to": 0
+            },
+            "model": {
+                "type": "reduce",
+                "refId": "B",
+                "expression": "A",
+                "reducer": "last",
+                "settings": {
+                    "mode": "replaceNN",
+                    "replaceWithValue": 0
+                }
+            }
+        },
+        {
+            "refId": "C",
+            "datasourceUid": "__expr__",
+            "queryType": "",
+            "relativeTimeRange": {
+                "from": 0,
+                "to": 0
+            },
+            "model": {
+                "type": "threshold",
+                "refId": "C",
+                "expression": "B",
+                "conditions": [
+                    {
+                        "evaluator": {
+                            "type": "lt",
+                            "params": [1]
+                        },
+                        "operator": {
+                            "type": "and"
+                        },
+                        "query": {
+                            "params": ["B"]
+                        },
+                        "reducer": {
+                            "type": "last",
+                            "params": []
+                        },
+                        "type": "query"
+                    }
+                ]
+            }
+        }
+    ],
+    "condition": "C",
+    "labels": {
+        "service": "tokens-assets",
+        "severity": "warning",
+        "slack": "true"
+    },
+    "notification_settings": {
+        "receiver": "tokens-slack",
+        "group_by": ["grafana_folder", "alertname"],
+        "group_wait": "30s",
+        "group_interval": "5m",
+        "repeat_interval": "4h"
+    },
+    "annotations": {
+        "summary": "The asset registry sync (data.solana.com) has not completed in 3 hours",
+        "description": "No solana_data_assets_sync log line from sync-solana-data-assets in 3 hours (two missed hourly ticks). Either the Cloud Scheduler job is failing (check the scheduler run history and the job HTTP status: 404 solana_data_jobs_disabled means SOLANA_DATA_API_KEY is missing on the worker; 500 means data.solana.com is failing or the upsert failed), or the worker is down. GET /api/v2/registry and tokens.xyz/registry keep serving the last synced rows, so this is staleness, not an outage.",
+        "runbook_url": "https://github.com/solana-foundation/tokens/blob/main/docs/operations/solana-data-registry.md"
+    }
+}

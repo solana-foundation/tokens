@@ -90,6 +90,13 @@ export {
 } from './launchpadReads';
 
 export {
+    solanaDataAssetsList,
+    type SolanaDataAssetResult,
+    type SolanaDataAssetsListArgs,
+    type SolanaDataAssetsListResult,
+} from './solanaDataReads';
+
+export {
     getLatestByAssetId as assetMarketsGetLatestByAssetId,
     getLatestByAssetIds as assetMarketsGetLatestByAssetIds,
     type GetLatestByAssetIdArgs as AssetMarketsGetLatestByAssetIdArgs,
