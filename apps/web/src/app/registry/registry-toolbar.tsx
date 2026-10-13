@@ -65,24 +65,39 @@ function ExportIcon({ className }: { className?: string }) {
     );
 }
 
-/**
- * Search box + editable filter chips + CSV export.
- * Esc clears everything unless a chip editor popover is open (Esc closes it).
- */
-export function RegistryToolbar({
-    state,
-    options,
+/** CSV export; sits in the group-tabs row (the explore page keeps its controls on that side too). */
+export function RegistryExportButton({
     isFiltered,
     matchedCount,
     onExportCsv,
 }: {
-    state: RegistryUrlState;
-    options: CategoryOptions;
-    /** True when search/filters exclude some rows; the export button then shows the matched count. */
+    /** True when search/filters exclude some rows; the button then shows the matched count. */
     isFiltered: boolean;
     matchedCount: number;
     onExportCsv: () => void;
 }) {
+    return (
+        <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="group/export relative h-9 overflow-visible rounded-full border-border-medium bg-white px-4 font-sans text-[13px] text-text-extra-high shadow-none hover:bg-gray-50/60 sm:w-auto"
+            onClick={onExportCsv}
+            disabled={matchedCount === 0}
+            aria-label={`Export ${matchedCount.toLocaleString()} assets as CSV`}
+        >
+            <ExportIcon className="size-4" />
+            Export CSV
+            <ExportCountBadge count={isFiltered ? matchedCount : null} />
+        </Button>
+    );
+}
+
+/**
+ * Search box + editable filter chips.
+ * Esc clears everything unless a chip editor popover is open (Esc closes it).
+ */
+export function RegistryToolbar({ state, options }: { state: RegistryUrlState; options: CategoryOptions }) {
     const { hasActive, clearAll } = state;
     const searchRef = useRef<HTMLInputElement>(null);
 
@@ -112,53 +127,34 @@ export function RegistryToolbar({
     }, [hasActive, clearAll]);
 
     return (
-        <div className="flex flex-col gap-3">
-            <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
-                <div className="flex min-w-0 flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center">
-                    <div className="relative sm:w-[280px]">
-                        <Input
-                            ref={searchRef}
-                            type="search"
-                            value={state.q}
-                            onChange={event => state.setQ(event.target.value)}
-                            placeholder="Search by name, symbol, or mint"
-                            aria-label="Search registry"
-                            aria-keyshortcuts="/"
-                            className="h-9 w-full rounded-full border-border-medium bg-white pl-4 pr-10 font-sans text-[13px] text-text-extra-high shadow-none placeholder:text-text-low focus-visible:ring-border-medium"
-                        />
-                        {/* Same key-cap treatment as the nav search hint; hidden once there is a query. */}
-                        {state.q ? null : (
-                            <kbd
-                                aria-hidden="true"
-                                className="pointer-events-none absolute right-2.5 top-1/2 hidden size-5 -translate-y-1/2 items-center justify-center rounded-sm bg-gray-100 font-sans text-[11px] font-medium leading-none text-text-medium sm:flex"
-                            >
-                                /
-                            </kbd>
-                        )}
-                    </div>
-                    <RegistryFilterChips state={state} options={options} />
-                    {hasActive ? (
-                        <span className="ml-1 text-[10px] uppercase text-muted-foreground">
-                            press <Kbd className="w-8 font-bold">esc</Kbd> to clear
-                        </span>
-                    ) : null}
-                </div>
-                <div className="flex shrink-0 lg:justify-end">
-                    <Button
-                        type="button"
-                        variant="outline"
-                        size="sm"
-                        className="group/export relative h-9 overflow-visible rounded-full border-border-medium bg-white px-4 font-sans text-[13px] text-text-extra-high shadow-none hover:bg-gray-50/60 sm:w-auto"
-                        onClick={onExportCsv}
-                        disabled={matchedCount === 0}
-                        aria-label={`Export ${matchedCount.toLocaleString()} assets as CSV`}
+        <div className="flex min-w-0 flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center">
+            <div className="relative sm:w-[280px]">
+                <Input
+                    ref={searchRef}
+                    type="search"
+                    value={state.q}
+                    onChange={event => state.setQ(event.target.value)}
+                    placeholder="Search by name, symbol, or mint"
+                    aria-label="Search registry"
+                    aria-keyshortcuts="/"
+                    className="h-9 w-full rounded-full border-border-medium bg-white pl-4 pr-10 font-sans text-[13px] text-text-extra-high shadow-none placeholder:text-text-low focus-visible:ring-border-medium"
+                />
+                {/* Same key-cap treatment as the nav search hint; hidden once there is a query. */}
+                {state.q ? null : (
+                    <kbd
+                        aria-hidden="true"
+                        className="pointer-events-none absolute right-2.5 top-1/2 hidden size-5 -translate-y-1/2 items-center justify-center rounded-sm bg-gray-100 font-sans text-[11px] font-medium leading-none text-text-medium sm:flex"
                     >
-                        <ExportIcon className="size-4" />
-                        Export CSV
-                        <ExportCountBadge count={isFiltered ? matchedCount : null} />
-                    </Button>
-                </div>
+                        /
+                    </kbd>
+                )}
             </div>
+            <RegistryFilterChips state={state} options={options} />
+            {hasActive ? (
+                <span className="ml-1 text-[10px] uppercase text-muted-foreground">
+                    press <Kbd className="w-8 font-bold">esc</Kbd> to clear
+                </span>
+            ) : null}
         </div>
     );
 }

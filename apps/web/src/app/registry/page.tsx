@@ -81,11 +81,20 @@ function RegistryUnavailable() {
     );
 }
 
+/** Matches the streamed region's footprint: group pills, the toolbar row, then the table card. */
 function RegistryFallback() {
     return (
         <section className="relative mx-auto max-w-7xl px-4 md:px-6 pb-12 md:pb-24">
-            <Skeleton className="h-10 w-full max-w-[360px] rounded-full bg-gray-50" />
-            <Skeleton className="mt-4 h-[560px] w-full rounded-[24px] bg-gray-50" />
+            <div className="mb-4 flex items-center justify-between gap-3">
+                <div className="flex min-w-0 flex-1 items-center gap-2 overflow-x-hidden pb-2 -mb-2">
+                    {Array.from({ length: 4 }, (_, index) => (
+                        <Skeleton key={index} className="h-10 w-24 shrink-0 rounded-full bg-gray-100" />
+                    ))}
+                </div>
+                <Skeleton className="h-9 w-32 shrink-0 rounded-full bg-gray-100" />
+            </div>
+            <Skeleton className="h-9 w-full max-w-[280px] rounded-full bg-gray-50" />
+            <Skeleton className="mt-4 h-[560px] w-full rounded-[24px] md:rounded-[32px] bg-gray-50" />
         </section>
     );
 }
