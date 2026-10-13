@@ -8,7 +8,7 @@ import type { RegistryRow } from './types';
  */
 
 export type CategoryFieldId = 'group' | 'category' | 'assetClass' | 'rwaClass' | 'alliumClass' | 'hasTokenPage';
-export type UsdFieldId = 'valueUsd' | 'alliumValueUsd' | 'rwaValueUsd' | 'marketCapUsd';
+export type UsdFieldId = 'providerValueUsd' | 'valueUsd' | 'alliumValueUsd' | 'rwaValueUsd' | 'marketCapUsd';
 export type FilterFieldId = CategoryFieldId | UsdFieldId;
 
 export type CategoryOp = 'is' | 'is_not';
@@ -87,10 +87,19 @@ export const FILTER_FIELDS: readonly FilterField[] = [
         read: row => (row.hasTokenPage ? 'yes' : 'no'),
     },
     {
-        id: 'valueUsd',
+        // Same number as the table's "Value" column: Allium, else RWA.xyz; never market cap.
+        id: 'providerValueUsd',
         kind: 'usd',
         label: 'Value',
-        synonyms: ['coalesced', 'ranking', 'size', 'aum', 'tvl'],
+        synonyms: ['onchain value', 'provider value', 'size', 'aum', 'tvl'],
+        read: row => row.providerValueUsd,
+    },
+    {
+        // The data team's ranking key (Allium → RWA.xyz → market cap); distinct from the Value column.
+        id: 'valueUsd',
+        kind: 'usd',
+        label: 'Ranking value',
+        synonyms: ['coalesced', 'ranking', 'rank value', 'market cap fallback'],
         read: row => row.valueUsd,
     },
     {

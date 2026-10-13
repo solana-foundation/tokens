@@ -9,6 +9,7 @@ import {
     encodeSort,
     formatFilter,
     parseUsdInput,
+    type RegistryFilter,
 } from './filters';
 import type { RegistryRow } from './types';
 
@@ -196,6 +197,23 @@ describe('filter url codec', () => {
         expect(decodeFilters('[["bogus","is","x"],["assetClass","is","Stocks"],["valueUsd","gt","abc"]]')).toEqual([
             { field: 'assetClass', op: 'is', value: 'Stocks' },
         ]);
+    });
+});
+
+describe('value fields', () => {
+    test('"Value" filters the same number the Value column shows, never the market-cap fallback', () => {
+        const mcapOnly = row({ alliumValueUsd: null, rwaValueUsd: null, marketCapUsd: 5_000_000, valueUsd: 5_000_000 });
+        const withProvider = row({
+            alliumValueUsd: null,
+            rwaValueUsd: 2_000_000,
+            providerValueUsd: 2_000_000,
+            providerValueSource: 'rwa',
+            valueUsd: 2_000_000,
+        });
+        const filters: RegistryFilter[] = [{ field: 'providerValueUsd', op: 'gt', value: 1_000_000 }];
+        expect(applyFilters([mcapOnly, withProvider], { q: '', filters })).toEqual([withProvider]);
+        const ranking: RegistryFilter[] = [{ field: 'valueUsd', op: 'gt', value: 1_000_000 }];
+        expect(applyFilters([mcapOnly, withProvider], { q: '', filters: ranking })).toEqual([mcapOnly, withProvider]);
     });
 });
 
