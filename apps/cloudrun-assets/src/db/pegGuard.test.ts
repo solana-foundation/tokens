@@ -21,20 +21,26 @@ interface RecordedQuery {
 
 type Responder = (query: RecordedQuery) => unknown[];
 
-function makeFakeSql(respond: Responder = () => []): { sql: Sql; queries: RecordedQuery[] } {
+function makeFakeSql(respond: Responder = () => []): { sql: Sql; queries: RecordedQuery[]; transactions: number[] } {
     const queries: RecordedQuery[] = [];
-    const sql = Object.assign(
-        async (strings: TemplateStringsArray, ...values: unknown[]) => {
-            const query = { text: strings.join('$'), params: values };
-            queries.push(query);
-            return respond(query);
+    /** Query count at the end of each `sql.begin` callback. */
+    const transactions: number[] = [];
+    const tagged = async (strings: TemplateStringsArray, ...values: unknown[]) => {
+        const query = { text: strings.join('$'), params: values };
+        queries.push(query);
+        return respond(query);
+    };
+    const sql = Object.assign(tagged, {
+        array: (value: unknown) => value,
+        json: (value: unknown) => value,
+        async begin<T>(run: (tx: Sql) => Promise<T>): Promise<T> {
+            const before = queries.length;
+            const result = await run(sql);
+            transactions.push(queries.length - before);
+            return result;
         },
-        {
-            array: (value: unknown) => value,
-            json: (value: unknown) => value,
-        },
-    ) as unknown as Sql;
-    return { sql, queries };
+    }) as unknown as Sql;
+    return { sql, queries, transactions };
 }
 
 const NOW = 1_789_000_000_000;
@@ -81,10 +87,10 @@ function fxRow(overrides: Partial<FxRateRow> = {}): FxRateRow {
 }
 
 describe('makePostgresPegGuardRepo', () => {
-    it('upsertLatest keeps the previous last_ok_at on a failed evaluation (COALESCE) and ids rows pgl_*', async () => {
+    it('writeObservations keeps the previous last_ok_at on a failed evaluation (COALESCE) and ids rows pgl_*', async () => {
         const { sql, queries } = makeFakeSql();
         const repo = makePostgresPegGuardRepo(sql);
-        await repo.upsertLatest([latestRow({ ok: false, errorMessage: 'thin_liquidity', lastOkAt: null })]);
+        await repo.writeObservations([latestRow({ ok: false, errorMessage: 'thin_liquidity', lastOkAt: null })], []);
         expect(queries).toHaveLength(1);
         const q = queries[0]!;
         expect(q.text).toContain('INSERT INTO peg_guard_latest');
@@ -95,19 +101,22 @@ describe('makePostgresPegGuardRepo', () => {
         expect(q.params[q.params.length - 1]).toBeNull();
     });
 
-    it('upsertLatest COALESCEs the reference columns so an unresolved run keeps the high-water mark', async () => {
+    it('writeObservations COALESCEs the reference columns so an unresolved run keeps the high-water mark', async () => {
         const { sql, queries } = makeFakeSql();
         const repo = makePostgresPegGuardRepo(sql);
-        await repo.upsertLatest([
-            latestRow({
-                ok: false,
-                errorMessage: 'no_reference',
-                referenceKind: 'high_water',
-                referenceUsd: null,
-                referenceUpdatedAt: null,
-                lastOkAt: null,
-            }),
-        ]);
+        await repo.writeObservations(
+            [
+                latestRow({
+                    ok: false,
+                    errorMessage: 'no_reference',
+                    referenceKind: 'high_water',
+                    referenceUsd: null,
+                    referenceUpdatedAt: null,
+                    lastOkAt: null,
+                }),
+            ],
+            [],
+        );
         const q = queries[0]!;
         expect(q.text).toContain('reference_kind = COALESCE(EXCLUDED.reference_kind, peg_guard_latest.reference_kind)');
         expect(q.text).toContain('reference_usd = COALESCE(EXCLUDED.reference_usd, peg_guard_latest.reference_usd)');
@@ -119,12 +128,13 @@ describe('makePostgresPegGuardRepo', () => {
         expect(q.params).toContain('no_reference');
     });
 
-    it('upsertLatest writes reference_usd and reference_updated_at in column order', async () => {
+    it('writeObservations writes reference_usd and reference_updated_at in column order', async () => {
         const { sql, queries } = makeFakeSql();
         const repo = makePostgresPegGuardRepo(sql);
-        await repo.upsertLatest([
-            latestRow({ referenceKind: 'high_water', referenceUsd: 1.14, referenceUpdatedAt: NOW - 60_000 }),
-        ]);
+        await repo.writeObservations(
+            [latestRow({ referenceKind: 'high_water', referenceUsd: 1.14, referenceUpdatedAt: NOW - 60_000 })],
+            [],
+        );
         const q = queries[0]!;
         expect(q.text).toContain('reference_kind, reference_usd, reference_updated_at');
         const kindIndex = q.params.indexOf('high_water');
@@ -133,11 +143,12 @@ describe('makePostgresPegGuardRepo', () => {
         expect(q.params[kindIndex + 2]).toBe(NOW - 60_000);
     });
 
-    it('upsertLatest writes one statement per row and updates every observation column', async () => {
-        const { sql, queries } = makeFakeSql();
+    it('writeObservations writes one statement per row and updates every observation column', async () => {
+        const { sql, queries, transactions } = makeFakeSql();
         const repo = makePostgresPegGuardRepo(sql);
-        await repo.upsertLatest([latestRow(), latestRow({ address: 'other', tier: 'warning' })]);
+        await repo.writeObservations([latestRow(), latestRow({ address: 'other', tier: 'warning' })], []);
         expect(queries).toHaveLength(2);
+        expect(transactions).toEqual([2]);
         for (const column of [
             'tier = EXCLUDED.tier',
             'prev_tier = EXCLUDED.prev_tier',
@@ -153,7 +164,58 @@ describe('makePostgresPegGuardRepo', () => {
         expect(queries[1]!.params).toContain('warning');
     });
 
-    it('insertTierEvents ids rows pgte_* and stores liquidity and the trigger source', async () => {
+    it('writeObservations puts the rows and their tier events in one transaction and skips an empty write', async () => {
+        const { sql, queries, transactions } = makeFakeSql();
+        const repo = makePostgresPegGuardRepo(sql);
+        await repo.writeObservations([], []);
+        expect(queries).toHaveLength(0);
+        expect(transactions).toHaveLength(0);
+        const event: PegGuardTierEventRow = {
+            chain: 'solana',
+            address: USDC,
+            oldTier: 'ok',
+            newTier: 'warning',
+            deviationPct: -1.5,
+            priceUsd: 0.985,
+            pegUsd: 1,
+            liquidityUsd: 2_000_000,
+            referenceKind: 'fixed',
+            source: 'sweep',
+            observedAt: NOW,
+        };
+        await repo.writeObservations([latestRow({ tier: 'warning', prevTier: 'ok' })], [event]);
+        expect(transactions).toEqual([2]);
+        expect(queries[0]!.text).toContain('INSERT INTO peg_guard_latest');
+        expect(queries[1]!.text).toContain('INSERT INTO peg_guard_tier_events');
+    });
+
+    it('writeObservations locks rows in (chain, address) order regardless of caller order', async () => {
+        const { sql, queries } = makeFakeSql();
+        const repo = makePostgresPegGuardRepo(sql);
+        const event = (address: string): PegGuardTierEventRow => ({
+            chain: 'solana',
+            address,
+            oldTier: 'ok',
+            newTier: 'warning',
+            deviationPct: -1.5,
+            priceUsd: 0.985,
+            pegUsd: 1,
+            liquidityUsd: 2_000_000,
+            referenceKind: 'fixed',
+            source: 'manual',
+            observedAt: NOW,
+        });
+        await repo.writeObservations(
+            [latestRow({ address: 'Zmint' }), latestRow({ address: 'Amint' }), latestRow({ address: 'Mmint' })],
+            [event('Zmint'), event('Amint')],
+        );
+        expect(queries).toHaveLength(5);
+        // address is the third value of the latest upsert and the third of the event insert (after id, chain).
+        expect(queries.slice(0, 3).map(q => q.params[2])).toEqual(['Amint', 'Mmint', 'Zmint']);
+        expect(queries.slice(3).map(q => q.params[2])).toEqual(['Amint', 'Zmint']);
+    });
+
+    it('writeObservations ids tier event rows pgte_* and stores liquidity and the trigger source', async () => {
         const { sql, queries } = makeFakeSql();
         const repo = makePostgresPegGuardRepo(sql);
         const event: PegGuardTierEventRow = {
@@ -169,7 +231,7 @@ describe('makePostgresPegGuardRepo', () => {
             source: 'manual',
             observedAt: NOW,
         };
-        await repo.insertTierEvents([event]);
+        await repo.writeObservations([], [event]);
         expect(queries).toHaveLength(1);
         expect(queries[0]!.text).toContain('INSERT INTO peg_guard_tier_events');
         expect(queries[0]!.text).toContain('liquidity_usd');

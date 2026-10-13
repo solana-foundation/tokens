@@ -94,11 +94,11 @@ import type { ClickhouseExtrasRepo } from './handlers/crons.clickhouse.extras';
 
 let cached: Sql | null = null;
 
-function positiveIntegerEnv(name: string, fallback: number): number {
-    const raw = process.env[name]?.trim();
+function integerEnv(env: NodeJS.ProcessEnv, name: string, fallback: number, min: number): number {
+    const raw = env[name]?.trim();
     if (!raw) return fallback;
     const parsed = Number(raw);
-    if (!Number.isInteger(parsed) || parsed < 1) {
+    if (!Number.isInteger(parsed) || parsed < min) {
         console.warn(
             JSON.stringify({
                 event: 'env_invalid_value',
@@ -112,18 +112,62 @@ function positiveIntegerEnv(name: string, fallback: number): number {
     return parsed;
 }
 
+export type PostgresServiceRole = 'api' | 'worker';
+
+/**
+ * Worker-only session timeouts (ms). `lock_timeout` turns a write blocked
+ * behind another transaction (an admin hard delete holds `peg_guard_latest`
+ * rows, for one) into "canceling statement due to lock timeout" instead of an
+ * indefinite hang; `statement_timeout` frees a wedged connection within one
+ * Cloud Run request window (540s). Both are below any legitimate worker
+ * statement; incident 2026-10-12 (peg guard silent for 50 minutes) is why.
+ * The API role sets neither: its reads already run under the request path's
+ * own retry/last-good machinery.
+ */
+const WORKER_LOCK_TIMEOUT_MS = 30_000;
+const WORKER_STATEMENT_TIMEOUT_MS = 300_000;
+
+export interface PostgresSessionOptions {
+    max: number;
+    idle_timeout: number;
+    connect_timeout: number;
+    /** Startup parameters; postgres.js forwards every key as a session GUC. */
+    connection: Record<string, string>;
+}
+
+/** Pure so the per-role options are testable; `getSql` feeds it `process.env`. */
+export function buildPostgresOptions(env: NodeJS.ProcessEnv, serviceRole: PostgresServiceRole): PostgresSessionOptions {
+    const connection: Record<string, string> = {
+        application_name: serviceRole === 'worker' ? 'cloudrun-assets-jobs' : 'cloudrun-assets',
+    };
+    if (serviceRole === 'worker') {
+        // 0 disables either timeout.
+        const lockTimeoutMs = integerEnv(env, 'PG_LOCK_TIMEOUT_MS', WORKER_LOCK_TIMEOUT_MS, 0);
+        const statementTimeoutMs = integerEnv(env, 'PG_STATEMENT_TIMEOUT_MS', WORKER_STATEMENT_TIMEOUT_MS, 0);
+        if (lockTimeoutMs > 0) connection.lock_timeout = String(lockTimeoutMs);
+        if (statementTimeoutMs > 0) connection.statement_timeout = String(statementTimeoutMs);
+    }
+    return {
+        max: integerEnv(env, 'PG_POOL_MAX', serviceRole === 'worker' ? 8 : 16, 1),
+        idle_timeout: integerEnv(env, 'PG_IDLE_TIMEOUT', 240, 1),
+        connect_timeout: integerEnv(env, 'PG_CONNECT_TIMEOUT', 3, 1),
+        connection,
+    };
+}
+
 export function getSql(): Sql {
     if (cached) return cached;
     const url = process.env.DATABASE_URL?.trim();
     if (!url) throw new Error('DATABASE_URL must be set');
-    const serviceRole = process.env.SERVICE_ROLE?.trim() === 'worker' ? 'worker' : 'api';
+    const serviceRole: PostgresServiceRole = process.env.SERVICE_ROLE?.trim() === 'worker' ? 'worker' : 'api';
+    const options = buildPostgresOptions(process.env, serviceRole);
     cached = postgres(url, {
-        max: positiveIntegerEnv('PG_POOL_MAX', serviceRole === 'worker' ? 8 : 16),
-        idle_timeout: positiveIntegerEnv('PG_IDLE_TIMEOUT', 240),
-        connect_timeout: positiveIntegerEnv('PG_CONNECT_TIMEOUT', 3),
-        connection: {
-            application_name: serviceRole === 'worker' ? 'cloudrun-assets-jobs' : 'cloudrun-assets',
-        },
+        max: options.max,
+        idle_timeout: options.idle_timeout,
+        connect_timeout: options.connect_timeout,
+        // postgres.js types `connection` as its known parameters only; arbitrary
+        // GUCs (lock_timeout, statement_timeout) are accepted at runtime.
+        connection: options.connection as unknown as NonNullable<Parameters<typeof postgres>[1]>['connection'],
         types: {
             bigint: {
                 to: 20,

@@ -210,6 +210,11 @@ export interface DepegCronDeps {
         isEnabled?: () => boolean;
         /** Env `PEG_GUARD_DRY_RUN`, falling back to `WEBACY_DEPEG_DRY_RUN`; true unless explicitly 'false'. */
         isDryRunDefault?: () => boolean;
+        /**
+         * Test seam: when `budgetMs` is 0 the `peg_guard_run_stalled` watchdog
+         * fires after this many ms (production: 60s).
+         */
+        stallLogFallbackMs?: number;
     };
 }
 

@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'bun:test';
+import { afterEach, describe, expect, it, spyOn } from 'bun:test';
 
 import type { AssetsRepo } from './handlers/assets';
 import type { AssetDeletionTombstonesRepo } from './handlers/assetDeletionTombstones';
@@ -779,5 +779,110 @@ describe('POST /jobs/:name', () => {
         const payload = (await res.json()) as { error: string; message?: string };
         expect(payload.error).toBe('handler_error');
         expect(payload.message).toBeUndefined();
+    });
+});
+
+describe('POST /jobs/:name lifecycle events', () => {
+    const spies: Array<{ mockRestore(): void }> = [];
+    afterEach(() => {
+        for (const spy of spies.splice(0)) spy.mockRestore();
+    });
+
+    function captureJson(level: 'warn' | 'error'): () => Record<string, unknown>[] {
+        const lines: Record<string, unknown>[] = [];
+        const spy = spyOn(console, level).mockImplementation((...parts: unknown[]) => {
+            const first = parts[0];
+            if (typeof first !== 'string' || !first.startsWith('{')) return;
+            lines.push(JSON.parse(first) as Record<string, unknown>);
+        });
+        spies.push(spy);
+        return () => lines;
+    }
+
+    function slowSanctumApp(delayMs: number, jobStallGraceMs?: number) {
+        const deps = emptyCronDeps();
+        deps.sanctum = {
+            async fetchAndNormalizeLsts() {
+                await new Promise(resolve => setTimeout(resolve, delayMs));
+                // `missing_env` makes the job report `skipped` with HTTP 200; only the timing matters here.
+                return { ok: false, reason: 'missing_env' };
+            },
+        };
+        return createApp({
+            ...baseDeps,
+            repo: noopRepo,
+            authToken: 'tok',
+            cronDeps: deps,
+            verifyOidc: allowOidc,
+            ...(jobStallGraceMs === undefined ? {} : { jobStallGraceMs }),
+        });
+    }
+
+    const post = (app: ReturnType<typeof createApp>, body: string) =>
+        call(app, '/jobs/sync-sanctum-lsts', {
+            method: 'POST',
+            headers: { authorization: 'Bearer jwt', 'content-type': 'application/json' },
+            body,
+        });
+
+    it('logs a structured cloudrun_assets_job_failed line when a handler throws', async () => {
+        const errors = captureJson('error');
+        const deps = emptyCronDeps();
+        deps.sanctum = {
+            async fetchAndNormalizeLsts() {
+                throw Object.assign(new Error('canceling statement due to lock timeout'), { code: '55P03' });
+            },
+        };
+        const app = createApp({ ...baseDeps, repo: noopRepo, authToken: 'tok', cronDeps: deps, verifyOidc: allowOidc });
+        const res = await post(app, '{"budgetMs":1000}');
+        expect(res.status).toBe(500);
+        const failed = errors().filter(line => line.event === 'cloudrun_assets_job_failed');
+        expect(failed).toHaveLength(1);
+        expect(failed[0]).toMatchObject({
+            job: 'sync-sanctum-lsts',
+            errorCode: '55P03',
+            errorMessage: 'canceling statement due to lock timeout',
+            revision: 'local',
+            instanceId: 'local',
+        });
+        expect(typeof failed[0]!.duration_ms).toBe('number');
+    });
+
+    it('logs job_stalled once past budget + grace and job_finished_late when the run outlives its budget', async () => {
+        const warns = captureJson('warn');
+        const app = slowSanctumApp(60, 5);
+        const res = await post(app, '{"budgetMs":10}');
+        expect(res.status).toBe(200);
+        const stalled = warns().filter(line => line.event === 'cloudrun_assets_job_stalled');
+        expect(stalled).toHaveLength(1);
+        expect(stalled[0]).toMatchObject({ job: 'sync-sanctum-lsts', budget_ms: 10, budget_declared: true });
+        const late = warns().filter(line => line.event === 'cloudrun_assets_job_finished_late');
+        expect(late).toHaveLength(1);
+        expect(late[0]).toMatchObject({ job: 'sync-sanctum-lsts', budget_ms: 10, budget_declared: true, ok: true });
+        expect(late[0]!.duration_ms as number).toBeGreaterThanOrEqual(10);
+    });
+
+    it('stays quiet for a run that finishes inside its budget', async () => {
+        const warns = captureJson('warn');
+        const app = slowSanctumApp(5, 5);
+        const res = await post(app, '{"budgetMs":5000}');
+        expect(res.status).toBe(200);
+        await new Promise(resolve => setTimeout(resolve, 20));
+        expect(warns().filter(line => String(line.event).startsWith('cloudrun_assets_job_'))).toHaveLength(0);
+    });
+
+    it('logs cloudrun_assets_job_overlap when the same job starts while a previous run is in flight', async () => {
+        const warns = captureJson('warn');
+        const app = slowSanctumApp(40);
+        const [first, second] = await Promise.all([post(app, '{"budgetMs":5000}'), post(app, '{"budgetMs":5000}')]);
+        expect(first.status).toBe(200);
+        expect(second.status).toBe(200);
+        const overlaps = warns().filter(line => line.event === 'cloudrun_assets_job_overlap');
+        expect(overlaps).toHaveLength(1);
+        expect(overlaps[0]).toMatchObject({ job: 'sync-sanctum-lsts', in_flight: 1 });
+        // Both runs finished, so a third run must not report an overlap.
+        const third = await post(app, '{"budgetMs":5000}');
+        expect(third.status).toBe(200);
+        expect(warns().filter(line => line.event === 'cloudrun_assets_job_overlap')).toHaveLength(1);
     });
 });

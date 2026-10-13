@@ -182,3 +182,49 @@ node scripts/_jobs.mjs refresh-peg-guard '{"mints":["<mint>"],"trigger":"manual"
 ```
 
 Targeted mode prices only the listed mints, writes their snapshot and tier event with `source='manual'`, and logs what the reconciler would do. Drop `dryRun` (or pass `false`) to apply. A full sweep is `{"trigger":"sweep","dryRun":true}`; add `"requireEnabled": false` to run while the flag is off. Every run ends with one `peg_guard_summary` line (`tracked`, `priced`, `fallback_priced`, `unsupported`, `issues` including `no_fx_rate`, `stale_fx` and `no_reference`, `reference_kinds{fixed, fx, high_water}`, `fx_rates{fetched, currencies, stale}`, `tier_counts`, `tier_changes`, `owned_by_webacy`, `reconciled`, `actions_*`, `skipped`, `circuit`); the `stablecoin-peg-guard-stale` alert fires when none appears for 30 minutes, and `stablecoin-peg-guard-critical` (Slack only during the shadow period) on any peg guard critical transition.
+
+### No summary while runs are starting (stall diagnosis)
+
+Added after the 2026-10-12 incident: the peg guard ran clean every 5 minutes until 16:52 UTC, then two runs logged their provider calls and went silent (no summary, no error, no circuit), six runs in between left no line at all, and the `stablecoin-peg-guard-stale` alert fired 50 minutes later with nothing to go on. The run is now bounded and names its stage.
+
+**Stages and events.** The run advances through `load_targets` (curated membership snapshot) → `load_state` (`asset_variants`/`assets`/`tokens` + `peg_guard_latest` reads) → `fetch_prices` (Birdeye `multi_price`; in parallel the fx branch marks `fx_upsert` and `fx_list` around its `peg_fx_rates_latest` write and read, then hands the stage back to `fetch_prices`, so `fetch_prices` after an `fx_rates_refreshed` line means only Birdeye is pending) → `load_fallback` (`variant_markets_latest`) → `evaluate` → `write_observations` (`peg_guard_latest` upserts and `peg_guard_tier_events` inserts in one transaction, so an abandoned write lands fully or not at all) → `load_reconcile_state` (`webacy_depeg_latest`, `asset_variant_advisories` and its events) → `apply_actions` → `summary`. `budgetMs` (60s from the scheduler body, 90s attempt deadline) bounds every stage, not only the advisory actions:
+
+| event                                                                                 | meaning                                                                                                                                                                                                                                     | fields                                        |
+| ------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------- |
+| `peg_guard_run_failed` `reason: stage_deadline`                                       | a stage outlived the remaining budget; the run returns `ok: false` (HTTP 500, so Cloud Scheduler records a failure instead of DEADLINE_EXCEEDED) and writes nothing further                                                                 | `stage`, `elapsed_ms`, `budget_ms`, `tracked` |
+| `peg_guard_run_failed` `reason: exception`                                            | a stage threw (a Postgres `canceling statement due to lock timeout` lands here with the stage that hit it); the error propagates and the dispatcher 500s                                                                                    | `stage`, `error`                              |
+| `peg_guard_run_stalled`                                                               | watchdog: the run is still going past the budget plus 5s (or 60s when `budgetMs` is 0, which turns the deadline off). With the deadline active it should never fire; when it does the event loop or the process is wedged                   | `stage`, `elapsed_ms`                         |
+| `cloudrun_assets_job_stalled` / `_job_finished_late` / `_job_failed` / `_job_overlap` | dispatcher-level, every job: still in flight 30s past the body's `budgetMs` (480s when none), finished after it, threw (`errorCode`, `errorMessage`), or started while a previous run of the same name was still in flight on this instance | `job`, `revision`, `instanceId`               |
+
+No `peg_guard_summary` is written on failure, so the stale alert still fires if every run fails; `assets-job-stalled` fires on the first `peg_guard_run_failed` or `cloudrun_assets_job_stalled` and carries the job name.
+
+**Where to look, in order**
+
+1. Loki: `{service="tokens-assets-jobs-prd-us"} | json | job="refresh-peg-guard" | event=~"peg_guard_run_.*"` and `| event=~"cloudrun_assets_job_.*"` for the window. A `stage` answers most questions on its own.
+2. Runs that left no line at all: did the handler run? Cloud Scheduler history, then the Cloud Run request log (429 `no available instance` means the 4-slot worker was saturated and the scheduler gave up at 90s before the handler started; `assets-cloudrun-no-instance` now covers the jobs service):
+
+    ```sh
+    gcloud logging read 'resource.type="cloud_scheduler_job" AND resource.labels.job_id="tokens-refresh-peg-guard-prd"' \
+      --project=tokensxyz --freshness=2h --format='value(timestamp,jsonPayload.status,jsonPayload.debugInfo)'
+    gcloud logging read 'resource.type="cloud_run_revision" AND resource.labels.service_name="tokens-assets-jobs-prd-us" AND httpRequest.requestUrl:"/jobs/refresh-peg-guard"' \
+      --project=tokensxyz --freshness=2h --format='value(timestamp,httpRequest.status,httpRequest.latency,textPayload)'
+    gcloud logging read 'resource.type="cloud_run_revision" AND resource.labels.service_name="tokens-assets-jobs-prd-us" AND textPayload:"no available instance"' \
+      --project=tokensxyz --freshness=2h --format='value(timestamp,textPayload)'
+    ```
+
+3. Postgres, while the stall is live (one-off Cloud Run job in the VPC as in the migration runbook, or Cloud SQL Studio):
+
+    ```sql
+    SELECT pid, application_name, state, wait_event_type, wait_event,
+           now() - xact_start AS xact_age, now() - query_start AS query_age,
+           pg_blocking_pids(pid) AS blocked_by, left(query, 120) AS query
+    FROM pg_stat_activity
+    WHERE datname = current_database() AND state <> 'idle'
+    ORDER BY query_age DESC;
+    ```
+
+    A `cloudrun-assets-jobs` session with `wait_event_type = 'Lock'` and `blocked_by` pointing at an admin-service pid is hard-delete contention (that transaction deletes `peg_guard_latest` rows); the worker's `lock_timeout` (30s, `PG_LOCK_TIMEOUT_MS`) now turns it into an exception line. A session `idle in transaction` for minutes is a leaked transaction; cancel it with `SELECT pg_cancel_backend(<pid>)` (then `pg_terminate_backend` if it ignores the cancel). Nothing long-running while the app reports a stall means the query never reached the server: the in-process pool (8 connections per instance, shared with whatever cron runs alongside) or the request slot, so go back to step 2. `statement_timeout` (300s, `PG_STATEMENT_TIMEOUT_MS`) frees a wedged connection within one request window either way.
+
+4. Mitigation: cancel the blocker first; redeploy or restart the worker revision only if connections are wedged and the stall persists, because a restart destroys the evidence above (see `docs/operations/assets-db-resilience.md`).
+
+5. Confirm: `node scripts/_jobs.mjs refresh-peg-guard '{"trigger":"sweep","dryRun":true,"budgetMs":60000}'` returns a `peg_guard_summary` within the budget, or a `peg_guard_run_failed` naming the stage.

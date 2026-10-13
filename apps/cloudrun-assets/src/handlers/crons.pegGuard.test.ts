@@ -20,7 +20,7 @@ import {
     type DepegRepo,
     type WebacyDepegClient,
 } from './crons.depeg';
-import { buildPegGuardRow, refreshPegGuard, type PegGuardRefreshResult } from './crons.pegGuard';
+import { buildPegGuardRow, refreshPegGuard, withStageDeadline, type PegGuardRefreshResult } from './crons.pegGuard';
 import type { CuratedMembershipSource } from './curatedMembershipReads';
 import { buildDepegReason, type ReconcilerAdvisory } from './depegReconciler';
 import { PEG_FX_CURRENCIES } from './pegReference';
@@ -337,12 +337,10 @@ function makeHarness(fx: Fixture = {}): Harness {
         async listLatest() {
             return [...latest.values()];
         },
-        async upsertLatest(rows) {
+        async writeObservations(rows, events) {
             rec.upserts.push([...rows]);
             for (const row of rows) latest.set(row.address, row);
-        },
-        async insertTierEvents(rows) {
-            rec.tierEvents.push([...rows]);
+            if (events.length > 0) rec.tierEvents.push([...events]);
         },
         async listCurrencyVariants(mints) {
             rec.variantCalls.push([...mints]);
@@ -1593,5 +1591,129 @@ describe('refresh-peg-guard high-water references', () => {
         });
         expect(out.reconciled).toBe(0);
         expect(h.rec.webacyListCalls).toBe(0);
+    });
+});
+
+describe('refresh-peg-guard bounded run (stage deadline, failure log, stall watchdog)', () => {
+    const never = <T>(): Promise<T> => new Promise<T>(() => {});
+    const after = <T>(ms: number, value: T): Promise<T> => new Promise(resolve => setTimeout(() => resolve(value), ms));
+
+    test('a stage that outlives the budget fails the run with its stage and no summary', async () => {
+        const h = makeHarness();
+        h.deps.pegGuard!.repo = { ...h.deps.pegGuard!.repo, writeObservations: () => never<void>() };
+        const result = await run(h, { trigger: 'sweep', budgetMs: 20 });
+        expect(result.ok).toBe(false);
+        expect(result.partial).toBe(true);
+        expect(result.reason).toBe('stage_deadline');
+        expect(result.stage).toBe('write_observations');
+        expect(result.tracked).toBe(DEFAULT_CURRENCIES.length);
+        const failed = events(h.rec, 'peg_guard_run_failed');
+        expect(failed).toHaveLength(1);
+        expect(failed[0]).toMatchObject({
+            job: 'refresh-peg-guard',
+            observer: 'peg_guard',
+            stage: 'write_observations',
+            reason: 'stage_deadline',
+            budget_ms: 20,
+            tracked: DEFAULT_CURRENCIES.length,
+        });
+        expect(events(h.rec, 'peg_guard_summary')).toHaveLength(0);
+        expect(events(h.rec, 'peg_guard_run_stalled')).toHaveLength(0);
+    });
+
+    test('a stall inside the fx branch names fx_upsert even though Birdeye already answered', async () => {
+        const h = makeHarness({ fiatResult: fiatOk({ eur: EUR_RATE, try: 0.03 }) });
+        h.deps.pegGuard!.repo = { ...h.deps.pegGuard!.repo, upsertFxRates: () => never<void>() };
+        const result = await run(h, { trigger: 'sweep', budgetMs: 20 });
+        expect(result.ok).toBe(false);
+        expect(result.stage).toBe('fx_upsert');
+        expect(h.rec.multiCalls).toHaveLength(1);
+        expect(events(h.rec, 'peg_guard_run_failed')[0]).toMatchObject({
+            stage: 'fx_upsert',
+            reason: 'stage_deadline',
+        });
+    });
+
+    test('once fx is done the stage returns to fetch_prices while Birdeye is pending', async () => {
+        const h = makeHarness({ fiatResult: fiatOk({ eur: EUR_RATE }) });
+        h.deps.pegGuard!.birdeye = { fetchMultiPrice: () => never<never>() };
+        const result = await run(h, { trigger: 'sweep', budgetMs: 20 });
+        expect(result.ok).toBe(false);
+        expect(result.stage).toBe('fetch_prices');
+        expect(h.rec.fxUpserts).toHaveLength(1);
+    });
+
+    test('an exception logs peg_guard_run_failed with the stage and propagates', async () => {
+        const h = makeHarness();
+        h.deps.pegGuard!.repo = {
+            ...h.deps.pegGuard!.repo,
+            async listLatest() {
+                throw new Error('canceling statement due to lock timeout');
+            },
+        };
+        await expect(run(h, { trigger: 'sweep' })).rejects.toThrow('lock timeout');
+        const failed = events(h.rec, 'peg_guard_run_failed');
+        expect(failed).toHaveLength(1);
+        expect(failed[0]).toMatchObject({
+            stage: 'load_state',
+            reason: 'exception',
+            error: 'canceling statement due to lock timeout',
+        });
+        expect(events(h.rec, 'peg_guard_summary')).toHaveLength(0);
+    });
+
+    test('budgetMs 0 disables the stage deadline and the run completes as before', async () => {
+        const h = makeHarness();
+        const repo = h.deps.pegGuard!.repo;
+        h.deps.pegGuard!.repo = {
+            ...repo,
+            writeObservations: (rows, evs) => after(15, undefined).then(() => repo.writeObservations(rows, evs)),
+        };
+        const result = await run(h, { trigger: 'sweep', budgetMs: 0 });
+        expect(result.ok).toBe(true);
+        expect(result.reason).toBeUndefined();
+        expect(result.stage).toBeUndefined();
+        expect(summary(h.rec)).toMatchObject({ tracked: DEFAULT_CURRENCIES.length });
+        expect(events(h.rec, 'peg_guard_run_failed')).toHaveLength(0);
+        expect(events(h.rec, 'peg_guard_run_stalled')).toHaveLength(0);
+    });
+
+    test('the watchdog logs peg_guard_run_stalled once when a deadline-less run outlives its fallback', async () => {
+        const h = makeHarness();
+        const repo = h.deps.pegGuard!.repo;
+        h.deps.pegGuard!.stallLogFallbackMs = 5;
+        h.deps.pegGuard!.repo = {
+            ...repo,
+            writeObservations: (rows, evs) => after(40, undefined).then(() => repo.writeObservations(rows, evs)),
+        };
+        const result = await run(h, { trigger: 'sweep', budgetMs: 0 });
+        expect(result.ok).toBe(true);
+        const stalled = events(h.rec, 'peg_guard_run_stalled');
+        expect(stalled).toHaveLength(1);
+        expect(stalled[0]).toMatchObject({
+            job: 'refresh-peg-guard',
+            observer: 'peg_guard',
+            stage: 'write_observations',
+            budget_ms: 0,
+            tracked: DEFAULT_CURRENCIES.length,
+        });
+        // The run still finishes and reports normally; the watchdog is evidence, not a verdict.
+        expect(summary(h.rec)).toMatchObject({ tracked: DEFAULT_CURRENCIES.length });
+    });
+
+    test('the watchdog does not fire for a run that finishes inside the budget', async () => {
+        const h = makeHarness();
+        await run(h, { trigger: 'sweep', budgetMs: 1_000 });
+        await after(10, undefined);
+        expect(events(h.rec, 'peg_guard_run_stalled')).toHaveLength(0);
+    });
+
+    test('withStageDeadline passes through with no budget, forwards values and rejections', async () => {
+        expect(await withStageDeadline(Promise.resolve(1), 'load_targets', null)).toBe(1);
+        expect(await withStageDeadline(after(1, 'ok'), 'load_targets', 100)).toBe('ok');
+        await expect(withStageDeadline(Promise.reject(new Error('boom')), 'load_targets', 100)).rejects.toThrow('boom');
+        await expect(withStageDeadline(never<void>(), 'write_observations', 5)).rejects.toThrow(
+            'peg guard stage write_observations exceeded the remaining budget (5ms)',
+        );
     });
 });

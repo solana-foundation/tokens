@@ -1,0 +1,95 @@
+{
+    "uid": "tokens-assets-job-stalled",
+    "title": "tokens-assets: a worker job stalled past its budget or the peg guard run failed",
+    "ruleGroup": "tokens-stablecoin-depeg",
+    "folderUID": "tokens",
+    "noDataState": "OK",
+    "execErrState": "OK",
+    "for": "0s",
+    "data": [
+        {
+            "refId": "A",
+            "datasourceUid": "grafanacloud-logs",
+            "queryType": "range",
+            "relativeTimeRange": {
+                "from": 900,
+                "to": 0
+            },
+            "model": {
+                "expr": "sum by (job) (count_over_time({service=~\"tokens-assets(-jobs)?-prd-us\"} | json | event=~\"cloudrun_assets_job_stalled|peg_guard_run_failed\" [15m]))",
+                "queryType": "range",
+                "refId": "A"
+            }
+        },
+        {
+            "refId": "B",
+            "datasourceUid": "__expr__",
+            "queryType": "",
+            "relativeTimeRange": {
+                "from": 0,
+                "to": 0
+            },
+            "model": {
+                "type": "reduce",
+                "refId": "B",
+                "expression": "A",
+                "reducer": "last",
+                "settings": {
+                    "mode": "replaceNN",
+                    "replaceWithValue": 0
+                }
+            }
+        },
+        {
+            "refId": "C",
+            "datasourceUid": "__expr__",
+            "queryType": "",
+            "relativeTimeRange": {
+                "from": 0,
+                "to": 0
+            },
+            "model": {
+                "type": "threshold",
+                "refId": "C",
+                "expression": "B",
+                "conditions": [
+                    {
+                        "evaluator": {
+                            "type": "gt",
+                            "params": [0]
+                        },
+                        "operator": {
+                            "type": "and"
+                        },
+                        "query": {
+                            "params": ["B"]
+                        },
+                        "reducer": {
+                            "type": "last",
+                            "params": []
+                        },
+                        "type": "query"
+                    }
+                ]
+            }
+        }
+    ],
+    "condition": "C",
+    "labels": {
+        "service": "tokens-assets",
+        "severity": "warning",
+        "slack": "true"
+    },
+    "notification_settings": {
+        "receiver": "tokens-slack",
+        "group_by": ["grafana_folder", "alertname", "job"],
+        "group_wait": "30s",
+        "group_interval": "5m",
+        "repeat_interval": "4h"
+    },
+    "annotations": {
+        "summary": "A tokens-assets worker job ran past its budget without finishing, or a peg guard run failed (label: job)",
+        "description": "Either the jobs dispatcher logged cloudrun_assets_job_stalled (a /jobs/<name> request is still in flight 30s past the budgetMs its scheduler body declared, or 480s when it declares none; the line carries job, elapsed_ms, budget_ms, revision and instanceId) or refresh-peg-guard logged peg_guard_run_failed (reason stage_deadline when one stage outlived the 60s budget, reason exception otherwise; `stage` names the table or provider it was waiting on, see the runbook). A stall with no matching failure means the handler is wedged on a query the database never answered or on the in-process connection pool: check pg_stat_activity for application_name = cloudrun-assets-jobs sessions waiting on locks (pg_blocking_pids) or idle in transaction, and Cloud Run request logs for the instance. Repeated stage_deadline failures at the same stage point at that table; a lock_timeout error message in the failure line points at a blocker (admin hard-delete transactions touch peg_guard_latest).",
+        "runbook_url": "https://github.com/solana-foundation/tokens/blob/main/docs/operations/asset-advisory-runbook.md#no-summary-while-runs-are-starting-stall-diagnosis"
+    }
+}
