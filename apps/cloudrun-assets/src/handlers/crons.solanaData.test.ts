@@ -200,6 +200,7 @@ function makeHarness(): Harness {
         async upsertLatest(batch) {
             for (const row of batch) {
                 const existing = rows.get(row.mint);
+                if (existing && existing.lastSeenAt > row.lastSeenAt) continue;
                 rows.set(row.mint, {
                     ...row,
                     isActive: true,
@@ -360,6 +361,31 @@ describe('syncSolanaDataAssets', () => {
         expect(third.deactivated).toBe(0);
         expect(h.rows.get(BONK)!.isActive).toBe(true);
         expect(h.rows.get(BONK)!.sourceRank).toBe(3);
+    });
+
+    it('an older overlapping run neither overwrites nor deactivates what a newer run wrote', async () => {
+        const h = makeHarness();
+        const full = [
+            rawRow(),
+            rawRow({ token: 'USDT', mint_address: USDT }),
+            rawRow({ token: 'JUP', mint_address: JUP }),
+            rawRow({ token: 'BONK', mint_address: BONK, group: 'Crypto Native' }),
+        ];
+        // Newer run (later clock) lands first with BONK present.
+        h.clock.now = 2_000_000_000_000;
+        h.setFetch(okFetch(full));
+        await syncSolanaDataAssets(h.deps, QUIET);
+        // Older run (earlier clock) finishes afterwards with a stale snapshot lacking BONK.
+        h.clock.now = 1_900_000_000_000;
+        h.setFetch(okFetch([...full.slice(0, 3), rawRow({ token: 'WIF', mint_address: WIF })]));
+        const stale = await syncSolanaDataAssets(h.deps, QUIET);
+        expect(stale.ok).toBe(true);
+        expect(stale.deactivated).toBe(0);
+        expect(h.rows.get(BONK)!.isActive).toBe(true);
+        expect(h.rows.get(BONK)!.groupName).toBe('Crypto Native');
+        expect(h.rows.get(USDC)!.lastSeenAt).toBe(2_000_000_000_000);
+        // The stale run may still add a mint the newer run did not know.
+        expect(h.rows.get(WIF)!.isActive).toBe(true);
     });
 
     it('fills provider metadata only for mints without a platform logo, in batches of 50, stamping misses too', async () => {

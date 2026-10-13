@@ -5730,7 +5730,9 @@ export function makePostgresSolanaDataJobsRepo(sql: Sql): SolanaDataJobsRepo {
             }));
             // The SET list deliberately omits provider_name / provider_logo_uri /
             // provider_fetched_at: the Birdeye fallback is owned by the provider
-            // phase and must survive every hourly upsert.
+            // phase and must survive every hourly upsert. The WHERE makes an
+            // older run's write a no-op on rows a newer run already touched
+            // (there is no job lock; last_seen_at is the run's start time).
             await sql`
                 INSERT INTO solana_data_assets_latest ${sql(values)}
                 ON CONFLICT (mint) DO UPDATE SET
@@ -5750,6 +5752,7 @@ export function makePostgresSolanaDataJobsRepo(sql: Sql): SolanaDataJobsRepo {
                     last_seen_at = EXCLUDED.last_seen_at,
                     last_synced_at = EXCLUDED.last_synced_at,
                     updated_at = NOW()
+                WHERE solana_data_assets_latest.last_seen_at <= EXCLUDED.last_seen_at
             `;
         },
 
@@ -5797,7 +5800,11 @@ export function makePostgresSolanaDataJobsRepo(sql: Sql): SolanaDataJobsRepo {
                   AND COALESCE(
                         NULLIF(vm.logo_uri, ''),
                         NULLIF(t.logo_uri, ''),
-                        (SELECT ml.logo_cdn_url FROM mint_logos ml WHERE ml.mint = r.mint)
+                        -- A mint_logos copy that logo-sync made FROM this table's
+                        -- provider_logo_uri is not an independent source: the mint
+                        -- must keep refreshing so a changed upstream logo/name lands.
+                        (SELECT ml.logo_cdn_url FROM mint_logos ml
+                          WHERE ml.mint = r.mint AND ml.source_table IS DISTINCT FROM 'solana_data_assets_latest')
                       ) IS NULL
                 ORDER BY r.source_rank ASC
                 LIMIT ${limit}

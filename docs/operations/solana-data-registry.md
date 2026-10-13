@@ -78,11 +78,14 @@ including the case where every tick fails or is skipped.
   `SELECT COUNT(*) FILTER (WHERE provider_logo_uri IS NOT NULL) AS with_provider_logo, COUNT(*) FILTER (WHERE provider_fetched_at IS NULL) AS never_looked FROM solana_data_assets_latest WHERE is_active;`
 - Rollback: the page and the endpoint keep serving the last synced rows; pausing
   the scheduler job freezes the registry rather than emptying it.
-- Overlapping runs (an hourly tick plus a manual trigger) are safe: deactivation
-  skips rows whose `last_seen_at` is newer than the run's own start.
-- Provider metadata is deliberately not refreshed for mints that already have a
-  platform or first-party (`mint_logos`) logo; names come from the platform
-  index first, so a stale `provider_name` only shows for mints nobody else knows.
+- Overlapping runs (an hourly tick plus a manual trigger) are safe without a
+  lock: both the upsert and the deactivation skip rows whose `last_seen_at` is
+  newer than the run's own start, so an older snapshot can never overwrite or
+  hide what a newer run wrote.
+- Provider metadata refreshes every `providerRefreshDays` for mints the
+  platform itself has no logo for. A `mint_logos` copy that logo-sync made from
+  this table's own `provider_logo_uri` does not count as a platform logo, so a
+  changed upstream name or logo still lands and logo-sync re-hosts it.
 
 ## Side effects to know
 

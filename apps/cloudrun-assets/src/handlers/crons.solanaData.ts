@@ -108,14 +108,23 @@ export interface SolanaDataProviderMetadataUpdate {
 
 export interface SolanaDataJobsRepo {
     listActiveCount(): Promise<number>;
-    /** Upsert; must NOT touch the `provider_*` columns (the Birdeye fallback outlives every sync). */
+    /**
+     * Upsert; must NOT touch the `provider_*` columns (the Birdeye fallback
+     * outlives every sync) and must leave rows whose `last_seen_at` is newer
+     * than the incoming one alone (written by a newer overlapping run).
+     */
     upsertLatest(rows: readonly SolanaDataAssetUpsert[]): Promise<void>;
     /**
      * Flags active rows whose mint is absent from `mints`; returns the count.
      * Must skip rows with `last_seen_at >= lastSyncedAt` (seen by a newer run).
      */
     deactivateMissing(mints: readonly string[], lastSyncedAt: number): Promise<number>;
-    /** Active mints with no platform logo whose provider fallback is unset or older than `staleBeforeMs`, by rank. */
+    /**
+     * Active mints with no platform logo whose provider fallback is unset or
+     * older than `staleBeforeMs`, by rank. A `mint_logos` copy that logo-sync
+     * made from this table's own `provider_logo_uri` does not count as a
+     * platform logo, so refreshed upstream metadata still lands.
+     */
     listMintsNeedingProviderMetadata(limit: number, staleBeforeMs: number): Promise<string[]>;
     updateProviderMetadata(rows: readonly SolanaDataProviderMetadataUpdate[]): Promise<void>;
 }
