@@ -23,11 +23,9 @@ import { cleanTokenName } from '@/lib/logo-overrides';
 import { normalizeLogoSrc } from '@/lib/normalize-logo-src';
 import { downloadTextFile, registryCsvFilename, registryRowsToCsv } from './lib/csv';
 import { SORTABLE_COLUMN_IDS, applyFilters, type SortableColumnId } from './lib/filters';
-import { activeGroupTab, filtersForGroupTab, listGroupTabs } from './lib/group-tabs';
 import type { RegistryData, RegistryRow } from './lib/types';
 import type { CategoryOptions } from './registry-filter-editor';
-import { RegistryGroupTabs } from './registry-group-tabs';
-import { RegistryExportButton, RegistryToolbar } from './registry-toolbar';
+import { RegistryToolbar } from './registry-toolbar';
 import { useRegistryUrlState } from './use-registry-url-state';
 
 const columnHelper = createColumnHelper<RegistryRow>();
@@ -211,16 +209,8 @@ function isSortableColumnId(id: string): id is SortableColumnId {
 
 export function RegistryTable({ data }: { data: RegistryData }) {
     const urlState = useRegistryUrlState();
-    const { q, filters, sort, setSort, setFilters, clearAll } = urlState;
+    const { q, filters, sort, setSort, clearAll } = urlState;
     const [pagination, setPagination] = useState<PaginationState>({ pageIndex: 0, pageSize: 50 });
-
-    // Group pills are a view onto the `group` filter chips (see lib/group-tabs.ts).
-    const groups = useMemo(() => listGroupTabs(data.rows), [data.rows]);
-    const activeGroup = useMemo(() => activeGroupTab(filters, groups), [filters, groups]);
-    const handleGroupChange = useCallback(
-        (next: string) => setFilters(filtersForGroupTab(filters, next)),
-        [filters, setFilters],
-    );
 
     const options = useMemo<CategoryOptions>(
         () => ({
@@ -272,23 +262,15 @@ export function RegistryTable({ data }: { data: RegistryData }) {
 
     return (
         <div className="flex flex-col gap-4">
-            {/* Same row as the explore page: category pills left, controls right. */}
-            <div className="flex items-center justify-between gap-3">
-                <div className="min-w-0 flex-1 overflow-x-auto pb-2 -mb-2 scrollbar-hide">
-                    <RegistryGroupTabs groups={groups} value={activeGroup} onValueChange={handleGroupChange} />
-                </div>
-                <div className="flex shrink-0 items-center gap-2 pb-2">
-                    <RegistryExportButton
-                        isFiltered={filteredRows.length !== data.rows.length}
-                        matchedCount={filteredRows.length}
-                        onExportCsv={handleExportCsv}
-                    />
-                </div>
-            </div>
+            <RegistryToolbar
+                state={urlState}
+                options={options}
+                isFiltered={filteredRows.length !== data.rows.length}
+                matchedCount={filteredRows.length}
+                onExportCsv={handleExportCsv}
+            />
 
-            <RegistryToolbar state={urlState} options={options} />
-
-            <div className="bg-white rounded-[24px] md:rounded-[32px] border border-border-medium shadow-[0_8px_40px_rgba(0,0,0,0.03)] overflow-hidden">
+            <div className="bg-white rounded-[24px] border border-border-medium shadow-[0_8px_40px_rgba(0,0,0,0.03)] overflow-hidden">
                 <div className="overflow-x-auto">
                     <table className="w-full min-w-[1400px] text-left border-collapse">
                         <thead>
@@ -372,7 +354,7 @@ export function RegistryTable({ data }: { data: RegistryData }) {
                                                 <td
                                                     key={cell.id}
                                                     className={cn(
-                                                        'h-16 py-0 align-middle',
+                                                        'py-3.5',
                                                         index === 0 && 'pl-4 pr-3 md:pl-6 md:pr-4',
                                                         index === 0 && PINNED_CELL_CLASS,
                                                         index !== 0 && !isLast && 'px-3 md:px-5',
