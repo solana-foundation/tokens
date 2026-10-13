@@ -110,7 +110,10 @@ export interface SolanaDataJobsRepo {
     listActiveCount(): Promise<number>;
     /** Upsert; must NOT touch the `provider_*` columns (the Birdeye fallback outlives every sync). */
     upsertLatest(rows: readonly SolanaDataAssetUpsert[]): Promise<void>;
-    /** Flags active rows whose mint is absent from `mints`; returns the count. */
+    /**
+     * Flags active rows whose mint is absent from `mints`; returns the count.
+     * Must skip rows with `last_seen_at >= lastSyncedAt` (seen by a newer run).
+     */
     deactivateMissing(mints: readonly string[], lastSyncedAt: number): Promise<number>;
     /** Active mints with no platform logo whose provider fallback is unset or older than `staleBeforeMs`, by rank. */
     listMintsNeedingProviderMetadata(limit: number, staleBeforeMs: number): Promise<string[]>;
@@ -279,9 +282,13 @@ function chunk<T>(items: readonly T[], size: number): T[][] {
     return out;
 }
 
+/** `solana_data_assets_sync` is logged only for a completed sync; the stale alert counts that event alone. */
+export const SOLANA_DATA_SYNC_EVENT = 'solana_data_assets_sync';
+export const SOLANA_DATA_SYNC_SKIPPED_EVENT = 'solana_data_assets_sync_skipped';
+
 interface SyncSummary {
     job: typeof SOLANA_DATA_SYNC_JOB;
-    event: 'solana_data_assets_sync';
+    event: typeof SOLANA_DATA_SYNC_EVENT | typeof SOLANA_DATA_SYNC_SKIPPED_EVENT;
     ok: boolean;
     skipped?: string;
     fetched: number;
@@ -306,7 +313,7 @@ export async function syncSolanaDataAssets(deps: SolanaDataCronDeps, rawArgs: un
     const log = (summary: SyncSummary) => console.log(JSON.stringify(summary));
     const base = {
         job: SOLANA_DATA_SYNC_JOB,
-        event: 'solana_data_assets_sync',
+        event: SOLANA_DATA_SYNC_SKIPPED_EVENT,
         fetched: 0,
         synced: 0,
         deactivated: 0,
@@ -450,6 +457,7 @@ export async function syncSolanaDataAssets(deps: SolanaDataCronDeps, rawArgs: un
     const summary: SyncSummary = {
         ...base,
         ...counts,
+        event: SOLANA_DATA_SYNC_EVENT,
         ok: true,
         synced,
         deactivated,

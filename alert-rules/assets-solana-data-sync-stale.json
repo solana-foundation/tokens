@@ -89,7 +89,7 @@
     },
     "annotations": {
         "summary": "The asset registry sync (data.solana.com) has not completed in 3 hours",
-        "description": "No solana_data_assets_sync log line from sync-solana-data-assets in 3 hours (two missed hourly ticks). Either the Cloud Scheduler job is failing (check the scheduler run history and the job HTTP status: 404 solana_data_jobs_disabled means SOLANA_DATA_API_KEY is missing on the worker; 500 means data.solana.com is failing or the upsert failed), or the worker is down. GET /api/v2/registry and tokens.xyz/registry keep serving the last synced rows, so this is staleness, not an outage.",
+        "description": "No solana_data_assets_sync (completed-sync) log line from sync-solana-data-assets in 3 hours, i.e. two missed hourly ticks. Failed or skipped runs log solana_data_assets_sync_skipped instead and do not count. Either the Cloud Scheduler job is failing (check the scheduler run history and the job HTTP status: 404 solana_data_jobs_disabled means SOLANA_DATA_API_KEY is missing on the worker; 500 means data.solana.com is failing or the upsert failed), the upstream keeps returning a truncated or suspiciously small body (skipped runs), or the worker is down. GET /api/v2/registry and tokens.xyz/registry keep serving the last synced rows, so this is staleness, not an outage.",
         "runbook_url": "https://github.com/solana-foundation/tokens/blob/main/docs/operations/solana-data-registry.md"
     }
 }

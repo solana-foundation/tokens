@@ -213,7 +213,7 @@ function makeHarness(): Harness {
             const present = new Set(mints);
             let count = 0;
             for (const row of rows.values()) {
-                if (row.isActive && !present.has(row.mint)) {
+                if (row.isActive && row.lastSeenAt < lastSyncedAt && !present.has(row.mint)) {
                     row.isActive = false;
                     row.lastSyncedAt = lastSyncedAt;
                     count += 1;

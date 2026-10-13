@@ -47,15 +47,18 @@ Failures (`ok: false` → HTTP 500, retried by Cloud Scheduler): `http_error`,
 
 ## Summary log
 
-One line per run, `event: "solana_data_assets_sync"` with `job`, `fetched`,
+One line per run. A completed sync logs `event: "solana_data_assets_sync"`;
+failures and skips log `event: "solana_data_assets_sync_skipped"` with the
+reason in `skipped`, so the stale alert only counts real syncs. Fields: `job`, `fetched`,
 `synced`, `deactivated`, `invalidMint`, `invalidNumeric`, `duplicateMint`,
 `withGroup`, `providerLooked`, `providerHits`, `providerFailed`, `partial`,
 `generatedAt`, `duration_ms`. `withGroup` dropping to 0 means the upstream
 renamed its taxonomy columns again (DAT-553 did once); the rows still land, with
 null taxonomy, so fix the parser rather than the data.
 
-Alert: `alert-rules/assets-solana-data-sync-stale.json` fires when no summary
-line has been logged for 3 hours (two missed hourly ticks).
+Alert: `alert-rules/assets-solana-data-sync-stale.json` fires when no
+completed-sync summary has been logged for 3 hours (two missed hourly ticks),
+including the case where every tick fails or is skipped.
 
 ## Operating
 
@@ -75,6 +78,11 @@ line has been logged for 3 hours (two missed hourly ticks).
   `SELECT COUNT(*) FILTER (WHERE provider_logo_uri IS NOT NULL) AS with_provider_logo, COUNT(*) FILTER (WHERE provider_fetched_at IS NULL) AS never_looked FROM solana_data_assets_latest WHERE is_active;`
 - Rollback: the page and the endpoint keep serving the last synced rows; pausing
   the scheduler job freezes the registry rather than emptying it.
+- Overlapping runs (an hourly tick plus a manual trigger) are safe: deactivation
+  skips rows whose `last_seen_at` is newer than the run's own start.
+- Provider metadata is deliberately not refreshed for mints that already have a
+  platform or first-party (`mint_logos`) logo; names come from the platform
+  index first, so a stale `provider_name` only shows for mints nobody else knows.
 
 ## Side effects to know
 

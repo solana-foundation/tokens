@@ -94,6 +94,7 @@ export const GET = route(
             const group = yield* decodeFilter(url, 'group');
             const category = yield* decodeFilter(url, 'category');
             const assetClass = yield* decodeFilter(url, 'class');
+            const hasFilters = group !== undefined || category !== undefined || assetClass !== undefined;
 
             const main = Effect.gen(function* () {
                 const result = yield* solanaDataAssetsList({
@@ -119,8 +120,10 @@ export const GET = route(
                     operation: 'v2.registry.list',
                     cacheKey: `v2:registry:${limit}:${offset}:${group ?? ''}:${category ?? ''}:${assetClass ?? ''}`,
                     ttlSeconds: STALE_TTL_SECONDS,
-                    // An empty page before the first sync must not become "last good".
-                    isHealthy: (payload: V2RegistryResponse) => payload.total > 0,
+                    // An empty unfiltered registry (before the first sync, or a wiped
+                    // table) must not become "last good". A filtered query can be
+                    // legitimately empty, so filters bypass the check.
+                    isHealthy: (payload: V2RegistryResponse) => hasFilters || payload.total > 0,
                 },
                 main,
             );

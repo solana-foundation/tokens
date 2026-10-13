@@ -5756,9 +5756,13 @@ export function makePostgresSolanaDataJobsRepo(sql: Sql): SolanaDataJobsRepo {
         async deactivateMissing(mints, lastSyncedAt) {
             if (mints.length === 0) return 0;
             // Collect the active set first so the NOT IN never has to carry
-            // 3.3k parameters in one statement.
+            // 3.3k parameters in one statement. Rows a newer run has already
+            // seen (last_seen_at >= this run's start) are left alone: there is
+            // no job lock, so a slow hourly run must not undo a manual backfill
+            // that landed a fresher snapshot while it was in flight.
             const active = await sql<{ mint: string }[]>`
-                SELECT mint FROM solana_data_assets_latest WHERE is_active = true
+                SELECT mint FROM solana_data_assets_latest
+                WHERE is_active = true AND last_seen_at < ${lastSyncedAt}
             `;
             const present = new Set(mints);
             const missing = active.map(row => row.mint).filter(mint => !present.has(mint));
@@ -5769,7 +5773,9 @@ export function makePostgresSolanaDataJobsRepo(sql: Sql): SolanaDataJobsRepo {
                     WITH updated AS (
                         UPDATE solana_data_assets_latest
                         SET is_active = false, last_synced_at = ${lastSyncedAt}, updated_at = NOW()
-                        WHERE is_active = true AND mint IN ${sql([...part])}
+                        WHERE is_active = true
+                          AND last_seen_at < ${lastSyncedAt}
+                          AND mint IN ${sql([...part])}
                         RETURNING 1
                     )
                     SELECT COUNT(*)::int AS count FROM updated
