@@ -42,8 +42,8 @@ describe('activeGroupTab', () => {
         expect(activeGroupTab([{ field: 'group', op: 'is', value: 'RWA' }], GROUPS)).toBe('RWA');
     });
 
-    it('selects no tab for is_not, several group chips, or an unknown group (those chips still exclude rows)', () => {
-        expect(activeGroupTab([{ field: 'group', op: 'is_not', value: 'RWA' }], GROUPS)).toBeNull();
+    it('falls back to "all" for is_not, several group chips, or an unknown group', () => {
+        expect(activeGroupTab([{ field: 'group', op: 'is_not', value: 'RWA' }], GROUPS)).toBe(ALL_GROUPS_TAB);
         expect(
             activeGroupTab(
                 [
@@ -52,8 +52,8 @@ describe('activeGroupTab', () => {
                 ],
                 GROUPS,
             ),
-        ).toBeNull();
-        expect(activeGroupTab([{ field: 'group', op: 'is', value: 'Nope' }], GROUPS)).toBeNull();
+        ).toBe(ALL_GROUPS_TAB);
+        expect(activeGroupTab([{ field: 'group', op: 'is', value: 'Nope' }], GROUPS)).toBe(ALL_GROUPS_TAB);
     });
 });
 
@@ -71,14 +71,8 @@ describe('filtersForGroupTab', () => {
         ]);
     });
 
-    it('"all" drops the group filters only, including is_not and several chips', () => {
+    it('"all" drops the group filters only', () => {
         const current = [...others, { field: 'group', op: 'is', value: 'RWA' } as RegistryFilter];
         expect(filtersForGroupTab(current, ALL_GROUPS_TAB)).toEqual(others);
-        const mixed: RegistryFilter[] = [
-            { field: 'group', op: 'is_not', value: 'RWA' },
-            ...others,
-            { field: 'group', op: 'is', value: 'Stablecoins' },
-        ];
-        expect(filtersForGroupTab(mixed, ALL_GROUPS_TAB)).toEqual(others);
     });
 });

@@ -24,20 +24,16 @@ export function listGroupTabs(rows: readonly RegistryRow[]): string[] {
 }
 
 /**
- * The tab that matches the current filters:
- *   - no `group` filter            → "all"
- *   - exactly one `group is X`     → X
- *   - anything else (`is_not`, several group chips, an unknown value) → null:
- *     no pill is selected, because the chips still exclude rows and "All"
- *     would be a lie. Clicking "All" from that state clears the group chips.
+ * The tab that matches the current filters: exactly one `group is X` and no
+ * other `group` filter selects X; anything else (none, several, `is_not`)
+ * is "all" so the pills never claim more than the chips enforce.
  */
-export function activeGroupTab(filters: readonly RegistryFilter[], groups: readonly string[]): string | null {
+export function activeGroupTab(filters: readonly RegistryFilter[], groups: readonly string[]): string {
     const groupFilters = filters.filter(filter => filter.field === 'group');
-    if (groupFilters.length === 0) return ALL_GROUPS_TAB;
-    if (groupFilters.length !== 1) return null;
+    if (groupFilters.length !== 1) return ALL_GROUPS_TAB;
     const only = groupFilters[0]!;
-    if (only.op !== 'is' || typeof only.value !== 'string') return null;
-    return groups.includes(only.value) ? only.value : null;
+    if (only.op !== 'is' || typeof only.value !== 'string') return ALL_GROUPS_TAB;
+    return groups.includes(only.value) ? only.value : ALL_GROUPS_TAB;
 }
 
 /** Filters after choosing a tab: every `group` filter dropped, then one `is` filter unless "all". */
