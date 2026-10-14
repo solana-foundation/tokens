@@ -8,9 +8,8 @@ import { fetchRegistry } from './lib/fetch-registry';
 import { RegistryTable } from './registry-table';
 
 export const metadata: Metadata = {
-    title: 'Asset Registry | Tokens',
-    description:
-        'Canonical registry of Solana assets by group, category, and class, with RWA.xyz and Allium classifications.',
+    title: 'Real World Assets Registry | Tokens',
+    description: 'Canonical RWA registry list for Assets on Solana.',
     robots: { index: false, follow: false },
 };
 
@@ -21,10 +20,10 @@ export default function RegistryPage() {
             <section className="relative mx-auto max-w-7xl px-6 pt-28 mt-12 pb-10">
                 <div className="mx-auto max-w-4xl text-center text-pretty">
                     <h1 className="text-balance text-[44px] leading-[1.02] md:text-[54px] font-medium text-text-extra-high">
-                        Asset Registry
+                        Real World Assets Registry
                     </h1>
                     <p className="mx-auto mt-5 max-w-2xl text-[length:var(--text-body-lg-size)] leading-[var(--leading-normal)] text-text-medium">
-                        Canonical Solana assets with internal, RWA.xyz, and Allium classifications and values.
+                        Canonical RWA registry list for Assets on Solana.
                     </p>
                 </div>
             </section>

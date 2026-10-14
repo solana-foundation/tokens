@@ -32,7 +32,7 @@ import { useRegistryUrlState } from './use-registry-url-state';
 
 const columnHelper = createColumnHelper<RegistryRow>();
 
-const RIGHT_ALIGNED_COLUMNS = new Set(['providerValueUsd', 'marketCapUsd']);
+const RIGHT_ALIGNED_COLUMNS = new Set(['marketCapUsd']);
 
 // The Token column stays pinned while the table scrolls sideways. Sticky cells need an opaque
 // background (the row/header tints are translucent), so mix the same tint over white.
@@ -100,10 +100,10 @@ const PROVIDER_LABELS = { allium: 'Allium', rwa: 'RWA.xyz' } as const;
  * did, hovering lists both numbers.
  */
 function ProviderValueCell({ row }: { row: RegistryRow }) {
-    if (row.providerValueUsd == null || row.providerValueSource == null) return <EmptyValue align="right" />;
+    if (row.providerValueUsd == null || row.providerValueSource == null) return <EmptyValue />;
     const both = row.alliumValueUsd != null && row.rwaValueUsd != null;
     const content = (
-        <span className="flex flex-col items-end leading-tight">
+        <span className="flex flex-col items-start leading-tight">
             <span className="text-[14px] text-[#2D2D2D] font-medium tabular-nums">
                 {formatLargeNumber(row.providerValueUsd)}
             </span>
@@ -116,11 +116,11 @@ function ProviderValueCell({ row }: { row: RegistryRow }) {
     return (
         <Tooltip>
             <TooltipTrigger asChild>
-                <span className="inline-flex cursor-help justify-end">{content}</span>
+                <span className="inline-flex cursor-help">{content}</span>
             </TooltipTrigger>
             <TooltipContent
                 side="top"
-                align="end"
+                align="start"
                 className="rounded-xl bg-[#111111] px-3 py-2 text-xs leading-5 text-white shadow-[0_10px_30px_rgba(20,20,21,0.18)] tabular-nums"
             >
                 <div>Allium {formatLargeNumber(row.alliumValueUsd)}</div>
