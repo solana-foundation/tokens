@@ -3,7 +3,7 @@
 import Link from 'next/link';
 import { useEffect, useState } from 'react';
 import { cn } from '@tokens/ui/cn';
-import { Logo } from '@/components/logo';
+import { SiteMenu } from '@/components/site-menu';
 import { DOCS_HREF } from './constants';
 
 function getHasScrolled(): boolean {
@@ -36,10 +36,7 @@ export function PartnersNav() {
             )}
         >
             <div className="mx-auto flex items-center justify-between gap-4 px-6 py-4">
-                <Link href="/" className="group flex items-center justify-center gap-2" aria-label="Tokens home">
-                    <Logo width={24} height={24} />
-                    <span className="text-text-extra-high text-2xl font-semibold">Tokens</span>
-                </Link>
+                <SiteMenu />
                 <nav aria-label="Partners navigation" className="hidden items-center gap-6 sm:flex sm:gap-8">
                     <a
                         href={DOCS_HREF}

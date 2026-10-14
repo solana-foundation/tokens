@@ -6,7 +6,7 @@ import { useEffect, useState } from 'react';
 import { cn } from '@tokens/ui/cn';
 import { trackEvent } from '@/lib/posthog-client';
 import { TokenSearch } from './token-search';
-import { Logo } from './logo';
+import { SiteMenu } from './site-menu';
 import { useSearchVisibility } from './search-visibility-provider';
 
 const NAV_LINK_CLASS =
@@ -15,6 +15,11 @@ const NAV_LINK_CLASS =
 /** Pages with their own primary search; the global token search would compete with it. */
 function shouldHideHeaderSearch(pathname: string): boolean {
     return pathname === '/registry';
+}
+
+/** Routes that render a hero search; the header search starts hidden there until the hero reports. */
+function hasHeroSearch(pathname: string): boolean {
+    return pathname === '/';
 }
 
 function getHasScrolled(): boolean {
@@ -35,6 +40,14 @@ export function Header() {
     const pathname = usePathname();
     const { isHeroSearchVisible } = useSearchVisibility();
     const [hasScrolled, setHasScrolled] = useState(false);
+    // Before the hero's IntersectionObserver fires, `isHeroSearchVisible` is null. On the home page
+    // assume the hero is in view so the header search doesn't appear and then fade out on load.
+    // Routes that don't render the header search at all also keep the wrapper hidden, otherwise a
+    // client-side navigation from them to the home page animates the wrapper from visible to hidden
+    // while the search mounts inside it.
+    const hideHeaderSearch =
+        isHeroSearchVisible === true ||
+        (!!pathname && (shouldHideHeaderSearch(pathname) || (isHeroSearchVisible === null && hasHeroSearch(pathname))));
 
     useEffect(() => {
         function handleScroll() {
@@ -62,66 +75,15 @@ export function Header() {
         >
             {/* Three-column grid with equal side tracks keeps the search centered regardless of link widths. */}
             <div className="mx-auto grid grid-cols-[1fr_auto_1fr] items-center gap-4 px-6 py-4">
-                <div className="flex min-w-0 items-center gap-6 lg:gap-8">
-                    <Link
-                        href="/"
-                        className="flex items-center justify-center group gap-2"
-                        onClick={() =>
-                            trackEvent('nav_link_clicked', {
-                                destination: 'home',
-                                link_url: '/',
-                                source: 'header',
-                            })
-                        }
-                    >
-                        <Logo width={24} height={24} className="" />
-                        <span className="text-text-extra-high font-semibold text-2xl">Tokens</span>
-                    </Link>
-                    {/*
-                      RWA shows from lg. Assets joins at 1120px, the first width where the left
-                      track holds logo + both links beside the centered 320px search; below that the logo
-                      already links home.
-                    */}
-                    <nav aria-label="Browse" className="hidden shrink-0 items-center gap-4 lg:flex">
-                        <Link
-                            href="/"
-                            className={cn(
-                                NAV_LINK_CLASS,
-                                'hidden min-[1120px]:inline-flex',
-                                pathname === '/' && 'text-text-extra-high',
-                            )}
-                            aria-current={pathname === '/' ? 'page' : undefined}
-                            onClick={() =>
-                                trackEvent('nav_link_clicked', {
-                                    destination: 'explore',
-                                    link_url: '/',
-                                    source: 'header',
-                                })
-                            }
-                        >
-                            Assets
-                        </Link>
-                        <Link
-                            href="/registry"
-                            className={cn(NAV_LINK_CLASS, pathname === '/registry' && 'text-text-extra-high')}
-                            aria-current={pathname === '/registry' ? 'page' : undefined}
-                            onClick={() =>
-                                trackEvent('nav_link_clicked', {
-                                    destination: 'registry',
-                                    link_url: '/registry',
-                                    source: 'header',
-                                })
-                            }
-                        >
-                            RWA
-                        </Link>
-                    </nav>
+                <div className="flex min-w-0 items-center">
+                    {/* Logo + wordmark; hover or focus opens the site menu (products, resources, legal, socials). */}
+                    <SiteMenu />
                 </div>
 
                 <div className="flex items-center justify-center">
                     <div
                         className={`transition-[opacity,transform] duration-200 ease-out ${
-                            isHeroSearchVisible
+                            hideHeaderSearch
                                 ? 'opacity-0 pointer-events-none translate-y-1'
                                 : 'opacity-100 pointer-events-auto translate-y-0'
                         }`}
