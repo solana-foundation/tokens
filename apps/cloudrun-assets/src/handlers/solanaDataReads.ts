@@ -18,6 +18,8 @@ export interface SolanaDataAssetReadRow {
     logo_uri: string | null;
     logo_cdn_url?: string | null;
     has_token_page: boolean | null;
+    /** Active curated asset that owns the mint; null for singletons and unknown mints. */
+    asset_id: string | null;
     group_name: string | null;
     category: string | null;
     asset_class: string | null;
@@ -71,6 +73,8 @@ export interface SolanaDataAssetResult {
     logoURI: string | null;
     /** True when the platform knows the mint (tokens / variant_markets_latest / an active registry variant). */
     hasTokenPage: boolean;
+    /** Curated tokens.xyz asset id owning the mint, or null (singleton / unknown); the API derives the public id. */
+    assetId: string | null;
     group: string | null;
     category: string | null;
     assetClass: string | null;
@@ -133,6 +137,7 @@ export function rowToSolanaDataAssetResult(row: SolanaDataAssetReadRow): SolanaD
         name: row.name,
         logoURI: resolveLogoUri({ logo_uri: row.logo_uri, logo_cdn_url: row.logo_cdn_url ?? null }),
         hasTokenPage: row.has_token_page === true,
+        assetId: row.asset_id?.trim() || null,
         group: row.group_name,
         category: row.category,
         assetClass: row.asset_class,

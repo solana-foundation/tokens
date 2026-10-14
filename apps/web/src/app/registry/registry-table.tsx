@@ -18,6 +18,7 @@ import { cn, truncateAddress } from '@tokens/ui/cn';
 import { Button } from '@tokens/ui/button';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@tokens/ui/tooltip';
 import { MarketsPagination } from '@/app/_components/markets/markets-pagination';
+import { buildCoinHref } from '@/lib/coin-href';
 import { formatLargeNumber } from '@/lib/format';
 import { cleanTokenName } from '@/lib/logo-overrides';
 import { downloadTextFile, registryCsvFilename, registryRowsToCsv } from './lib/csv';
@@ -59,9 +60,12 @@ function TokenCell({ row }: { row: RegistryRow }) {
     if (!row.hasTokenPage) {
         return <div className="flex max-w-[220px] items-center gap-[8px] md:max-w-[280px]">{content}</div>;
     }
+    // Direct asset-page link (`/{assetId}?solana={mint}`), the same the home table builds;
+    // the mint redirect only covers a cached payload from before the API carried assetId.
+    const href = row.assetId ? buildCoinHref(row.assetId, row.mintAddress) : `/token/${row.mintAddress}`;
     return (
         <Link
-            href={`/token/${row.mintAddress}`}
+            href={href}
             prefetch={false}
             className="flex max-w-[220px] items-center gap-[8px] hover:opacity-80 transition-opacity md:max-w-[280px]"
         >

@@ -253,6 +253,11 @@ function assertRegistryItem(item: unknown, path: string): { mint: string; rank: 
     assertNullableString(item.name, `${path}.name`);
     assertNullableString(item.logoURI, `${path}.logoURI`);
     assert(typeof item.hasTokenPage === 'boolean', `${path}.hasTokenPage must be a boolean`);
+    assertNullableString(item.assetId, `${path}.assetId`);
+    assert(
+        (item.assetId !== null) === item.hasTokenPage,
+        `${path}.assetId must be set exactly when hasTokenPage is true`,
+    );
     for (const key of ['group', 'category', 'assetClass', 'alliumClass', 'rwaClass']) {
         assertNullableString(item[key], `${path}.${key}`);
     }

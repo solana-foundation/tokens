@@ -20,6 +20,7 @@ function row(overrides: Partial<RegistryRow>): RegistryRow {
         name: null,
         logoURI: null,
         hasTokenPage: false,
+        assetId: null,
         group: 'RWA',
         category: 'Equities',
         assetClass: 'Stocks',

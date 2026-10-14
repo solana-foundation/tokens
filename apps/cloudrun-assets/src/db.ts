@@ -5835,6 +5835,25 @@ export function makePostgresSolanaDataJobsRepo(sql: Sql): SolanaDataJobsRepo {
     };
 }
 
+/**
+ * Canonical tokens.xyz asset id for a registry mint: the active curated asset
+ * that owns the mint (`asset_variants` → `assets`, tombstones excluded), lowest
+ * id first so a mint listed under two assets resolves the same way every read.
+ * Null when no curated asset owns the mint; the API maps those to singleton ids.
+ */
+function registryAssetIdColumn(mintExpr: string): string {
+    return `(
+        SELECT av.asset_id
+        FROM asset_variants av
+        JOIN assets a ON a.asset_id = av.asset_id AND a.is_active = true
+        WHERE av.mint = ${mintExpr}
+          AND av.is_active = true
+          AND NOT EXISTS (SELECT 1 FROM asset_deletion_tombstones dt WHERE dt.asset_id = av.asset_id)
+        ORDER BY av.asset_id ASC
+        LIMIT 1
+    ) AS asset_id`;
+}
+
 export function makePostgresSolanaDataReadsRepo(sql: Sql): SolanaDataReadsRepo {
     return {
         async listActive(filters: SolanaDataAssetsListFilters) {
@@ -5865,6 +5884,7 @@ export function makePostgresSolanaDataReadsRepo(sql: Sql): SolanaDataReadsRepo {
                                OR vm.mint IS NOT NULL
                                OR EXISTS (SELECT 1 FROM asset_variants av WHERE av.mint = f.mint AND av.is_active = true)
                            ) AS has_token_page,
+                           ${sql.unsafe(registryAssetIdColumn('f.mint'))},
                            f.group_name, f.category, f.asset_class,
                            f.allium_asset_class, f.rwa_asset_class,
                            f.allium_asset_value_usd, f.rwa_asset_value_usd, f.coingecko_market_cap_usd,
@@ -5895,6 +5915,7 @@ export function makePostgresSolanaDataReadsRepo(sql: Sql): SolanaDataReadsRepo {
                            OR vm.mint IS NOT NULL
                            OR EXISTS (SELECT 1 FROM asset_variants av WHERE av.mint = r.mint AND av.is_active = true)
                        ) AS has_token_page,
+                       ${sql.unsafe(registryAssetIdColumn('r.mint'))},
                        r.group_name, r.category, r.asset_class,
                        r.allium_asset_class, r.rwa_asset_class,
                        r.allium_asset_value_usd, r.rwa_asset_value_usd, r.coingecko_market_cap_usd,

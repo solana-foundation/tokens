@@ -22,6 +22,7 @@ function pageRow(overrides: Partial<SolanaDataAssetReadRow> = {}): SolanaDataAss
         logo_uri: 'https://img/usdc.png',
         logo_cdn_url: null,
         has_token_page: true,
+        asset_id: 'usd',
         group_name: 'Stablecoins',
         category: 'Fiat-Backed',
         asset_class: 'USD Stablecoins',
@@ -108,6 +109,7 @@ describe('listAssets', () => {
             name: null,
             logo_uri: null,
             has_token_page: null,
+            asset_id: null,
         });
         const result = await listAssets(repoWith([metaOnly], null), { limit: 5, offset: 999_999 });
         expect(result.items).toEqual([]);

@@ -8,6 +8,8 @@ export interface V2RegistryItem {
     name: string | null;
     logoURI: string | null;
     hasTokenPage: boolean;
+    /** tokens.xyz asset id (`/{assetId}?solana={mint}`); null when hasTokenPage is false. */
+    assetId: string | null;
     group: string | null;
     category: string | null;
     assetClass: string | null;
@@ -44,8 +46,10 @@ export interface RegistryRow {
     name: string | null;
     /** Per-mint logo: first-party CDN copy, platform index, then the Birdeye fallback; never a symbol-level override. */
     logoURI: string | null;
-    /** True when the Tokens API knows this mint, so `/token/<mint>` resolves. */
+    /** True when the Tokens API knows this mint and `assetId` is set. */
     hasTokenPage: boolean;
+    /** Route id of the asset page: `/{assetId}?solana={mint}`, the same link the home table builds. */
+    assetId: string | null;
     /** Top tier of the Foundation taxonomy, e.g. "RWA", "Crypto Native", "Stablecoins". */
     group: string | null;
     /** Middle tier, e.g. "Equities", "Fixed Income", "Fiat-Backed". */

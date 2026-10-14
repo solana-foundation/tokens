@@ -73,6 +73,7 @@ function toRegistryRow(item: V2RegistryItem): RegistryRow {
         name: item.name?.trim() || null,
         logoURI: normalizeLogoURI(item.logoURI),
         hasTokenPage: item.hasTokenPage,
+        assetId: item.assetId ?? null,
         group: item.group,
         category: item.category,
         assetClass: item.assetClass,

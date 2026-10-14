@@ -9,6 +9,7 @@ const baseRow: RegistryRow = {
     name: 'USD Coin',
     logoURI: null,
     hasTokenPage: true,
+    assetId: 'usd',
     group: 'Stablecoins',
     category: 'Fiat-Backed',
     assetClass: 'USD Stablecoins',

@@ -15,8 +15,10 @@ asset classes and on-chain values, plus the CoinGecko market cap. It is the data
 [tokens.xyz/registry](https://tokens.xyz/registry).
 
 We sync it hourly from the data team's feed into our index and serve it from there, so a call
-here never waits on an upstream. Identity (`name`, `logoURI`, `hasTokenPage`) is resolved from our
-own token index at read time; the taxonomy and values are the data team's as delivered.
+here never waits on an upstream. Identity (`name`, `logoURI`, `hasTokenPage`, `assetId`) is resolved
+from our own token index at read time; the taxonomy and values are the data team's as delivered.
+`assetId` is the same id `GET /v1/assets/resolve?mint=` returns: a curated asset id such as `usd`,
+or a `solana-{mint}` singleton id for a mint we index without a curated asset.
 
 ## `GET /v2/registry`
 
@@ -37,7 +39,8 @@ interface RegistryResponse {
         symbol: string;
         name: string | null;
         logoURI: string | null;
-        hasTokenPage: boolean;  // tokens.xyz/token/{mint} resolves with identity
+        hasTokenPage: boolean;  // tokens.xyz has a page for this mint
+        assetId: string | null; // tokens.xyz/{assetId}?solana={mint}; null when hasTokenPage is false
         group: string | null;      // e.g. "RWA", "Crypto Native", "Stablecoins"
         category: string | null;   // e.g. "Equities", "Fixed Income", "Fiat-Backed"
         assetClass: string | null; // e.g. "Stocks", "US Treasuries", "USD Stablecoins"

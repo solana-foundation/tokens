@@ -1,4 +1,5 @@
 import type { SolanaDataAssetResult } from '@/lib/cloudrun';
+import { looksLikeSolanaMintAddress, mintToSingletonAssetId } from '../../v1/assets/_singleton-asset-id';
 
 /** Shapes shared by GET /api/v2/registry and GET /api/v2/registry/{mint}. */
 
@@ -8,8 +9,13 @@ export type V2RegistryItem = {
     symbol: string;
     name: string | null;
     logoURI: string | null;
-    /** True when tokens.xyz has a token page for the mint (`/token/{mint}`). */
+    /** True when tokens.xyz has a page for the mint: `tokens.xyz/{assetId}?solana={mint}`. */
     hasTokenPage: boolean;
+    /**
+     * tokens.xyz asset id the mint resolves to (`GET /v1/assets/resolve?mint=` agrees): the curated
+     * asset that owns the mint, else the `solana-{mint}` singleton id; null when `hasTokenPage` is false.
+     */
+    assetId: string | null;
     /** Foundation taxonomy, top to leaf. */
     group: string | null;
     category: string | null;
@@ -34,6 +40,15 @@ export type V2RegistryResponse = {
     items: V2RegistryItem[];
 };
 
+/**
+ * Mirrors `/v1/assets/resolve?mint=`: a curated asset id wins; a mint we know only
+ * from the token index (or a curated id that is itself a mint) is a singleton.
+ */
+function publicAssetId(row: SolanaDataAssetResult): string | null {
+    if (row.assetId && !looksLikeSolanaMintAddress(row.assetId)) return row.assetId;
+    return row.hasTokenPage ? mintToSingletonAssetId(row.mint) : null;
+}
+
 export function toRegistryItem(row: SolanaDataAssetResult): V2RegistryItem {
     return {
         mint: row.mint,
@@ -41,6 +56,7 @@ export function toRegistryItem(row: SolanaDataAssetResult): V2RegistryItem {
         name: row.name,
         logoURI: row.logoURI,
         hasTokenPage: row.hasTokenPage,
+        assetId: publicAssetId(row),
         group: row.group,
         category: row.category,
         assetClass: row.assetClass,
