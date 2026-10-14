@@ -4,6 +4,7 @@ import { encryptRawApiKey } from './apiKeyCrypto';
 import type { IdentityRepo } from './clerkIdentity';
 import {
     apiKeysGetPlaygroundAuthContext,
+    apiKeysReencrypt,
     apiKeysReset,
     apiKeysReveal,
     apiKeysRevoke,
@@ -53,6 +54,8 @@ interface RepoState {
     apiKeyByHash?: ApiKeyFullRow | null;
     personalProjectId?: string | null;
     projectIdByName?: string | null;
+    /** Rows returned by listEncryptedApiKeys (mutated in place by updateApiKeyEncryption). */
+    encryptedKeys?: ApiKeyFullRow[];
 }
 
 function makeRepo(state: RepoState = {}) {
@@ -100,8 +103,33 @@ function makeRepo(state: RepoState = {}) {
             track('insertApiKeyRevokingActive', args);
             return 'key_new';
         },
+        listEncryptedApiKeys: async (afterId, limit) => {
+            track('listEncryptedApiKeys', [afterId, limit]);
+            const rows = (state.encryptedKeys ?? []).filter(k => k.encryptedRawKeyCiphertext !== null);
+            rows.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+            return rows.filter(k => afterId === null || k.id > afterId).slice(0, limit);
+        },
+        updateApiKeyEncryption: async (apiKeyId, encrypted) => {
+            track('updateApiKeyEncryption', [apiKeyId, encrypted]);
+            const row = (state.encryptedKeys ?? []).find(k => k.id === apiKeyId);
+            if (!row) throw new Error(`no such key ${apiKeyId}`);
+            row.encryptedRawKeyCiphertext = encrypted.encryptedRawKeyCiphertext;
+            row.encryptedRawKeyIv = encrypted.encryptedRawKeyIv;
+            row.encryptedRawKeyVersion = encrypted.encryptedRawKeyVersion;
+        },
     };
     return { repo, calls };
+}
+
+async function encryptedRow(id: string, rawKey: string, secret: string): Promise<ApiKeyFullRow> {
+    const encrypted = await encryptRawApiKey(rawKey, secret, NOW);
+    return {
+        ...ACTIVE_KEY,
+        id,
+        encryptedRawKeyCiphertext: encrypted.encryptedRawKeyCiphertext,
+        encryptedRawKeyIv: encrypted.encryptedRawKeyIv,
+        encryptedRawKeyVersion: encrypted.encryptedRawKeyVersion,
+    };
 }
 
 function makeDeps(state: RepoState = {}): { deps: DashboardDeps; calls: Record<string, unknown[]> } {
@@ -467,6 +495,86 @@ describe('apiKeysReveal', () => {
             rawKey: 'tok_secret_raw',
             keyPreview: 'tok_abcd…',
         });
+    });
+
+    it('falls back to the previous encryption secret during a rotation', async () => {
+        const apiKey = await encryptedRow('key_1', 'tok_old_raw', 'old-secret');
+        const withPrevious = makeDeps({ membership: { role: 'member' }, apiKey });
+        withPrevious.deps.apiKeyEncryptionSecretPrevious = 'old-secret';
+        expect(await apiKeysReveal(withPrevious.deps, { projectId: 'proj_1', apiKeyId: 'key_1' }, IDENT)).toEqual({
+            status: 'ok',
+            apiKeyId: 'key_1',
+            rawKey: 'tok_old_raw',
+            keyPreview: 'tok_abcd…',
+        });
+
+        // Without the previous secret the current one cannot decrypt it: surfaces as an error, not a wrong key.
+        const withoutPrevious = makeDeps({ membership: { role: 'member' }, apiKey });
+        await expect(
+            apiKeysReveal(withoutPrevious.deps, { projectId: 'proj_1', apiKeyId: 'key_1' }, IDENT),
+        ).rejects.toThrow();
+
+        // Neither secret decrypts it: reported like a legacy key so the owner regenerates.
+        const neither = makeDeps({ membership: { role: 'member' }, apiKey });
+        neither.deps.apiKeyEncryptionSecretPrevious = 'some-other-secret';
+        expect(await apiKeysReveal(neither.deps, { projectId: 'proj_1', apiKeyId: 'key_1' }, IDENT)).toEqual({
+            status: 'unavailable',
+            reason: 'legacy',
+        });
+    });
+});
+
+describe('apiKeysReencrypt', () => {
+    it('requires the confirmation token and a previous secret', async () => {
+        const { deps } = makeDeps();
+        await expect(apiKeysReencrypt(deps, {})).rejects.toBeInstanceOf(InvalidArgsError);
+        await expect(apiKeysReencrypt(deps, { confirm: 'yes' })).rejects.toBeInstanceOf(InvalidArgsError);
+        await expect(apiKeysReencrypt(deps, { confirm: 'reencrypt' })).rejects.toThrow(
+            'TOKENS_API_KEY_ENCRYPTION_SECRET_PREVIOUS',
+        );
+    });
+
+    it('rewrites rows encrypted under the previous secret and leaves the rest alone', async () => {
+        const encryptedKeys = [
+            await encryptedRow('key_a', 'tok_a', 'old-secret'),
+            await encryptedRow('key_b', 'tok_b', SECRET),
+            await encryptedRow('key_c', 'tok_c', 'unknown-secret'),
+            await encryptedRow('key_d', 'tok_d', 'old-secret'),
+        ];
+        const { deps, calls } = makeDeps({ encryptedKeys });
+        deps.apiKeyEncryptionSecretPrevious = 'old-secret';
+
+        const result = await apiKeysReencrypt(deps, { confirm: 'reencrypt' });
+        expect(result).toEqual({ processed: 4, reencrypted: 2, alreadyCurrent: 1, failed: 1, failedIds: ['key_c'] });
+        expect((calls.updateApiKeyEncryption ?? []).map(c => (c as [string])[0])).toEqual(['key_a', 'key_d']);
+
+        // The rewritten rows now decrypt with the current secret alone.
+        for (const id of ['key_a', 'key_d']) {
+            const row = encryptedKeys.find(k => k.id === id)!;
+            const { deps: revealDeps } = makeDeps({ membership: { role: 'member' }, apiKey: row });
+            const revealed = await apiKeysReveal(revealDeps, { projectId: 'proj_1', apiKeyId: id }, IDENT);
+            expect(revealed).toMatchObject({ status: 'ok', rawKey: id === 'key_a' ? 'tok_a' : 'tok_d' });
+        }
+
+        // Idempotent: a rerun has nothing left to rewrite.
+        const again = await apiKeysReencrypt(deps, { confirm: 'reencrypt' });
+        expect(again).toEqual({ processed: 4, reencrypted: 0, alreadyCurrent: 3, failed: 1, failedIds: ['key_c'] });
+    });
+
+    it('pages through the table by id', async () => {
+        const encryptedKeys: ApiKeyFullRow[] = [];
+        for (let i = 0; i < 205; i++) {
+            encryptedKeys.push(await encryptedRow(`key_${String(i).padStart(3, '0')}`, `tok_${i}`, 'old-secret'));
+        }
+        const { deps, calls } = makeDeps({ encryptedKeys });
+        deps.apiKeyEncryptionSecretPrevious = 'old-secret';
+        const result = await apiKeysReencrypt(deps, { confirm: 'reencrypt' });
+        expect(result.processed).toBe(205);
+        expect(result.reencrypted).toBe(205);
+        expect(calls.listEncryptedApiKeys).toEqual([
+            [null, 200],
+            ['key_199', 200],
+        ]);
     });
 });
 

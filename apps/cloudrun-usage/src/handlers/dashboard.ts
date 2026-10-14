@@ -135,6 +135,12 @@ export interface DashboardRepo {
         scopes: string[];
         nowMs: number;
     }): Promise<string>;
+    /**
+     * Rotation support: page through keys that carry an encrypted copy
+     * (ordered by id, strictly after `afterId`), and rewrite one key's copy.
+     */
+    listEncryptedApiKeys(afterId: string | null, limit: number): Promise<ApiKeyFullRow[]>;
+    updateApiKeyEncryption(apiKeyId: string, encrypted: EncryptedRawApiKey): Promise<void>;
 }
 
 export interface DashboardDeps {
@@ -142,6 +148,12 @@ export interface DashboardDeps {
     identity: IdentityRepo;
     /** Required for key reset/reveal; may be absent in minimal deployments. */
     apiKeyEncryptionSecret?: string;
+    /**
+     * Set only while rotating the encryption secret: reveal falls back to it
+     * when the current secret cannot decrypt a row, and `apiKeysReencrypt`
+     * rewrites such rows under the current secret.
+     */
+    apiKeyEncryptionSecretPrevious?: string;
     now?: () => number;
 }
 
@@ -188,6 +200,35 @@ function getEncryptionSecret(deps: DashboardDeps): string {
     const secret = (deps.apiKeyEncryptionSecret ?? '').trim();
     if (!secret) throw new Error('TOKENS_API_KEY_ENCRYPTION_SECRET is required to encrypt API keys');
     return secret;
+}
+
+type EncryptedColumns = { ciphertext: string; iv: string; version: number };
+
+function encryptedColumns(key: ApiKeyFullRow): EncryptedColumns | null {
+    if (!key.encryptedRawKeyCiphertext || !key.encryptedRawKeyIv || key.encryptedRawKeyVersion === null) return null;
+    return { ciphertext: key.encryptedRawKeyCiphertext, iv: key.encryptedRawKeyIv, version: key.encryptedRawKeyVersion };
+}
+
+/**
+ * Decrypts with the current secret, falling back to the previous one during a
+ * rotation. Reports which secret worked so callers can migrate the row.
+ */
+async function decryptWithRotation(
+    deps: DashboardDeps,
+    columns: EncryptedColumns,
+): Promise<{ rawKey: string; secret: 'current' | 'previous' } | null> {
+    const current = getEncryptionSecret(deps);
+    try {
+        return { rawKey: await decryptRawApiKey(columns, current), secret: 'current' };
+    } catch (currentErr) {
+        const previous = (deps.apiKeyEncryptionSecretPrevious ?? '').trim();
+        if (!previous) throw currentErr;
+        try {
+            return { rawKey: await decryptRawApiKey(columns, previous), secret: 'previous' };
+        } catch {
+            return null;
+        }
+    }
 }
 
 function getMaxProjectsForTier(tier: ProjectTier): number {
@@ -568,20 +609,76 @@ export async function apiKeysReveal(
     const key = await deps.repo.getApiKeyById(apiKeyId);
     if (!key || key.projectId !== projectId) return { status: 'unavailable', reason: 'not_found' };
     if (key.revokedAt !== null) return { status: 'unavailable', reason: 'inactive' };
-    if (!key.encryptedRawKeyCiphertext || !key.encryptedRawKeyIv || key.encryptedRawKeyVersion === null) {
-        return { status: 'unavailable', reason: 'legacy' };
+    const columns = encryptedColumns(key);
+    if (!columns) return { status: 'unavailable', reason: 'legacy' };
+
+    const decrypted = await decryptWithRotation(deps, columns);
+    // Neither secret decrypts it: treat like a legacy key (regenerate to fix).
+    if (!decrypted) return { status: 'unavailable', reason: 'legacy' };
+
+    return { status: 'ok', apiKeyId: key.id, rawKey: decrypted.rawKey, keyPreview: `${key.keyPrefix}…` };
+}
+
+export const REENCRYPT_CONFIRMATION = 'reencrypt';
+const REENCRYPT_PAGE_SIZE = 200;
+
+export interface ApiKeysReencryptResult {
+    /** Rows with an encrypted copy that were examined. */
+    processed: number;
+    /** Rows rewritten under the current secret. */
+    reencrypted: number;
+    /** Rows already decryptable with the current secret (left untouched). */
+    alreadyCurrent: number;
+    /** Rows neither secret could decrypt; their ids, so owners can be told to regenerate. */
+    failed: number;
+    failedIds: string[];
+}
+
+/**
+ * Encryption-secret rotation: rewrite every stored reveal copy that only the
+ * PREVIOUS secret can decrypt so it is encrypted under the CURRENT one.
+ * Bearer-gated ops mutation (no caller identity); requires an explicit
+ * `confirm` and refuses to run unless a previous secret is configured, so it
+ * cannot be invoked by accident. Idempotent: a rerun finds nothing to rewrite.
+ * See docs/security/secret-rotation.md.
+ */
+export async function apiKeysReencrypt(deps: DashboardDeps, args: unknown): Promise<ApiKeysReencryptResult> {
+    const a = requireObject(args);
+    if (a.confirm !== REENCRYPT_CONFIRMATION) {
+        throw new InvalidArgsError(`apiKeysReencrypt requires confirm: '${REENCRYPT_CONFIRMATION}'`);
+    }
+    const current = getEncryptionSecret(deps);
+    if (!(deps.apiKeyEncryptionSecretPrevious ?? '').trim()) {
+        throw new InvalidArgsError('TOKENS_API_KEY_ENCRYPTION_SECRET_PREVIOUS must be set to re-encrypt');
     }
 
-    const rawKey = await decryptRawApiKey(
-        {
-            ciphertext: key.encryptedRawKeyCiphertext,
-            iv: key.encryptedRawKeyIv,
-            version: key.encryptedRawKeyVersion,
-        },
-        getEncryptionSecret(deps),
-    );
-
-    return { status: 'ok', apiKeyId: key.id, rawKey, keyPreview: `${key.keyPrefix}…` };
+    const result: ApiKeysReencryptResult = { processed: 0, reencrypted: 0, alreadyCurrent: 0, failed: 0, failedIds: [] };
+    let afterId: string | null = null;
+    for (;;) {
+        const page = await deps.repo.listEncryptedApiKeys(afterId, REENCRYPT_PAGE_SIZE);
+        if (page.length === 0) break;
+        for (const key of page) {
+            afterId = key.id;
+            const columns = encryptedColumns(key);
+            if (!columns) continue;
+            result.processed += 1;
+            const decrypted = await decryptWithRotation(deps, columns);
+            if (!decrypted) {
+                result.failed += 1;
+                result.failedIds.push(key.id);
+                continue;
+            }
+            if (decrypted.secret === 'current') {
+                result.alreadyCurrent += 1;
+                continue;
+            }
+            const encrypted = await encryptRawApiKey(decrypted.rawKey, current, now(deps));
+            await deps.repo.updateApiKeyEncryption(key.id, encrypted);
+            result.reencrypted += 1;
+        }
+        if (page.length < REENCRYPT_PAGE_SIZE) break;
+    }
+    return result;
 }
 
 export interface PlaygroundAuthContext {

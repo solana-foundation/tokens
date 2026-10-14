@@ -1,24 +1,51 @@
 # Security-sensitive paths require maintainer review before merge.
-# Pair this file with a branch-protection rule on `main` that enables
-# "Require review from Code Owners".
-#
-# NOTE: adjust the team handle if the maintainer team is named differently.
+# Paired with the repo ruleset on `main` that enables "Require review from
+# Code Owners" (see docs/security/threat-model-api-keys.md, "Controls").
 
 # Infrastructure-as-code: IAM bindings, ingress, secrets wiring.
-/terraform/ @solana-foundation/tokens-maintainers
+/terraform/ @solana-foundation/foundation-product-team
 
 # CI/CD: anything here runs with repository credentials.
-/.github/ @solana-foundation/tokens-maintainers
+/.github/ @solana-foundation/foundation-product-team
 
-# Authentication and authorization surfaces.
-/apps/admin/src/lib/admin-auth.ts @solana-foundation/tokens-maintainers
-/apps/admin/src/lib/cloudrun.ts @solana-foundation/tokens-maintainers
-/apps/admin/src/proxy.ts @solana-foundation/tokens-maintainers
-/apps/cloudrun-admin/src/adminAuth.ts @solana-foundation/tokens-maintainers
-/apps/cloudrun-assets/src/adminAuth.ts @solana-foundation/tokens-maintainers
-/apps/cloudrun-admin/src/oidc.ts @solana-foundation/tokens-maintainers
-/apps/cloudrun-assets/src/oidc.ts @solana-foundation/tokens-maintainers
+# Database schema: auth tables and anything that touches api_keys.
+/db/migrations/ @solana-foundation/foundation-product-team
+
+# API-key provisioning + platform auth (usage service).
+/apps/cloudrun-usage/src/index.ts @solana-foundation/foundation-product-team
+/apps/cloudrun-usage/src/server.ts @solana-foundation/foundation-product-team
+/apps/cloudrun-usage/src/handlers/apiKeyCrypto.ts @solana-foundation/foundation-product-team
+/apps/cloudrun-usage/src/handlers/platformAuth.ts @solana-foundation/foundation-product-team
+/apps/cloudrun-usage/src/handlers/dashboard.ts @solana-foundation/foundation-product-team
+/apps/cloudrun-usage/src/handlers/clerkIdentity.ts @solana-foundation/foundation-product-team
+
+# Platform API auth hot path + service-to-service client.
+/apps/api/src/proxy.ts @solana-foundation/foundation-product-team
+/apps/api/src/effect/next-route.ts @solana-foundation/foundation-product-team
+/apps/api/src/effect/playground-proxy-auth.ts @solana-foundation/foundation-product-team
+/apps/api/src/lib/env.ts @solana-foundation/foundation-product-team
+/apps/api/src/lib/cloudrun/ @solana-foundation/foundation-product-team
+
+# Dashboard → usage service caller (sends caller identity).
+/apps/app/src/lib/cloudrun.ts @solana-foundation/foundation-product-team
+/apps/app/src/lib/playground-proxy.ts @solana-foundation/foundation-product-team
+/apps/app/src/app/api/dashboard/ @solana-foundation/foundation-product-team
+
+# Admin authentication and authorization surfaces.
+/apps/admin/src/lib/admin-auth.ts @solana-foundation/foundation-product-team
+/apps/admin/src/lib/cloudrun.ts @solana-foundation/foundation-product-team
+/apps/admin/src/proxy.ts @solana-foundation/foundation-product-team
+/apps/cloudrun-admin/src/adminAuth.ts @solana-foundation/foundation-product-team
+/apps/cloudrun-assets/src/adminAuth.ts @solana-foundation/foundation-product-team
+/apps/cloudrun-admin/src/oidc.ts @solana-foundation/foundation-product-team
+/apps/cloudrun-assets/src/oidc.ts @solana-foundation/foundation-product-team
+
+# Shared bearer/identity helpers used by every Cloud Run service.
+/packages/cloudrun-shutdown/ @solana-foundation/foundation-product-team
+
+# Security documentation (threat model, key inventory, rotation runbooks).
+/docs/security/ @solana-foundation/foundation-product-team
 
 # Secret-scanner and hygiene tooling.
-/scripts/check-repo-hygiene.mjs @solana-foundation/tokens-maintainers
-/.githooks/ @solana-foundation/tokens-maintainers
+/scripts/check-repo-hygiene.mjs @solana-foundation/foundation-product-team
+/.githooks/ @solana-foundation/foundation-product-team

@@ -107,6 +107,15 @@ output "cloudrun_auth_token_value" {
   sensitive = true
 }
 
+output "identity_signing_secret_id" {
+  value = module.env.identity_signing_secret_id
+}
+
+output "identity_signing_secret_value" {
+  value     = module.env.identity_signing_secret_value
+  sensitive = true
+}
+
 output "database_url_secret_id" {
   value = module.env.database_url_secret_id
 }

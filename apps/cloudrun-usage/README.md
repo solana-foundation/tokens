@@ -9,7 +9,7 @@ Unlike the other `cloudrun-*` services, `usage` has `ingress = INGRESS_TRAFFIC_A
 - `GET /health` — Cloud Run startup/liveness probe.
 - `POST /query/{name}` — bearer-auth, called by `apps/api`'s `CloudRunClient` (`Authorization: Bearer <TOKENS_CLOUDRUN_AUTH_TOKEN>`). Same shape as `cloudrun-assets`.
 - `POST /mutation/{name}` — bearer-auth, same gate as `/query/*`.
-- Caller identity: an optional `x-tokens-identity` header (base64 JSON `{clerkUserId, projectId?, email?}`) carries the Clerk-session-verified caller for user-scoped handlers, which enforce membership/role checks in SQL against it.
+- Caller identity: an optional `x-tokens-identity` header carries the Clerk-session-verified caller for user-scoped handlers, which enforce membership/role checks in SQL against it. The header is a **signed token** (`@tokens/cloudrun-shutdown/identity`): `base64url(payload).base64url(HMAC-SHA256)` where the payload is `{v:1, clerkUserId, projectId?, email?, kind, fn, bodySha256, iat, exp}`. The token is bound to the RPC (`kind` + `fn`), to the exact request body, and to a 60 s window; anything that fails verification is a `401 {error:'identity_invalid', reason}` before the handler runs, even for RPCs that ignore identity. During the rollout `TOKENS_IDENTITY_ACCEPT_UNSIGNED=true` also admits the legacy unsigned base64 JSON form.
 
 ## Implemented
 
@@ -19,6 +19,7 @@ Unlike the other `cloudrun-*` services, `usage` has `ingress = INGRESS_TRAFFIC_A
 | `apiKeysAuthenticate` | query | parity with `convex/apiKeys.ts:authenticate`. Resolves an active key by SHA-256 hash (personal-project fallback for legacy keys, default legacy scopes) and returns the platform auth context `apps/api` uses on every authenticated `/v1` request. |
 | `logApiRequest` | mutation | parity with `convex/auth.ts:logApiRequest`. Best-effort insert into `api_request_events` (same ownership checks + latency clamping) and a deduped `api_keys.last_used_at` bump. Feeds the cloudrun-assets rollup job. |
 | `ingestUsageAggregates` | mutation | parity with `convex/apiUsageRollups.ts:ingestUsageAggregates`. Ingests usage buckets (daily + per-endpoint with latency histograms) into the rollup tables additively, in one transaction. Its original caller (the Upstash drain timer) is retired. Buckets are deltas; not replay-safe. |
+| `apiKeysReencrypt` | mutation | Ops, bearer-only, `{confirm:'reencrypt'}`: rewrites every stored reveal copy that only `TOKENS_API_KEY_ENCRYPTION_SECRET_PREVIOUS` can decrypt under the current secret. Idempotent; returns `{processed, reencrypted, alreadyCurrent, failed, failedIds}`. See `docs/security/secret-rotation.md`. |
 | `syncUsageAggregates` | mutation | Target of the API's self-drain (`apps/api/src/effect/usage-drain.ts`). Same bucket shape, but buckets carry running totals and each column is raised to the larger of stored and incoming, so a replayed batch cannot double-count. |
 
 The dashboard queries and mutations (`users.*`, `projects.*`,
@@ -31,6 +32,12 @@ the maintainers.
 | --- | --- | --- |
 | `DATABASE_URL` | yes | Cloud SQL Postgres connection string |
 | `TOKENS_CLOUDRUN_AUTH_TOKEN` | yes | Shared bearer token with the `CloudRunClient` caller for `/query/*` + `/mutation/*` |
+| `TOKENS_IDENTITY_SIGNING_SECRET` | yes | HMAC key verifying the signed `x-tokens-identity` token (apps/app signs with the same value). While unset the service accepts only the legacy unsigned header and logs an error at boot. |
+| `TOKENS_IDENTITY_ACCEPT_UNSIGNED` | no | `true` keeps accepting the legacy unsigned identity header alongside signed ones during the rollout. Remove once every caller signs. |
+| `TOKENS_API_KEY_ENCRYPTION_SECRET` | no | Required for key reset/reveal (AES-GCM reveal copy); those handlers error without it |
+| `TOKENS_CLOUDRUN_AUTH_TOKEN_PREVIOUS` | no | Rotation only: previous bearer, accepted alongside the current one until removed |
+| `TOKENS_IDENTITY_SIGNING_SECRET_PREVIOUS` | no | Rotation only: previous signing secret, accepted alongside the current one until removed |
+| `TOKENS_API_KEY_ENCRYPTION_SECRET_PREVIOUS` | no | Rotation only: reveal falls back to it; run `apiKeysReencrypt` then remove it |
 | `PORT` | no | Defaults to 8080 |
 | `PG_POOL_MAX` | no | postgres-js connection pool size, default 10 |
 | `PG_IDLE_TIMEOUT` | no | seconds, default 30 |
@@ -38,7 +45,7 @@ the maintainers.
 ## Local dev
 
 ```bash
-DATABASE_URL=postgres://... TOKENS_CLOUDRUN_AUTH_TOKEN=dev \
+DATABASE_URL=postgres://... TOKENS_CLOUDRUN_AUTH_TOKEN=dev TOKENS_IDENTITY_SIGNING_SECRET=dev-identity-signing-secret \
     bun run apps/cloudrun-usage/src/index.ts
 ```
 
