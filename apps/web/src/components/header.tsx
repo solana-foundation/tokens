@@ -78,7 +78,7 @@ export function Header() {
                         <span className="text-text-extra-high font-semibold text-2xl">Tokens</span>
                     </Link>
                     {/*
-                      Asset Registry shows from lg. Explore joins at 1120px, the first width where the left
+                      RWA shows from lg. Assets joins at 1120px, the first width where the left
                       track holds logo + both links beside the centered 320px search; below that the logo
                       already links home.
                     */}
@@ -99,7 +99,7 @@ export function Header() {
                                 })
                             }
                         >
-                            Explore
+                            Assets
                         </Link>
                         <Link
                             href="/registry"
@@ -113,7 +113,7 @@ export function Header() {
                                 })
                             }
                         >
-                            Asset Registry
+                            RWA
                         </Link>
                     </nav>
                 </div>
