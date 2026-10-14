@@ -95,19 +95,6 @@ export function SiteFooter({ tone = 'dark', asteroidsOpen, onAsteroidsOpenChange
                                 Partners
                             </Link>
                             <Link
-                                href="/status"
-                                className={linkClass}
-                                onClick={() =>
-                                    trackEvent('nav_link_clicked', {
-                                        destination: 'status',
-                                        link_url: '/status',
-                                        source: 'site_footer',
-                                    })
-                                }
-                            >
-                                Status
-                            </Link>
-                            <Link
                                 href="https://docs.tokens.xyz"
                                 className={linkClass}
                                 onClick={() =>
