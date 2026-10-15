@@ -226,24 +226,32 @@ export function makePostgresAssetsRepo(sql: Sql): AssetsRepo {
             return rows;
         },
 
-        async findAliasesByFuzzy(query, limit) {
+        async findAliasesByFuzzy(query, limit, filter) {
             const tsq = buildPrefixTsQuery(query) ?? 'noresultsentinel:*';
             const pattern = `%${query}%`;
+            // The asset predicates ride along via a JOIN only when a filter is
+            // set, so the unfiltered query keeps its plan (and its semantics
+            // for aliases whose asset row is gone).
+            const hasFilter = Boolean(filter?.category || filter?.region || filter?.industry);
             const rows = await sql<AssetAliasRow[]>`
-                SELECT alias, normalized, asset_id, priority
-                FROM asset_aliases
-                WHERE to_tsvector('english', alias) @@ to_tsquery('english', ${tsq})
-                   OR alias ILIKE ${pattern}
-                ORDER BY ts_rank_cd(to_tsvector('english', alias), to_tsquery('english', ${tsq})) DESC,
-                         priority DESC,
-                         length(alias) ASC,
-                         alias ASC
+                SELECT al.alias, al.normalized, al.asset_id, al.priority
+                FROM asset_aliases al
+                ${hasFilter ? sql`JOIN assets a ON a.asset_id = al.asset_id` : sql``}
+                WHERE (to_tsvector('english', al.alias) @@ to_tsquery('english', ${tsq})
+                   OR al.alias ILIKE ${pattern})
+                  ${filter?.category ? sql`AND a.category = ${filter.category}` : sql``}
+                  ${filter?.region ? sql`AND a.region = ${filter.region}` : sql``}
+                  ${filter?.industry ? sql`AND a.industry = ${filter.industry}` : sql``}
+                ORDER BY ts_rank_cd(to_tsvector('english', al.alias), to_tsquery('english', ${tsq})) DESC,
+                         al.priority DESC,
+                         length(al.alias) ASC,
+                         al.alias ASC
                 LIMIT ${limit}
             `;
             return rows;
         },
 
-        async findAssetsByNameFuzzy(query, limit) {
+        async findAssetsByNameFuzzy(query, limit, filter) {
             const tsq = buildPrefixTsQuery(query) ?? 'noresultsentinel:*';
             const pattern = `%${query}%`;
             const rows = await sql<AssetRow[]>`
@@ -251,8 +259,11 @@ export function makePostgresAssetsRepo(sql: Sql): AssetsRepo {
                        coingecko_id, description, image_url, is_active,
                        created_at, updated_at, region, industry
                 FROM assets
-                WHERE to_tsvector('english', coalesce(name, '')) @@ to_tsquery('english', ${tsq})
-                   OR coalesce(name, '') ILIKE ${pattern}
+                WHERE (to_tsvector('english', coalesce(name, '')) @@ to_tsquery('english', ${tsq})
+                   OR coalesce(name, '') ILIKE ${pattern})
+                  ${filter?.category ? sql`AND category = ${filter.category}` : sql``}
+                  ${filter?.region ? sql`AND region = ${filter.region}` : sql``}
+                  ${filter?.industry ? sql`AND industry = ${filter.industry}` : sql``}
                 ORDER BY ts_rank_cd(to_tsvector('english', coalesce(name, '')), to_tsquery('english', ${tsq})) DESC,
                          length(coalesce(name, '')) ASC,
                          asset_id ASC
@@ -261,7 +272,7 @@ export function makePostgresAssetsRepo(sql: Sql): AssetsRepo {
             return rows;
         },
 
-        async findAssetsBySymbolFuzzy(query, limit) {
+        async findAssetsBySymbolFuzzy(query, limit, filter) {
             const tsq = buildPrefixTsQuery(query) ?? 'noresultsentinel:*';
             const pattern = `%${query}%`;
             const rows = await sql<AssetRow[]>`
@@ -269,8 +280,11 @@ export function makePostgresAssetsRepo(sql: Sql): AssetsRepo {
                        coingecko_id, description, image_url, is_active,
                        created_at, updated_at, region, industry
                 FROM assets
-                WHERE to_tsvector('english', coalesce(symbol, '')) @@ to_tsquery('english', ${tsq})
-                   OR coalesce(symbol, '') ILIKE ${pattern}
+                WHERE (to_tsvector('english', coalesce(symbol, '')) @@ to_tsquery('english', ${tsq})
+                   OR coalesce(symbol, '') ILIKE ${pattern})
+                  ${filter?.category ? sql`AND category = ${filter.category}` : sql``}
+                  ${filter?.region ? sql`AND region = ${filter.region}` : sql``}
+                  ${filter?.industry ? sql`AND industry = ${filter.industry}` : sql``}
                 ORDER BY ts_rank_cd(to_tsvector('english', coalesce(symbol, '')), to_tsquery('english', ${tsq})) DESC,
                          length(coalesce(symbol, '')) ASC,
                          asset_id ASC

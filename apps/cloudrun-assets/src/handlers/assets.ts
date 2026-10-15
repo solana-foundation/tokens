@@ -103,13 +103,24 @@ export interface AssetCoinGeckoEntry {
     description?: string;
 }
 
+/**
+ * Asset-level predicates the fuzzy search queries apply *inside* SQL, before
+ * their LIMIT, so a filtered search never exhausts its candidate window on
+ * rows the handler would discard anyway.
+ */
+export interface AssetSearchFilter {
+    category?: AssetCategory;
+    region?: AssetRegion;
+    industry?: AssetIndustry;
+}
+
 export interface AssetsRepo {
     findByAssetId(assetId: string): Promise<AssetRow | null>;
     findByAssetIds(assetIds: readonly string[]): Promise<AssetRow[]>;
     findAliasesByNormalized(normalized: string, limit: number): Promise<AssetAliasRow[]>;
-    findAliasesByFuzzy(query: string, limit: number): Promise<AssetAliasRow[]>;
-    findAssetsByNameFuzzy(query: string, limit: number): Promise<AssetRow[]>;
-    findAssetsBySymbolFuzzy(query: string, limit: number): Promise<AssetRow[]>;
+    findAliasesByFuzzy(query: string, limit: number, filter?: AssetSearchFilter): Promise<AssetAliasRow[]>;
+    findAssetsByNameFuzzy(query: string, limit: number, filter?: AssetSearchFilter): Promise<AssetRow[]>;
+    findAssetsBySymbolFuzzy(query: string, limit: number, filter?: AssetSearchFilter): Promise<AssetRow[]>;
     findVariantByMint(mint: string): Promise<AssetVariantRow | null>;
     isDeletedRef(normalizedRef: string): Promise<boolean>;
     /**
@@ -419,12 +430,15 @@ export async function search(repo: AssetsRepo, args: unknown): Promise<AssetResu
 
     const limit = clampLimit(limitArg, 20, 50);
 
-    // Category/region/industry are checked on the asset row *after* the alias
-    // and text queries return their candidates, so a filtered search widens
-    // those candidate windows: otherwise a broad query would exhaust the
-    // `limit * 4` window on untagged assets and hide matching tagged ones.
-    const hasAssetFilter = Boolean(category || region || industry);
-    const candidateLimit = hasAssetFilter ? Math.min(limit * 20, 1000) : limit * 4;
+    // Category/region/industry are pushed into the fuzzy queries' WHERE so
+    // the `limit * 4` candidate windows only contain eligible assets; the
+    // in-memory checks below stay as the exact-alias path's guard and as a
+    // belt-and-braces re-check.
+    const assetFilter: AssetSearchFilter = {
+        ...(category ? { category } : {}),
+        ...(region ? { region } : {}),
+        ...(industry ? { industry } : {}),
+    };
 
     // Region/industry are stored as free text; compare the coerced value so a
     // legacy/unknown stored slug never matches a valid filter.
@@ -483,7 +497,7 @@ export async function search(repo: AssetsRepo, args: unknown): Promise<AssetResu
     }
 
     if (matched.length < limit) {
-        const fuzzyAliases = await repo.findAliasesByFuzzy(raw, candidateLimit);
+        const fuzzyAliases = await repo.findAliasesByFuzzy(raw, limit * 4, assetFilter);
         fuzzyAliases.sort((x, y) => (y.priority ?? 0) - (x.priority ?? 0));
         const fuzzyIds: string[] = [];
         const fuzzySeen = new Set<string>();
@@ -504,7 +518,7 @@ export async function search(repo: AssetsRepo, args: unknown): Promise<AssetResu
     }
 
     if (matched.length < limit) {
-        const symbolMatches = await repo.findAssetsBySymbolFuzzy(raw, candidateLimit);
+        const symbolMatches = await repo.findAssetsBySymbolFuzzy(raw, limit * 4, assetFilter);
         for (const asset of symbolMatches) {
             if (matched.length >= limit) break;
             appendIfEligible(asset);
@@ -512,7 +526,7 @@ export async function search(repo: AssetsRepo, args: unknown): Promise<AssetResu
     }
 
     if (matched.length < limit) {
-        const nameMatches = await repo.findAssetsByNameFuzzy(raw, candidateLimit);
+        const nameMatches = await repo.findAssetsByNameFuzzy(raw, limit * 4, assetFilter);
         for (const asset of nameMatches) {
             if (matched.length >= limit) break;
             appendIfEligible(asset);

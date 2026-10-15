@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'bun:test';
 
 import { assetsApiSearchPrefetchForApi, type SearchPrefetchDeps } from './assetsApiSearchPrefetch';
-import type { AssetsRepo, AssetRow, AssetAliasRow } from './assets';
+import type { AssetAliasRow, AssetRow, AssetSearchFilter, AssetsRepo } from './assets';
 import type { AssetVariantDocRow, AssetVariantsRepo } from './assetVariants';
 import type { SanctumLstRow, SanctumLstsRepo } from './sanctumLsts';
 import type { TokenRow, TokensReadsRepo } from './tokensReads';
@@ -770,41 +770,53 @@ describe('assetsApiSearchPrefetchForApi', () => {
         expect(wrongIndustry.assets).toEqual([]);
     });
 
-    it('widens the candidate window when a tag filter is active so tagged assets past limit*4 still surface', async () => {
-        const fuzzyLimits: number[] = [];
+    it('pushes region/industry/category into the fuzzy repo queries so SQL filters before LIMIT', async () => {
+        const seenFilters: Array<AssetSearchFilter | undefined> = [];
         const deps = makeEmptyDeps({
             assetsRepo: {
                 ...makeEmptyDeps().assetsRepo,
-                async findAliasesByFuzzy(_query, limit) {
-                    fuzzyLimits.push(limit);
+                async findAliasesByFuzzy(_query, _limit, filter) {
+                    seenFilters.push(filter);
                     return [];
                 },
-                async findAssetsBySymbolFuzzy(_query, limit) {
-                    fuzzyLimits.push(limit);
+                async findAssetsBySymbolFuzzy(_query, _limit, filter) {
+                    seenFilters.push(filter);
                     return [];
                 },
-                async findAssetsByNameFuzzy(_query, limit) {
-                    fuzzyLimits.push(limit);
-                    // Untagged assets fill the first limit*4 slots; the tagged one sits behind them.
+                async findAssetsByNameFuzzy(_query, limit, filter) {
+                    seenFilters.push(filter);
+                    // Simulate the database applying the predicate before LIMIT:
+                    // 40 untagged rows would otherwise fill the limit*4 window.
                     const filler = Array.from({ length: 40 }, (_, i) =>
                         makeAssetRow({ asset_id: `filler-${i}`, category: 'equity' }),
                     );
-                    return [...filler, makeAssetRow({ asset_id: 'tsmc', category: 'equity', region: 'asia', industry: 'semiconductors' })].slice(
-                        0,
-                        limit,
+                    const tagged = makeAssetRow({
+                        asset_id: 'tsmc',
+                        category: 'equity',
+                        region: 'asia',
+                        industry: 'semiconductors',
+                    });
+                    const rows = [...filler, tagged].filter(
+                        row =>
+                            (!filter?.region || row.region === filter.region) &&
+                            (!filter?.industry || row.industry === filter.industry) &&
+                            (!filter?.category || row.category === filter.category),
                     );
+                    return rows.slice(0, limit);
                 },
             },
         });
         const base = { query: 'zzz', searchLimit: 10, tokensLimit: 10, includeSanctum: false, includeTokensSearch: false };
         const unfiltered = await assetsApiSearchPrefetchForApi(deps, base);
         expect(unfiltered.assets.map(a => a.assetId)).not.toContain('tsmc');
-        expect(Math.max(...fuzzyLimits)).toBe(40);
+        expect(seenFilters.every(f => f !== undefined && Object.keys(f).length === 0)).toBe(true);
 
-        fuzzyLimits.length = 0;
-        const filtered = await assetsApiSearchPrefetchForApi(deps, { ...base, region: 'asia' });
+        seenFilters.length = 0;
+        const filtered = await assetsApiSearchPrefetchForApi(deps, { ...base, region: 'asia', category: 'equity' });
         expect(filtered.assets.map(a => a.assetId)).toEqual(['tsmc']);
-        expect(Math.max(...fuzzyLimits)).toBe(200);
+        expect(seenFilters.every(f => f?.region === 'asia' && f?.category === 'equity' && !('industry' in f))).toBe(
+            true,
+        );
     });
 
     it('honors category filter on assets search', async () => {
