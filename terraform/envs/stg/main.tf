@@ -14,7 +14,7 @@ import {
 # here; the definition in modules/env/crons_solana_data.tf is the source of
 # truth and the first apply reconciles any drift.
 import {
-  to = module.env.module.scheduler_jobs.google_cloud_scheduler_job.jobs["sync-solana-data-assets"]
+  to = module.env.module.scheduler_jobs[0].google_cloud_scheduler_job.jobs["sync-solana-data-assets"]
   id = "projects/${data.google_project.this.project_id}/locations/${var.region}/jobs/tokens-sync-solana-data-assets-stg"
 }
 
