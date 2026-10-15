@@ -3,49 +3,49 @@
 # Code Owners" (see docs/security/threat-model-api-keys.md, "Controls").
 
 # Infrastructure-as-code: IAM bindings, ingress, secrets wiring.
-/terraform/ @solana-foundation/foundation-product-team
+/terraform/ @stevesarmiento @niks3089
 
 # CI/CD: anything here runs with repository credentials.
-/.github/ @solana-foundation/foundation-product-team
+/.github/ @stevesarmiento @niks3089
 
 # Database schema: auth tables and anything that touches api_keys.
-/db/migrations/ @solana-foundation/foundation-product-team
+/db/migrations/ @stevesarmiento @niks3089
 
 # API-key provisioning + platform auth (usage service).
-/apps/cloudrun-usage/src/index.ts @solana-foundation/foundation-product-team
-/apps/cloudrun-usage/src/server.ts @solana-foundation/foundation-product-team
-/apps/cloudrun-usage/src/handlers/apiKeyCrypto.ts @solana-foundation/foundation-product-team
-/apps/cloudrun-usage/src/handlers/platformAuth.ts @solana-foundation/foundation-product-team
-/apps/cloudrun-usage/src/handlers/dashboard.ts @solana-foundation/foundation-product-team
-/apps/cloudrun-usage/src/handlers/clerkIdentity.ts @solana-foundation/foundation-product-team
+/apps/cloudrun-usage/src/index.ts @stevesarmiento @niks3089
+/apps/cloudrun-usage/src/server.ts @stevesarmiento @niks3089
+/apps/cloudrun-usage/src/handlers/apiKeyCrypto.ts @stevesarmiento @niks3089
+/apps/cloudrun-usage/src/handlers/platformAuth.ts @stevesarmiento @niks3089
+/apps/cloudrun-usage/src/handlers/dashboard.ts @stevesarmiento @niks3089
+/apps/cloudrun-usage/src/handlers/clerkIdentity.ts @stevesarmiento @niks3089
 
 # Platform API auth hot path + service-to-service client.
-/apps/api/src/proxy.ts @solana-foundation/foundation-product-team
-/apps/api/src/effect/next-route.ts @solana-foundation/foundation-product-team
-/apps/api/src/effect/playground-proxy-auth.ts @solana-foundation/foundation-product-team
-/apps/api/src/lib/env.ts @solana-foundation/foundation-product-team
-/apps/api/src/lib/cloudrun/ @solana-foundation/foundation-product-team
+/apps/api/src/proxy.ts @stevesarmiento @niks3089
+/apps/api/src/effect/next-route.ts @stevesarmiento @niks3089
+/apps/api/src/effect/playground-proxy-auth.ts @stevesarmiento @niks3089
+/apps/api/src/lib/env.ts @stevesarmiento @niks3089
+/apps/api/src/lib/cloudrun/ @stevesarmiento @niks3089
 
 # Dashboard → usage service caller (sends caller identity).
-/apps/app/src/lib/cloudrun.ts @solana-foundation/foundation-product-team
-/apps/app/src/lib/playground-proxy.ts @solana-foundation/foundation-product-team
-/apps/app/src/app/api/dashboard/ @solana-foundation/foundation-product-team
+/apps/app/src/lib/cloudrun.ts @stevesarmiento @niks3089
+/apps/app/src/lib/playground-proxy.ts @stevesarmiento @niks3089
+/apps/app/src/app/api/dashboard/ @stevesarmiento @niks3089
 
 # Admin authentication and authorization surfaces.
-/apps/admin/src/lib/admin-auth.ts @solana-foundation/foundation-product-team
-/apps/admin/src/lib/cloudrun.ts @solana-foundation/foundation-product-team
-/apps/admin/src/proxy.ts @solana-foundation/foundation-product-team
-/apps/cloudrun-admin/src/adminAuth.ts @solana-foundation/foundation-product-team
-/apps/cloudrun-assets/src/adminAuth.ts @solana-foundation/foundation-product-team
-/apps/cloudrun-admin/src/oidc.ts @solana-foundation/foundation-product-team
-/apps/cloudrun-assets/src/oidc.ts @solana-foundation/foundation-product-team
+/apps/admin/src/lib/admin-auth.ts @stevesarmiento @niks3089
+/apps/admin/src/lib/cloudrun.ts @stevesarmiento @niks3089
+/apps/admin/src/proxy.ts @stevesarmiento @niks3089
+/apps/cloudrun-admin/src/adminAuth.ts @stevesarmiento @niks3089
+/apps/cloudrun-assets/src/adminAuth.ts @stevesarmiento @niks3089
+/apps/cloudrun-admin/src/oidc.ts @stevesarmiento @niks3089
+/apps/cloudrun-assets/src/oidc.ts @stevesarmiento @niks3089
 
 # Shared bearer/identity helpers used by every Cloud Run service.
-/packages/cloudrun-shutdown/ @solana-foundation/foundation-product-team
+/packages/cloudrun-shutdown/ @stevesarmiento @niks3089
 
 # Security documentation (threat model, key inventory, rotation runbooks).
-/docs/security/ @solana-foundation/foundation-product-team
+/docs/security/ @stevesarmiento @niks3089
 
 # Secret-scanner and hygiene tooling.
-/scripts/check-repo-hygiene.mjs @solana-foundation/foundation-product-team
-/.githooks/ @solana-foundation/foundation-product-team
+/scripts/check-repo-hygiene.mjs @stevesarmiento @niks3089
+/.githooks/ @stevesarmiento @niks3089
