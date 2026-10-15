@@ -1,6 +1,5 @@
 import type { Metadata } from 'next';
 import { Suspense } from 'react';
-import { connection } from 'next/server';
 
 import { Skeleton } from '@tokens/ui/skeleton';
 import { SiteFooter } from '@/components/site-footer';
@@ -42,29 +41,21 @@ export default function RegistryPage() {
 }
 
 /**
- * `connection()` keeps the registry fetch out of the build-time prerender so
- * the static shell never depends on the platform API being reachable; the
- * `use cache` inside fetchRegistry (one GET /api/v2/registry read) still
- * applies across requests.
+ * The table is part of the prerendered shell: fetchRegistry is `use cache`
+ * (one GET /api/v2/registry read, revalidated in the background), so a reload
+ * or a prefetched navigation gets the rows from the CDN with no loading state.
+ * When the API is unreachable while prerendering (a preview whose API deploy
+ * is still building, a prod blip) the panel below is what gets prerendered,
+ * and fetchRegistry's one-second cache life makes the next request retry.
  */
 async function RegistryLoader() {
-    await connection();
-    try {
-        const data = await fetchRegistry();
-        return (
-            <section className="relative mx-auto max-w-7xl px-4 md:px-6 pb-12 md:pb-24">
-                <RegistryTable data={data} />
-            </section>
-        );
-    } catch (error) {
-        console.error(
-            JSON.stringify({
-                event: 'asset_registry_fetch_failed',
-                message: error instanceof Error ? error.message : String(error),
-            }),
-        );
-        return <RegistryUnavailable />;
-    }
+    const data = await fetchRegistry();
+    if (!data) return <RegistryUnavailable />;
+    return (
+        <section className="relative mx-auto max-w-7xl px-4 md:px-6 pb-12 md:pb-24">
+            <RegistryTable data={data} />
+        </section>
+    );
 }
 
 function RegistryUnavailable() {

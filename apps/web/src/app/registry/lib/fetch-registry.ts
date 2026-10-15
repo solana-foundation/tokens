@@ -16,10 +16,14 @@ import type { RegistryData, RegistryRow, V2RegistryItem, V2RegistryResponse } fr
 const REGISTRY_PATH = '/api/v2/registry?limit=5000';
 
 /**
- * Throws on any failure so the error is never cached: the page falls back to
- * an "unavailable" panel and the next request retries the API.
+ * Resolves to `null` instead of throwing on failure. The page is prerendered
+ * with this call inside it, and an error escaping a `use cache` scope fails
+ * the build outright even when the caller catches it, so a failure becomes a
+ * value: it is cached for one second only (the route then revalidates on the
+ * next request) and the page shows an "unavailable" panel until the API
+ * answers again.
  */
-export async function fetchRegistry(): Promise<RegistryData> {
+export async function fetchRegistry(): Promise<RegistryData | null> {
     'use cache';
     cacheLife('minutes');
 
@@ -28,15 +32,15 @@ export async function fetchRegistry(): Promise<RegistryData> {
         Effect.result(apiAppJson<V2RegistryResponse>({ path: REGISTRY_PATH, timeout: '20 seconds', retryTimes: 1 })),
     );
     if (!Result.isSuccess(result)) {
-        throw new Error(`${REGISTRY_PATH} failed: ${result.failure._tag}: ${result.failure.message}`);
+        return unavailable(`${REGISTRY_PATH} failed: ${result.failure._tag}: ${result.failure.message}`);
     }
     const payload = result.success;
     if (!Array.isArray(payload?.items)) {
-        throw new Error('Asset registry response is missing items');
+        return unavailable('Asset registry response is missing items');
     }
-    // Before the first worker sync the endpoint is an empty 200; do not cache that.
+    // Before the first worker sync the endpoint is an empty 200; do not keep that.
     if (payload.items.length === 0) {
-        throw new Error('Asset registry has not been synced yet');
+        return unavailable('Asset registry has not been synced yet');
     }
 
     const rows = payload.items.map(toRegistryRow);
@@ -64,6 +68,15 @@ export async function fetchRegistry(): Promise<RegistryData> {
         truncated: payload.total > payload.items.length,
         rows,
     };
+}
+
+/** Logs the failure and makes sure it does not outlive the next request. */
+function unavailable(message: string): null {
+    console.error(JSON.stringify({ event: 'asset_registry_fetch_failed', message }));
+    // The shortest cacheLife in a scope wins: the failed entry expires at once
+    // so the following request re-fetches instead of serving the panel.
+    cacheLife({ stale: 0, revalidate: 1, expire: 1 });
+    return null;
 }
 
 function toRegistryRow(item: V2RegistryItem): RegistryRow {

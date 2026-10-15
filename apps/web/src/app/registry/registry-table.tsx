@@ -25,6 +25,7 @@ import { downloadTextFile, registryCsvFilename, registryRowsToCsv } from './lib/
 import { SORTABLE_COLUMN_IDS, applyFilters, type SortableColumnId } from './lib/filters';
 import type { RegistryData, RegistryRow } from './lib/types';
 import type { CategoryOptions } from './registry-filter-editor';
+import { RegistryNuqsAdapter } from './registry-nuqs-adapter';
 import { RegistryResponseSheet } from './registry-response-sheet';
 import { RegistryTokenLogo } from './registry-token-logo';
 import { RegistryToolbar } from './registry-toolbar';
@@ -216,7 +217,19 @@ function isSortableColumnId(id: string): id is SortableColumnId {
     return (SORTABLE_COLUMN_IDS as readonly string[]).includes(id);
 }
 
+/**
+ * Wrapped in the registry's own nuqs adapter so the table (toolbar state and
+ * all) renders in the prerendered HTML instead of behind a Suspense fallback.
+ */
 export function RegistryTable({ data }: { data: RegistryData }) {
+    return (
+        <RegistryNuqsAdapter>
+            <RegistryTableInner data={data} />
+        </RegistryNuqsAdapter>
+    );
+}
+
+function RegistryTableInner({ data }: { data: RegistryData }) {
     const urlState = useRegistryUrlState();
     const { q, filters, sort, setSort, clearAll } = urlState;
     const [pagination, setPagination] = useState<PaginationState>({ pageIndex: 0, pageSize: 50 });
