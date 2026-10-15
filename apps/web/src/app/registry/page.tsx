@@ -1,10 +1,10 @@
 import type { Metadata } from 'next';
 import { Suspense } from 'react';
 
-import { Skeleton } from '@tokens/ui/skeleton';
 import { SiteFooter } from '@/components/site-footer';
 import { fetchRegistry } from './lib/fetch-registry';
 import { RegistryTable } from './registry-table';
+import { RegistryTableSkeleton } from './registry-table-skeleton';
 
 export const metadata: Metadata = {
     title: 'Real World Assets Registry | Tokens',
@@ -27,7 +27,7 @@ export default function RegistryPage() {
                 </div>
             </section>
 
-            <Suspense fallback={<RegistryFallback />}>
+            <Suspense fallback={<RegistryTableSkeleton />}>
                 <RegistryLoader />
             </Suspense>
 
@@ -67,15 +67,6 @@ function RegistryUnavailable() {
                     Please try again in a few minutes.
                 </p>
             </div>
-        </section>
-    );
-}
-
-function RegistryFallback() {
-    return (
-        <section className="relative mx-auto max-w-7xl px-4 md:px-6 pb-12 md:pb-24">
-            <Skeleton className="h-10 w-full max-w-[360px] rounded-full bg-gray-50" />
-            <Skeleton className="mt-4 h-[560px] w-full rounded-[24px] bg-gray-50" />
         </section>
     );
 }
