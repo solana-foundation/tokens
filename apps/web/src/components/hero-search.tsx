@@ -33,8 +33,9 @@ export function HeroSearch() {
 
         return () => {
             observer.unobserve(element);
-            // Reset visibility when HeroSearch unmounts (e.g., navigating to token page)
-            setHeroSearchVisible(false);
+            // Back to "unknown" when HeroSearch unmounts (e.g., navigating to a token page) so a later
+            // return to the home page starts hidden again instead of flashing the header search.
+            setHeroSearchVisible(null);
         };
     }, [setHeroSearchVisible]);
 
