@@ -770,6 +770,43 @@ describe('assetsApiSearchPrefetchForApi', () => {
         expect(wrongIndustry.assets).toEqual([]);
     });
 
+    it('widens the candidate window when a tag filter is active so tagged assets past limit*4 still surface', async () => {
+        const fuzzyLimits: number[] = [];
+        const deps = makeEmptyDeps({
+            assetsRepo: {
+                ...makeEmptyDeps().assetsRepo,
+                async findAliasesByFuzzy(_query, limit) {
+                    fuzzyLimits.push(limit);
+                    return [];
+                },
+                async findAssetsBySymbolFuzzy(_query, limit) {
+                    fuzzyLimits.push(limit);
+                    return [];
+                },
+                async findAssetsByNameFuzzy(_query, limit) {
+                    fuzzyLimits.push(limit);
+                    // Untagged assets fill the first limit*4 slots; the tagged one sits behind them.
+                    const filler = Array.from({ length: 40 }, (_, i) =>
+                        makeAssetRow({ asset_id: `filler-${i}`, category: 'equity' }),
+                    );
+                    return [...filler, makeAssetRow({ asset_id: 'tsmc', category: 'equity', region: 'asia', industry: 'semiconductors' })].slice(
+                        0,
+                        limit,
+                    );
+                },
+            },
+        });
+        const base = { query: 'zzz', searchLimit: 10, tokensLimit: 10, includeSanctum: false, includeTokensSearch: false };
+        const unfiltered = await assetsApiSearchPrefetchForApi(deps, base);
+        expect(unfiltered.assets.map(a => a.assetId)).not.toContain('tsmc');
+        expect(Math.max(...fuzzyLimits)).toBe(40);
+
+        fuzzyLimits.length = 0;
+        const filtered = await assetsApiSearchPrefetchForApi(deps, { ...base, region: 'asia' });
+        expect(filtered.assets.map(a => a.assetId)).toEqual(['tsmc']);
+        expect(Math.max(...fuzzyLimits)).toBe(200);
+    });
+
     it('honors category filter on assets search', async () => {
         const deps = makeEmptyDeps({
             assetsRepo: {

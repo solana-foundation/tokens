@@ -376,7 +376,17 @@ export const GET = route(
                     });
                 }
             }
-            const canonicalDocs = Array.from(canonicalDocsById.values());
+            // Apply the tag filter before the page is cut: extras hydrated via
+            // variants-by-mint and registry-only matches (never tagged) must
+            // not crowd tagged assets out of the first `limit` slots.
+            const canonicalDocs = Array.from(canonicalDocsById.values()).filter(
+                doc =>
+                    !hasTagFilter ||
+                    matchesTagFilter({
+                        region: toAssetRegionOrNull(doc.region),
+                        industry: toAssetIndustryOrNull(doc.industry),
+                    }),
+            );
 
             const firstPage = canonicalDocs.slice(0, limit);
             const coingeckoIdsToFetch = Array.from(

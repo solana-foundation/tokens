@@ -53,9 +53,12 @@ export function makePostgresAssetTagsImportRepo(sql: Sql): AssetTagsImportRepo {
             return out;
         },
 
-        async applyTags(rows, nowMs) {
+        async applyTags(rows, nowMs, mode) {
             if (rows.length === 0) return 0;
             const now = new Date(nowMs);
+            // `fill_empty` re-asserts the plan's precondition in the WHERE
+            // clause so a concurrent hand edit wins the race.
+            const overwrite = mode === 'overwrite';
             return await sql.begin(async tx => {
                 let updated = 0;
                 for (const row of rows) {
@@ -66,6 +69,7 @@ export function makePostgresAssetTagsImportRepo(sql: Sql): AssetTagsImportRepo {
                             updated_at = ${now},
                             admin_edited_at = ${nowMs}
                         WHERE asset_id = ${row.assetId}
+                          AND (${overwrite} OR (region IS NULL AND industry IS NULL))
                     `;
                     updated += result.count ?? 0;
                 }

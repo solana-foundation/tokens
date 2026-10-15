@@ -60,18 +60,35 @@ describe('makePostgresAssetTagsImportRepo', () => {
                 { assetId: 'asml', region: 'europe', industry: 'semiconductors' },
             ],
             NOW,
+            'overwrite',
         );
         expect(updated).toBe(2);
         const updates = queries.filter(q => q.text.startsWith('UPDATE assets SET'));
         expect(updates.length).toBe(2);
         expect(updates[0]!.text).toContain('admin_edited_at = $');
-        expect(updates[0]!.params).toEqual(['north_america', 'automotive', new Date(NOW), NOW, 'tesla']);
+        expect(updates[0]!.text).toContain('OR (region IS NULL AND industry IS NULL)');
+        // overwrite binds the guard-bypass flag as true
+        expect(updates[0]!.params).toEqual(['north_america', 'automotive', new Date(NOW), NOW, 'tesla', true]);
+    });
+
+    it('applyTags in fill_empty mode re-checks at write time that both columns are still null', async () => {
+        // The fake returns no rows for the UPDATE: the row was tagged between plan and write.
+        const { sql, queries } = makeFakeSql(() => []);
+        const repo = makePostgresAssetTagsImportRepo(sql);
+        const updated = await repo.applyTags(
+            [{ assetId: 'tesla', region: 'north_america', industry: 'automotive' }],
+            NOW,
+            'fill_empty',
+        );
+        expect(updated).toBe(0);
+        const update = queries.find(q => q.text.startsWith('UPDATE assets SET'));
+        expect(update!.params).toEqual(['north_america', 'automotive', new Date(NOW), NOW, 'tesla', false]);
     });
 
     it('applyTags is a no-op for an empty plan', async () => {
         const { sql, queries } = makeFakeSql();
         const repo = makePostgresAssetTagsImportRepo(sql);
-        expect(await repo.applyTags([], NOW)).toBe(0);
+        expect(await repo.applyTags([], NOW, 'fill_empty')).toBe(0);
         expect(queries).toEqual([]);
     });
 });

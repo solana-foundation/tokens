@@ -238,8 +238,14 @@ function curatedStaleCacheKey(request: Request): string | null {
         const shouldPaginate = searchParams.has('limit') || searchParams.has('offset');
         const offset = shouldPaginate ? (searchParams.get('offset') ?? '').trim() : '';
         const limit = shouldPaginate ? (searchParams.get('limit') ?? '').trim() : '';
-        const region = parseTagParam(searchParams.get('region'), isAssetRegion);
-        const industry = parseTagParam(searchParams.get('industry'), isAssetIndustry);
+        // An unknown region/industry must reach the handler and 400: sharing
+        // the unfiltered key would let `freshSeconds` serve a cached 200.
+        const rawRegion = (searchParams.get('region') ?? '').trim();
+        const rawIndustry = (searchParams.get('industry') ?? '').trim();
+        if (rawRegion && !isAssetRegion(rawRegion)) return null;
+        if (rawIndustry && !isAssetIndustry(rawIndustry)) return null;
+        const region = parseTagParam(rawRegion, isAssetRegion);
+        const industry = parseTagParam(rawIndustry, isAssetIndustry);
         // `variants` (and the region/industry filters) are spread conditionally
         // so pre-existing key hashes (incl. the warmer's) stay stable. `advisoryRevision` bumps on every advisory
         // set/clear so the `freshSeconds` serve-without-handler path can never

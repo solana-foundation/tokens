@@ -47,8 +47,13 @@ export interface AssetTagsImportRepo {
      * alias left by an admin rename. Unresolved ids are absent from the map.
      */
     resolveAssets(requestedIds: readonly string[]): Promise<Map<string, ResolvedAssetTags>>;
-    /** Apply the writes in one transaction; returns the number of rows updated. */
-    applyTags(rows: readonly AssetTagsImportRow[], nowMs: number): Promise<number>;
+    /**
+     * Apply the writes in one transaction; returns the number of rows actually
+     * updated. In `fill_empty` mode each UPDATE re-checks that both columns are
+     * still null, so a hand edit saved between plan and write is never
+     * overwritten (the count then comes back lower than the plan).
+     */
+    applyTags(rows: readonly AssetTagsImportRow[], nowMs: number, mode: AssetTagsImportMode): Promise<number>;
     /** Asset ids on the curated `stocks` list that still have neither tag. */
     listUntaggedStockAssetIds(): Promise<string[]>;
 }
@@ -197,7 +202,7 @@ export async function applyAssetTagsImport(
     const { rows, mode } = parseArgs(args);
     const plan = await planAssetTagsImport(deps.repo, rows, mode);
     const applied =
-        plan.toApply.length > 0 ? await deps.repo.applyTags(plan.toApply, deps.now ? deps.now() : Date.now()) : 0;
+        plan.toApply.length > 0 ? await deps.repo.applyTags(plan.toApply, deps.now ? deps.now() : Date.now(), mode) : 0;
     const preview = await buildPreview(deps.repo, rows, plan);
     return { ...preview, applied };
 }

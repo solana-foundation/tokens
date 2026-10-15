@@ -19,8 +19,8 @@ const NOW = 1_760_000_000_000;
 function makeRepo(
     assets: Record<string, ResolvedAssetTags>,
     options: { renames?: Record<string, string>; untagged?: string[] } = {},
-): { repo: AssetTagsImportRepo; applied: Array<{ rows: AssetTagsImportRow[]; nowMs: number }> } {
-    const applied: Array<{ rows: AssetTagsImportRow[]; nowMs: number }> = [];
+): { repo: AssetTagsImportRepo; applied: Array<{ rows: AssetTagsImportRow[]; nowMs: number; mode: string }> } {
+    const applied: Array<{ rows: AssetTagsImportRow[]; nowMs: number; mode: string }> = [];
     const repo: AssetTagsImportRepo = {
         async resolveAssets(ids) {
             const out = new Map<string, ResolvedAssetTags>();
@@ -31,8 +31,8 @@ function makeRepo(
             }
             return out;
         },
-        async applyTags(rows, nowMs) {
-            applied.push({ rows: [...rows], nowMs });
+        async applyTags(rows, nowMs, mode) {
+            applied.push({ rows: [...rows], nowMs, mode });
             return rows.length;
         },
         async listUntaggedStockAssetIds() {
@@ -151,9 +151,24 @@ describe('previewAssetTagsImport / applyAssetTagsImport', () => {
         const result = await applyAssetTagsImport(deps(repo), { rows: ROWS.slice(0, 2) }, ADMIN);
         expect(result.applied).toBe(1);
         expect(applied).toEqual([
-            { rows: [{ assetId: 'tesla', region: 'north_america', industry: 'automotive' }], nowMs: NOW },
+            {
+                rows: [{ assetId: 'tesla', region: 'north_america', industry: 'automotive' }],
+                nowMs: NOW,
+                mode: 'fill_empty',
+            },
         ]);
         expect(result.skippedAlreadyTagged).toEqual(['asml']);
+    });
+
+    it('apply reports the repo count, which can be lower than the plan when a row was tagged mid-run', async () => {
+        const { repo } = makeRepo({
+            tesla: { assetId: 'tesla', region: null, industry: null },
+            asml: { assetId: 'asml', region: null, industry: null },
+        });
+        repo.applyTags = async rows => rows.length - 1; // one row lost the fill_empty race
+        const result = await applyAssetTagsImport(deps(repo), { rows: ROWS.slice(0, 2) }, ADMIN);
+        expect(result.toApply.length).toBe(2);
+        expect(result.applied).toBe(1);
     });
 
     it('apply skips the write entirely when nothing is planned', async () => {
