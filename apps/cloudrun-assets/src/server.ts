@@ -212,7 +212,8 @@ export interface ServerDeps {
     prestocksReadsRepo: PrestocksReadsRepo;
     launchpadReadsRepo: LaunchpadReadsRepo;
     solanaDataReadsRepo: SolanaDataReadsRepo;
-    authToken: string;
+    /** Current shared bearer, or [current, previous] during a rotation. */
+    authToken: string | readonly string[];
     /** API serves RPC routes; worker serves Cloud Scheduler jobs only. */
     serviceRole?: ServiceRole;
     /** Production injects a SELECT 1 check for the Cloud Run startup probe. */

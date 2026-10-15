@@ -41,6 +41,7 @@ done
 # --- 3. Services --------------------------------------------------------------
 export TOKENS_CLOUDRUN_AUTH_TOKEN="$AUTH_TOKEN"
 export TOKENS_API_KEY_ENCRYPTION_SECRET="${TOKENS_API_KEY_ENCRYPTION_SECRET:-dev-encryption-secret}"
+export TOKENS_IDENTITY_SIGNING_SECRET="${TOKENS_IDENTITY_SIGNING_SECRET:-dev-identity-signing-secret}"
 export TOKENS_ADMIN_CLERK_USER_IDS="${TOKENS_ADMIN_CLERK_USER_IDS:-}"
 
 pids=()
@@ -72,6 +73,9 @@ Stack is up. Point the apps at it (\`.env.local\`):
   TOKENS_CLOUDRUN_USAGE_URL=http://localhost:3012
   TOKENS_CLOUDRUN_ADMIN_URL=http://localhost:3013
   TOKENS_CLOUDRUN_AUTH_TOKEN=${AUTH_TOKEN}
+
+  # apps/app additionally (signs x-tokens-identity for the usage service)
+  TOKENS_IDENTITY_SIGNING_SECRET=${TOKENS_IDENTITY_SIGNING_SECRET}
 
   # apps/admin additionally
   TOKENS_ADMIN_CLERK_USER_IDS=<your clerk user id>

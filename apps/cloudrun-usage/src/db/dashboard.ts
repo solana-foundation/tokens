@@ -385,6 +385,44 @@ export function makePostgresDashboardRepo(sql: Sql): DashboardRepo {
             `;
         },
 
+        async listEncryptedApiKeys(afterId, limit) {
+            const rows = await sql<
+                {
+                    id: string;
+                    project_id: string | null;
+                    owner_clerk_user_id: string;
+                    key_prefix: string;
+                    revoked_at: string | number | null;
+                    scopes: unknown;
+                    encrypted_raw_key_ciphertext: string | null;
+                    encrypted_raw_key_iv: string | null;
+                    encrypted_raw_key_version: number | null;
+                }[]
+            >`
+                SELECT id, project_id, owner_clerk_user_id, key_prefix, revoked_at, scopes,
+                       encrypted_raw_key_ciphertext, encrypted_raw_key_iv, encrypted_raw_key_version
+                FROM api_keys
+                WHERE encrypted_raw_key_ciphertext IS NOT NULL
+                  AND encrypted_raw_key_iv IS NOT NULL
+                  AND encrypted_raw_key_version IS NOT NULL
+                  AND (${afterId}::text IS NULL OR id > ${afterId})
+                ORDER BY id
+                LIMIT ${limit}
+            `;
+            return rows.map(toApiKeyFullRow);
+        },
+
+        async updateApiKeyEncryption(apiKeyId, encrypted) {
+            await sql`
+                UPDATE api_keys
+                SET encrypted_raw_key_ciphertext = ${encrypted.encryptedRawKeyCiphertext},
+                    encrypted_raw_key_iv = ${encrypted.encryptedRawKeyIv},
+                    encrypted_raw_key_version = ${encrypted.encryptedRawKeyVersion},
+                    encrypted_raw_key_created_at = ${encrypted.encryptedRawKeyCreatedAt}
+                WHERE id = ${apiKeyId}
+            `;
+        },
+
         async insertApiKeyRevokingActive({
             projectId,
             isPersonalProject,

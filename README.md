@@ -122,6 +122,7 @@ bun run audit:deps
 
 - Local env files such as `.env.local` are ignored and must never be committed.
 - Never commit credentials, secrets, or personal data. `bun run check:repo-hygiene` enforces the basics in CI.
+- Threat model, key inventory, and rotation runbooks live in [docs/security/](docs/security/).
 
 ## License
 

@@ -3,14 +3,16 @@
   "version": "0.0.0",
   "private": true,
   "scripts": {
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "bun test src"
   },
   "license": "MIT",
   "type": "module",
   "sideEffects": false,
   "exports": {
     ".": "./src/index.ts",
-    "./http-errors": "./src/http-errors.ts"
+    "./http-errors": "./src/http-errors.ts",
+    "./identity": "./src/identity.ts"
   },
   "files": [
     "src"
@@ -21,6 +23,7 @@
   "devDependencies": {
     "@tokens/typescript-config": "workspace:*",
     "@types/node": "^22.10.2",
-    "typescript": "^5.9.3"
+    "typescript": "^5.9.3",
+    "@types/bun": "^1.1.14"
   }
 }

@@ -61,6 +61,17 @@ output "cloudrun_auth_token_value" {
   description = "Generated TOKENS_CLOUDRUN_AUTH_TOKEN. Copy into Doppler tokens/<env> + Vercel apps/api after first apply."
 }
 
+output "identity_signing_secret_id" {
+  value       = module.secrets.identity_signing_secret_id
+  description = "Secret Manager id holding the HMAC key for the signed x-tokens-identity token (usage service)."
+}
+
+output "identity_signing_secret_value" {
+  value       = module.secrets.identity_signing_secret_value
+  sensitive   = true
+  description = "Generated TOKENS_IDENTITY_SIGNING_SECRET. Copy into Vercel apps/app (Production = prd, Preview = stg) after first apply."
+}
+
 output "database_url_secret_id" {
   value       = module.secrets.database_url_secret_id
   description = "Secret Manager id holding the composed postgres://… connection string consumed by Cloud Run services."

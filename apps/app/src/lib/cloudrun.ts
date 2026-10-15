@@ -1,20 +1,32 @@
 import 'server-only';
 
+import { IDENTITY_HEADER, signIdentityToken, type IdentityClaims } from '@tokens/cloudrun-shutdown/identity';
+
 /**
  * Minimal Cloud Run client for the dashboard (usage service only).
- * Trimmed copy of `apps/api/src/lib/cloudrun/client.ts` — bearer token +
- * base64 `x-tokens-identity` header carrying the Clerk-session-verified caller.
+ * Trimmed copy of `apps/api/src/lib/cloudrun/client.ts` — bearer token plus a
+ * signed `x-tokens-identity` token carrying the Clerk-session-verified caller,
+ * bound to this exact RPC and body (see `@tokens/cloudrun-shutdown/identity`).
  */
 
-export interface CloudRunCallerIdentity {
-    clerkUserId: string;
-    projectId?: string;
-    email?: string;
-}
+export type CloudRunCallerIdentity = IdentityClaims;
 
-export const CLOUDRUN_IDENTITY_HEADER = 'x-tokens-identity';
+export const CLOUDRUN_IDENTITY_HEADER = IDENTITY_HEADER;
 
-export function encodeCallerIdentity(identity: CloudRunCallerIdentity): string {
+let warnedUnsigned = false;
+
+/**
+ * TRANSITIONAL (removed with the legacy decoder in the usage service): until
+ * TOKENS_IDENTITY_SIGNING_SECRET is set on this deployment, send the legacy
+ * unsigned header so the dashboard keeps working while the secret is rolled
+ * out. The usage service only accepts this form while
+ * TOKENS_IDENTITY_ACCEPT_UNSIGNED is on.
+ */
+function legacyIdentityHeader(identity: CloudRunCallerIdentity): string {
+    if (!warnedUnsigned) {
+        warnedUnsigned = true;
+        console.warn('[cloudrun] TOKENS_IDENTITY_SIGNING_SECRET is not set — sending unsigned x-tokens-identity');
+    }
     return Buffer.from(JSON.stringify(identity), 'utf8').toString('base64');
 }
 
@@ -45,7 +57,15 @@ export async function callCloudRunUsage<T>(
 ): Promise<T> {
     const base = requireEnv('TOKENS_CLOUDRUN_USAGE_URL').replace(/\/$/, '');
     const authToken = requireEnv('TOKENS_CLOUDRUN_AUTH_TOKEN');
+    const signingSecret = process.env.TOKENS_IDENTITY_SIGNING_SECRET?.trim();
     const timeoutMs = Number(process.env.TOKENS_CLOUDRUN_TIMEOUT_MS) || 15_000;
+
+    // The body string is hashed into the identity token, so serialise once and
+    // send those exact bytes.
+    const body = JSON.stringify(args);
+    const identityToken = signingSecret
+        ? await signIdentityToken(identity, { kind, fn: name, body }, signingSecret)
+        : legacyIdentityHeader(identity);
 
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), timeoutMs);
@@ -56,9 +76,9 @@ export async function callCloudRunUsage<T>(
             headers: {
                 'content-type': 'application/json',
                 authorization: `Bearer ${authToken}`,
-                [CLOUDRUN_IDENTITY_HEADER]: encodeCallerIdentity(identity),
+                [CLOUDRUN_IDENTITY_HEADER]: identityToken,
             },
-            body: JSON.stringify(args),
+            body,
         });
         if (!res.ok) {
             const body = await res.text().catch(() => '');
