@@ -8,6 +8,16 @@ import {
   id = "projects/${data.google_project.this.project_id}/locations/${var.region}/services/tokens-assets-jobs-stg-us"
 }
 
+# The Project Canon registry sync job was created out-of-band on 2026-10-14 so
+# the PR #189 staging preview could be seeded before this module was applied
+# (the standalone Cloud Run deploy workflow cannot run from a branch). Adopt it
+# here; the definition in modules/env/crons_solana_data.tf is the source of
+# truth and the first apply reconciles any drift.
+import {
+  to = module.env.module.scheduler_jobs.google_cloud_scheduler_job.jobs["sync-solana-data-assets"]
+  id = "projects/${data.google_project.this.project_id}/locations/${var.region}/jobs/tokens-sync-solana-data-assets-stg"
+}
+
 module "env" {
   source = "../../modules/env"
 
