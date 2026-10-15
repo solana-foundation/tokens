@@ -36,12 +36,18 @@ import {
     type TokenMarketsGetLatestByMintsResult,
 } from '@/lib/cloudrun';
 
-import type { AssetCategory, CanonicalAsset } from '@tokens/asset-registry';
+import type { AssetCategory, AssetIndustry, AssetRegion, CanonicalAsset } from '@tokens/asset-registry';
 import {
+    ASSET_INDUSTRIES,
+    ASSET_REGIONS,
     buildRegistryTombstoneRefs,
     getVariantByMint,
+    isAssetIndustry,
+    isAssetRegion,
     isHiddenAdvisory,
     listCategories,
+    toAssetIndustryOrNull,
+    toAssetRegionOrNull,
     resolveAlias as resolveRegistryAlias,
     searchAssets as searchRegistryAssets,
 } from '@tokens/asset-registry';
@@ -85,6 +91,16 @@ function parseCategory(raw: string | null): AssetCategory | null {
     return categories.includes(trimmed as AssetCategory) ? (trimmed as AssetCategory) : null;
 }
 
+function parseRegion(raw: string | null): AssetRegion | null {
+    const trimmed = (raw ?? '').trim();
+    return isAssetRegion(trimmed) ? trimmed : null;
+}
+
+function parseIndustry(raw: string | null): AssetIndustry | null {
+    const trimmed = (raw ?? '').trim();
+    return isAssetIndustry(trimmed) ? trimmed : null;
+}
+
 function normalizeOptionalText(value: string | undefined | null): string | null {
     const trimmed = (value ?? '').trim();
     if (!trimmed) return null;
@@ -126,6 +142,8 @@ interface AssetDocLike {
     aliases: string[];
     coingeckoId?: string | null;
     imageUrl?: string | null;
+    region?: string | null;
+    industry?: string | null;
 }
 
 export const GET = route(
@@ -152,6 +170,31 @@ export const GET = route(
                     }),
                 );
             }
+
+            // Admin-curated segmentation tags: exact-match, AND-combined.
+            const rawRegion = (url.searchParams.get('region') ?? '').trim() || null;
+            const region = parseRegion(rawRegion);
+            if (rawRegion && !region) {
+                return yield* Effect.fail(
+                    new BadRequestError({
+                        message: `Invalid region: ${rawRegion}`,
+                        details: { regions: [...ASSET_REGIONS] },
+                    }),
+                );
+            }
+            const rawIndustry = (url.searchParams.get('industry') ?? '').trim() || null;
+            const industry = parseIndustry(rawIndustry);
+            if (rawIndustry && !industry) {
+                return yield* Effect.fail(
+                    new BadRequestError({
+                        message: `Invalid industry: ${rawIndustry}`,
+                        details: { industries: [...ASSET_INDUSTRIES] },
+                    }),
+                );
+            }
+            const hasTagFilter = region !== null || industry !== null;
+            const matchesTagFilter = (asset: { region?: AssetRegion | null; industry?: AssetIndustry | null }) =>
+                (!region || asset.region === region) && (!industry || asset.industry === industry);
 
             const mintRank = buildCuratedMintRank();
 
@@ -195,6 +238,8 @@ export const GET = route(
             const prefetch: SearchPrefetchResult | null = yield* searchPrefetchForApi({
                     query: qOriginal,
                     ...(category ? { category } : {}),
+                    ...(region ? { region } : {}),
+                    ...(industry ? { industry } : {}),
                     searchLimit: Math.min(limit * 2, 50),
                     tokensLimit: Math.min(limit * 2, 50),
                     includeSanctum: shouldConsiderSanctumLsts,
@@ -219,6 +264,8 @@ export const GET = route(
                 : yield* cloudRunSearch({
                           query: effectiveAssetQuery,
                           ...(category ? { category } : {}),
+                          ...(region ? { region } : {}),
+                          ...(industry ? { industry } : {}),
                           limit: Math.min(limit * 2, 50),
                       })) as AssetDocLike[];
             const legacyMintAssetsFromDb = assetsFromDb.filter(a => looksLikeSolanaMintAddress(a.assetId));
@@ -432,6 +479,8 @@ export const GET = route(
                     aliases: a.aliases,
                     ...(coingeckoId ? { coingeckoId } : {}),
                     variants,
+                    region: toAssetRegionOrNull(a.region),
+                    industry: toAssetIndustryOrNull(a.industry),
                 };
             });
 
@@ -510,7 +559,12 @@ export const GET = route(
                 };
             }
 
-            const mergedAssets = assets.map(mergeRegistryVariantMetadata);
+            // Re-apply the tag filter locally: the Cloud Run search already
+            // honours it, but extras hydrated via variants-by-mint and
+            // registry-only hits (no tags) are merged in unfiltered.
+            const mergedAssets = assets
+                .map(mergeRegistryVariantMetadata)
+                .filter(asset => !hasTagFilter || matchesTagFilter(asset));
 
             // Advisory set for this request (fail-open: empty on outage).
             // `blocked` mints are hidden from search; `compromised`/`caution`
@@ -518,7 +572,9 @@ export const GET = route(
             const advisoriesByMint = yield* loadAdvisoriesOrEmpty();
             const isHiddenMint = (mint: string) => isHiddenAdvisory(advisoriesByMint.get(mint));
 
-            const singletonSlots = Math.max(0, limit - mergedAssets.length);
+            // Singleton tokens never carry region/industry, so a tag filter
+            // excludes them outright instead of back-filling the page.
+            const singletonSlots = hasTagFilter ? 0 : Math.max(0, limit - mergedAssets.length);
             const singletonAssets: CanonicalAsset[] = [];
             if (singletonSlots > 0) {
                 const seenSingletonAssetIds = new Set<string>(mergedAssets.map(a => a.assetId));
@@ -1078,6 +1134,8 @@ export const GET = route(
                     name: asset.name,
                     symbol: responseSymbol,
                     category: asset.category,
+                    region: asset.region ?? null,
+                    industry: asset.industry ?? null,
                     imageUrl,
                     stats: effectiveStats,
                     ...(canonicalMarket ? { canonicalMarket } : {}),
@@ -1087,7 +1145,7 @@ export const GET = route(
                 };
             });
 
-            return { query: q, category, primaryVariantStrategy, results };
+            return { query: q, category, region, industry, primaryVariantStrategy, results };
         }),
     // maxAge 120 → 30: an advisory set on a mint must reach search consumers
     // in the same window as the detail endpoint (browser-side worst case was

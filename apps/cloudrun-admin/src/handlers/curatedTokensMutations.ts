@@ -11,12 +11,14 @@
  * transaction (postgres-js `sql.begin`).
  */
 
-import type { AssetCategory, StockVariantTier, VariantKind } from '@tokens/asset-registry';
+import type { AssetCategory, AssetIndustry, AssetRegion, StockVariantTier, VariantKind } from '@tokens/asset-registry';
 import { CURATED_LIST_SLUGS, type CuratedListSlug } from '@tokens/asset-registry/curated-lists';
 
 import { InvalidArgsError } from './errors';
 import {
     ASSET_CATEGORY_VALUES,
+    ASSET_INDUSTRY_VALUES,
+    ASSET_REGION_VALUES,
     ASSET_ID_FORMAT_MESSAGE,
     ASSET_ID_PATTERN,
     CURATED_CATEGORY_SLUGS,
@@ -65,6 +67,9 @@ export interface CreateCanonicalAssetWrite {
     coingeckoId: string | null;
     description: string | null;
     imageUrl: string | null;
+    /** Admin-curated segmentation tags (migration 0032). */
+    region: AssetRegion | null;
+    industry: AssetIndustry | null;
     /** Unique, trimmed custom aliases (priority 500). */
     aliases: string[];
     collections: CuratedCategorySlug[];
@@ -83,6 +88,9 @@ export interface UpdateCanonicalAssetWrite {
     description?: string | null;
     imageUrl?: string | null;
     clearImage: boolean;
+    /** undefined = unchanged; null = clear; slug = set. */
+    region?: AssetRegion | null;
+    industry?: AssetIndustry | null;
     aliases?: string[];
     collections?: CuratedCategorySlug[];
     isActive?: boolean;
@@ -209,6 +217,8 @@ export async function createCanonicalAsset(
         coingeckoId: normalizeOptionalText(optionalNullableString(obj, 'coingeckoId')),
         description: normalizeOptionalText(optionalNullableString(obj, 'description')),
         imageUrl: normalizeOptionalText(optionalNullableString(obj, 'imageUrl')),
+        region: optionalNullableEnum(obj, 'region', ASSET_REGION_VALUES) ?? null,
+        industry: optionalNullableEnum(obj, 'industry', ASSET_INDUSTRY_VALUES) ?? null,
         aliases: uniqueStrings(aliases),
         collections,
         nowMs: nowMs(deps),
@@ -255,6 +265,8 @@ export async function updateCanonicalAsset(
     const coingeckoId = normalizeTriState('coingeckoId');
     const description = normalizeTriState('description');
     const imageUrl = normalizeTriState('imageUrl');
+    const region = optionalNullableEnum(obj, 'region', ASSET_REGION_VALUES);
+    const industry = optionalNullableEnum(obj, 'industry', ASSET_INDUSTRY_VALUES);
     const aliases = optionalStringArray(obj, 'aliases');
     const collections = optionalCuratedSlugArray(obj, 'collections');
     const isActive = optionalBoolean(obj, 'isActive');
@@ -269,6 +281,8 @@ export async function updateCanonicalAsset(
         ...(description !== undefined ? { description } : {}),
         ...(imageUrl !== undefined ? { imageUrl } : {}),
         clearImage,
+        ...(region !== undefined ? { region } : {}),
+        ...(industry !== undefined ? { industry } : {}),
         ...(aliases !== undefined ? { aliases: uniqueStrings(aliases) } : {}),
         ...(collections !== undefined ? { collections } : {}),
         ...(isActive !== undefined ? { isActive } : {}),

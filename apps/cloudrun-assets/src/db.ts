@@ -196,7 +196,7 @@ export function makePostgresAssetsRepo(sql: Sql): AssetsRepo {
             const rows = await sql<AssetRow[]>`
                 SELECT id, asset_id, category, name, symbol, aliases,
                        coingecko_id, description, image_url, is_active,
-                       created_at, updated_at
+                       created_at, updated_at, region, industry
                 FROM assets
                 WHERE asset_id = ${assetId}
                 LIMIT 1
@@ -209,7 +209,7 @@ export function makePostgresAssetsRepo(sql: Sql): AssetsRepo {
             const rows = await sql<AssetRow[]>`
                 SELECT id, asset_id, category, name, symbol, aliases,
                        coingecko_id, description, image_url, is_active,
-                       created_at, updated_at
+                       created_at, updated_at, region, industry
                 FROM assets
                 WHERE asset_id IN ${sql(assetIds)}
             `;
@@ -249,7 +249,7 @@ export function makePostgresAssetsRepo(sql: Sql): AssetsRepo {
             const rows = await sql<AssetRow[]>`
                 SELECT id, asset_id, category, name, symbol, aliases,
                        coingecko_id, description, image_url, is_active,
-                       created_at, updated_at
+                       created_at, updated_at, region, industry
                 FROM assets
                 WHERE to_tsvector('english', coalesce(name, '')) @@ to_tsquery('english', ${tsq})
                    OR coalesce(name, '') ILIKE ${pattern}
@@ -267,7 +267,7 @@ export function makePostgresAssetsRepo(sql: Sql): AssetsRepo {
             const rows = await sql<AssetRow[]>`
                 SELECT id, asset_id, category, name, symbol, aliases,
                        coingecko_id, description, image_url, is_active,
-                       created_at, updated_at
+                       created_at, updated_at, region, industry
                 FROM assets
                 WHERE to_tsvector('english', coalesce(symbol, '')) @@ to_tsquery('english', ${tsq})
                    OR coalesce(symbol, '') ILIKE ${pattern}
@@ -333,7 +333,7 @@ export function makePostgresAssetsRepo(sql: Sql): AssetsRepo {
             const rows = await sql<AssetRow[]>`
                 SELECT id, asset_id, category, name, symbol, aliases,
                        coingecko_id, description, image_url, is_active,
-                       created_at, updated_at
+                       created_at, updated_at, region, industry
                 FROM assets
                 WHERE category = ${category} AND is_active = true
                 ORDER BY asset_id ASC
@@ -346,7 +346,7 @@ export function makePostgresAssetsRepo(sql: Sql): AssetsRepo {
             const rows = await sql<AssetRow[]>`
                 SELECT id, asset_id, category, name, symbol, aliases,
                        coingecko_id, description, image_url, is_active,
-                       created_at, updated_at
+                       created_at, updated_at, region, industry
                 FROM assets
                 WHERE is_active = true
                   AND coingecko_id IS NOT NULL
@@ -2884,7 +2884,7 @@ export function makePostgresAssetsApiRepo(sql: Sql): AssetsApiRepo {
             const rows = await sql<AssetsApiAssetRow[]>`
                 SELECT asset_id, category, name, symbol, aliases,
                        coingecko_id, description, image_url, is_active,
-                       created_at, updated_at
+                       created_at, updated_at, region, industry
                 FROM assets
                 WHERE asset_id = ${assetId}
                 LIMIT 1
@@ -3051,6 +3051,19 @@ function sqlFragmentColumns(cols: readonly string[]): string {
  */
 function logoCdnColumn(keyExpr: string): string {
     return `(SELECT ml.logo_cdn_url FROM mint_logos ml WHERE ml.mint = ${keyExpr}) AS logo_cdn_url`;
+}
+
+/**
+ * Admin-curated `assets.region` / `assets.industry` (migration 0032) for rows
+ * that only carry a denormalized `asset_id` (trending snapshots copy
+ * category/symbol/name at cron time and would otherwise lag admin edits by a
+ * cycle). Correlated unique-index lookups for the same reason as above.
+ */
+function assetTagColumns(keyExpr: string): readonly string[] {
+    return [
+        `(SELECT a.region FROM assets a WHERE a.asset_id = ${keyExpr}) AS region`,
+        `(SELECT a.industry FROM assets a WHERE a.asset_id = ${keyExpr}) AS industry`,
+    ];
 }
 
 export function makePostgresCoingeckoReadsRepo(sql: Sql): CoingeckoReadsRepo {
@@ -3414,6 +3427,7 @@ const TRENDING_MARKET_COLUMNS = sqlFragmentColumns([
     'as_of',
     'last_computed_at',
     logoCdnColumn('trending_markets.mint'),
+    ...assetTagColumns('trending_markets.asset_id'),
 ]);
 
 const FRESH_TRENDING_MARKET_COLUMNS = sqlFragmentColumns([
@@ -3453,6 +3467,7 @@ const FRESH_TRENDING_MARKET_COLUMNS = sqlFragmentColumns([
     'category_rank',
     'last_computed_at',
     logoCdnColumn('fresh_trending_markets.mint'),
+    ...assetTagColumns('fresh_trending_markets.asset_id'),
 ]);
 
 const FILL_QUALITY_COLUMNS = sqlFragmentColumns([

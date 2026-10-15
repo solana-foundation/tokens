@@ -10,7 +10,7 @@ import {
 } from '@/lib/cloudrun';
 import { loadAdvisoriesOrEmpty } from '@/lib/advisories';
 import { getTokenLogoURLForMint } from '@/lib/logo-overrides';
-import { getVariantByMint, type VariantAdvisory } from '@tokens/asset-registry';
+import { getVariantByMint, type AssetIndustry, type AssetRegion, type VariantAdvisory } from '@tokens/asset-registry';
 import { resolveVariantSymbol } from '../_asset-helpers';
 
 export const dynamic = 'force-dynamic';
@@ -34,6 +34,8 @@ interface SharedTrendingRow {
     name: string;
     decimals?: number;
     category: AssetCategory;
+    region: AssetRegion | null;
+    industry: AssetIndustry | null;
     logoURI?: string;
 }
 
@@ -138,6 +140,8 @@ function buildBaseTrendingAsset(
         name,
         decimals: row.decimals ?? 9,
         category: row.category,
+        region: row.region,
+        industry: row.industry,
         imageUrl: absolutizeLogoUrl(
             request,
             row.logoURI ?? getTokenLogoURLForMint(row.mint, symbol, row.symbol) ?? null,

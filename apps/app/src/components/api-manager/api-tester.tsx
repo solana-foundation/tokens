@@ -44,12 +44,24 @@ const ENDPOINTS: Array<ApiPlaygroundEndpointConfig> = [
             {
                 key: 'category',
                 label: 'category (optional)',
-                placeholder: 'e.g. l1, dex, stablecoin',
+                placeholder: 'e.g. crypto, equity, etf',
+            },
+            {
+                key: 'region',
+                label: 'region (optional)',
+                placeholder: 'e.g. asia, europe, north_america',
+            },
+            {
+                key: 'industry',
+                label: 'industry (optional)',
+                placeholder: 'e.g. manufacturing, defense, software',
             },
         ],
         expectedResponse: {
             query: 'solana',
             category: null,
+            region: null,
+            industry: null,
             results: [],
         },
     },
@@ -84,6 +96,16 @@ const ENDPOINTS: Array<ApiPlaygroundEndpointConfig> = [
                     { label: 'asset', value: 'asset' },
                     { label: 'mint', value: 'mint' },
                 ],
+            },
+            {
+                key: 'region',
+                label: 'region (optional)',
+                placeholder: 'e.g. asia, europe, north_america',
+            },
+            {
+                key: 'industry',
+                label: 'industry (optional)',
+                placeholder: 'e.g. manufacturing, defense, software',
             },
         ],
         expectedResponse: {

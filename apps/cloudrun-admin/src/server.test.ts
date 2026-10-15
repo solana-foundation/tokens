@@ -83,6 +83,11 @@ function makeDeps(overrides: Partial<ServerDeps> = {}): ServerDeps {
         tokenListsAdmin: { listAll: async () => [], archiveBySlug: async () => false, unlockBySlug: async () => false },
         variantAdvisories: makeVariantAdvisoriesRepo(),
         launchpadApprovals: makeLaunchpadApprovalsRepo(),
+        assetTagsImport: {
+            resolveAssets: async () => new Map(),
+            applyTags: async () => 0,
+            listUntaggedStockAssetIds: async () => [],
+        },
         adminAllowlist: { clerkUserIds: new Set([ADMIN_ID]), emails: new Set<string>() },
         authToken: 'tok',
         ...overrides,

@@ -1,3 +1,14 @@
+import {
+    isAssetIndustry,
+    isAssetRegion,
+    toAssetIndustryOrNull,
+    toAssetRegionOrNull,
+    type AssetIndustry,
+    type AssetRegion,
+} from '@tokens/asset-registry';
+
+export type { AssetIndustry, AssetRegion };
+
 export type AssetCategory =
     | 'crypto'
     | 'stablecoin'
@@ -32,6 +43,9 @@ export interface AssetRow {
     is_active: boolean;
     created_at: Date;
     updated_at: Date;
+    /** Admin-curated segmentation tags (migration 0032); unknown values read as null. */
+    region: string | null;
+    industry: string | null;
 }
 
 export interface AssetAliasRow {
@@ -60,6 +74,8 @@ export interface AssetResult {
     isActive: boolean;
     createdAt: number;
     updatedAt: number;
+    region: AssetRegion | null;
+    industry: AssetIndustry | null;
     name?: string;
     symbol?: string;
     coingeckoId?: string;
@@ -136,6 +152,8 @@ export function rowToResult(row: AssetRow): AssetResult {
         isActive: row.is_active,
         createdAt: row.created_at.getTime(),
         updatedAt: row.updated_at.getTime(),
+        region: toAssetRegionOrNull(row.region),
+        industry: toAssetIndustryOrNull(row.industry),
     };
     if (row.name !== null) result.name = row.name;
     if (row.symbol !== null) result.symbol = row.symbol;
@@ -198,6 +216,24 @@ function readOptionalCategory(args: Record<string, unknown>, key: string): Asset
     if (value === undefined) return undefined;
     if (!isAssetCategory(value)) {
         throw new InvalidArgsError(`${key} must be a valid asset category`);
+    }
+    return value;
+}
+
+function readOptionalRegion(args: Record<string, unknown>, key: string): AssetRegion | undefined {
+    const value = args[key];
+    if (value === undefined) return undefined;
+    if (!isAssetRegion(value)) {
+        throw new InvalidArgsError(`${key} must be a valid asset region`);
+    }
+    return value;
+}
+
+function readOptionalIndustry(args: Record<string, unknown>, key: string): AssetIndustry | undefined {
+    const value = args[key];
+    if (value === undefined) return undefined;
+    if (!isAssetIndustry(value)) {
+        throw new InvalidArgsError(`${key} must be a valid asset industry`);
     }
     return value;
 }
@@ -373,6 +409,8 @@ export async function search(repo: AssetsRepo, args: unknown): Promise<AssetResu
     const a = asObject(args);
     const queryRaw = readString(a, 'query');
     const category = readOptionalCategory(a, 'category');
+    const region = readOptionalRegion(a, 'region');
+    const industry = readOptionalIndustry(a, 'industry');
     const limitArg = readOptionalNumber(a, 'limit');
     const includeInactive = readOptionalBoolean(a, 'includeInactive') ?? false;
 
@@ -381,6 +419,12 @@ export async function search(repo: AssetsRepo, args: unknown): Promise<AssetResu
 
     const limit = clampLimit(limitArg, 20, 50);
 
+    // Region/industry are stored as free text; compare the coerced value so a
+    // legacy/unknown stored slug never matches a valid filter.
+    const matchesTags = (asset: AssetRow): boolean =>
+        (!region || toAssetRegionOrNull(asset.region) === region) &&
+        (!industry || toAssetIndustryOrNull(asset.industry) === industry);
+
     if (looksLikeSolanaMintAddress(raw)) {
         const variant = await repo.findVariantByMint(raw);
         if (variant) {
@@ -388,7 +432,8 @@ export async function search(repo: AssetsRepo, args: unknown): Promise<AssetResu
             if (
                 asset &&
                 (includeInactive || asset.is_active) &&
-                (!category || asset.category === category)
+                (!category || asset.category === category) &&
+                matchesTags(asset)
             ) {
                 return [rowToResult(asset)];
             }
@@ -405,6 +450,7 @@ export async function search(repo: AssetsRepo, args: unknown): Promise<AssetResu
         if (seen.has(asset.asset_id)) return;
         if (!includeInactive && !asset.is_active) return;
         if (category && asset.category !== category) return;
+        if (!matchesTags(asset)) return;
         seen.add(asset.asset_id);
         matched.push(asset);
     };

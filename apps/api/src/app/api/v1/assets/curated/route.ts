@@ -3,7 +3,7 @@ import { Array as Arr, Effect } from 'effect';
 
 import { route } from '@/effect/next-route';
 import { withStaleFallback } from '@/effect/stale-response-cache';
-import { decodeLimit, decodeOffset } from '@tokens/effect';
+import { BadRequestError, decodeLimit, decodeOffset } from '@tokens/effect';
 import { tapErrorAndDefault } from '@tokens/effect';
 import {
     annotateAssetAdvisories,
@@ -42,9 +42,17 @@ import {
 import { isRetryableCloudRunError, type CloudRunError } from '@/lib/cloudrun/errors';
 
 import {
+    ASSET_INDUSTRIES,
+    ASSET_REGIONS,
     getVariantByMint,
+    isAssetIndustry,
+    isAssetRegion,
     resolveAlias as resolveRegistryAlias,
+    toAssetIndustryOrNull,
+    toAssetRegionOrNull,
     type AssetCategory,
+    type AssetIndustry,
+    type AssetRegion,
     type CanonicalAsset,
     type VariantKind,
 } from '@tokens/asset-registry';
@@ -212,6 +220,12 @@ function isTransientCuratedFailure(error: unknown): boolean {
  * that the handler would reject (e.g. `limit=abc`) still produce a key, but
  * those requests fail with a 4xx and never reach the fallback path.
  */
+/** `null` for absent/blank/unknown; the handler turns unknown into a 400, the cache key just ignores it. */
+function parseTagParam<T extends string>(raw: string | null, guard: (value: unknown) => value is T): T | null {
+    const trimmed = (raw ?? '').trim();
+    return guard(trimmed) ? trimmed : null;
+}
+
 function curatedStaleCacheKey(request: Request): string | null {
     try {
         const searchParams = new URL(request.url).searchParams;
@@ -224,8 +238,10 @@ function curatedStaleCacheKey(request: Request): string | null {
         const shouldPaginate = searchParams.has('limit') || searchParams.has('offset');
         const offset = shouldPaginate ? (searchParams.get('offset') ?? '').trim() : '';
         const limit = shouldPaginate ? (searchParams.get('limit') ?? '').trim() : '';
-        // `variants` is spread conditionally so pre-existing key hashes (incl.
-        // the warmer's) stay stable. `advisoryRevision` bumps on every advisory
+        const region = parseTagParam(searchParams.get('region'), isAssetRegion);
+        const industry = parseTagParam(searchParams.get('industry'), isAssetIndustry);
+        // `variants` (and the region/industry filters) are spread conditionally
+        // so pre-existing key hashes (incl. the warmer's) stay stable. `advisoryRevision` bumps on every advisory
         // set/clear so the `freshSeconds` serve-without-handler path can never
         // keep serving a pre-flag payload (the Redis client has no `del`;
         // revision-keying is the bust mechanism).
@@ -236,6 +252,8 @@ function curatedStaleCacheKey(request: Request): string | null {
             strategy,
             pagination: shouldPaginate ? { offset, limit } : null,
             ...(includeVariants ? { variants: 'all' } : {}),
+            ...(region ? { region } : {}),
+            ...(industry ? { industry } : {}),
             advisoryRevision: getAdvisoryRevisionSync(),
         });
         const shapeHash = createHash('sha256').update(canonical).digest('hex').slice(0, 32);
@@ -272,6 +290,31 @@ export const GET = route(
                 requestedPrimaryVariantStrategy === null && listId === 'stocks'
                     ? 'stock_redeemability'
                     : parsePrimaryVariantStrategy(requestedPrimaryVariantStrategy);
+
+            // Admin-curated segmentation tags: exact-match, AND-combined, applied
+            // after membership expansion and before pagination so `total` is
+            // the filtered count.
+            const rawRegion = (searchParams.get('region') ?? '').trim() || null;
+            const region: AssetRegion | null = parseTagParam(rawRegion, isAssetRegion);
+            if (rawRegion && !region) {
+                return yield* Effect.fail(
+                    new BadRequestError({
+                        message: `Invalid region: ${rawRegion}`,
+                        details: { regions: [...ASSET_REGIONS] },
+                    }),
+                );
+            }
+            const rawIndustry = (searchParams.get('industry') ?? '').trim() || null;
+            const industry: AssetIndustry | null = parseTagParam(rawIndustry, isAssetIndustry);
+            if (rawIndustry && !industry) {
+                return yield* Effect.fail(
+                    new BadRequestError({
+                        message: `Invalid industry: ${rawIndustry}`,
+                        details: { industries: [...ASSET_INDUSTRIES] },
+                    }),
+                );
+            }
+            const hasTagFilter = region !== null || industry !== null;
 
             const mintRank = buildCuratedMintRank();
 
@@ -458,6 +501,8 @@ export const GET = route(
                         aliases: a.aliases,
                         ...(coingeckoId ? { coingeckoId } : {}),
                         variants: variantsForList,
+                        region: toAssetRegionOrNull(a.region),
+                        industry: toAssetIndustryOrNull(a.industry),
                     });
                 }
             }
@@ -542,12 +587,20 @@ export const GET = route(
             // `compromised` stays listed (badged, never primary).
             const advisoriesByMint = yield* loadAdvisoriesOrEmpty();
             const advisoriesByAssetId = new Map<string, AssetAdvisorySummaryEntry[]>();
-            const canonicalAssets = Array.from(canonicalAssetById.values()).flatMap(asset => {
-                const annotated = annotateAssetAdvisories(mergeRegistryVariantMetadata(asset), advisoriesByMint);
-                advisoriesByAssetId.set(annotated.assetId, summarizeAssetAdvisories(annotated));
-                const visible = filterHiddenVariants(annotated, advisoriesByMint);
-                return visible ? [visible] : [];
-            });
+            const canonicalAssets = Array.from(canonicalAssetById.values())
+                .flatMap(asset => {
+                    const annotated = annotateAssetAdvisories(mergeRegistryVariantMetadata(asset), advisoriesByMint);
+                    advisoriesByAssetId.set(annotated.assetId, summarizeAssetAdvisories(annotated));
+                    const visible = filterHiddenVariants(annotated, advisoriesByMint);
+                    return visible ? [visible] : [];
+                })
+                // Registry/fallback-only members carry no tags, so any filter
+                // drops them; `total` below counts the filtered set.
+                .filter(
+                    asset =>
+                        !hasTagFilter ||
+                        ((!region || asset.region === region) && (!industry || asset.industry === industry)),
+                );
 
             // variants=all needs sanctum ranks too: shouldIncludeMintRow gates
             // nested solana LST variants on sanctum membership.
@@ -1135,6 +1188,8 @@ export const GET = route(
                                           name: asset.name,
                                           symbol: responseSymbol,
                                           category: asset.category,
+                                          region: asset.region ?? null,
+                                          industry: asset.industry ?? null,
                                           imageUrl,
                                           stats: effectiveStats,
                                           ...(canonicalMarket ? { canonicalMarket } : {}),
@@ -1205,6 +1260,8 @@ export const GET = route(
                                   name: asset.name,
                                   symbol: responseSymbol,
                                   category: asset.category,
+                                  region: asset.region ?? null,
+                                  industry: asset.industry ?? null,
                                   imageUrl,
                                   stats: effectiveStats,
                                   ...(canonicalMarket ? { canonicalMarket } : {}),

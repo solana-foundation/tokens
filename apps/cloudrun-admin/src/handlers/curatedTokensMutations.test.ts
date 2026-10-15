@@ -147,10 +147,28 @@ describe('createCanonicalAsset', () => {
             coingeckoId: null,
             description: null,
             imageUrl: 'https://img/x.png',
+            region: null,
+            industry: null,
             aliases: ['BTC', 'digital gold'],
             collections: ['majors'],
             nowMs: NOW,
         });
+    });
+
+    it('accepts region/industry slugs and rejects unknown ones', async () => {
+        const { deps, calls } = makeDeps();
+        await createCanonicalAsset(
+            deps,
+            { assetId: 'sk-hynix', category: 'equity', region: 'asia', industry: 'semiconductors' },
+            ADMIN,
+        );
+        expect(calls.createCanonicalAsset?.[0]).toMatchObject({ region: 'asia', industry: 'semiconductors' });
+        await expect(
+            createCanonicalAsset(deps, { assetId: 'x', category: 'equity', region: 'mars' }, ADMIN),
+        ).rejects.toThrow(/region must be one of/);
+        await expect(
+            createCanonicalAsset(deps, { assetId: 'x', category: 'equity', industry: 'Defense' }, ADMIN),
+        ).rejects.toThrow(/industry must be one of/);
     });
 
     it('maps repo outcomes to the Convex error messages', async () => {
@@ -189,6 +207,23 @@ describe('updateCanonicalAsset', () => {
         expect('aliases' in args).toBe(false);
         expect('collections' in args).toBe(false);
         expect(args.clearImage).toBe(false);
+    });
+
+    it('forwards region/industry as tri-state (slug sets, null clears, omitted untouched)', async () => {
+        const { deps, calls } = makeDeps();
+        await updateCanonicalAsset(deps, { assetId: 'asml', region: 'europe', industry: null }, ADMIN);
+        const args = calls.updateCanonicalAsset?.[0] as Record<string, unknown>;
+        expect(args.region).toBe('europe');
+        expect(args.industry).toBeNull();
+
+        await updateCanonicalAsset(deps, { assetId: 'asml', name: 'ASML' }, ADMIN);
+        const untouched = calls.updateCanonicalAsset?.[1] as Record<string, unknown>;
+        expect('region' in untouched).toBe(false);
+        expect('industry' in untouched).toBe(false);
+
+        await expect(updateCanonicalAsset(deps, { assetId: 'asml', region: 'ASIA' }, ADMIN)).rejects.toThrow(
+            /region must be one of/,
+        );
     });
 
     it('forwards clearImage, collections and deduped aliases', async () => {

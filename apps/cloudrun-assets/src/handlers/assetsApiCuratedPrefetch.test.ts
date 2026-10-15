@@ -29,6 +29,8 @@ function makeAssetRow(overrides: Partial<AssetRow> = {}): AssetRow {
         is_active: true,
         created_at: NOW,
         updated_at: NOW,
+        region: null,
+        industry: null,
         ...overrides,
     };
 }
