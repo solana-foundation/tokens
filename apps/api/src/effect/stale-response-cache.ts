@@ -1,5 +1,6 @@
 import { Effect } from 'effect';
 
+import { runAfterResponse } from '@/effect/after-response';
 import { getRedisClient, type RedisClient } from '@/lib/redis';
 import { httpStatusForError, toApiErrorInfo } from '@tokens/effect';
 
@@ -19,6 +20,20 @@ import { httpStatusForError, toApiErrorInfo } from '@tokens/effect';
  * 4xx-class failures (bad request, auth, rate limit) are never masked — they
  * propagate unchanged. When Redis is unavailable or has no entry, the original
  * outcome propagates and behavior is identical to an unwrapped handler.
+ *
+ * Latency: the Redis behind this is Upstash with its primary far from the API
+ * region, so every command costs a cross-country round-trip. Two things keep
+ * it off the request's critical path:
+ * - `freshSeconds` is answered first from a small **per-process** tier
+ *   (`TOKENS_STALE_CACHE_PROCESS_FRESH=off` disables it); Redis is only
+ *   consulted on a process miss (e.g. a cold instance right after a deploy),
+ *   and a Redis fresh hit back-fills the process tier.
+ * - The last-good **write** is scheduled after the response is sent
+ *   (`runAfterResponse`) instead of being awaited inline. The write throttle
+ *   is still armed synchronously, so "one write per interval per process"
+ *   holds under concurrency.
+ * The failure paths (5xx-class error, hollow success) still read last-good
+ * from Redis exactly as before — the process tier is never used there.
  */
 
 export interface StaleFallbackOptions<A = Record<string, unknown>> {
@@ -48,6 +63,10 @@ export interface StaleFallbackOptions<A = Record<string, unknown>> {
     writeIntervalMs?: number;
     /** Test injection for the Redis client. Defaults to `getRedisClient()`. */
     getClient?: () => RedisClient;
+    /** Where the deferred last-good write runs. Defaults to `runAfterResponse`. */
+    scheduleWrite?: (effect: Effect.Effect<void, never>) => void;
+    /** Clock injection for tests. Defaults to `Date.now`. */
+    now?: () => number;
 }
 
 interface StaleEnvelope {
@@ -66,6 +85,56 @@ const lastWriteAtByKey = new Map<string, number>();
 
 /** Bound the throttle map — arbitrary offset/limit combos yield unbounded keys. */
 const MAX_THROTTLE_ENTRIES = 1_000;
+
+interface ProcessFreshEntry {
+    payload: Record<string, unknown>;
+    cachedAt: number;
+}
+
+/**
+ * Per-process fresh tier. Payloads can be megabytes, so this is bounded by
+ * entry count, not by the throttle map's limit: a handful of request shapes
+ * per instance is the realistic working set.
+ */
+const processFresh = new Map<string, ProcessFreshEntry>();
+const MAX_PROCESS_FRESH_ENTRIES = 8;
+
+function processFreshEnabled(): boolean {
+    return process.env.TOKENS_STALE_CACHE_PROCESS_FRESH?.trim().toLowerCase() !== 'off';
+}
+
+function rememberFresh(cacheKey: string, entry: ProcessFreshEntry, freshMs: number, now: number): void {
+    if (!processFreshEnabled()) return;
+    // Drop anything that can no longer be served fresh, then the oldest
+    // survivor if we are still at the cap.
+    for (const [key, existing] of processFresh) {
+        if (key !== cacheKey && now - existing.cachedAt > freshMs) processFresh.delete(key);
+    }
+    processFresh.delete(cacheKey);
+    if (processFresh.size >= MAX_PROCESS_FRESH_ENTRIES) {
+        let oldestKey: string | null = null;
+        let oldestAt = Number.POSITIVE_INFINITY;
+        for (const [key, existing] of processFresh) {
+            if (existing.cachedAt < oldestAt) {
+                oldestAt = existing.cachedAt;
+                oldestKey = key;
+            }
+        }
+        if (oldestKey !== null) processFresh.delete(oldestKey);
+    }
+    processFresh.set(cacheKey, entry);
+}
+
+function readProcessFresh(cacheKey: string, freshMs: number, now: number): ProcessFreshEntry | null {
+    if (!processFreshEnabled()) return null;
+    const entry = processFresh.get(cacheKey);
+    if (!entry) return null;
+    if (now - entry.cachedAt > freshMs) {
+        processFresh.delete(cacheKey);
+        return null;
+    }
+    return entry;
+}
 
 function redisOrNull(getClient?: () => RedisClient): RedisClient | null {
     try {
@@ -111,21 +180,35 @@ function logDegradedResponse(
     );
 }
 
-async function writeLastGood(options: StaleFallbackOptions<never>, payload: Record<string, unknown>): Promise<void> {
+/**
+ * Synchronous half of the last-good write: decide whether this process may
+ * write now and arm the throttle. Armed before the (deferred) serialization
+ * so an oversized payload cannot bypass the throttle, and so concurrent
+ * requests cannot all schedule a write before the first one runs.
+ */
+function armWriteThrottle(options: StaleFallbackOptions<never>, now: number): boolean {
     const writeIntervalMs = options.writeIntervalMs ?? DEFAULT_WRITE_INTERVAL_MS;
     const lastWriteAt = lastWriteAtByKey.get(options.cacheKey) ?? 0;
-    const now = Date.now();
-    if (now - lastWriteAt < writeIntervalMs) return;
+    if (now - lastWriteAt < writeIntervalMs) return false;
 
+    // Redis not configured — nothing to write, nothing to arm (as before).
+    if (!redisOrNull(options.getClient)) return false;
+
+    if (lastWriteAtByKey.size >= MAX_THROTTLE_ENTRIES) lastWriteAtByKey.clear();
+    lastWriteAtByKey.set(options.cacheKey, now);
+    return true;
+}
+
+/** Deferred half: serialize, size-check, and SET. */
+async function persistLastGood(
+    options: StaleFallbackOptions<never>,
+    payload: Record<string, unknown>,
+    cachedAt: number,
+): Promise<void> {
     const redis = redisOrNull(options.getClient);
     if (!redis) return;
 
-    // Arm the throttle before any early return — otherwise an oversized
-    // payload would re-serialize on every request, bypassing the throttle.
-    if (lastWriteAtByKey.size >= MAX_THROTTLE_ENTRIES) lastWriteAtByKey.clear();
-    lastWriteAtByKey.set(options.cacheKey, now);
-
-    const envelope: StaleEnvelope = { v: 1, cachedAt: now, payload };
+    const envelope: StaleEnvelope = { v: 1, cachedAt, payload };
     const body = JSON.stringify(envelope);
     if (body.length > MAX_CACHEABLE_CHARS) {
         console.error('Stale-response cache: payload too large to cache', {
@@ -153,6 +236,11 @@ export function withStaleFallback<A extends Record<string, unknown>, E, R>(
 ): Effect.Effect<A | (A & { stale: true; staleCachedAt: number }), E, R> {
     type Out = A | (A & { stale: true; staleCachedAt: number });
 
+    const clock = options.now ?? Date.now;
+    const scheduleWrite = options.scheduleWrite ?? runAfterResponse;
+    const freshSeconds = options.freshSeconds ?? 0;
+    const freshMs = freshSeconds * 1_000;
+
     const readStale = Effect.tryPromise(() => readLastGood(options)).pipe(Effect.catch(() => Effect.succeed(null)));
 
     const asStale = (envelope: StaleEnvelope): Out => ({
@@ -178,17 +266,24 @@ export function withStaleFallback<A extends Record<string, unknown>, E, R>(
                 );
             }
 
-            return Effect.tryPromise(() => writeLastGood(options, payload)).pipe(
-                Effect.catch(error => {
-                    console.error('Stale-response cache: write failed', {
-                        operation: options.operation,
-                        cacheKey: options.cacheKey,
-                        error: toApiErrorInfo(error),
-                    });
-                    return Effect.void;
-                }),
-                Effect.as(payload),
-            );
+            const now = clock();
+            // Only callers with a fresh window take a process-tier slot.
+            if (freshMs > 0) rememberFresh(options.cacheKey, { payload, cachedAt: now }, freshMs, now);
+            if (armWriteThrottle(options, now)) {
+                scheduleWrite(
+                    Effect.tryPromise(() => persistLastGood(options, payload, now)).pipe(
+                        Effect.catch(error => {
+                            console.error('Stale-response cache: write failed', {
+                                operation: options.operation,
+                                cacheKey: options.cacheKey,
+                                error: toApiErrorInfo(error),
+                            });
+                            return Effect.void;
+                        }),
+                    ),
+                );
+            }
+            return Effect.succeed(payload);
         }),
         Effect.catch(error => {
             // Never mask client errors (4xx) with stale data — only degrade on
@@ -207,17 +302,33 @@ export function withStaleFallback<A extends Record<string, unknown>, E, R>(
         }),
     );
 
-    const freshSeconds = options.freshSeconds ?? 0;
     if (freshSeconds <= 0) return live;
-    return readStale.pipe(
-        Effect.flatMap(envelope => {
-            if (!envelope || Date.now() - envelope.cachedAt > freshSeconds * 1_000) return live;
-            return Effect.succeed(envelope.payload as A);
-        }),
-    );
+    return Effect.suspend(() => {
+        const now = clock();
+        const local = readProcessFresh(options.cacheKey, freshMs, now);
+        if (local) return Effect.succeed(local.payload as A);
+        return readStale.pipe(
+            Effect.flatMap(envelope => {
+                if (!envelope || clock() - envelope.cachedAt > freshMs) return live;
+                rememberFresh(
+                    options.cacheKey,
+                    { payload: envelope.payload, cachedAt: envelope.cachedAt },
+                    freshMs,
+                    clock(),
+                );
+                return Effect.succeed(envelope.payload as A);
+            }),
+        );
+    });
 }
 
-/** Test helper — reset the per-process write throttle. */
+/** Test helper — reset the per-process write throttle and fresh tier. */
 export function __resetStaleResponseCacheForTesting(): void {
     lastWriteAtByKey.clear();
+    processFresh.clear();
+}
+
+/** Test helper — number of entries in the per-process fresh tier. */
+export function __processFreshSizeForTesting(): number {
+    return processFresh.size;
 }
