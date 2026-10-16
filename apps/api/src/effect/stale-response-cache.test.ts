@@ -339,6 +339,60 @@ describe('withStaleFallback', () => {
         expect(liveCalls).toBe(1);
     });
 
+    it('a shorter fresh window on one key never sweeps another key stored with a longer window', async () => {
+        const redis = new FakeRedis();
+        let now = 1_000_000;
+        const long = optionsWith(redis, { freshSeconds: 60, cacheKey: 'stale-response:v1:long', now: () => now });
+        const short = optionsWith(redis, { freshSeconds: 30, cacheKey: 'stale-response:v1:short', now: () => now });
+        await Effect.runPromise(withStaleFallback(long, Effect.succeed({ listId: 'long' })));
+
+        // 39 s later the short-window caller inserts; `long` is still inside its own 60 s window.
+        now += 39_000;
+        await Effect.runPromise(withStaleFallback(short, Effect.succeed({ listId: 'short' })));
+        const stillFresh = await Effect.runPromise(withStaleFallback(long, serverError('must not run')));
+        expect(stillFresh).toEqual({ listId: 'long' });
+
+        // Past its own window it falls through (Redis is empty → live).
+        now += 22_000;
+        let liveCalls = 0;
+        await Effect.runPromise(
+            withStaleFallback(
+                long,
+                Effect.sync(() => {
+                    liveCalls += 1;
+                    return { listId: 'long-2' };
+                }),
+            ),
+        );
+        expect(liveCalls).toBe(1);
+    });
+
+    it('a back-filled Redis entry keeps the original cachedAt, so it is never served past the fresh window', async () => {
+        const redis = new FakeRedis();
+        let now = 1_000_000;
+        const options = optionsWith(redis, { freshSeconds: 60, now: () => now });
+        redis.store.set(
+            'stale-response:v1:test',
+            JSON.stringify({ v: 1, cachedAt: now - 59_000, payload: { listId: 'from-redis' } }),
+        );
+        expect(await Effect.runPromise(withStaleFallback(options, serverError('must not run')))).toEqual({
+            listId: 'from-redis',
+        });
+        // Two seconds later the payload is 61 s old: process miss, Redis stale, live runs.
+        now += 2_000;
+        let liveCalls = 0;
+        await Effect.runPromise(
+            withStaleFallback(
+                options,
+                Effect.sync(() => {
+                    liveCalls += 1;
+                    return { listId: 'live' };
+                }),
+            ),
+        );
+        expect(liveCalls).toBe(1);
+    });
+
     it('holds at most eight process entries and evicts the oldest', async () => {
         const redis = new FakeRedis();
         let now = 1_000_000;

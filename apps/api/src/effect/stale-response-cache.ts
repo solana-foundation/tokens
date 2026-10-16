@@ -88,7 +88,10 @@ const MAX_THROTTLE_ENTRIES = 1_000;
 
 interface ProcessFreshEntry {
     payload: Record<string, unknown>;
+    /** When the payload was produced — freshness always counts from here, whichever tier served it. */
     cachedAt: number;
+    /** `cachedAt + freshSeconds` of the caller that stored it; sweeps use this, never another caller's window. */
+    expiresAt: number;
 }
 
 /**
@@ -103,12 +106,12 @@ function processFreshEnabled(): boolean {
     return process.env.TOKENS_STALE_CACHE_PROCESS_FRESH?.trim().toLowerCase() !== 'off';
 }
 
-function rememberFresh(cacheKey: string, entry: ProcessFreshEntry, freshMs: number, now: number): void {
+function rememberFresh(cacheKey: string, entry: ProcessFreshEntry, now: number): void {
     if (!processFreshEnabled()) return;
-    // Drop anything that can no longer be served fresh, then the oldest
-    // survivor if we are still at the cap.
+    // Drop anything past its own fresh window, then the oldest survivor if
+    // we are still at the cap.
     for (const [key, existing] of processFresh) {
-        if (key !== cacheKey && now - existing.cachedAt > freshMs) processFresh.delete(key);
+        if (key !== cacheKey && now > existing.expiresAt) processFresh.delete(key);
     }
     processFresh.delete(cacheKey);
     if (processFresh.size >= MAX_PROCESS_FRESH_ENTRIES) {
@@ -125,11 +128,11 @@ function rememberFresh(cacheKey: string, entry: ProcessFreshEntry, freshMs: numb
     processFresh.set(cacheKey, entry);
 }
 
-function readProcessFresh(cacheKey: string, freshMs: number, now: number): ProcessFreshEntry | null {
+function readProcessFresh(cacheKey: string, now: number): ProcessFreshEntry | null {
     if (!processFreshEnabled()) return null;
     const entry = processFresh.get(cacheKey);
     if (!entry) return null;
-    if (now - entry.cachedAt > freshMs) {
+    if (now > entry.expiresAt) {
         processFresh.delete(cacheKey);
         return null;
     }
@@ -268,7 +271,7 @@ export function withStaleFallback<A extends Record<string, unknown>, E, R>(
 
             const now = clock();
             // Only callers with a fresh window take a process-tier slot.
-            if (freshMs > 0) rememberFresh(options.cacheKey, { payload, cachedAt: now }, freshMs, now);
+            if (freshMs > 0) rememberFresh(options.cacheKey, { payload, cachedAt: now, expiresAt: now + freshMs }, now);
             if (armWriteThrottle(options, now)) {
                 scheduleWrite(
                     Effect.tryPromise(() => persistLastGood(options, payload, now)).pipe(
@@ -305,16 +308,19 @@ export function withStaleFallback<A extends Record<string, unknown>, E, R>(
     if (freshSeconds <= 0) return live;
     return Effect.suspend(() => {
         const now = clock();
-        const local = readProcessFresh(options.cacheKey, freshMs, now);
+        const local = readProcessFresh(options.cacheKey, now);
         if (local) return Effect.succeed(local.payload as A);
         return readStale.pipe(
             Effect.flatMap(envelope => {
-                if (!envelope || clock() - envelope.cachedAt > freshMs) return live;
+                const readAt = clock();
+                if (!envelope || readAt - envelope.cachedAt > freshMs) return live;
+                // Keep the original `cachedAt`: the fresh window counts from when
+                // the payload was produced, so a back-filled entry can never be
+                // served later than the Redis entry it came from would be.
                 rememberFresh(
                     options.cacheKey,
-                    { payload: envelope.payload, cachedAt: envelope.cachedAt },
-                    freshMs,
-                    clock(),
+                    { payload: envelope.payload, cachedAt: envelope.cachedAt, expiresAt: envelope.cachedAt + freshMs },
+                    readAt,
                 );
                 return Effect.succeed(envelope.payload as A);
             }),
