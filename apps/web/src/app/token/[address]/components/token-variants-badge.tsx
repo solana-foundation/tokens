@@ -347,9 +347,13 @@ function VariantsBody({
 }: VariantsBodyProps) {
     const isLight = appearance === 'light';
 
-    const scrollClassName = cn('space-y-1 overflow-auto', isDrawer ? 'max-h-[65dvh] px-4 pb-4' : 'max-h-72 px-1 pb-1');
+    // Same scroll-driven top fade + hidden scrollbar as the Latest Updates feed (globals.css).
+    const scrollClassName = cn(
+        'market-feed-news-scroll scrollbar-hide space-y-1 overflow-y-auto',
+        isDrawer ? 'max-h-[65dvh] px-4 pb-4' : 'max-h-72 px-1 pb-1',
+    );
     const groupedScrollClassName = cn(
-        'space-y-3 overflow-auto',
+        'market-feed-news-scroll scrollbar-hide space-y-3 overflow-y-auto',
         isDrawer ? 'max-h-[65dvh] px-4 pb-4' : 'max-h-72 px-1 pb-1',
     );
 
