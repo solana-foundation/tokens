@@ -10,7 +10,7 @@ import { TextMorph } from 'torph/react';
 import { Badge } from '@tokens/ui/badge';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@tokens/ui/dropdown-menu';
 import { Drawer, DrawerClose, DrawerContent, DrawerHeader, DrawerTitle, DrawerTrigger } from '@tokens/ui/drawer';
-import { SolanaLogo } from '@/components/icons';
+import { ChainLogo } from '@/components/chain-logo';
 import { AssetAdvisoryBadge } from '@/components/asset-advisory-badge';
 import { CopyButton } from '@/components/copy-button';
 import { PegStatusPill } from '@/components/peg-status-pill';
@@ -65,7 +65,7 @@ interface TokenHeaderProps {
     variantCurrentKey?: string;
     /** @deprecated Solana-only; use `variantCurrentKey`. Treated as `solana:<address>`. */
     variantCurrentAddress?: string;
-    showSolanaBadge?: boolean;
+    showChainBadge?: boolean;
     variantLinkMode?: 'token' | 'coingecko';
     variantLinkCoinId?: string;
     showSingletonVariantBadge?: boolean;
@@ -232,7 +232,7 @@ function TokenHeaderLinks({
     explorerAriaLabel,
     orbHref,
     birdeyeHref,
-    showSolanaBadge,
+    showChainBadge,
     linkTrackingProperties,
     drawerLinkTrackingProperties,
 }: {
@@ -243,11 +243,10 @@ function TokenHeaderLinks({
     explorerAriaLabel: string;
     orbHref: string | null;
     birdeyeHref: string | null;
-    showSolanaBadge: boolean;
+    showChainBadge: boolean;
     linkTrackingProperties: Record<string, unknown>;
     drawerLinkTrackingProperties: Record<string, unknown>;
 }) {
-    const isSolana = chain === 'solana';
     return (
         <div className="flex items-center gap-2 flex-shrink-0">
             {/* Desktop: show icon links inline */}
@@ -279,11 +278,7 @@ function TokenHeaderLinks({
                                         })
                                     }
                                 >
-                                    {isSolana ? (
-                                        <SolanaLogo className="h-4 w-4" />
-                                    ) : (
-                                        <Search className="h-4 w-4" aria-hidden="true" />
-                                    )}
+                                    <ChainLogo chain={chain} className="h-4 w-4" />
                                     Explorer
                                 </a>
                             </DropdownMenuItem>
@@ -402,8 +397,8 @@ function TokenHeaderLinks({
                                     href={explorerHref}
                                     label={explorerAriaLabel}
                                     icon={
-                                        isSolana && showSolanaBadge ? (
-                                            <SolanaLogo className="h-4 w-4" />
+                                        showChainBadge ? (
+                                            <ChainLogo chain={chain} className="h-4 w-4" />
                                         ) : (
                                             <Search className="h-4 w-4" aria-hidden="true" />
                                         )
@@ -498,7 +493,7 @@ export function TokenHeader({
     variantGroup,
     variantCurrentKey,
     variantCurrentAddress,
-    showSolanaBadge: showSolanaBadgeProp,
+    showChainBadge: showChainBadgeProp,
     variantLinkMode = 'token',
     variantLinkCoinId,
     showSingletonVariantBadge = false,
@@ -528,7 +523,9 @@ export function TokenHeader({
         (variantCurrentAddress ? chainAddressKey('solana', variantCurrentAddress) : chainAddressKey(chain, address));
     const explorerHref = explorerHrefProp ?? explorerTokenUrl(chain, address);
     const explorerAriaLabel = explorerAriaLabelProp ?? `View on ${CHAINS[chain].explorer.name}`;
-    const showSolanaBadge = showSolanaBadgeProp ?? isSolana;
+    // The chain mark on the main logo only appears once a variant is selected
+    // (the canonical view is chain-agnostic); it then shows that variant's chain.
+    const showChainBadge = showChainBadgeProp ?? Boolean(selectedVariant);
     const orbHref =
         isSolana && looksLikeSolanaAddress(address)
             ? `https://orbmarkets.io/token/${encodeURIComponent(address)}`
@@ -584,10 +581,14 @@ export function TokenHeader({
                         displayLogoURI={displayLogoURI}
                         preferDisplayLogoURI={shouldShowSelectedVariant}
                     />
-                    {showSolanaBadge && (
+                    {showChainBadge && (
                         <div className="absolute bottom-0 right-0 translate-x-1.5 translate-y-1.5">
-                            <div className="flex size-6 items-center justify-center rounded-lg border-2 border-border-extra-light bg-white">
-                                <SolanaLogo className="h-3.5 w-3.5 text-text-extra-high" />
+                            <div
+                                className="flex size-6 items-center justify-center rounded-lg border-2 border-border-extra-light bg-white"
+                                title={CHAINS[chain].label}
+                                aria-label={CHAINS[chain].label}
+                            >
+                                <ChainLogo chain={chain} className="h-3.5 w-3.5 text-text-extra-high" />
                             </div>
                         </div>
                     )}
@@ -699,7 +700,7 @@ export function TokenHeader({
                     explorerAriaLabel={explorerAriaLabel}
                     orbHref={orbHref}
                     birdeyeHref={tradeBlocked ? null : birdeyeHref}
-                    showSolanaBadge={showSolanaBadge}
+                    showChainBadge={showChainBadge}
                     linkTrackingProperties={linkTrackingProperties}
                     drawerLinkTrackingProperties={drawerLinkTrackingProperties}
                 />

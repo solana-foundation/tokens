@@ -20,6 +20,7 @@ import {
     type ChainKind,
 } from '@tokens/asset-registry/chains';
 import { AssetAdvisoryBadge } from '@/components/asset-advisory-badge';
+import { ChainLogo } from '@/components/chain-logo';
 import type { V2AssetVariantsResponse, V2Variant } from '@/lib/api-v2-types';
 import { normalizeAdvisory, type AssetAdvisory } from '@/lib/asset-advisory';
 import { SOL_MINT, hasMultipleChains, isPreIpoVariant } from '@/lib/asset-variant-categories';
@@ -118,8 +119,8 @@ function TokenLogo({ token, appearance = 'dark' }: { token: VariantListItem; app
     const resolvedLogoURI = normalizeLogoSrc((token.logoURI ?? '').trim() || undefined);
     const isLight = appearance === 'light';
 
-    if (!resolvedLogoURI || hasError) {
-        return (
+    const logo =
+        !resolvedLogoURI || hasError ? (
             <div
                 className={cn(
                     'flex size-10 items-center justify-center rounded-full text-[10px] font-bold',
@@ -128,19 +129,36 @@ function TokenLogo({ token, appearance = 'dark' }: { token: VariantListItem; app
             >
                 {initials}
             </div>
+        ) : (
+            <Image
+                src={resolvedLogoURI}
+                alt={symbol}
+                width={40}
+                height={40}
+                className={cn('size-10 rounded-full object-cover', isLight ? 'bg-sand-100' : 'bg-white/10')}
+                onError={() => setHasError(true)}
+                loading="lazy"
+            />
         );
-    }
 
+    // Same chain indicator as the page header's main logo: a small chain mark
+    // pinned to the logo instead of a text chip.
     return (
-        <Image
-            src={resolvedLogoURI}
-            alt={symbol}
-            width={40}
-            height={40}
-            className={cn('size-10 rounded-full object-cover', isLight ? 'bg-sand-100' : 'bg-white/10')}
-            onError={() => setHasError(true)}
-            loading="lazy"
-        />
+        <div className="relative shrink-0">
+            {logo}
+            <div
+                className={cn(
+                    'absolute -bottom-1 -right-1 flex size-[18px] items-center justify-center rounded-md border-2',
+                    isLight
+                        ? 'border-white bg-white text-text-extra-high shadow-sm'
+                        : 'border-[#111111] bg-[#1f1f1f] text-white',
+                )}
+                aria-label={CHAINS[token.chain].label}
+                title={CHAINS[token.chain].label}
+            >
+                <ChainLogo chain={token.chain} className="h-2.5 w-2.5" />
+            </div>
+        </div>
     );
 }
 
@@ -176,7 +194,6 @@ VariantsTriggerButton.displayName = 'VariantsTriggerButton';
 interface VariantTokenRowProps {
     token: VariantListItem;
     /** Show the chain chip (every row, once the panel spans more than one chain). */
-    showChain: boolean;
     group: VariantHub;
     currentKey: string | undefined;
     routeName: string;
@@ -187,7 +204,6 @@ interface VariantTokenRowProps {
 
 function VariantTokenRow({
     token,
-    showChain,
     group,
     currentKey,
     routeName,
@@ -243,18 +259,6 @@ function VariantTokenRow({
                     >
                         ${token.symbol}
                     </span>
-                    {showChain ? (
-                        <span
-                            className={cn(
-                                'shrink-0 rounded-full px-2 py-0.5 text-[11px] font-medium',
-                                isLight
-                                    ? 'bg-white text-sand-800 border border-sand-300'
-                                    : 'bg-white/15 text-[var(--tooltip-text)] border border-white/20',
-                            )}
-                        >
-                            {CHAINS[token.chain].label}
-                        </span>
-                    ) : null}
                     <AssetAdvisoryBadge advisory={token.advisory} size="sm" appearance={appearance} />
                     {shouldShowLabelBadge ? (
                         <span
@@ -347,13 +351,13 @@ function VariantsBody({
 }: VariantsBodyProps) {
     const isLight = appearance === 'light';
 
-    // Same scroll-driven top fade + hidden scrollbar as the Latest Updates feed (globals.css).
+    // Scroll-driven fade on both edges + hidden scrollbar, shared with the registry filter palette (globals.css).
     const scrollClassName = cn(
-        'market-feed-news-scroll scrollbar-hide space-y-1 overflow-y-auto',
+        'screener-filter-scroll scrollbar-hide space-y-1 overflow-y-auto',
         isDrawer ? 'max-h-[65dvh] px-4 pb-4' : 'max-h-72 px-1 pb-1',
     );
     const groupedScrollClassName = cn(
-        'market-feed-news-scroll scrollbar-hide space-y-3 overflow-y-auto',
+        'screener-filter-scroll scrollbar-hide space-y-3 overflow-y-auto',
         isDrawer ? 'max-h-[65dvh] px-4 pb-4' : 'max-h-72 px-1 pb-1',
     );
 
@@ -383,7 +387,6 @@ function VariantsBody({
         <VariantTokenRow
             key={token.key}
             token={token}
-            showChain={multiChain}
             group={group}
             currentKey={currentKey}
             routeName={routeName}
