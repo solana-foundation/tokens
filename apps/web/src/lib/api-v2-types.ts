@@ -143,11 +143,20 @@ export interface V2AssetStats {
 export interface V2ChainStats {
     liquidity: number | null;
     volume24hUSD: number | null;
+    trade24h: number | null;
     marketCap: number | null;
     fdv: number | null;
     circulatingSupply: number | null;
     variantCount: number;
     issuedVariantCount: number;
+}
+
+/** `executable` (default): chains we can swap on rank first; `global`: every chain. */
+export type V2PrimaryScope = 'executable' | 'global';
+
+export interface V2PrimaryVariantSelection {
+    pool: 'executable_active' | 'active' | 'executable' | 'all';
+    reason: string | null;
 }
 
 export interface V2Aggregate extends V2ChainStats {
@@ -219,6 +228,8 @@ export interface V2Asset {
     referenceMarket: V2ReferenceMarket | null;
     advisories: V2AssetAdvisory[];
     primaryVariantStrategy: PrimaryVariantStrategy;
+    primaryScope: V2PrimaryScope;
+    primaryVariantSelection: V2PrimaryVariantSelection | null;
     primaryVariant: V2Variant | null;
     primaryVariantByChain: Partial<Record<V2ChainId, V2Variant>>;
     rank: number | null;
@@ -237,6 +248,7 @@ export interface V2AssetsResponse {
     total: number;
     list: string;
     primaryVariantStrategy: PrimaryVariantStrategy;
+    primaryScope: V2PrimaryScope;
 }
 
 export type V2VariantSort = 'liquidity' | 'execution_quality' | 'stock_redeemability';

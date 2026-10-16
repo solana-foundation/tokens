@@ -2,6 +2,7 @@ import Link from 'next/link';
 
 import { CHAINS, CHAIN_KINDS, type ChainKind } from '@tokens/asset-registry/chains';
 
+import { formatCount } from '@/app/token/[address]/lib/format';
 import type { V2ChainStats } from '@/lib/api-v2-types';
 import { buildVariantHref } from '@/lib/coin-href';
 import { formatLargeNumber } from '@/lib/format';
@@ -17,7 +18,7 @@ interface AssetChainStatsSectionProps {
 
 /**
  * Canonical view of a multichain asset: one row per chain with the on-chain
- * liquidity, 24h volume and variant count from `chainStats` (computed from the
+ * liquidity, 24h volume, 24h trades and variant count from `chainStats` (computed from the
  * unfiltered variant set, so the numbers match the headline aggregate).
  */
 export function AssetChainStatsSection({
@@ -39,7 +40,7 @@ export function AssetChainStatsSection({
         <section className="mt-10">
             <h2 className="text-title-md text-text-extra-high text-balance">By chain</h2>
             <p className="mt-2 text-body-md text-text-medium text-pretty">
-                Where {displayName} trades on-chain. Liquidity and volume are summed across each chain&apos;s variants.
+                Where {displayName} trades on-chain. Liquidity, volume and trades are summed across each chain&apos;s variants.
             </p>
             <div className="mt-6 overflow-hidden rounded-[24px] border border-border-light bg-white shadow-[0_8px_40px_rgba(0,0,0,0.03)]">
                 <table className="w-full text-left">
@@ -48,6 +49,7 @@ export function AssetChainStatsSection({
                             <th className="px-5 py-3 font-semibold">Chain</th>
                             <th className="px-5 py-3 text-right font-semibold">Liquidity</th>
                             <th className="px-5 py-3 text-right font-semibold">24h Vol</th>
+                            <th className="px-5 py-3 text-right font-semibold">24h Trades</th>
                             <th className="px-5 py-3 text-right font-semibold">Variants</th>
                         </tr>
                     </thead>
@@ -82,6 +84,9 @@ export function AssetChainStatsSection({
                                         {row.stats?.volume24hUSD != null
                                             ? formatLargeNumber(row.stats.volume24hUSD)
                                             : '—'}
+                                    </td>
+                                    <td className="px-5 py-3 text-right text-[13px] tabular-nums text-text-extra-high">
+                                        {formatCount(row.stats?.trade24h)}
                                     </td>
                                     <td className="px-5 py-3 text-right text-[13px] tabular-nums text-text-extra-high">
                                         {row.stats ? row.stats.variantCount : '—'}
