@@ -3,7 +3,7 @@
 import Link from 'next/link';
 import { useEffect, useState } from 'react';
 import { cn } from '@tokens/ui/cn';
-import { SiteMenu } from '@/components/site-menu';
+import { SiteMenu, SiteMenuButton } from '@/components/site-menu';
 import { DOCS_HREF } from './constants';
 
 function getHasScrolled(): boolean {
@@ -37,6 +37,7 @@ export function PartnersNav() {
         >
             <div className="mx-auto flex items-center justify-between gap-4 px-6 py-4">
                 <SiteMenu />
+                <SiteMenuButton className="sm:hidden" />
                 <nav aria-label="Partners navigation" className="hidden items-center gap-6 sm:flex sm:gap-8">
                     <a
                         href={DOCS_HREF}

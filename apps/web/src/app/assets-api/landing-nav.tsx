@@ -1,4 +1,4 @@
-import { SiteMenu } from '@/components/site-menu';
+import { SiteMenu, SiteMenuButton } from '@/components/site-menu';
 import { TrackedAnchor, TrackedLink } from '@/components/tracked-link';
 
 function LandingLogo() {
@@ -18,7 +18,8 @@ export function LandingNav() {
             <div className="mx-auto flex items-center justify-between gap-4 px-6 py-4">
                 <SiteMenu tone="dark" label="Assets API" logo={<LandingLogo />} />
 
-                <nav className="flex items-center gap-6 sm:gap-8">
+                <nav className="flex items-center gap-3 sm:gap-8">
+                    <SiteMenuButton tone="dark" className="sm:hidden" />
                     <div className="hidden items-center gap-2 sm:flex sm:gap-2">
                         <TrackedAnchor
                             href="https://docs.tokens.xyz"
@@ -38,7 +39,7 @@ export function LandingNav() {
 
                     <TrackedLink
                         href="https://app.tokens.xyz"
-                        className="inline-flex h-9 items-center justify-center rounded-full bg-white px-3.5 text-[length:var(--text-button-md)] leading-none font-inter-semibold text-black transition-[colors,transform] duration-150 hover:bg-white/90 active:scale-[0.96]"
+                        className="inline-flex h-9 items-center justify-center whitespace-nowrap rounded-full bg-white px-3.5 text-[length:var(--text-button-md)] leading-none font-inter-semibold text-black transition-[colors,transform] duration-150 hover:bg-white/90 active:scale-[0.96]"
                         trackingEvent="api_cta_clicked"
                         trackingProperties={{
                             cta: 'get_api_keys',

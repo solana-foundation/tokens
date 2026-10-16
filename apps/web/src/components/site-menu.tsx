@@ -3,9 +3,10 @@
 import { useState, type ReactNode } from 'react';
 import Image from 'next/image';
 import Link from 'next/link';
-import { ChevronDown, Github, type LucideIcon } from 'lucide-react';
+import { ChevronDown, Github, Menu, X, type LucideIcon } from 'lucide-react';
 import { cn } from '@tokens/ui/cn';
 import { HoverCard, HoverCardContent, HoverCardTrigger } from '@tokens/ui/hover-card';
+import { Popover, PopoverContent, PopoverTrigger } from '@tokens/ui/popover';
 import { trackEvent } from '@/lib/posthog-client';
 import { Logo } from './logo';
 
@@ -240,14 +241,81 @@ function MenuColumn({ label, links }: { label: string; links: MenuLink[] }) {
     );
 }
 
+const PANEL_CLASS =
+    'w-[min(440px,calc(100vw-24px))] overflow-hidden rounded-2xl border p-0 text-[var(--tooltip-text)] shadow-[0_16px_48px_rgba(0,0,0,0.12)]';
+
+/** On a near-black page the tooltip surface vanishes; step up to charcoal there. */
+function panelToneClass(isDark: boolean): string {
+    return isDark ? 'border-white/10 bg-gray-1300' : 'border-border-strong bg-[var(--tooltip-bg)]';
+}
+
+/** The menu body: product tiles, resource + legal columns, foundation mark and socials. */
+function SiteMenuPanel() {
+    return (
+        <>
+            <div className="p-5">
+                <p className={COLUMN_LABEL_CLASS}>Products</p>
+                <div className="mt-3 grid grid-cols-2 gap-x-4 gap-y-3.5">
+                    {PRODUCTS.map(product => (
+                        <ProductTile key={product.href} product={product} />
+                    ))}
+                </div>
+                <div className="mt-5">
+                    <FeaturedTile product={FEATURED} />
+                </div>
+            </div>
+
+            <div className="h-px bg-white/10" />
+
+            <div className="grid grid-cols-2 gap-4 p-5">
+                <MenuColumn label="Resources" links={RESOURCE_LINKS} />
+                <MenuColumn label="Legal" links={LEGAL_LINKS} />
+            </div>
+
+            <div className="h-px bg-white/10" />
+
+            <div className="flex items-end justify-between px-5 py-3.5">
+                <div className="flex flex-col gap-2.5">
+                    <span className={COLUMN_LABEL_CLASS}>Managed by</span>
+                    <Image
+                        src="/landing/solana-foundation.svg"
+                        alt="Solana Foundation"
+                        width={147}
+                        height={24}
+                        className="h-3.5 w-auto"
+                    />
+                </div>
+                <ul className="flex items-center gap-0.5">
+                    {SOCIAL_LINKS.map(link => {
+                        const Icon = link.icon;
+                        return (
+                            <li key={link.href}>
+                                <a
+                                    href={link.href}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    aria-label={link.label}
+                                    className="flex size-8 items-center justify-center rounded-full text-white/70 hover:bg-white/10 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/40"
+                                    onClick={() => track(link.destination, link.href)}
+                                >
+                                    <Icon className="size-4" aria-hidden="true" />
+                                </a>
+                            </li>
+                        );
+                    })}
+                </ul>
+            </div>
+        </>
+    );
+}
+
 /**
  * Logo + wordmark that opens the site menu on hover or focus: product tiles
  * (Assets API as a full-width card, then Explore and Registry), resource links
  * (Docs, Heat map, Partners), legal, socials.
- * Clicking the logo still goes home. Hover never fires on touch, so the
- * chevron is a button that toggles the panel there (and works with a mouse
- * too); the panel is capped to the viewport width so it never runs off a
- * phone screen.
+ * Clicking the logo goes home on every screen. Hover never fires on touch, so
+ * the chevron is hidden below sm and phones get the same panel from
+ * `SiteMenuButton`, the hamburger on the other side of the header.
  */
 interface SiteMenuProps {
     className?: string;
@@ -261,106 +329,86 @@ interface SiteMenuProps {
 
 export function SiteMenu({ className, label = 'Tokens', logo, tone = 'light' }: SiteMenuProps) {
     const isDark = tone === 'dark';
-    const [open, setOpen] = useState(false);
     return (
-        <HoverCard open={open} onOpenChange={setOpen} openDelay={60} closeDelay={160}>
+        <HoverCard openDelay={60} closeDelay={160}>
             <HoverCardTrigger asChild>
-                <div className={cn('group flex items-center gap-1', className)}>
-                    <Link
-                        href="/"
-                        className="flex items-center gap-2 rounded-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-text-extra-high/30 focus-visible:ring-offset-4 focus-visible:ring-offset-background"
-                        onClick={() =>
-                            trackEvent('nav_link_clicked', { destination: 'home', link_url: '/', source: 'header' })
-                        }
-                    >
-                        {logo ?? <Logo width={24} height={24} className="" />}
-                        <span className={cn('text-2xl font-semibold', isDark ? 'text-white' : 'text-text-extra-high')}>
-                            {label}
-                        </span>
-                    </Link>
-                    <button
-                        type="button"
-                        aria-label={open ? 'Close site menu' : 'Open site menu'}
-                        aria-haspopup="true"
-                        aria-expanded={open}
-                        onClick={() => setOpen(current => !current)}
+                <Link
+                    href="/"
+                    className={cn(
+                        'group flex items-center gap-2 rounded-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-text-extra-high/30 focus-visible:ring-offset-4 focus-visible:ring-offset-background',
+                        className,
+                    )}
+                    onClick={() =>
+                        trackEvent('nav_link_clicked', { destination: 'home', link_url: '/', source: 'header' })
+                    }
+                >
+                    {logo ?? <Logo width={24} height={24} className="" />}
+                    <span
                         className={cn(
-                            '-m-1 flex size-7 items-center justify-center rounded-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-text-extra-high/30',
-                            isDark ? 'text-white/60 hover:text-white' : 'text-text-low hover:text-text-extra-high',
+                            'whitespace-nowrap text-xl font-semibold sm:text-2xl',
+                            isDark ? 'text-white' : 'text-text-extra-high',
                         )}
                     >
-                        <ChevronDown
-                            aria-hidden="true"
-                            className={cn('size-4 transition-transform duration-200', open && 'rotate-180')}
-                            strokeWidth={2.25}
-                        />
-                    </button>
-                </div>
+                        {label}
+                    </span>
+                    <ChevronDown
+                        aria-hidden="true"
+                        className={cn(
+                            'hidden size-4 transition-transform duration-200 group-data-[state=open]:rotate-180 sm:block',
+                            isDark ? 'text-white/60' : 'text-text-low',
+                        )}
+                        strokeWidth={2.25}
+                    />
+                </Link>
             </HoverCardTrigger>
             <HoverCardContent
                 align="start"
                 sideOffset={12}
                 alignOffset={-10}
                 collisionPadding={12}
-                className={cn(
-                    'w-[min(440px,calc(100vw-24px))] overflow-hidden rounded-2xl border p-0 text-[var(--tooltip-text)] shadow-[0_16px_48px_rgba(0,0,0,0.12)]',
-                    // On a near-black page the tooltip surface vanishes; step up to charcoal there.
-                    isDark ? 'border-white/10 bg-gray-1300' : 'border-border-strong bg-[var(--tooltip-bg)]',
-                )}
+                className={cn(PANEL_CLASS, panelToneClass(isDark))}
             >
-                <div className="p-5">
-                    <p className={COLUMN_LABEL_CLASS}>Products</p>
-                    <div className="mt-3 grid grid-cols-2 gap-x-4 gap-y-3.5">
-                        {PRODUCTS.map(product => (
-                            <ProductTile key={product.href} product={product} />
-                        ))}
-                    </div>
-                    <div className="mt-5">
-                        <FeaturedTile product={FEATURED} />
-                    </div>
-                </div>
-
-                <div className="h-px bg-white/10" />
-
-                <div className="grid grid-cols-2 gap-4 p-5">
-                    <MenuColumn label="Resources" links={RESOURCE_LINKS} />
-                    <MenuColumn label="Legal" links={LEGAL_LINKS} />
-                </div>
-
-                <div className="h-px bg-white/10" />
-
-                <div className="flex items-end justify-between px-5 py-3.5">
-                    <div className="flex flex-col gap-2.5">
-                        <span className={COLUMN_LABEL_CLASS}>Managed by</span>
-                        <Image
-                            src="/landing/solana-foundation.svg"
-                            alt="Solana Foundation"
-                            width={147}
-                            height={24}
-                            className="h-3.5 w-auto"
-                        />
-                    </div>
-                    <ul className="flex items-center gap-0.5">
-                        {SOCIAL_LINKS.map(link => {
-                            const Icon = link.icon;
-                            return (
-                                <li key={link.href}>
-                                    <a
-                                        href={link.href}
-                                        target="_blank"
-                                        rel="noopener noreferrer"
-                                        aria-label={link.label}
-                                        className="flex size-8 items-center justify-center rounded-full text-white/70 hover:bg-white/10 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/40"
-                                        onClick={() => track(link.destination, link.href)}
-                                    >
-                                        <Icon className="size-4" aria-hidden="true" />
-                                    </a>
-                                </li>
-                            );
-                        })}
-                    </ul>
-                </div>
+                <SiteMenuPanel />
             </HoverCardContent>
         </HoverCard>
+    );
+}
+
+/**
+ * Phone trigger for the same panel: a hamburger that sits where the desktop
+ * links go, so the logo stays a plain link home. Closes when a link inside is
+ * tapped.
+ */
+export function SiteMenuButton({ className, tone = 'light' }: Pick<SiteMenuProps, 'className' | 'tone'>) {
+    const isDark = tone === 'dark';
+    const [open, setOpen] = useState(false);
+    const Icon = open ? X : Menu;
+    return (
+        <Popover open={open} onOpenChange={setOpen}>
+            <PopoverTrigger asChild>
+                <button
+                    type="button"
+                    aria-label={open ? 'Close menu' : 'Open menu'}
+                    className={cn(
+                        'flex size-10 items-center justify-center rounded-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-text-extra-high/30',
+                        isDark ? 'text-white hover:bg-white/10' : 'text-text-extra-high hover:bg-gray-1400/5',
+                        className,
+                    )}
+                >
+                    <Icon className="size-5" aria-hidden="true" strokeWidth={2} />
+                </button>
+            </PopoverTrigger>
+            <PopoverContent
+                align="end"
+                sideOffset={12}
+                collisionPadding={12}
+                className={cn(PANEL_CLASS, panelToneClass(isDark))}
+                onClickCapture={event => {
+                    if ((event.target as HTMLElement).closest('a')) setOpen(false);
+                }}
+            >
+                <SiteMenuPanel />
+            </PopoverContent>
+        </Popover>
     );
 }

@@ -6,7 +6,7 @@ import { useEffect, useState } from 'react';
 import { cn } from '@tokens/ui/cn';
 import { trackEvent } from '@/lib/posthog-client';
 import { TokenSearch } from './token-search';
-import { SiteMenu } from './site-menu';
+import { SiteMenu, SiteMenuButton } from './site-menu';
 import { useSearchVisibility } from './search-visibility-provider';
 
 const NAV_LINK_CLASS =
@@ -92,39 +92,42 @@ export function Header() {
                     </div>
                 </div>
 
-                <nav
-                    aria-label="Main navigation"
-                    className="hidden items-center justify-end gap-6 justify-self-end sm:flex sm:gap-8"
-                >
-                    <a
-                        href="https://docs.tokens.xyz"
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className={NAV_LINK_CLASS}
-                        onClick={() =>
-                            trackEvent('external_link_clicked', {
-                                link_type: 'docs',
-                                link_url: 'https://docs.tokens.xyz',
-                                source: 'header',
-                            })
-                        }
+                <div className="flex items-center justify-end justify-self-end">
+                    <SiteMenuButton className="sm:hidden" />
+                    <nav
+                        aria-label="Main navigation"
+                        className="hidden items-center justify-end gap-6 sm:flex sm:gap-8"
                     >
-                        Docs
-                    </a>
-                    <Link
-                        href="/assets-api"
-                        className="inline-flex h-9 items-center justify-center rounded-full bg-text-extra-high px-3.5 text-[length:var(--text-button-md)] font-semibold leading-none text-background transition-[colors,transform] duration-150 hover:bg-text-high active:scale-[0.96] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-text-extra-high/30 focus-visible:ring-offset-2 focus-visible:ring-offset-background"
-                        onClick={() =>
-                            trackEvent('nav_link_clicked', {
-                                destination: 'assets_api',
-                                link_url: '/assets-api',
-                                source: 'header',
-                            })
-                        }
-                    >
-                        Assets API
-                    </Link>
-                </nav>
+                        <a
+                            href="https://docs.tokens.xyz"
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className={NAV_LINK_CLASS}
+                            onClick={() =>
+                                trackEvent('external_link_clicked', {
+                                    link_type: 'docs',
+                                    link_url: 'https://docs.tokens.xyz',
+                                    source: 'header',
+                                })
+                            }
+                        >
+                            Docs
+                        </a>
+                        <Link
+                            href="/assets-api"
+                            className="inline-flex h-9 items-center justify-center rounded-full bg-text-extra-high px-3.5 text-[length:var(--text-button-md)] font-semibold leading-none text-background transition-[colors,transform] duration-150 hover:bg-text-high active:scale-[0.96] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-text-extra-high/30 focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+                            onClick={() =>
+                                trackEvent('nav_link_clicked', {
+                                    destination: 'assets_api',
+                                    link_url: '/assets-api',
+                                    source: 'header',
+                                })
+                            }
+                        >
+                            Assets API
+                        </Link>
+                    </nav>
+                </div>
             </div>
         </header>
     );
