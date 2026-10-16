@@ -28,12 +28,19 @@ export function AssetChainStatsSection({
     chainStats,
     primaryVariantByChain,
 }: AssetChainStatsSectionProps) {
-    const rows = CHAIN_KINDS.filter(chain => chains.includes(chain)).map(chain => ({
-        chain,
-        label: CHAINS[chain].label,
-        stats: chainStats[chain] ?? null,
-        primary: primaryVariantByChain[chain] ?? null,
-    }));
+    const present = new Set(chains);
+    const rows = CHAIN_KINDS.flatMap(chain =>
+        present.has(chain)
+            ? [
+                  {
+                      chain,
+                      label: CHAINS[chain].label,
+                      stats: chainStats[chain] ?? null,
+                      primary: primaryVariantByChain[chain] ?? null,
+                  },
+              ]
+            : [],
+    );
     if (rows.length < 2) return null;
 
     return (

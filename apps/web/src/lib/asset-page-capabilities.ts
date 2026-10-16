@@ -32,10 +32,10 @@ export function resolveAssetPageCapabilities(args: {
     const supports = (capability: Parameters<typeof chainSupports>[1]) =>
         activeChain !== null && chainSupports(activeChain, capability);
     const swap = supports('swap');
-    const swapChains = chainsSupporting('swap');
+    const assetChainSet = new Set(assetChains);
     const tradeOnChain =
         activeChain !== null && !swap
-            ? (swapChains.find(chain => chain !== activeChain && assetChains.includes(chain)) ?? null)
+            ? (chainsSupporting('swap').find(chain => chain !== activeChain && assetChainSet.has(chain)) ?? null)
             : null;
     return {
         chart: activeChain === null ? 'none' : isVariantView && supports('ohlcv') ? 'variant' : 'canonical',

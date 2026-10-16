@@ -153,7 +153,7 @@ export function TokenPageScaffold({
 }: TokenPageScaffoldProps) {
     const hasBottomBar = Boolean(buyAddress) || Boolean(tradeOnChainHref && tradeOnChainLabel);
     return (
-        <main className="min-h-dvh bg-gradient-to-b from-white via-white to-white relative overflow-x-hidden">
+        <main className="min-h-dvh bg-linear-to-b from-white via-white to-white relative overflow-x-hidden">
             {viewedEvent}
             {background}
 

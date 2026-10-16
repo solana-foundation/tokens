@@ -248,7 +248,7 @@ function TokenHeaderLinks({
     drawerLinkTrackingProperties: Record<string, unknown>;
 }) {
     return (
-        <div className="flex items-center gap-2 flex-shrink-0">
+        <div className="flex items-center gap-2 shrink-0">
             {/* Desktop: show icon links inline */}
             <div className="hidden sm:flex items-center gap-2">
                 {orbHref ? (
@@ -604,7 +604,7 @@ export function TokenHeader({
         <div className="grid grid-cols-1 sm:grid-cols-12 gap-0 sm:gap-5 mb-8">
             <div className="flex cols-span-1 items-start flex-col sm:flex-row sm:col-span-8 gap-2 sm:items-end">
                 {/* Token Logo with Solana Badge */}
-                <div className="relative flex-shrink-0 mr-2">
+                <div className="relative shrink-0 mr-2">
                     <TokenLogo
                         mint={logoMint}
                         symbol={symbol}
