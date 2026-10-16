@@ -726,4 +726,158 @@ describe('assetsApiSearchPrefetchForApi', () => {
         });
         expect(out.assets).toEqual([]);
     });
+    it('phase-3b: covers the variant mints of combined assets without widening the tokenMarkets scoring input', async () => {
+        const solMint = 'So11111111111111111111111111111111111111112';
+        const lstA = 'LST1111111111111111111111111111111111111111';
+        const lstB = 'LST2222222222222222222222222222222222222222';
+        const seenMarketMintBatches: string[][] = [];
+        const seenFillMintBatches: string[][] = [];
+        const seenTokenMarketsMints: string[][] = [];
+        const deps = makeEmptyDeps({
+            assetsRepo: {
+                ...makeEmptyDeps().assetsRepo,
+                async findAliasesByNormalized(normalized) {
+                    if (normalized === 'sol') {
+                        return [
+                            {
+                                asset_id: 'solana',
+                                alias: 'SOL',
+                                normalized: 'sol',
+                                priority: 100,
+                            } as AssetAliasRow,
+                        ];
+                    }
+                    return [];
+                },
+                async findByAssetIds(ids) {
+                    return ids.includes('solana') ? [makeAssetRow()] : [];
+                },
+            },
+            tokensReadsRepo: {
+                ...makeEmptyDeps().tokensReadsRepo,
+                async searchTokensBySymbol(q) {
+                    return q.toLowerCase().includes('sol') ? [makeTokenRow()] : [];
+                },
+                async findTokenMarketsLatestByMints(mints) {
+                    seenTokenMarketsMints.push([...mints]);
+                    return [];
+                },
+            },
+            assetVariantsRepo: {
+                ...makeEmptyDeps().assetVariantsRepo,
+                async findVariantsByMints(mints) {
+                    return mints.includes(solMint) ? [makeVariantRow()] : [];
+                },
+                async findVariantsByAssetIds(ids) {
+                    if (!ids.includes('solana')) return [];
+                    return [
+                        makeVariantRow(),
+                        makeVariantRow({ mint: lstA, variant_id: 'solana:lst-a', kind: 'lst' }),
+                        makeVariantRow({ mint: lstB, variant_id: 'solana:lst-b', kind: 'lst' }),
+                    ];
+                },
+                async findAssetIsActive() {
+                    return true;
+                },
+            },
+            variantMarketsRepo: {
+                async findLatestByMints(mints) {
+                    seenMarketMintBatches.push([...mints]);
+                    return [];
+                },
+            },
+            fillQualityReadsRepo: {
+                async findLatestByMints(mints) {
+                    seenFillMintBatches.push([...mints]);
+                    return [];
+                },
+            },
+        });
+        const out = await assetsApiSearchPrefetchForApi(deps, {
+            query: 'sol',
+            searchLimit: 40,
+            tokensLimit: 40,
+            includeSanctum: false,
+            includeTokensSearch: true,
+        });
+
+        // The token-search mint is the original universe; the two LST variant
+        // mints discovered via variantsByAssetId are covered in a later phase.
+        const seenMarketMints = seenMarketMintBatches.flat();
+        expect(seenMarketMints).toContain(solMint);
+        expect(seenMarketMints).toContain(lstA);
+        expect(seenMarketMints).toContain(lstB);
+        expect(seenFillMintBatches.flat()).toContain(lstA);
+        expect(seenFillMintBatches.flat()).toContain(lstB);
+        // Extras never share a batch with the original universe.
+        for (const batch of seenMarketMintBatches) {
+            const hasOriginal = batch.includes(solMint);
+            const hasExtra = batch.includes(lstA) || batch.includes(lstB);
+            expect(hasOriginal && hasExtra).toBe(false);
+        }
+        // The returned rows (one per requested mint) cover every variant mint,
+        // so the route's gap-fill finds nothing left to fetch.
+        const returnedMints = new Set(out.variantMarkets.map(row => row.mint));
+        expect(returnedMints.has(solMint)).toBe(true);
+        expect(returnedMints.has(lstA)).toBe(true);
+        expect(returnedMints.has(lstB)).toBe(true);
+        expect(new Set(out.fillQuality.map(row => row.mint)).has(lstB)).toBe(true);
+        // The DEX-market fallback scoring input is unchanged: only the original
+        // universe is scored, never the extras.
+        expect(seenTokenMarketsMints).toEqual([[solMint]]);
+    });
+
+    it('phase-3b: a failed extras chunk is dropped, leaving the route to gap-fill those mints', async () => {
+        const solMint = 'So11111111111111111111111111111111111111112';
+        const lstA = 'LST1111111111111111111111111111111111111111';
+        const deps = makeEmptyDeps({
+            assetsRepo: {
+                ...makeEmptyDeps().assetsRepo,
+                async findAliasesByNormalized(normalized) {
+                    return normalized === 'sol'
+                        ? [{ asset_id: 'solana', alias: 'SOL', normalized: 'sol', priority: 100 } as AssetAliasRow]
+                        : [];
+                },
+                async findByAssetIds(ids) {
+                    return ids.includes('solana') ? [makeAssetRow()] : [];
+                },
+            },
+            tokensReadsRepo: {
+                ...makeEmptyDeps().tokensReadsRepo,
+                async searchTokensBySymbol() {
+                    return [makeTokenRow()];
+                },
+            },
+            assetVariantsRepo: {
+                ...makeEmptyDeps().assetVariantsRepo,
+                async findVariantsByMints(mints) {
+                    return mints.includes(solMint) ? [makeVariantRow()] : [];
+                },
+                async findVariantsByAssetIds(ids) {
+                    return ids.includes('solana')
+                        ? [makeVariantRow(), makeVariantRow({ mint: lstA, variant_id: 'solana:lst-a', kind: 'lst' })]
+                        : [];
+                },
+                async findAssetIsActive() {
+                    return true;
+                },
+            },
+            variantMarketsRepo: {
+                async findLatestByMints(mints) {
+                    if (mints.includes(lstA)) throw new Error('markets down');
+                    return [];
+                },
+            },
+        });
+        const out = await assetsApiSearchPrefetchForApi(deps, {
+            query: 'sol',
+            searchLimit: 40,
+            tokensLimit: 40,
+            includeSanctum: false,
+            includeTokensSearch: true,
+        });
+        const returnedMints = new Set(out.variantMarkets.map(row => row.mint));
+        expect(returnedMints.has(solMint)).toBe(true);
+        expect(returnedMints.has(lstA)).toBe(false);
+    });
 });
