@@ -8,7 +8,8 @@ import type { RedisClient } from '@/lib/redis';
 
 mock.module('server-only', () => ({}));
 
-const { loadLiveMarketFallback, needsLiveFallback } = await import('./_risk-live-fallback');
+const { __resetRiskLiveCacheForTests, __riskLiveCacheSizeForTests, loadLiveMarketFallback, needsLiveFallback } =
+    await import('./_risk-live-fallback');
 type LiveMarketDeps = import('./_risk-live-fallback').LiveMarketDeps;
 
 const MINT = 'JUPyiwrYJFskUPiHa7hkeR8VUtAeFoSYbKedZNsDvCN';
@@ -85,7 +86,11 @@ const run = (h: Harness) => Effect.runPromise(loadLiveMarketFallback(AUTH, MINT,
 const ORIGINAL_LOG = console.log;
 let events: Array<Record<string, unknown>> = [];
 
+const ORIGINAL_FLAG = process.env.TOKENS_RISK_CACHE_PROCESS;
+
 beforeEach(() => {
+    __resetRiskLiveCacheForTests();
+    delete process.env.TOKENS_RISK_CACHE_PROCESS;
     events = [];
     console.log = (line: unknown) => {
         try {
@@ -98,6 +103,8 @@ beforeEach(() => {
 
 afterEach(() => {
     console.log = ORIGINAL_LOG;
+    if (ORIGINAL_FLAG === undefined) delete process.env.TOKENS_RISK_CACHE_PROCESS;
+    else process.env.TOKENS_RISK_CACHE_PROCESS = ORIGINAL_FLAG;
 });
 
 describe('needsLiveFallback', () => {
@@ -166,6 +173,7 @@ describe('loadLiveMarketFallback', () => {
 
     it('ignores a cache entry it cannot read and goes to the provider', async () => {
         for (const entry of ['{not json', JSON.stringify({ v: 2, market: MARKET, at: NOW }), 'null', 42]) {
+            __resetRiskLiveCacheForTests();
             const h = harness();
             h.store.set(KEY, entry);
             expect((await run(h)).outcome).toBe('live_hit');
@@ -205,6 +213,7 @@ describe('loadLiveMarketFallback', () => {
             new Error('socket hang up'),
         ];
         for (const failure of failures) {
+            __resetRiskLiveCacheForTests();
             const h = harness();
             h.deps.fetchOverview = () => counted(h.calls, Effect.fail(failure));
             const result = await run(h);
@@ -252,6 +261,7 @@ describe('loadLiveMarketFallback', () => {
                 } as unknown as RedisClient),
         ];
         for (const getRedis of unavailable) {
+            __resetRiskLiveCacheForTests();
             const h = harness({ getRedis });
             expect(await run(h)).toEqual({ market: MARKET, outcome: 'live_hit', fetchedAt: NOW });
         }
@@ -274,5 +284,67 @@ describe('loadLiveMarketFallback', () => {
         const fallbackEvents = events.filter(e => e.event === 'risk_live_fallback');
         expect(fallbackEvents.map(e => e.outcome)).toEqual(['live_hit', 'cached_hit']);
         expect(fallbackEvents[0]!.mint).toBe(MINT);
+    });
+
+    it('a repeat read for the same mint is answered from the process tier with the original fetchedAt', async () => {
+        const h = harness();
+        await run(h);
+        // Different Redis (empty) proves the answer did not come from Redis.
+        const h2 = harness({ now: () => NOW + 120_000 });
+        const result = await run(h2);
+
+        expect(result).toEqual({ market: MARKET, outcome: 'cached_hit', fetchedAt: NOW });
+        expect(h2.calls).toEqual({ budget: 0, fetch: 0, warm: 0 });
+        expect(h2.sets).toEqual([]);
+    });
+
+    it('a process entry expires with its TTL and falls back to Redis, then the provider', async () => {
+        const h = harness();
+        await run(h);
+        // Past the 5-minute hit window: process miss → Redis (holds the same entry,
+        // which the parser still accepts) → cached_hit, from Redis this time.
+        const redisHit = harness({ now: () => NOW + 301_000 });
+        redisHit.store.set(KEY, h.store.get(KEY));
+        expect((await run(redisHit)).outcome).toBe('cached_hit');
+
+        // Empty Redis as well: the provider is read.
+        __resetRiskLiveCacheForTests();
+        const miss = harness({ now: () => NOW + 301_000 });
+        expect((await run(miss)).outcome).toBe('live_hit');
+    });
+
+    it('a Redis hit back-fills the process tier', async () => {
+        const h = harness();
+        h.store.set(KEY, JSON.stringify({ v: 1, market: MARKET, at: NOW - 60_000 }));
+        expect((await run(h)).outcome).toBe('cached_hit');
+        expect(__riskLiveCacheSizeForTests()).toBe(1);
+
+        const h2 = harness();
+        const result = await run(h2);
+        expect(result).toEqual({ market: MARKET, outcome: 'cached_hit', fetchedAt: NOW - 60_000 });
+        expect(h2.calls.fetch).toBe(0);
+    });
+
+    it('defers the Redis write when a scheduler is provided, keeping the same entry', async () => {
+        const pending: Array<Effect.Effect<void, never>> = [];
+        const h = harness({ scheduleWrite: effect => void pending.push(effect) });
+        const result = await run(h);
+
+        expect(result).toEqual({ market: MARKET, outcome: 'live_hit', fetchedAt: NOW });
+        expect(h.sets).toEqual([]);
+        expect(pending.length).toBe(1);
+        await Effect.runPromise(pending[0]!);
+        expect(h.sets.length).toBe(1);
+        expect(h.sets[0]!.ex).toBe(300);
+        expect(JSON.parse(h.sets[0]!.value)).toEqual({ v: 1, market: MARKET, at: NOW });
+    });
+
+    it('TOKENS_RISK_CACHE_PROCESS=off reads Redis every time', async () => {
+        process.env.TOKENS_RISK_CACHE_PROCESS = 'off';
+        const h = harness();
+        await run(h);
+        expect(__riskLiveCacheSizeForTests()).toBe(0);
+        const h2 = harness();
+        expect((await run(h2)).outcome).toBe('live_hit');
     });
 });
