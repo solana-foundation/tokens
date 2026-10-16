@@ -257,7 +257,7 @@ function looksLikeSolanaMintAddress(value: string): boolean {
  * Port of apps/api's `normalizeCoinGeckoCoinIdForAsset` — kept in sync so the
  * composite and per-call paths agree on which coin IDs to fetch.
  */
-function normalizeCoinGeckoCoinIdForAsset(params: {
+export function normalizeCoinGeckoCoinIdForAsset(params: {
     assetId: string;
     coinId: string | null | undefined;
 }): string | null {

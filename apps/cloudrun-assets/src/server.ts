@@ -500,6 +500,9 @@ export function createApp(deps: ServerDeps) {
                 stockReadsRepo: deps.stockReadsRepo,
                 tokensReadsRepo: deps.tokensReadsRepo,
                 variantMarketsRepo: deps.variantMarketsRepo,
+                fillQualityReadsRepo: deps.fillQualityReadsRepo,
+                assetMarketsRepo: deps.assetMarketsRepo,
+                coingeckoReadsRepo: deps.coingeckoReadsRepo,
             },
             args,
         );

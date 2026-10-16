@@ -5,6 +5,7 @@ import {
     variantFillQualityGetLatestByMints,
     variantMarketsGetLatestByMints,
 } from '@/lib/cloudrun';
+import { CloudRunQueryMemo, type CloudRunMemoStore } from '@/lib/cloudrun/client';
 
 import {
     buildSnapshotFromTokenMarketsDoc,
@@ -108,11 +109,22 @@ export function loadVariantMarkets(
     });
 }
 
-export async function loadTokensByMints(mints: string[]): Promise<Map<string, TokenMarketSnapshot>> {
+/**
+ * These helpers run their RPC in a nested runtime (`Effect.runPromise`), which
+ * cannot see the request's `CloudRunQueryMemo` Reference. Callers that hold
+ * the request memo pass it in so a speculative batch can still answer the
+ * call; the error semantics of the nested run are unchanged.
+ */
+export async function loadTokensByMints(
+    mints: string[],
+    memo: CloudRunMemoStore | null = null,
+): Promise<Map<string, TokenMarketSnapshot>> {
     const uniqueMints = Array.from(new Set(mints.map(m => m.trim()).filter(Boolean)));
     if (uniqueMints.length === 0) return new Map();
 
-    const rows = await Effect.runPromise(variantMarketsGetLatestByMints({ mints: uniqueMints }));
+    const rows = await Effect.runPromise(
+        variantMarketsGetLatestByMints({ mints: uniqueMints }).pipe(Effect.provideService(CloudRunQueryMemo, memo)),
+    );
 
     const out = new Map<string, TokenMarketSnapshot>();
     for (const row of rows) {
@@ -127,11 +139,14 @@ export async function loadTokensByMints(mints: string[]): Promise<Map<string, To
 
 export async function loadExecutionQualityByMints(
     mints: string[],
+    memo: CloudRunMemoStore | null = null,
 ): Promise<Map<string, VariantExecutionQualitySnapshot>> {
     const uniqueMints = Array.from(new Set(mints.map(m => m.trim()).filter(Boolean)));
     if (uniqueMints.length === 0) return new Map();
 
-    const rows = await Effect.runPromise(variantFillQualityGetLatestByMints({ mints: uniqueMints }));
+    const rows = await Effect.runPromise(
+        variantFillQualityGetLatestByMints({ mints: uniqueMints }).pipe(Effect.provideService(CloudRunQueryMemo, memo)),
+    );
 
     const out = new Map<string, VariantExecutionQualitySnapshot>();
     for (const row of rows) {

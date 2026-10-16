@@ -87,6 +87,16 @@ export const MEMOISABLE_QUERY_NAMES: ReadonlySet<string> = new Set([
     'assetVariantsListByAssetIds',
     'variantMarketsGetLatestByMints',
     'tokensGetByAddress',
+    'tokenMarketsGetLatestByMint',
+    'tokenMarketsGetLatestByMints',
+    'tokenMarketsGetTopMarketsByMints',
+    'variantFillQualityGetLatestByMints',
+    'assetMarketsGetLatestByAssetId',
+    'stockPricesGetLatestByAssetId',
+    'coingeckoReadsGetCoinById',
+    'coingeckoReadsGetPriceLatestByCoinId',
+    'sanctumListActive',
+    'assetVariantsGetSolanaDefaultVariantsViewForApi',
 ]);
 
 function stableStringify(value: unknown): string {
