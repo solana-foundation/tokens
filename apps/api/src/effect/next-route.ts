@@ -131,52 +131,12 @@ function hasAllScopes(scopes: string[], required: string[]): boolean {
     return true;
 }
 
-function isPlatformAuthContext(value: unknown): value is PlatformAuthContext {
-    if (!value || typeof value !== 'object') return false;
-    const auth = value as Partial<PlatformAuthContext>;
-    return (
-        typeof auth.apiKeyId === 'string' &&
-        typeof auth.keyPrefix === 'string' &&
-        typeof auth.projectId === 'string' &&
-        typeof auth.ownerClerkUserId === 'string' &&
-        Array.isArray(auth.scopes) &&
-        auth.scopes.every(scope => typeof scope === 'string')
-    );
-}
-
-function getCachedPlatformAuth(keyHash: string): Effect.Effect<PlatformAuthContext | null, unknown> {
-    return Effect.gen(function* () {
-        const ttl = loadEnv().authCacheTtlSeconds;
-        if (ttl <= 0) return null;
-
-        const redis = yield* getRedisClientEffect();
-        const cached = yield* Effect.tryPromise(() =>
-            redis.get<string | PlatformAuthContext>(`api-auth:v1:${keyHash}`),
-        );
-        const value = typeof cached === 'string' ? JSON.parse(cached) : cached;
-        return isPlatformAuthContext(value) ? value : null;
-    });
-}
-
-function cachePlatformAuth(keyHash: string, auth: PlatformAuthContext): Effect.Effect<void, unknown> {
-    return Effect.gen(function* () {
-        const ttl = loadEnv().authCacheTtlSeconds;
-        if (ttl <= 0) return;
-
-        const redis = yield* getRedisClientEffect();
-        yield* Effect.tryPromise(() => redis.set(`api-auth:v1:${keyHash}`, JSON.stringify(auth), { ex: ttl }));
-    });
-}
-
 function requirePlatformAuth(request: Request) {
     return Effect.gen(function* () {
         const rawKey = request.headers.get('x-api-key')?.trim() ?? '';
 
         if (rawKey) {
             const keyHash = yield* Effect.tryPromise(() => sha256Hex(rawKey));
-            const cachedAuth = yield* getCachedPlatformAuth(keyHash).pipe(Effect.catch(() => Effect.succeed(null)));
-            if (cachedAuth) return cachedAuth;
-
             const auth = yield* authenticateApiKey(keyHash);
             if (!auth) {
                 return yield* Effect.fail(new UnauthorizedError({ message: 'Invalid API key' }));
@@ -190,8 +150,6 @@ function requirePlatformAuth(request: Request) {
                 scopes: auth.scopes,
                 ...(auth.limits ? { limits: auth.limits } : {}),
             } satisfies PlatformAuthContext;
-
-            yield* cachePlatformAuth(keyHash, authContext).pipe(Effect.catch(() => Effect.succeed(undefined)));
 
             return authContext;
         }
@@ -803,6 +761,4 @@ export const __internals = {
     enforceUpstashLimits,
     enforceCloudRunLimits,
     enforceLimits,
-    getCachedPlatformAuth,
-    cachePlatformAuth,
 };

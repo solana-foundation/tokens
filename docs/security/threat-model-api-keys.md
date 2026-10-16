@@ -17,16 +17,16 @@ A signed-in dashboard user creates a project and asks for an API key. The usage
 service mints a `tok_<64 hex>` key from 32 random bytes, stores its SHA-256
 hash for lookup and an AES-GCM-256 copy for later reveal, and revokes the
 project's previous key. The public API verifies keys on every `/v1` request by
-hashing the `x-api-key` header and resolving the hash through a short-lived
-Redis cache and then the usage service.
+hashing the `x-api-key` header and resolving the hash through the usage
+service on every request (no Redis auth cache).
 
 Data touched:
 
 | Data                                               | Classification | Where                                                          |
 | -------------------------------------------------- | -------------- | -------------------------------------------------------------- |
 | Raw API key                                        | Restricted     | returned once to the browser; AES-GCM ciphertext in `api_keys` |
-| Key hash (SHA-256)                                 | Internal       | `api_keys.key_hash`, Redis auth cache (`api-auth:v1:<hash>`)   |
-| Key→project/scope/limits mapping                   | Internal       | `api_keys`, `projects`, Redis auth cache                       |
+| Key hash (SHA-256)                                 | Internal       | `api_keys.key_hash`                                            |
+| Key→project/scope/limits mapping                   | Internal       | `api_keys`, `projects`                                         |
 | Caller identity (Clerk user id, email, project id) | Internal       | signed identity token on dashboard→usage calls                 |
 | Usage events (path, status, latency per key)       | Internal       | `api_request_events` and rollups                               |
 
@@ -74,13 +74,12 @@ a user.
 
 ## External dependencies
 
-| Dependency                                                                           | If it fails                                                                          | If it lies or is compromised                                                                                                                                                       |
-| ------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Clerk (session verification in apps/app)                                             | dashboard unusable; no key operations possible; API traffic unaffected               | attacker gets a valid session for a victim and can reset or reveal that victim's keys. Mitigation: Clerk MFA settings, and reveal/reset are logged with `created_by_clerk_user_id` |
-| GCP Secret Manager (bearer, signing, encryption secrets)                             | new revisions fail to start; running instances keep their copy                       | holder of the secrets can call any RPC and forge identity. Mitigation: least-privilege `secretAccessor` on the runtime SA only; rotation runbook                                   |
-| Doppler / Vercel env (apps/app and apps/api copies of the bearer and signing secret) | deploys fail or calls 401                                                            | same as above. Mitigation: SSO + hardware 2FA on both platforms; named owners in `key-inventory.md`                                                                                |
-| Redis (auth cache)                                                                   | apps/api falls through to the usage service on every request (slower, still correct) | a poisoned cache entry grants a forged auth context for up to 60 s. Mitigation: Memorystore is private-IP, AUTH enabled, no public route                                           |
-| Cloud SQL                                                                            | key mint/verify fail closed (401/5xx)                                                | full read of hashes and ciphertexts. Hashes do not yield keys; ciphertexts need `TOKENS_API_KEY_ENCRYPTION_SECRET`, which lives in a different system                              |
+| Dependency                                                                           | If it fails                                                            | If it lies or is compromised                                                                                                                                                       |
+| ------------------------------------------------------------------------------------ | ---------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Clerk (session verification in apps/app)                                             | dashboard unusable; no key operations possible; API traffic unaffected | attacker gets a valid session for a victim and can reset or reveal that victim's keys. Mitigation: Clerk MFA settings, and reveal/reset are logged with `created_by_clerk_user_id` |
+| GCP Secret Manager (bearer, signing, encryption secrets)                             | new revisions fail to start; running instances keep their copy         | holder of the secrets can call any RPC and forge identity. Mitigation: least-privilege `secretAccessor` on the runtime SA only; rotation runbook                                   |
+| Doppler / Vercel env (apps/app and apps/api copies of the bearer and signing secret) | deploys fail or calls 401                                              | same as above. Mitigation: SSO + hardware 2FA on both platforms; named owners in `key-inventory.md`                                                                                |
+| Cloud SQL                                                                            | key mint/verify fail closed (401/5xx)                                  | full read of hashes and ciphertexts. Hashes do not yield keys; ciphertexts need `TOKENS_API_KEY_ENCRYPTION_SECRET`, which lives in a different system                              |
 
 ## STRIDE by component
 

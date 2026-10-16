@@ -28,7 +28,6 @@ export interface ApiEnv {
     usageLogMode: 'aggregated' | 'raw' | 'off';
     /** Always 0 in `aggregated` mode, see `readUsageRawSampleRate`. */
     usageRawSampleRate: number;
-    authCacheTtlSeconds: number;
     usageAggregationTtlSeconds: number;
     /** Min seconds between drains of the Redis usage aggregates into the rollup tables; 0 disables. */
     usageDrainIntervalSeconds: number;
@@ -166,7 +165,6 @@ export function loadEnv(): ApiEnv {
         playgroundProxySecret: readTrimmed('TOKENS_PLAYGROUND_PROXY_SECRET'),
         usageLogMode,
         usageRawSampleRate: readUsageRawSampleRate(usageLogMode),
-        authCacheTtlSeconds: Math.floor(readNumber('TOKENS_AUTH_CACHE_TTL_SECONDS', 60, 0, 300)),
         usageAggregationTtlSeconds: Math.floor(
             readNumber('TOKENS_USAGE_AGGREGATION_TTL_SECONDS', 172_800, MIN_USAGE_AGGREGATION_TTL_SECONDS, 604_800),
         ),
