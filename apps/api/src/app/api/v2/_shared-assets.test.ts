@@ -7,6 +7,7 @@ import type { V2ChainRollupResult, V2VariantResult } from '@/lib/cloudrun';
 
 import {
     aggregateChainStats,
+    buildV2Asset,
     computeChainStats,
     decodeAssetIdPath,
     decodeChainAddressPath,
@@ -15,6 +16,7 @@ import {
     decodeListParam,
     toV2Chain,
     toV2Market,
+    toV2PegHealth,
     variantIssuance,
 } from './_shared-assets';
 
@@ -201,5 +203,100 @@ describe('mappers', () => {
         expect(base.capabilities.markets).toBe(true);
         expect(base.capabilities.swap).toBe(false);
         expect(toV2Chain('solana', { variantCount: null, assetCount: null }).evmChainId).toBeNull();
+    });
+});
+
+describe('detail include= enrichments', () => {
+    const solana = variant('solana', USDC_SOLANA, 'native');
+    const base = variant('base', USDC_BASE, 'stablecoin');
+    const request = new Request('https://api.example.test/api/v2/assets/usd');
+    const asset = {
+        assetId: 'usd',
+        category: 'stablecoin' as const,
+        aliases: [],
+        isActive: true,
+        createdAt: 0,
+        updatedAt: 0,
+        name: 'US Dollar',
+        symbol: 'USD',
+    };
+    const fillQuality = {
+        source: 'clickhouse_fill_quality' as const,
+        range: '24h' as const,
+        horizon: '5s' as const,
+        quoteMint: USDC_SOLANA,
+        volume24hUSD: 1,
+        trade24h: 2,
+        botVolume24hUSD: 0,
+        botTrade24h: 0,
+        botVolumeRatio: Number.NaN,
+        fee24hUSD: 0,
+        feeBps: 0,
+        flowSourceCount: 1,
+        markoutPnl24hUSD: null,
+        markoutCount: null,
+        markoutBps: null,
+        executionScore: 0.5,
+        isEligibleForPrimary: true,
+        asOf: null,
+        lastComputedAt: 10,
+    };
+    const build = (enrichments: Parameters<typeof buildV2Asset>[0]['enrichments']) =>
+        buildV2Asset({
+            request,
+            asset,
+            variants: [solana, base],
+            marketByKey: new Map(),
+            rollupByChain: null,
+            advisoriesByMint: new Map(),
+            coingeckoPrice: null,
+            stockInstrument: null,
+            stockPrice: null,
+            preStocksByMint: new Map(),
+            requestedStrategy: null,
+            hideBlocked: false,
+            listChain: null,
+            includeVariants: true,
+            rank: null,
+            ...(enrichments ? { enrichments } : {}),
+        })!;
+
+    test('keys are absent when nothing was requested', () => {
+        const out = build(undefined);
+        for (const v of out.variants!) {
+            expect('executionQuality' in v).toBe(false);
+            expect('pegHealth' in v).toBe(false);
+            expect('preStocks' in v).toBe(false);
+        }
+    });
+
+    test('requested keys are present on every variant, null off-capability, same object on primaryVariant', () => {
+        const out = build({
+            executionQualityByMint: new Map([[USDC_SOLANA, fillQuality]]),
+            stablecoinHealthByMint: new Map(),
+            preStocks: true,
+        });
+        const byKey = new Map(out.variants!.map(v => [v.key, v] as const));
+        const sol = byKey.get(`solana:${USDC_SOLANA}`)!;
+        const evm = byKey.get(`base:${USDC_BASE}`)!;
+        expect(sol.executionQuality?.quoteKey).toBe(`solana:${USDC_SOLANA}`);
+        expect('quoteMint' in (sol.executionQuality ?? {})).toBe(false);
+        expect(sol.executionQuality?.botVolumeRatio).toBeNull();
+        expect(sol.pegHealth).toBeNull();
+        expect(sol.preStocks).toBeNull();
+        expect(evm.executionQuality).toBeNull();
+        expect(evm.pegHealth).toBeNull();
+        expect(evm.preStocks).toBeNull();
+        expect('executionQuality' in evm).toBe(true);
+        expect(out.primaryVariant?.executionQuality).toEqual(sol.executionQuality);
+    });
+
+    test('toV2PegHealth defaults provider and reference kind', () => {
+        expect(toV2PegHealth(null)).toBeNull();
+        const out = toV2PegHealth({
+            pegHealth: { provider: 'webacy', referenceKind: null, tier: 'stable', deviationPct: 0.01, updatedAt: 5, stale: false } as never,
+            structuralHealth: null,
+        });
+        expect(out).toEqual({ provider: 'webacy', referenceKind: 'fixed', tier: 'stable', deviationPct: 0.01, updatedAt: 5, stale: false });
     });
 });

@@ -68,7 +68,63 @@ interface V2Advisory {
     source: 'admin' | 'webacy_depeg' | 'peg_guard';
 }
 
-interface V2Variant {
+// Opt-in per-variant enrichments on `GET /v2/assets/{assetId}?include=…`.
+// A key is present on EVERY variant in the response (`variants[]`, `primaryVariant`,
+// `primaryVariantByChain.*`) when its include value was requested, and absent otherwise.
+// `null` means the chain lacks the capability or there is no data for that variant.
+
+// Fill-quality snapshot (24h window, 5s markout horizon); v1's `quoteMint` is `quoteKey` here.
+// Needs the chain's `executionQuality` capability — Solana only today.
+interface V2ExecutionQuality {
+    source: 'clickhouse_fill_quality';
+    range: '24h';
+    horizon: '5s';
+    quoteKey: VariantKey; // `solana:<mint>` of the quote token the fills were measured against
+    volume24hUSD: number;
+    trade24h: number;
+    botVolume24hUSD: number;
+    botTrade24h: number;
+    botVolumeRatio: number;
+    fee24hUSD: number;
+    feeBps: number;
+    flowSourceCount: number;
+    markoutPnl24hUSD: number | null;
+    markoutCount: number | null;
+    markoutBps: number | null;
+    executionScore: number;
+    isEligibleForPrimary: boolean;
+    asOf: number | null;
+    lastComputedAt: number;
+}
+
+// Compact peg status for stablecoin variants. Needs the chain's `risk` capability and a
+// `stablecoin`-category asset; `null` on every variant of a non-stablecoin asset.
+interface V2PegHealth {
+    provider: 'webacy' | 'tokens';           // always present (v1 omitted it on older builds)
+    referenceKind: 'fixed' | 'fx' | 'high_water'; // always present
+    tier: 'ok' | 'watch' | 'warning' | 'critical' | 'premium';
+    deviationPct: number | null; // signed percent from peg; negative = below peg
+    updatedAt: number;
+    stale: boolean;
+}
+
+// PreStocks reference mark for a tokenized pre-IPO equity. Solana PreStocks tokens only.
+interface V2VariantPreStocks {
+    symbol: string;
+    markPriceUsd: number | null;
+    markValuationUsd: number | null;
+    impliedValuationUsd: number | null;  // from the variant's on-chain price
+    premiumToMarkPercent: number | null;
+    lastFetchedAt: number;
+}
+
+interface V2VariantEnrichments {
+    executionQuality?: V2ExecutionQuality | null; // with include=executionQuality
+    pegHealth?: V2PegHealth | null;               // with include=pegHealth
+    preStocks?: V2VariantPreStocks | null;        // with include=preStocks
+}
+
+interface V2Variant extends V2VariantEnrichments {
     key: VariantKey;        // `${chain}:${address}`
     chain: ChainId;
     address: string;
@@ -308,7 +364,16 @@ off-chain reference market.
   `details.code: "invalid_asset_id"` — look tokens up under
   [`GET /v2/variants/{chain}/{address}`](/docs/v2/endpoints/variants#get-v2variantschainaddress).
   There are no singleton ids (v1's `solana-<mint>`).
-- **Query params**: `primaryVariantStrategy` (optional), as above.
+- **Query params**:
+  - `primaryVariantStrategy` (optional), as above.
+  - `include` (optional): any of `executionQuality`, `pegHealth`, `preStocks` — comma-separated
+    and/or repeated. Each requested value adds that key to **every** variant in the response
+    (`variants[]`, `primaryVariant` and each `primaryVariantByChain.*`): always present, an object
+    when there is data, and `null` when the chain lacks the capability or there is no data for
+    that variant (`executionQuality` needs the chain's `executionQuality` capability; `pegHealth`
+    needs `risk` and a `stablecoin`-category asset; `preStocks` is Solana PreStocks tokens only).
+    Keys you did not ask for are absent. Anything else is `400` with
+    `details.code: "invalid_include"` (`details.include`, `details.values`).
 
 ```ts
 interface AssetResponse extends V2Asset {
@@ -334,6 +399,12 @@ curl -sS "$API_BASE_URL/v2/assets/usd" -H "x-api-key: $API_KEY"
 # Aliases resolve; the body says how
 curl -sS "$API_BASE_URL/v2/assets/usdc" -H "x-api-key: $API_KEY" | jq '{assetId, resolvedBy}'
 # { "assetId": "usd", "resolvedBy": "alias" }
+
+# Peg status on every variant: an object on Solana stablecoins, null on chains without `risk`
+curl -sS "$API_BASE_URL/v2/assets/usd?include=pegHealth" -H "x-api-key: $API_KEY" \
+  | jq '.variants[] | {key, pegHealth}'
+# { "key": "solana:EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", "pegHealth": { "provider": "webacy", "referenceKind": "fixed", "tier": "ok", "deviationPct": -0.01, "updatedAt": 1792800000000, "stale": false } }
+# { "key": "base:0x833589fcd6edb6e08f4c7c32d4f71b54bda02913", "pegHealth": null }
 ```
 
 ## `GET /v2/assets/{assetId}/variants`
@@ -398,7 +469,7 @@ gone.
 | `GET /v1/assets/:assetId/variants` | `GET /v2/assets/{assetId}/variants` |
 | `GET /v1/assets/resolve?ref=` | `GET /v2/assets/{assetId}` (`resolvedBy`) for ids and aliases; `GET /v2/variants/{chain}/{address}` for addresses |
 | `GET /v1/assets/variant-markets?mints=` | `GET /v2/variants?keys=solana:<mint>,…` |
-| `GET /v1/assets/:assetId?include=profile,risk,ohlcv,markets` | not in v2 yet — keep using the v1 route and its `/risk-*`, `/ohlcv`, `/markets` siblings for Solana variants |
+| `GET /v1/assets/:assetId?include=profile,risk,ohlcv,markets` | `profile`, `risk`, `ohlcv` and `markets` are not in v2 yet — keep using the v1 route and its `/risk-*`, `/ohlcv`, `/markets` siblings for Solana variants. The per-variant enrichments v1 attached implicitly are opt-in on v2: `GET /v2/assets/{assetId}?include=executionQuality,pegHealth,preStocks` |
 
 ### Fields
 
@@ -414,9 +485,9 @@ gone.
 | `symbol?`, `name?`, `issuer?`, `label?` (absent when unknown) | always present, `null` when unknown |
 | `pagination: { hasMore, nextOffset }` | `total` with `limit` / `offset` |
 | `variantsMode=all` | not needed — `/v2/assets/{assetId}/variants` is never capped |
-| `variant.executionQuality`, `variant.pegHealth`, `variant.preStocks` | deferred; not on v2 variants yet (Solana-only data that will arrive capability-gated) |
+| `variant.executionQuality`, `variant.pegHealth`, `variant.preStocks` (always attached) | opt-in via `include=executionQuality,pegHealth,preStocks` on `GET /v2/assets/{assetId}`; present on every variant when requested, `null` off-capability (EVM) or without data; `executionQuality.quoteMint` → `quoteKey`; `pegHealth.provider` / `.referenceKind` always present |
 | `assetId: "solana-<mint>"` (singletons) | none — every v2 asset is curated |
-| `include=…` / `resolution` | dropped |
+| `include=profile,risk,ohlcv,markets` / `resolution` | dropped (`include=` on the v2 detail route takes the three variant enrichments above instead) |
 
 Addresses: Solana addresses are case-sensitive base58, exactly as in v1. EVM addresses are
 accepted in any casing and always **returned lowercase** — compare keys, not checksummed strings.

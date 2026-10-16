@@ -18,8 +18,17 @@ import { isTradeBlocked, type AssetAdvisory } from '@/lib/asset-advisory';
 import { trackEvent } from '@/lib/posthog-client';
 import { getTokenLogoURLForMintWithSecondarySymbol } from '@/lib/logo-overrides';
 import { normalizeLogoSrc } from '@/lib/normalize-logo-src';
-import { looksLikeSolanaMintAddress } from '@/lib/solana-address';
 import { getVariantHubById, getVariantHubByMint, type CompactPegHealth, type VariantHub } from '@tokens/asset-registry';
+import {
+    CHAINS,
+    CHAIN_KINDS,
+    chainAddressKey,
+    chainSupports,
+    explorerTokenUrl,
+    looksLikeSolanaAddress,
+    normalizeAddressForChain,
+    type ChainKind,
+} from '@tokens/asset-registry/chains';
 import { TokenVariantsBadge } from './token-variants-badge';
 import { TokenRiskPopover } from './token-risk-popover';
 import { formatCompactAddress } from '../lib/format';
@@ -33,12 +42,15 @@ interface TokenLinks {
 }
 
 interface SelectedVariant {
-    mint: string;
+    chain: ChainKind;
+    address: string;
     symbol: string;
 }
 
 interface TokenHeaderProps {
     address: string;
+    /** Chain `address` lives on; absent/null = Solana. */
+    chain?: ChainKind | null;
     symbol: string;
     displayName: string;
     displayLogoURI?: string;
@@ -49,6 +61,9 @@ interface TokenHeaderProps {
     riskSummaryUrl?: string;
     riskQueryKey?: readonly unknown[];
     variantGroup?: VariantHub | null;
+    /** `<chain>:<address>` of the active variant (highlighted in the variants list). */
+    variantCurrentKey?: string;
+    /** @deprecated Solana-only; use `variantCurrentKey`. Treated as `solana:<address>`. */
     variantCurrentAddress?: string;
     showSolanaBadge?: boolean;
     variantLinkMode?: 'token' | 'coingecko';
@@ -211,6 +226,7 @@ function LinkDrawerItem({
 
 function TokenHeaderLinks({
     address,
+    chain,
     links,
     explorerHref,
     explorerAriaLabel,
@@ -221,6 +237,7 @@ function TokenHeaderLinks({
     drawerLinkTrackingProperties,
 }: {
     address: string;
+    chain: ChainKind;
     links?: TokenLinks;
     explorerHref: string;
     explorerAriaLabel: string;
@@ -230,6 +247,7 @@ function TokenHeaderLinks({
     linkTrackingProperties: Record<string, unknown>;
     drawerLinkTrackingProperties: Record<string, unknown>;
 }) {
+    const isSolana = chain === 'solana';
     return (
         <div className="flex items-center gap-2 flex-shrink-0">
             {/* Desktop: show icon links inline */}
@@ -257,10 +275,15 @@ function TokenHeaderLinks({
                                             link_url: explorerHref,
                                             source: 'token_header_menu',
                                             token_address: address,
+                                            token_chain: chain,
                                         })
                                     }
                                 >
-                                    <SolanaLogo className="h-4 w-4" />
+                                    {isSolana ? (
+                                        <SolanaLogo className="h-4 w-4" />
+                                    ) : (
+                                        <Search className="h-4 w-4" aria-hidden="true" />
+                                    )}
                                     Explorer
                                 </a>
                             </DropdownMenuItem>
@@ -275,6 +298,7 @@ function TokenHeaderLinks({
                                             link_url: orbHref,
                                             source: 'token_header_menu',
                                             token_address: address,
+                                            token_chain: chain,
                                         })
                                     }
                                 >
@@ -294,6 +318,7 @@ function TokenHeaderLinks({
                                                 link_url: birdeyeHref,
                                                 source: 'token_header_menu',
                                                 token_address: address,
+                                                token_chain: chain,
                                             })
                                         }
                                     >
@@ -377,7 +402,7 @@ function TokenHeaderLinks({
                                     href={explorerHref}
                                     label={explorerAriaLabel}
                                     icon={
-                                        showSolanaBadge ? (
+                                        isSolana && showSolanaBadge ? (
                                             <SolanaLogo className="h-4 w-4" />
                                         ) : (
                                             <Search className="h-4 w-4" aria-hidden="true" />
@@ -460,6 +485,7 @@ function TokenHeaderLinks({
 
 export function TokenHeader({
     address,
+    chain: chainProp,
     symbol,
     displayName,
     displayLogoURI,
@@ -470,6 +496,7 @@ export function TokenHeader({
     riskSummaryUrl,
     riskQueryKey,
     variantGroup,
+    variantCurrentKey,
     variantCurrentAddress,
     showSolanaBadge: showSolanaBadgeProp,
     variantLinkMode = 'token',
@@ -482,51 +509,64 @@ export function TokenHeader({
     const pathname = usePathname();
     const tradeBlocked = isTradeBlocked(advisory);
 
-    const variantsGroup =
-        variantGroup ??
-        (looksLikeSolanaMintAddress(address) ? getVariantHubByMint(address) : getVariantHubById(address));
+    const chain: ChainKind = chainProp ?? 'solana';
+    const isSolana = chain === 'solana';
+    // `address` is a real on-chain address only when it parses for `chain`;
+    // the canonical view may pass an asset id / CoinGecko id here instead.
+    const canonicalAddress = normalizeAddressForChain(chain, address) ? address : undefined;
+    // Registry + logo overrides are keyed by Solana mint; never feed them an EVM address.
+    const logoMint = isSolana ? canonicalAddress : undefined;
+
+    const variantsGroup = variantGroup ?? (logoMint ? getVariantHubByMint(logoMint) : getVariantHubById(address));
     const variantsCount = React.useMemo(() => {
         if (!variantsGroup) return 0;
-        return new Set(variantsGroup.addresses.map(item => item.address)).size;
+        return new Set(variantsGroup.addresses.map(item => chainAddressKey(item.chain ?? 'solana', item.address))).size;
     }, [variantsGroup]);
     const hasVariants = variantsCount > 1 || (showSingletonVariantBadge && variantsCount > 0);
-    const variantsCurrent = variantCurrentAddress ?? address;
-    const explorerHref = explorerHrefProp ?? `https://explorer.solana.com/address/${address}`;
-    const explorerAriaLabel = explorerAriaLabelProp ?? 'View on Solana Explorer';
-    const showSolanaBadge = showSolanaBadgeProp ?? explorerHrefProp == null;
+    const variantsCurrentKey =
+        variantCurrentKey ??
+        (variantCurrentAddress ? chainAddressKey('solana', variantCurrentAddress) : chainAddressKey(chain, address));
+    const explorerHref = explorerHrefProp ?? explorerTokenUrl(chain, address);
+    const explorerAriaLabel = explorerAriaLabelProp ?? `View on ${CHAINS[chain].explorer.name}`;
+    const showSolanaBadge = showSolanaBadgeProp ?? isSolana;
     const orbHref =
-        showSolanaBadge && looksLikeSolanaMintAddress(address)
+        isSolana && looksLikeSolanaAddress(address)
             ? `https://orbmarkets.io/token/${encodeURIComponent(address)}`
             : null;
     const birdeyeHref =
-        showSolanaBadge && looksLikeSolanaMintAddress(address)
+        isSolana && looksLikeSolanaAddress(address)
             ? `https://birdeye.so/solana/token/${encodeURIComponent(address)}?tab=trades&trades_layout=table`
             : null;
 
     const linkTrackingProperties = {
         source: 'token_header',
         token_address: address,
+        token_chain: chain,
         ...(symbol ? { token_symbol: symbol } : {}),
     };
     const drawerLinkTrackingProperties = {
         source: 'token_header_drawer',
         token_address: address,
+        token_chain: chain,
         ...(symbol ? { token_symbol: symbol } : {}),
     };
 
     const trimmedSelectedSymbol = (selectedVariant?.symbol ?? '').trim();
-    const shouldShowSelectedVariant = trimmedSelectedSymbol.length > 0 && Boolean(selectedVariant?.mint?.trim());
-    const logoMint = looksLikeSolanaMintAddress(address) ? address : undefined;
-    const shouldShowCanonicalCopyMint = !hasVariants && !shouldShowSelectedVariant && Boolean(logoMint);
+    const shouldShowSelectedVariant = trimmedSelectedSymbol.length > 0 && Boolean(selectedVariant?.address?.trim());
+    const shouldShowCanonicalCopyAddress = !hasVariants && !shouldShowSelectedVariant && Boolean(canonicalAddress);
     const badgeSymbol = shouldShowSelectedVariant ? trimmedSelectedSymbol : symbol;
 
     function clearVariantSelection(): void {
-        trackEvent('variant_selection_cleared', { token_address: address });
+        trackEvent('variant_selection_cleared', {
+            token_address: address,
+            token_chain: chain,
+            ...(selectedVariant ? { variant_mint: selectedVariant.address, variant_chain: selectedVariant.chain } : {}),
+        });
 
         // Avoid `useSearchParams()` to preserve static rendering for this route.
         // This handler only runs on the client.
         const nextParams = new URLSearchParams(typeof window === 'undefined' ? '' : window.location.search);
-        nextParams.delete('solana');
+        for (const chainKind of CHAIN_KINDS) nextParams.delete(chainKind);
 
         const query = nextParams.toString();
         router.replace(query ? `${pathname}?${query}` : pathname, { scroll: false });
@@ -557,11 +597,13 @@ export function TokenHeader({
                 <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2 mb-1">
                         <h1 className="text-title-md text-text-extra-high font-semibold truncate">{displayName}</h1>
-                        <TokenRiskPopover
-                            address={address}
-                            riskSummaryUrl={riskSummaryUrl}
-                            riskQueryKey={riskQueryKey}
-                        />
+                        {chainSupports(chain, 'risk') ? (
+                            <TokenRiskPopover
+                                address={address}
+                                riskSummaryUrl={riskSummaryUrl}
+                                riskQueryKey={riskQueryKey}
+                            />
+                        ) : null}
                     </div>
                     <div className="flex items-center gap-2 flex-wrap">
                         <Badge
@@ -587,16 +629,20 @@ export function TokenHeader({
                         {hasVariants && variantsGroup ? (
                             <TokenVariantsBadge
                                 group={variantsGroup}
-                                currentAddress={variantsCurrent}
+                                currentKey={variantsCurrentKey}
                                 linkMode={variantLinkMode}
                                 coingeckoCoinId={variantLinkCoinId}
                             />
-                        ) : shouldShowCanonicalCopyMint && logoMint ? (
+                        ) : shouldShowCanonicalCopyAddress && canonicalAddress ? (
                             <CopyButton
-                                textToCopy={logoMint}
-                                ariaLabel="Copy mint address"
+                                textToCopy={canonicalAddress}
+                                ariaLabel="Copy address"
                                 trackingEvent="address_copied"
-                                trackingProperties={{ token_address: address, source: 'token_header' }}
+                                trackingProperties={{
+                                    token_address: address,
+                                    token_chain: chain,
+                                    source: 'token_header',
+                                }}
                                 className="!bg-transparent hover:!bg-[var(--badge-default-bg)] px-2 py-1 rounded-full gap-1 text-[var(--badge-default-text)] font-medium text-xs"
                                 displayText={
                                     <TextMorph
@@ -604,7 +650,7 @@ export function TokenHeader({
                                         respectReducedMotion
                                         className="font-sans text-xs text-[var(--badge-default-text)] tabular-nums"
                                     >
-                                        {formatCompactAddress(logoMint)}
+                                        {formatCompactAddress(canonicalAddress)}
                                     </TextMorph>
                                 }
                                 iconClassName="text-text-extra-low group-hover:text-text-high"
@@ -613,10 +659,20 @@ export function TokenHeader({
                         ) : null}
                         {shouldShowSelectedVariant ? (
                             <CopyButton
-                                textToCopy={selectedVariant?.mint ?? ''}
-                                ariaLabel="Copy mint address"
+                                textToCopy={selectedVariant?.address ?? ''}
+                                ariaLabel="Copy address"
                                 trackingEvent="address_copied"
-                                trackingProperties={{ token_address: address, source: 'token_header' }}
+                                trackingProperties={{
+                                    token_address: address,
+                                    token_chain: chain,
+                                    ...(selectedVariant
+                                        ? {
+                                              variant_mint: selectedVariant.address,
+                                              variant_chain: selectedVariant.chain,
+                                          }
+                                        : {}),
+                                    source: 'token_header',
+                                }}
                                 className="!bg-transparent hover:!bg-[var(--badge-default-bg)] px-2 py-1 rounded-full gap-1 text-[var(--badge-default-text)] font-medium text-xs"
                                 displayText={
                                     <TextMorph
@@ -624,7 +680,7 @@ export function TokenHeader({
                                         respectReducedMotion
                                         className="font-sans text-xs text-[var(--badge-default-text)] tabular-nums"
                                     >
-                                        {formatCompactAddress(selectedVariant?.mint)}
+                                        {formatCompactAddress(selectedVariant?.address)}
                                     </TextMorph>
                                 }
                                 iconClassName="text-text-extra-low group-hover:text-text-high"
@@ -637,6 +693,7 @@ export function TokenHeader({
                 {/* Links */}
                 <TokenHeaderLinks
                     address={address}
+                    chain={chain}
                     links={tradeBlocked ? undefined : links}
                     explorerHref={explorerHref}
                     explorerAriaLabel={explorerAriaLabel}

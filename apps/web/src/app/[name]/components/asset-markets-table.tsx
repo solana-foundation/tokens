@@ -1,5 +1,6 @@
 'use client';
 
+import { explorerTokenUrl } from '@tokens/asset-registry/chains';
 import * as React from 'react';
 import Image from 'next/image';
 import { type ColumnDef, createColumnHelper, flexRender, getCoreRowModel, useReactTable } from '@tanstack/react-table';
@@ -190,7 +191,7 @@ function createColumns(protocolTokensByMarket: Record<string, TokenMarketToken |
                                     <span className="text-[14px] font-medium text-text-extra-high">{quoteSymbol}</span>
                                 </div>
                                 <a
-                                    href={`https://explorer.solana.com/address/${market.address}`}
+                                    href={explorerTokenUrl('solana', market.address)}
                                     target="_blank"
                                     rel="noopener noreferrer"
                                     className="mt-0.5 inline-flex items-center gap-1 text-[11px] text-text-extra-low font-sans hover:text-text-extra-high transition-colors"
@@ -341,9 +342,7 @@ export function AssetMarketsTable({
 
     const handleSort = React.useCallback((columnId: string) => {
         setSort(prev =>
-            prev.column === columnId
-                ? { column: columnId, desc: !prev.desc }
-                : { column: columnId, desc: true },
+            prev.column === columnId ? { column: columnId, desc: !prev.desc } : { column: columnId, desc: true },
         );
     }, []);
 
@@ -408,7 +407,7 @@ export function AssetMarketsTable({
             quote_symbol: market.quote?.symbol,
             source: 'assets',
         });
-        window.open(`https://explorer.solana.com/address/${market.address}`, '_blank', 'noopener,noreferrer');
+        window.open(explorerTokenUrl('solana', market.address), '_blank', 'noopener,noreferrer');
     }
 
     const sortableColumns = ['liquidity', 'volume24h', 'trade24h', 'uniqueWallet24h'];

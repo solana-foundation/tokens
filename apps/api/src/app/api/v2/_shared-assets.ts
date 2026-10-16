@@ -28,7 +28,9 @@ import {
     type AssetCategory,
     type AssetVariant,
     type CanonicalAsset,
+    type CompactPegHealth,
     type LiquidityTier,
+    type StablecoinHealth,
     type PrimaryVariantStrategy,
     type StockVariantTier,
     type TrustTier,
@@ -39,6 +41,7 @@ import {
     CHAINS,
     CHAIN_KINDS,
     chainAddressKey,
+    chainSupports,
     explorerTokenUrl,
     isChainKind,
     looksLikeEvmAddress,
@@ -55,6 +58,7 @@ import {
 import { BadRequestError } from '@tokens/effect';
 
 import { getAdvisoriesByMintSync, tradeRestrictedMints } from '@/lib/advisories';
+import { toCompactPegHealth } from '@/lib/stablecoin-health';
 import type { V2ChainRollupResult, V2MarketResult, V2VariantResult } from '@/lib/cloudrun';
 import type { PrestocksPriceResult } from '@/lib/cloudrun/prestocksReads';
 import type { AssetResult } from '../../../../../cloudrun-assets/src/handlers/assets';
@@ -66,6 +70,7 @@ import {
     aggregateTokenStats,
     buildCuratedMintRank,
     computeCompanyMarketCapUsd,
+    computePreStocksDerived,
     deriveVariantTierFields,
     isCanonicalPublicEquityAsset,
     mergeAssetStatsWithAggregates,
@@ -78,6 +83,7 @@ import {
     tokenMarketSnapshotFromConvexMarket,
     type AssetStats,
     type TokenMarketSnapshot,
+    type VariantExecutionQualitySnapshot,
 } from '../v1/assets/_asset-helpers';
 import type { PreStocksMintSnapshot } from '../v1/assets/_asset-detail-response';
 import { normalizeCoinGeckoCoinIdForAsset } from '../v1/assets/_coingecko-id';
@@ -176,6 +182,38 @@ export type V2Variant = {
     rank: number | null;
     explorerUrl: string;
     market: V2Market | null;
+} & V2VariantEnrichments;
+
+/** `GET /v2/assets/{id}?include=` values. Each adds one key to EVERY variant in the response. */
+export type V2AssetDetailInclude = 'executionQuality' | 'pegHealth' | 'preStocks';
+export const V2_ASSET_DETAIL_INCLUDES: readonly V2AssetDetailInclude[] = ['executionQuality', 'pegHealth', 'preStocks'];
+
+/** Fill-quality snapshot (ClickHouse, 24h / 5s horizon); chains without `executionQuality` get `null`. */
+export type V2ExecutionQuality = Omit<VariantExecutionQualitySnapshot, 'quoteMint'> & { quoteKey: VariantKey };
+
+/** Compact peg status for stablecoin variants; chains without `risk` get `null`. */
+export type V2PegHealth = Required<Pick<CompactPegHealth, 'provider' | 'referenceKind'>> &
+    Omit<CompactPegHealth, 'provider' | 'referenceKind'>;
+
+/** PreStocks reference mark for a tokenized pre-IPO variant. */
+export type V2VariantPreStocks = {
+    symbol: string;
+    markPriceUsd: number | null;
+    markValuationUsd: number | null;
+    impliedValuationUsd: number | null;
+    premiumToMarkPercent: number | null;
+    lastFetchedAt: number;
+};
+
+/**
+ * Per-variant enrichments. A key is present on every variant only when its
+ * `include=` value was requested; `null` means the chain lacks the capability
+ * or there is no data for the variant.
+ */
+export type V2VariantEnrichments = {
+    executionQuality?: V2ExecutionQuality | null;
+    pegHealth?: V2PegHealth | null;
+    preStocks?: V2VariantPreStocks | null;
 };
 
 export type V2AssetStats = AssetStats;
@@ -719,6 +757,80 @@ export interface V2AssetBuildContext {
     listChain: ChainId | null;
     includeVariants: boolean;
     rank: number | null;
+    /** Requested `include=` enrichments; absent = no enrichment keys on the variants. */
+    enrichments?: V2EnrichmentInputs;
+}
+
+/** Inputs for the `include=` enrichments (mint-keyed: these pipelines are Solana-only today). */
+export interface V2EnrichmentInputs {
+    executionQualityByMint: ReadonlyMap<string, VariantExecutionQualitySnapshot> | null;
+    stablecoinHealthByMint: ReadonlyMap<string, StablecoinHealth> | null;
+    preStocks: boolean;
+}
+
+export function toV2ExecutionQuality(snapshot: VariantExecutionQualitySnapshot | null | undefined): V2ExecutionQuality | null {
+    if (!snapshot) return null;
+    const { quoteMint, ...rest } = snapshot;
+    const out: V2ExecutionQuality = { ...rest, quoteKey: chainAddressKey('solana', quoteMint) };
+    for (const [key, value] of Object.entries(out)) {
+        if (typeof value === 'number' && !Number.isFinite(value)) (out as Record<string, unknown>)[key] = null;
+    }
+    return out;
+}
+
+export function toV2PegHealth(health: StablecoinHealth | null | undefined): V2PegHealth | null {
+    const compact = toCompactPegHealth(health?.pegHealth);
+    if (!compact) return null;
+    return {
+        provider: compact.provider ?? 'webacy',
+        referenceKind: compact.referenceKind ?? 'fixed',
+        tier: compact.tier,
+        deviationPct: compact.deviationPct,
+        updatedAt: compact.updatedAt,
+        stale: compact.stale,
+    };
+}
+
+export function toV2VariantPreStocks(
+    snapshot: PreStocksMintSnapshot | null | undefined,
+    onChainPriceUsd: number | null | undefined,
+): V2VariantPreStocks | null {
+    if (!snapshot) return null;
+    const derived = computePreStocksDerived(snapshot, onChainPriceUsd);
+    return {
+        symbol: snapshot.symbol,
+        markPriceUsd: snapshot.markPriceUsd,
+        markValuationUsd: snapshot.markValuationUsd,
+        impliedValuationUsd: derived.impliedValuationUsd,
+        premiumToMarkPercent: derived.premiumToMarkPercent,
+        lastFetchedAt: snapshot.lastFetchedAt,
+    };
+}
+
+/** The enrichment keys for one variant (only the requested ones, `null` off-capability). */
+export function variantEnrichments(
+    variant: Pick<V2VariantResult, 'chain' | 'address'>,
+    inputs: V2EnrichmentInputs | undefined,
+    preStocksByMint: ReadonlyMap<string, PreStocksMintSnapshot>,
+    onChainPriceUsd: number | null | undefined,
+): V2VariantEnrichments {
+    if (!inputs) return {};
+    const out: V2VariantEnrichments = {};
+    const solanaMint = variant.chain === 'solana' ? variant.address : null;
+    if (inputs.executionQualityByMint) {
+        out.executionQuality =
+            chainSupports(variant.chain, 'executionQuality') && solanaMint
+                ? toV2ExecutionQuality(inputs.executionQualityByMint.get(solanaMint))
+                : null;
+    }
+    if (inputs.stablecoinHealthByMint) {
+        out.pegHealth =
+            chainSupports(variant.chain, 'risk') && solanaMint ? toV2PegHealth(inputs.stablecoinHealthByMint.get(solanaMint)) : null;
+    }
+    if (inputs.preStocks) {
+        out.preStocks = solanaMint ? toV2VariantPreStocks(preStocksByMint.get(solanaMint), onChainPriceUsd) : null;
+    }
+    return out;
 }
 
 /** Registry-keyed adapter: the ranking / aggregation helpers see the variant key as `mint`. */
@@ -983,6 +1095,7 @@ export function buildV2Asset(ctx: V2AssetBuildContext): V2Asset | null {
             rank: rankByKey.get(variant.key) ?? 0,
             explorerUrl: explorerTokenUrl(variant.chain, variant.address),
             market: toV2Market(market),
+            ...variantEnrichments(variant, ctx.enrichments, ctx.preStocksByMint, market?.price),
         });
     }
 

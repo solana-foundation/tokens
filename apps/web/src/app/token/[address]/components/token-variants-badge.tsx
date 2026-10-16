@@ -12,9 +12,18 @@ import { Drawer, DrawerClose, DrawerContent, DrawerHeader, DrawerTitle, DrawerTr
 import { HoverCard, HoverCardArrow, HoverCardContent, HoverCardTrigger } from '@tokens/ui/hover-card';
 import type { VariantHub } from '@tokens/asset-registry';
 import { getVariantByMint, type VariantKind } from '@tokens/asset-registry';
+import {
+    CHAINS,
+    CHAIN_KINDS,
+    chainAddressKey,
+    parseChainAddressKey,
+    type ChainKind,
+} from '@tokens/asset-registry/chains';
 import { AssetAdvisoryBadge } from '@/components/asset-advisory-badge';
+import type { V2AssetVariantsResponse, V2Variant } from '@/lib/api-v2-types';
 import { normalizeAdvisory, type AssetAdvisory } from '@/lib/asset-advisory';
-import { SOL_MINT, isPreIpoVariant } from '@/lib/asset-variant-categories';
+import { SOL_MINT, hasMultipleChains, isPreIpoVariant } from '@/lib/asset-variant-categories';
+import { buildVariantHref } from '@/lib/coin-href';
 import { getMintLogoOverride } from '@/lib/logo-overrides';
 import { normalizeLogoSrc } from '@/lib/normalize-logo-src';
 import { apiJson } from '@/effect/api-client';
@@ -24,13 +33,19 @@ import { IconChevronRight, IconCircleDottedAndCircle, IconDrop } from 'symbols-r
 
 interface TokenVariantsBadgeProps {
     group: VariantHub;
-    currentAddress: string;
+    /** `<chain>:<address>` of the variant being viewed (highlighted row). */
+    currentKey?: string;
     linkMode?: 'token' | 'coingecko';
     coingeckoCoinId?: string;
 }
 
-function getAddressLabel(group: VariantHub, address: string): string | undefined {
-    return group.addresses.find(item => item.address === address)?.label;
+/** Hub entries are Solana unless they say otherwise (static registry hubs carry no chain). */
+function hubEntryKey(item: VariantHub['addresses'][number]): string {
+    return chainAddressKey(item.chain ?? 'solana', item.address);
+}
+
+function getAddressLabel(group: VariantHub, key: string): string | undefined {
+    return group.addresses.find(item => hubEntryKey(item) === key)?.label;
 }
 
 function normalizeVariantBadgeLabel(label: string | undefined): string | undefined {
@@ -71,42 +86,29 @@ function extractFallbackSymbolFromLabel(label: string | undefined): string | und
     return upper;
 }
 
-interface VariantMarketSnapshot {
-    liquidity: number | null;
-    decimals: number | null;
-    logoURI?: string | null;
-}
-
-interface VariantRow {
-    mint: string;
-    kind?: VariantKind;
-    symbol?: string;
-    name?: string;
-    label?: string;
-    market: VariantMarketSnapshot | null;
-    /** `{ status, reason, url, since } | null`; `/variants` keeps `blocked` rows visible. */
-    advisory?: unknown;
-}
-
-interface AssetVariantsResponse {
-    assetId: string;
-    variants: VariantRow[];
-}
-
 interface VariantListItem {
+    /** `<chain>:<address>` — the one identifier of a variant. */
+    key: string;
+    chain: ChainKind;
     address: string;
     symbol: string;
     name: string;
     label?: string;
-    decimals: number;
     logoURI?: string;
     liquidity: number;
     kind?: VariantKind;
     isPreIpo?: boolean;
-    advisory?: AssetAdvisory | null;
+    advisory: AssetAdvisory | null;
 }
 
 type VariantsPanelAppearance = 'dark' | 'light';
+
+/** Analytics props for the viewed variant, derived from its key. */
+function currentTrackingProperties(currentKey: string | undefined): Record<string, unknown> {
+    const parsed = currentKey ? parseChainAddressKey(currentKey) : null;
+    if (!parsed) return currentKey ? { token_key: currentKey } : {};
+    return { token_key: currentKey, token_address: parsed.address, token_chain: parsed.chain };
+}
 
 function TokenLogo({ token, appearance = 'dark' }: { token: VariantListItem; appearance?: VariantsPanelAppearance }) {
     const [hasError, setHasError] = React.useState(false);
@@ -173,8 +175,10 @@ VariantsTriggerButton.displayName = 'VariantsTriggerButton';
 
 interface VariantTokenRowProps {
     token: VariantListItem;
+    /** Show the chain chip (every row, once the panel spans more than one chain). */
+    showChain: boolean;
     group: VariantHub;
-    currentAddress: string;
+    currentKey: string | undefined;
     routeName: string;
     closeOnSelect: boolean;
     isDrawer: boolean;
@@ -183,29 +187,33 @@ interface VariantTokenRowProps {
 
 function VariantTokenRow({
     token,
+    showChain,
     group,
-    currentAddress,
+    currentKey,
     routeName,
     closeOnSelect,
     isDrawer,
     appearance,
 }: VariantTokenRowProps) {
     const isLight = appearance === 'light';
-    const isCurrent = token.address === currentAddress;
+    const isCurrent = token.key === currentKey;
     const label =
         group.id === 'solana'
             ? undefined
-            : normalizeVariantBadgeLabel(getAddressLabel(group, token.address) ?? token.label);
+            : normalizeVariantBadgeLabel(getAddressLabel(group, token.key) ?? token.label);
     const shouldShowLabelBadge =
         Boolean(label) && normalizeBadgeToken(label ?? '') !== normalizeBadgeToken(token.symbol);
-    const href = `/${encodeURIComponent(routeName)}?solana=${encodeURIComponent(token.address)}`;
+    const href = buildVariantHref(routeName, token);
 
     const row = (
         <Link
             href={href}
             onClick={() =>
                 trackEvent('variant_clicked', {
-                    token_address: currentAddress,
+                    ...currentTrackingProperties(currentKey),
+                    asset_id: group.id,
+                    variant_key: token.key,
+                    variant_chain: token.chain,
                     variant_mint: token.address,
                     ...(token.symbol && token.symbol !== '???' ? { variant_symbol: token.symbol } : {}),
                     surface: isDrawer ? 'drawer' : 'hover_card',
@@ -235,6 +243,18 @@ function VariantTokenRow({
                     >
                         ${token.symbol}
                     </span>
+                    {showChain ? (
+                        <span
+                            className={cn(
+                                'shrink-0 rounded-full px-2 py-0.5 text-[11px] font-medium',
+                                isLight
+                                    ? 'bg-white text-sand-800 border border-sand-300'
+                                    : 'bg-white/15 text-[var(--tooltip-text)] border border-white/20',
+                            )}
+                        >
+                            {CHAINS[token.chain].label}
+                        </span>
+                    ) : null}
                     <AssetAdvisoryBadge advisory={token.advisory} size="sm" appearance={appearance} />
                     {shouldShowLabelBadge ? (
                         <span
@@ -303,7 +323,7 @@ function VariantsLoadingSkeleton({
 interface VariantsBodyProps {
     group: VariantHub;
     tokens: VariantListItem[];
-    currentAddress: string;
+    currentKey: string | undefined;
     assetId: string | undefined;
     coingeckoCoinId: string | undefined;
     isLoading: boolean;
@@ -316,7 +336,7 @@ interface VariantsBodyProps {
 function VariantsBody({
     group,
     tokens,
-    currentAddress,
+    currentKey,
     assetId,
     coingeckoCoinId,
     isLoading,
@@ -354,18 +374,44 @@ function VariantsBody({
     const canonicalAssetId = (assetId ?? '').trim();
     const routeName = canonicalAssetId || (coingeckoCoinId ?? group.id).trim() || group.id;
 
+    const multiChain = hasMultipleChains(tokens);
     const renderTokenRow = (token: VariantListItem) => (
         <VariantTokenRow
-            key={token.address}
+            key={token.key}
             token={token}
+            showChain={multiChain}
             group={group}
-            currentAddress={currentAddress}
+            currentKey={currentKey}
             routeName={routeName}
             closeOnSelect={closeOnSelect}
             isDrawer={isDrawer}
             appearance={appearance}
         />
     );
+
+    // Cross-chain assets: one section per chain (canonical order) so the
+    // deployments read side by side; the kind-based splits below stay for
+    // single-chain assets.
+    if (multiChain) {
+        const sectionHeadingClassName = cn(
+            'px-2 py-1 text-[11px] font-medium',
+            isLight ? 'text-sand-600' : 'text-white/50',
+        );
+        return (
+            <div className={groupedScrollClassName}>
+                {CHAIN_KINDS.map(chain => {
+                    const rows = tokens.filter(token => token.chain === chain);
+                    if (rows.length === 0) return null;
+                    return (
+                        <div key={chain}>
+                            <div className={sectionHeadingClassName}>{CHAINS[chain].label}</div>
+                            <div className="space-y-1">{rows.map(renderTokenRow)}</div>
+                        </div>
+                    );
+                })}
+            </div>
+        );
+    }
 
     if (group.id === 'solana') {
         const nativeTokens = tokens.filter(token => token.address === SOL_MINT);
@@ -489,9 +535,86 @@ function VariantsBody({
     return <div className={scrollClassName}>{tokens.map(renderTokenRow)}</div>;
 }
 
+/** Row from the v2 variants API; registry / logo-override fallbacks are Solana-only. */
+function listItemFromV2Variant(v: V2Variant, hubLabel: string | undefined): VariantListItem {
+    const itemLabel = normalizeOptionalText(hubLabel);
+    const apiSymbol = normalizeOptionalText(v.symbol);
+    const apiName = normalizeOptionalText(v.name);
+    const apiLabel = normalizeOptionalText(v.label);
+
+    const registryMatch = v.chain === 'solana' ? getVariantByMint(v.address) : null;
+    const registrySymbol = normalizeOptionalText(registryMatch?.variant.symbol ?? registryMatch?.asset.symbol);
+    const registryName = normalizeOptionalText(
+        registryMatch?.variant.name ?? registryMatch?.variant.label ?? registryMatch?.asset.name,
+    );
+    const kind = v.kind ?? registryMatch?.variant.kind;
+
+    const fallbackSymbol = extractFallbackSymbolFromLabel(apiLabel || itemLabel);
+    const symbol = apiSymbol || fallbackSymbol || registrySymbol || '???';
+    const name = apiName || apiLabel || registryName || itemLabel || symbol;
+    const liquidity = v.market?.liquidity ?? 0;
+    const isPreIpo = isPreIpoVariant({
+        tags: [...v.tags, ...(registryMatch?.variant.tags ?? [])],
+        labels: [apiLabel, itemLabel, registryMatch?.variant.label],
+    });
+    const logoURI =
+        normalizeOptionalText(v.logoURI) || (v.chain === 'solana' ? getMintLogoOverride(v.address) : undefined);
+    const rowLabel = itemLabel || apiLabel;
+
+    return {
+        key: v.key,
+        chain: v.chain,
+        address: v.address,
+        symbol,
+        name,
+        ...(rowLabel ? { label: rowLabel } : {}),
+        ...(logoURI ? { logoURI } : {}),
+        liquidity,
+        ...(kind ? { kind } : {}),
+        ...(isPreIpo ? { isPreIpo } : {}),
+        advisory: normalizeAdvisory(v.advisory),
+    };
+}
+
+/** Row for a hub entry the API did not return (capped list, or still loading). */
+function listItemFromHubEntry(item: VariantHub['addresses'][number]): VariantListItem {
+    const chain: ChainKind = item.chain ?? 'solana';
+    const itemLabel = normalizeOptionalText(item.label);
+
+    const registryMatch = chain === 'solana' ? getVariantByMint(item.address) : null;
+    const registrySymbol = normalizeOptionalText(registryMatch?.variant.symbol ?? registryMatch?.asset.symbol);
+    const registryName = normalizeOptionalText(
+        registryMatch?.variant.name ?? registryMatch?.variant.label ?? registryMatch?.asset.name,
+    );
+    const kind = registryMatch?.variant.kind;
+
+    const fallbackSymbol = extractFallbackSymbolFromLabel(itemLabel);
+    const symbol = fallbackSymbol || registrySymbol || itemLabel || '???';
+    const name = registryName || itemLabel || symbol;
+    const isPreIpo = isPreIpoVariant({
+        tags: registryMatch?.variant.tags ?? [],
+        labels: [itemLabel, registryMatch?.variant.label],
+    });
+    const logoURI = chain === 'solana' ? getMintLogoOverride(item.address) : undefined;
+
+    return {
+        key: chainAddressKey(chain, item.address),
+        chain,
+        address: item.address,
+        symbol,
+        name,
+        ...(itemLabel ? { label: itemLabel } : {}),
+        ...(logoURI ? { logoURI } : {}),
+        liquidity: 0,
+        ...(kind ? { kind } : {}),
+        ...(isPreIpo ? { isPreIpo } : {}),
+        advisory: null,
+    };
+}
+
 export function TokenVariantsBadge({
     group,
-    currentAddress,
+    currentKey,
     linkMode: _linkMode = 'token',
     coingeckoCoinId,
 }: TokenVariantsBadgeProps) {
@@ -499,17 +622,12 @@ export function TokenVariantsBadge({
     const [drawerOpen, setDrawerOpen] = React.useState(false);
     const isOpen = hoverOpen || drawerOpen;
 
-    const { data, isLoading, error } = useQuery<AssetVariantsResponse>({
-        queryKey: ['assets', 'variants', group.id, currentAddress],
+    const { data, isLoading, error } = useQuery<V2AssetVariantsResponse>({
+        queryKey: ['assets', 'v2', 'variants', group.id],
         queryFn: ({ signal }) =>
             Effect.runPromise(
-                apiJson<AssetVariantsResponse>({
-                    url:
-                        group.id === 'solana'
-                            ? `/api/v1/assets/${encodeURIComponent(group.id)}/variants?mint=${encodeURIComponent(
-                                  currentAddress,
-                              )}`
-                            : `/api/v1/assets/${encodeURIComponent(group.id)}/variants`,
+                apiJson<V2AssetVariantsResponse>({
+                    url: `/api/v2/assets/${encodeURIComponent(group.id)}/variants?sort=liquidity&limit=300`,
                 }),
                 { signal },
             ),
@@ -517,67 +635,39 @@ export function TokenVariantsBadge({
         staleTime: 60 * 1000,
     });
 
-    const variantCount = React.useMemo(() => {
-        // API variants (registry ∪ DB) are the source of truth so admin-added
-        // variants show without a redeploy; fall back to the static registry
-        // hub until the query has loaded.
-        const apiCount = new Set((data?.variants ?? []).map(v => v.mint)).size;
-        if (apiCount > 0) return apiCount;
-        return new Set(group.addresses.map(item => item.address)).size;
-    }, [data?.variants, group.addresses]);
-    const variantCountLabel = variantCount > 1 ? `${variantCount}+` : `${variantCount}`;
-
     const tokens: VariantListItem[] = React.useMemo(() => {
         const variants = data?.variants ?? [];
-        const byMint = new Map(variants.map(v => [v.mint, v]));
+        const hubByKey = new Map(group.addresses.map(item => [hubEntryKey(item), item]));
 
+        // API variants (registry ∪ DB) are the source of truth so admin-added
+        // variants show without a redeploy; hub entries the response lacks
+        // (capped list, or not loaded yet) are appended so the viewed row is
+        // always present.
         const items: VariantListItem[] = [];
-        const addresses = variants.length > 0 ? variants.map(v => ({ address: v.mint })) : group.addresses;
-        for (const item of addresses) {
-            const v = byMint.get(item.address);
-            const market = v?.market ?? null;
-            const itemLabel = normalizeOptionalText((item as { label?: string }).label);
-
-            const apiSymbol = normalizeOptionalText(v?.symbol);
-            const apiName = normalizeOptionalText(v?.name);
-            const apiLabel = normalizeOptionalText(v?.label);
-
-            const registryMatch = getVariantByMint(item.address);
-            const registrySymbol = normalizeOptionalText(registryMatch?.variant.symbol ?? registryMatch?.asset.symbol);
-            const registryName = normalizeOptionalText(
-                registryMatch?.variant.name ?? registryMatch?.variant.label ?? registryMatch?.asset.name,
-            );
-            const kind = v?.kind ?? registryMatch?.variant.kind;
-
-            const fallbackSymbol = extractFallbackSymbolFromLabel(apiLabel || itemLabel);
-            const symbol = apiSymbol || fallbackSymbol || registrySymbol || '???';
-            const name = apiName || apiLabel || registryName || itemLabel || symbol;
-            const decimals = (market?.decimals ?? 0) || 0;
-            const liquidity = (market?.liquidity ?? 0) || 0;
-            const isPreIpo = isPreIpoVariant({
-                tags: registryMatch?.variant.tags ?? [],
-                labels: [apiLabel, itemLabel, registryMatch?.variant.label],
-            });
-            const logoURI = normalizeOptionalText(market?.logoURI) || getMintLogoOverride(item.address);
-            const advisory = normalizeAdvisory(v?.advisory);
-
-            const rowLabel = itemLabel || apiLabel;
-            items.push({
-                address: item.address,
-                symbol,
-                name,
-                ...(rowLabel ? { label: rowLabel } : {}),
-                decimals,
-                ...(logoURI ? { logoURI } : {}),
-                liquidity,
-                ...(kind ? { kind } : {}),
-                ...(isPreIpo ? { isPreIpo } : {}),
-                ...(advisory ? { advisory } : {}),
-            });
+        const seen = new Set<string>();
+        for (const v of variants) {
+            if (seen.has(v.key)) continue;
+            seen.add(v.key);
+            items.push(listItemFromV2Variant(v, hubByKey.get(v.key)?.label));
+        }
+        for (const item of group.addresses) {
+            const key = hubEntryKey(item);
+            if (seen.has(key)) continue;
+            seen.add(key);
+            items.push(listItemFromHubEntry(item));
         }
 
         return items.sort((a, b) => (b.liquidity ?? 0) - (a.liquidity ?? 0));
     }, [data?.variants, group.addresses]);
+
+    const variantCount = React.useMemo(() => {
+        // `total` counts every variant the API knows (beyond the 300 cap);
+        // the union covers hub-only rows until the query has loaded.
+        return Math.max(data?.total ?? 0, tokens.length);
+    }, [data?.total, tokens.length]);
+    const variantCountLabel = variantCount > 1 ? `${variantCount}+` : `${variantCount}`;
+
+    const panelTrackingProperties = { ...currentTrackingProperties(currentKey), asset_id: group.id };
 
     return (
         <>
@@ -588,7 +678,7 @@ export function TokenVariantsBadge({
                         setHoverOpen(open);
                         if (open) {
                             trackEvent('variants_panel_opened', {
-                                token_address: currentAddress,
+                                ...panelTrackingProperties,
                                 surface: 'hover_card',
                             });
                         }
@@ -621,7 +711,7 @@ export function TokenVariantsBadge({
                         <VariantsBody
                             group={group}
                             tokens={tokens}
-                            currentAddress={currentAddress}
+                            currentKey={currentKey}
                             assetId={data?.assetId}
                             coingeckoCoinId={coingeckoCoinId}
                             isLoading={isLoading}
@@ -641,7 +731,7 @@ export function TokenVariantsBadge({
                         setDrawerOpen(open);
                         if (open) {
                             trackEvent('variants_panel_opened', {
-                                token_address: currentAddress,
+                                ...panelTrackingProperties,
                                 surface: 'drawer',
                             });
                         }
@@ -663,7 +753,7 @@ export function TokenVariantsBadge({
                         <VariantsBody
                             group={group}
                             tokens={tokens}
-                            currentAddress={currentAddress}
+                            currentKey={currentKey}
                             assetId={data?.assetId}
                             coingeckoCoinId={coingeckoCoinId}
                             isLoading={isLoading}

@@ -7,10 +7,12 @@ import { getAdvisoryRevisionSync } from '@/lib/advisories';
 import { currentAssetId, loadAssetIdRenames } from '@/lib/asset-id-renames';
 import { v2AssetsGetDetail } from '@/lib/cloudrun';
 
-import { buildAssetFromDetail, loadAdvisories, loadPreStocks } from '../../_assets-loader';
+import { buildAssetFromDetail, loadAdvisories, loadEnrichments, loadPreStocks } from '../../_assets-loader';
 import {
     decodeAssetIdPath,
+    decodeIncludeParam,
     decodePrimaryVariantStrategyParam,
+    V2_ASSET_DETAIL_INCLUDES,
     type V2AssetResponse,
     type V2Variant,
 } from '../../_shared-assets';
@@ -21,7 +23,8 @@ import {
  * reference market. `{assetId}` is an asset id or alias (renames are
  * followed); token addresses are rejected — look those up under
  * /v2/variants/{chain}/{address}. Blocked variants are served here with
- * their advisory (list surfaces hide them).
+ * their advisory (list surfaces hide them). `include=executionQuality,pegHealth,preStocks`
+ * adds those keys to every variant (`null` on chains without the capability).
  */
 
 interface RouteCtx {
@@ -53,6 +56,8 @@ export const GET = route(
             const requestedId = yield* decodeAssetIdPath(decodeURIComponent(rawAssetId));
             const url = new URL(request.url);
             const requestedStrategy = yield* decodePrimaryVariantStrategyParam(url.searchParams);
+            const include = yield* decodeIncludeParam(url.searchParams, V2_ASSET_DETAIL_INCLUDES);
+            const includeKey = [...include].sort().join(',');
 
             const main = Effect.gen(function* () {
                 const renames = yield* loadAssetIdRenames();
@@ -67,9 +72,10 @@ export const GET = route(
                         }),
                     );
                 }
-                const [advisoriesByMint, preStocksByMint] = yield* Effect.all([
+                const [advisoriesByMint, preStocksByMint, enrichments] = yield* Effect.all([
                     loadAdvisories(),
                     loadPreStocks(detail.variants),
+                    loadEnrichments(include, detail.asset, detail.variants),
                 ]);
                 const asset = buildAssetFromDetail({
                     request,
@@ -78,6 +84,7 @@ export const GET = route(
                     preStocksByMint,
                     requestedStrategy,
                     includeVariants: true,
+                    ...(enrichments ? { enrichments } : {}),
                 });
                 if (!asset) {
                     return yield* Effect.fail(
@@ -100,7 +107,7 @@ export const GET = route(
             return yield* withStaleFallback(
                 {
                     operation: 'v2.assets.detail',
-                    cacheKey: `v2:asset:${requestedId}:${requestedStrategy ?? 'default'}:${getAdvisoryRevisionSync()}`,
+                    cacheKey: `v2:asset:${requestedId}:${requestedStrategy ?? 'default'}:${includeKey}:${getAdvisoryRevisionSync()}`,
                     ttlSeconds: STALE_TTL_SECONDS,
                 },
                 main,
