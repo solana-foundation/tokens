@@ -8,6 +8,9 @@ import { BadRequestError, UpstreamDataError } from './api-errors';
 // Base58 (no 0,O,I,l) and common Solana mint length range.
 export const SolanaAddress = Schema.String.check(Schema.isPattern(/^[1-9A-HJ-NP-Za-km-z]{32,44}$/));
 
+// `0x` + 40 hex chars, any casing (callers lowercase after decoding; see @tokens/asset-registry/chains).
+export const EvmAddress = Schema.String.check(Schema.isPattern(/^0x[0-9a-fA-F]{40}$/));
+
 export const TimeInterval = Schema.Literals(['1m', '5m', '15m', '1H', '4H', '1D', '1W']);
 
 export const NonEmptyString = Schema.NonEmptyString;

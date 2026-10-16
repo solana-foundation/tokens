@@ -1,0 +1,95 @@
+{
+    "uid": "tokens-assets-v2-evm-variants-sync-stale",
+    "title": "tokens-assets: no v2 EVM variant derivation summary in 26h",
+    "ruleGroup": "tokens-assets-availability",
+    "folderUID": "tokens",
+    "noDataState": "Alerting",
+    "execErrState": "OK",
+    "for": "0s",
+    "data": [
+        {
+            "refId": "A",
+            "datasourceUid": "grafanacloud-logs",
+            "queryType": "range",
+            "relativeTimeRange": {
+                "from": 93600,
+                "to": 0
+            },
+            "model": {
+                "expr": "sum(count_over_time({service=~\"tokens-assets(-jobs)?-prd-us\"} | json | job=\"sync-v2-evm-variants\" | event=\"v2_evm_variants_sync\" [26h]))",
+                "queryType": "range",
+                "refId": "A"
+            }
+        },
+        {
+            "refId": "B",
+            "datasourceUid": "__expr__",
+            "queryType": "",
+            "relativeTimeRange": {
+                "from": 0,
+                "to": 0
+            },
+            "model": {
+                "type": "reduce",
+                "refId": "B",
+                "expression": "A",
+                "reducer": "last",
+                "settings": {
+                    "mode": "replaceNN",
+                    "replaceWithValue": 0
+                }
+            }
+        },
+        {
+            "refId": "C",
+            "datasourceUid": "__expr__",
+            "queryType": "",
+            "relativeTimeRange": {
+                "from": 0,
+                "to": 0
+            },
+            "model": {
+                "type": "threshold",
+                "refId": "C",
+                "expression": "B",
+                "conditions": [
+                    {
+                        "evaluator": {
+                            "type": "lt",
+                            "params": [1]
+                        },
+                        "operator": {
+                            "type": "and"
+                        },
+                        "query": {
+                            "params": ["B"]
+                        },
+                        "reducer": {
+                            "type": "last",
+                            "params": []
+                        },
+                        "type": "query"
+                    }
+                ]
+            }
+        }
+    ],
+    "condition": "C",
+    "labels": {
+        "service": "tokens-assets",
+        "severity": "warning",
+        "slack": "true"
+    },
+    "notification_settings": {
+        "receiver": "tokens-slack",
+        "group_by": ["grafana_folder", "alertname"],
+        "group_wait": "30s",
+        "group_interval": "5m",
+        "repeat_interval": "4h"
+    },
+    "annotations": {
+        "summary": "The v2 EVM variant derivation (sync-v2-evm-variants) has not completed in 26 hours",
+        "description": "No v2_evm_variants_sync summary from sync-v2-evm-variants in 26 hours (the job runs daily at 06:10 UTC with one retry). The job derives EVM variants from coingecko_coins.platforms and the registry's native-coin table; identity only, markets are refreshed separately. Either the Cloud Scheduler job is failing (404 v2_assets_jobs_disabled means BIRDEYE_API_KEY is missing on the worker; 500 means the derivation threw before its summary, usually a DB timeout), or the worker is down. Existing v2_asset_variants rows keep being served, so new EVM deployments are simply not picked up until the next successful run; nothing is deactivated by a missed run.",
+        "runbook_url": "https://github.com/solana-foundation/tokens/blob/main/docs/operations/v2-multichain-assets.md"
+    }
+}

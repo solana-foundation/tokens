@@ -1,0 +1,422 @@
+---
+title: Assets
+description: Curated, chain-agnostic assets with their variants on every chain, per-chain stats, a cross-chain aggregate and the off-chain reference market.
+---
+
+All endpoints on this page are Platform API endpoints authenticated with `x-api-key` and
+require only the default `assets:read` scope (base URL `https://api.tokens.xyz/v2`; see the
+[Quickstart](/docs/v2/quickstart)).
+
+An **asset** is the curated, chain-agnostic thing — `usd`, `bitcoin`, `tesla`. A **variant** is
+one token on one chain that represents it, identified by exactly one key `<chain>:<address>`.
+Assets live here; tokens are looked up under [Variants](/docs/v2/endpoints/variants). The
+[Overview → Multichain assets](/docs/v2/overview#multichain-assets) section has the rules in
+one place; the chain ids and capability flags are on [Chains](/docs/v2/endpoints/chains).
+
+Two rules shape every response on this page:
+
+- **All chains by default.** `chains`, `chainStats`, `aggregate`, `stats`, `primaryVariant` and
+  `primaryVariantByChain` are always computed from the asset's full variant set.
+- **`chain=` narrows what is listed, never what is summed.** It filters which assets qualify and
+  which variants are returned in `variants[]`; the numbers above do not change.
+
+## Shared shapes
+
+```ts
+type ChainId = 'solana' | 'ethereum' | 'base' | 'arbitrum' | 'polygon' | 'bnb';
+type VariantKey = string; // `<chain>:<address>` — EVM lowercase, Solana base58
+
+type AssetCategory = 'crypto' | 'stablecoin' | 'lst' | 'rwa' | 'commodity' | 'equity' | 'etf' | 'index';
+type VariantKind =
+    | 'native' | 'wrapped' | 'bridged' | 'spot' | 'etf' | 'yield' | 'leveraged'
+    | 'basket' | 'lst' | 'stablecoin' | 'tokenized_equity';
+type LiquidityTier = 'tier1' | 'tier2' | 'tier3';
+type StockVariantTier = 'share_redeemable' | 'cash_redeemable' | 'not_redeemable';
+type PrimaryVariantStrategy = 'liquidity' | 'execution_quality' | 'stock_redeemability';
+
+// Every documented key is always present; `null` means unknown / not applicable.
+// Timestamps (`*At`, `since`) are unix milliseconds.
+
+interface V2Market {
+    source: 'birdeye' | 'rwa_xyz' | 'clickhouse_trades';
+    metricsSource: 'birdeye' | 'rwa_xyz' | 'clickhouse_trades' | null;
+    price: number | null;
+    liquidity: number | null;
+    volume1hUSD: number | null;
+    volume24hUSD: number | null;
+    trade1h: number | null;
+    trade24h: number | null;
+    uniqueWallet1h: number | null;
+    uniqueWallet24h: number | null;
+    marketCap: number | null;
+    fdv: number | null;
+    holder: number | null;
+    totalSupply: number | null;       // on this chain
+    circulatingSupply: number | null; // on this chain
+    priceChange1hPercent: number | null;
+    priceChange24hPercent: number | null;
+    lastTradeAt: number | null;
+    asOf: number | null;          // provider timestamp
+    lastFetchedAt: number | null; // our fetch
+}
+
+interface V2Advisory {
+    status: 'caution' | 'compromised' | 'blocked';
+    reason: string;
+    url: string | null;
+    since: number;
+    source: 'admin' | 'webacy_depeg' | 'peg_guard';
+}
+
+interface V2Variant {
+    key: VariantKey;        // `${chain}:${address}`
+    chain: ChainId;
+    address: string;
+    assetId: string;
+    variantId: string;
+    kind: VariantKind;
+    issuance: 'native' | 'bridged' | 'wrapped'; // drives supply / market-cap counting
+    symbol: string | null;
+    name: string | null;
+    label: string | null;
+    decimals: number | null;
+    logoURI: string | null;
+    issuer: string | null;
+    issuerUrl: string | null;
+    trustTier: LiquidityTier; // mirrors liquidityTier; kept for v1 parity
+    liquidityTier: LiquidityTier;
+    stockVariantTier: StockVariantTier | null;
+    tags: string[];
+    advisory: V2Advisory | null;
+    rank: number | null;      // 0-based liquidity rank within the asset across chains; null in batch lookups
+    explorerUrl: string;
+    market: V2Market | null;
+}
+
+interface V2ChainStats {
+    liquidity: number | null;         // summed over every variant on the chain
+    volume24hUSD: number | null;      // summed over every variant on the chain
+    marketCap: number | null;         // summed over issued (native) variants only
+    fdv: number | null;
+    circulatingSupply: number | null; // issued variants only
+    variantCount: number;
+    issuedVariantCount: number;       // variants counted toward supply / market cap
+}
+
+interface V2Aggregate extends V2ChainStats {
+    chainCount: number;
+    excludedFromSupplyCount: number; // bridged / wrapped variants left out of supply and market cap
+}
+
+type V2ReferenceMarket =
+    | {
+          source: 'coingecko';
+          coinId: string;
+          price: number | null;
+          marketCap: number | null;
+          volume24hUSD: number | null;
+          priceChange24hPercent: number | null;
+          circulatingSupply: number | null; // canonical cross-chain supply
+          totalSupply: number | null;
+          maxSupply: number | null;
+          asOf: number | null;
+          lastFetchedAt: number | null;
+      }
+    | {
+          source: 'stock'; // mapped public equities; v1 called this `clickhouse_stock`
+          symbol: string;
+          price: number | null;
+          marketCap: number | null; // underlying company valuation
+          volume24hUSD: number | null;
+          priceChange24hPercent: number | null;
+          asOf: number | null;
+          lastFetchedAt: number | null;
+      }
+    | {
+          source: 'prestocks'; // tokenized pre-IPO equities
+          symbol: string;
+          key: VariantKey; // the Solana variant the mark is derived from
+          price: number | null;
+          marketCap: number | null; // implied company valuation
+          markPriceUsd: number | null;
+          markValuationUsd: number | null;
+          impliedValuationUsd: number | null;
+          premiumToMarkPercent: number | null;
+          volume24hUSD: number | null;
+          priceChange24hPercent: number | null;
+          asOf: number | null;
+          lastFetchedAt: number | null;
+      };
+
+interface V2AssetStats {
+    price: number | null;
+    liquidity: number | null;      // = aggregate.liquidity
+    volume24hUSD: number | null;
+    volume30dUSD: number | null;   // Solana rolling 30d, null elsewhere
+    marketCap: number | null;
+    fdv: number | null;
+    priceChange24hPercent: number | null;
+    priceChange1hPercent: number | null;
+    totalSupply: number | null;
+    circulatingSupply: number | null;
+}
+
+interface V2AssetAdvisory extends V2Advisory {
+    key: VariantKey;
+    chain: ChainId;
+    address: string;
+    variantId: string;
+}
+
+interface V2Asset {
+    assetId: string;
+    name: string | null;
+    symbol: string | null;
+    description: string | null;
+    category: AssetCategory;
+    aliases: string[];
+    symbols: string[]; // canonical symbol first, then every variant symbol, deduped
+    imageUrl: string | null;
+    coingeckoId: string | null;
+    chains: ChainId[];                               // every chain with ≥ 1 variant, canonical order
+    stats: V2AssetStats | null;                      // headline numbers (reference market first, aggregate second)
+    chainStats: Partial<Record<ChainId, V2ChainStats>>; // one entry per chain in `chains`
+    aggregate: V2Aggregate;                          // sum over chainStats
+    referenceMarket: V2ReferenceMarket | null;
+    advisories: V2AssetAdvisory[];                   // most severe first; names hidden (blocked) siblings too
+    primaryVariantStrategy: PrimaryVariantStrategy;  // the strategy actually applied to this asset
+    primaryVariant: V2Variant | null;
+    primaryVariantByChain: Partial<Record<ChainId, V2Variant>>;
+    rank: number | null;                             // 0-based position in the requested list; null outside a list
+    variants?: V2Variant[];                          // list: with include=variants; detail: always
+}
+```
+
+Reading the numbers:
+
+- `chainStats.<chain>` is that chain's on-chain view. Liquidity and 24h volume are summed over
+  every variant (pools are distinct); market cap, FDV and circulating supply only over variants
+  whose `issuance` is `native` — a bridged or wrapped token is a claim on supply issued elsewhere,
+  and `excludedFromSupplyCount` tells you how many were left out. `chainStats.solana` is the number
+  v1 reported.
+- `aggregate` is the sum of `chainStats` across chains. `stats` is the headline view: price, market
+  cap and supply come from `referenceMarket` when there is one (CoinGecko for crypto, the stock
+  benchmark for mapped equities, the PreStocks mark for pre-IPO equities), with on-chain liquidity
+  and volume from `aggregate`.
+- `referenceMarket` is the off-chain reference v1 called `canonicalMarket`; `source: "stock"`
+  replaces v1's `clickhouse_stock`. Consumers with an exhaustive `switch (source)` should keep a
+  default branch.
+- `primaryVariant` is picked across chains with the applied strategy (`liquidity` by default,
+  `stock_redeemability` for equities); `primaryVariantByChain` runs the same selection inside each
+  chain. `compromised` and `blocked` variants are never chosen.
+- Advisories are keyed by Solana mint today; EVM variants always carry `advisory: null`. See
+  [Asset by ID → Advisories](/docs/v1/endpoints/asset-by-id#advisories) for semantics.
+- `symbol` / `name` / `issuer` are always present (`null` when unknown) rather than optional keys as
+  in v1.
+
+## `GET /v2/assets`
+
+Curated assets from one list (or every curated list) with their primary variant on every chain,
+per-chain stats and the cross-chain aggregate. Rows are ordered by headline 24h volume, as v1's
+curated endpoint.
+
+- **Scope**: `assets:read`
+- **Query params**:
+  - `list` (optional): `all` (default) or a curated slug — `majors`, `currencies`, `lsts`, `rwas`,
+    `etfs`, `metals`, `stocks` (the legacy aliases `stables` / `xstocks` are accepted). Unknown
+    slugs are `400` with `details.code: "invalid_list"` (v1 silently coerced to `all`).
+  - `chain` (optional): one chain id. Keeps only assets with ≥ 1 variant on that chain and, with
+    `include=variants`, lists only that chain's variants. Stats are unaffected.
+  - `category` (optional): one `AssetCategory`.
+  - `q` (optional, ≤ 100 chars): case-insensitive substring over id, symbol, name, aliases and
+    variant symbols of the curated set. The long tail of unregistered tokens lives under
+    [`/v2/search`](/docs/v2/endpoints/search).
+  - `primaryVariantStrategy` (optional): `liquidity`, `execution_quality` or `stock_redeemability`.
+    Default `liquidity`, except `list=stocks` and equity assets, which default to
+    `stock_redeemability`.
+  - `include` (optional): `variants` — attach `variants[]` to every row, sorted by liquidity across
+    chains.
+  - `limit` (1–500, default 100; clamped), `offset` (default 0). `total` is the full count after
+    filters, so page until `offset + assets.length >= total`.
+
+```ts
+interface AssetsResponse {
+    assets: V2Asset[]; // each with `rank` set to its position in the full ordering
+    total: number;
+    list: string; // the resolved slug, or "all"
+    primaryVariantStrategy: PrimaryVariantStrategy; // the requested / list default; equities may apply their own
+}
+```
+
+Variants carrying a `blocked` advisory are omitted from every row here (`asset.advisories` still
+names them); an asset whose variants are all blocked is dropped from the list. The detail route
+serves them.
+
+If the data layer is unavailable the endpoint returns the last healthy payload for the same
+params (up to 15 minutes old) with a `200`; use `market.lastFetchedAt` / `referenceMarket.asOf`
+as the freshness signal.
+
+### Example
+
+```bash
+# Majors with a variant on Base, listing only the Base variants
+curl -sS "$API_BASE_URL/v2/assets?list=majors&chain=base&include=variants&limit=20" \
+  -H "x-api-key: $API_KEY"
+```
+
+```json
+{
+  "assets": [
+    {
+      "assetId": "usd",
+      "name": "US Dollar",
+      "symbol": "USD",
+      "category": "stablecoin",
+      "chains": ["solana", "ethereum", "base", "arbitrum", "polygon", "bnb"],
+      "chainStats": {
+        "solana": { "liquidity": 410000000, "volume24hUSD": 2100000000, "marketCap": 9800000000, "fdv": 9800000000, "circulatingSupply": 9800000000, "variantCount": 4, "issuedVariantCount": 2 },
+        "base": { "liquidity": 52000000, "volume24hUSD": 380000000, "marketCap": 3900000000, "fdv": 3900000000, "circulatingSupply": 3900000000, "variantCount": 2, "issuedVariantCount": 1 }
+      },
+      "aggregate": { "liquidity": 1800000000, "volume24hUSD": 9400000000, "marketCap": 170000000000, "fdv": 170000000000, "circulatingSupply": 170000000000, "variantCount": 14, "issuedVariantCount": 9, "chainCount": 6, "excludedFromSupplyCount": 5 },
+      "referenceMarket": { "source": "coingecko", "coinId": "usd-coin", "price": 0.9998, "marketCap": 171000000000, "circulatingSupply": 171000000000, "totalSupply": 171000000000, "maxSupply": null, "volume24hUSD": 12000000000, "priceChange24hPercent": 0.01, "asOf": 1792800000000, "lastFetchedAt": 1792800030000 },
+      "primaryVariant": { "key": "solana:EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", "chain": "solana", "address": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", "symbol": "USDC", "issuance": "native", "rank": 0, "...": "..." },
+      "primaryVariantByChain": { "solana": { "...": "..." }, "base": { "key": "base:0x833589fcd6edb6e08f4c7c32d4f71b54bda02913", "...": "..." } },
+      "variants": [
+        { "key": "base:0x833589fcd6edb6e08f4c7c32d4f71b54bda02913", "chain": "base", "address": "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913", "symbol": "USDC", "issuance": "native", "rank": 2, "explorerUrl": "https://basescan.org/token/0x833589fcd6edb6e08f4c7c32d4f71b54bda02913", "...": "..." }
+      ],
+      "rank": 0,
+      "...": "..."
+    }
+  ],
+  "total": 11,
+  "list": "majors",
+  "primaryVariantStrategy": "liquidity"
+}
+```
+
+Note that `chains`, `chainStats` and `aggregate` still describe all six chains even though
+`chain=base` was requested; only `variants[]` was narrowed.
+
+## `GET /v2/assets/{assetId}`
+
+One asset with every variant on every chain, per-chain stats, the cross-chain aggregate and the
+off-chain reference market.
+
+- **Scope**: `assets:read`
+- **Path**: `{assetId}` is an asset id (`usd`, `bitcoin`, `tesla`) or an alias; renamed ids are
+  followed. A Solana or `0x` address, or a `<chain>:<address>` key, is rejected with `400` and
+  `details.code: "invalid_asset_id"` — look tokens up under
+  [`GET /v2/variants/{chain}/{address}`](/docs/v2/endpoints/variants#get-v2variantschainaddress).
+  There are no singleton ids (v1's `solana-<mint>`).
+- **Query params**: `primaryVariantStrategy` (optional), as above.
+
+```ts
+interface AssetResponse extends V2Asset {
+    variants: V2Variant[]; // always present here, liquidity order across chains
+    resolvedBy: 'assetId' | 'alias' | 'rename';
+}
+```
+
+- Unknown ids are `404` with `details.code: "asset_not_found"`.
+- Unlike the list, `blocked` variants are **served** here with their advisory attached, so a
+  direct read never hides a flagged sibling.
+- For the `solana` asset only, `variants[]` keeps the payload bounded as v1 does: `yield` / `lst`
+  variants need ≥ $250k liquidity and at most 500 are returned. The
+  [`/variants` sub-route](#get-v2assetsassetidvariants) is never capped.
+- The response is served from a last-good copy (up to 15 minutes old) when the data layer is
+  unavailable; a `404` is a real answer and is never cached as good.
+
+### Example
+
+```bash
+curl -sS "$API_BASE_URL/v2/assets/usd" -H "x-api-key: $API_KEY"
+
+# Aliases resolve; the body says how
+curl -sS "$API_BASE_URL/v2/assets/usdc" -H "x-api-key: $API_KEY" | jq '{assetId, resolvedBy}'
+# { "assetId": "usd", "resolvedBy": "alias" }
+```
+
+## `GET /v2/assets/{assetId}/variants`
+
+The asset's variants on every chain (or one chain with `chain=`), filterable, sorted and
+paginated. This is the full list — nothing is capped — so it is the right call for the `solana`
+asset's LSTs and for any UI that pages through variants.
+
+- **Scope**: `assets:read`
+- **Path**: `{assetId}` as for the detail route (`invalid_asset_id` / `asset_not_found` apply).
+- **Query params**:
+  - `chain` (optional): one chain id.
+  - `kind` (optional): one `VariantKind` — `invalid_kind` otherwise.
+  - `liquidityTier` (optional): `tier1` | `tier2` | `tier3` — `invalid_liquidity_tier` otherwise.
+  - `stockVariantTier` (optional): `share_redeemable` | `cash_redeemable` | `not_redeemable` —
+    `invalid_stock_variant_tier` otherwise.
+  - `sort` (optional): `liquidity` (default), `stock_redeemability` (redeemable tiers first, then
+    liquidity) or `execution_quality` — `invalid_sort` otherwise. `execution_quality` currently
+    falls back to liquidity order until fill quality joins v2 (Solana only, capability-gated).
+  - `limit` (1–1000, default 100; clamped), `offset`.
+
+```ts
+interface AssetVariantsResponse {
+    assetId: string; // the canonical id, even when an alias was requested
+    variants: V2Variant[];
+    total: number;   // after filters, before pagination
+    sort: 'liquidity' | 'execution_quality' | 'stock_redeemability';
+}
+```
+
+Each variant's `rank` is its liquidity rank within the **whole** asset across chains, independent
+of `chain=`, the filters and `sort` — so a Base-only page still tells you where each token sits
+globally. `blocked` variants are included with their advisory.
+
+### Example
+
+```bash
+# USD stablecoins on Solana, deepest three
+curl -sS "$API_BASE_URL/v2/assets/usd/variants?chain=solana&limit=3" -H "x-api-key: $API_KEY"
+
+# Tesla: redeemable tokenized shares first
+curl -sS "$API_BASE_URL/v2/assets/tesla/variants?kind=tokenized_equity&sort=stock_redeemability" \
+  -H "x-api-key: $API_KEY"
+```
+
+## Migrating from v1
+
+v1 keeps working unchanged. v2 is a different shape, not a renamed one: the variant is addressed by
+`<chain>:<address>`, every number is cross-chain by default and the singleton / raw-mint paths are
+gone.
+
+### Endpoints
+
+| v1 | v2 |
+|---|---|
+| `GET /v1/assets/curated?list=…&groupBy=asset` | `GET /v2/assets?list=…` |
+| `GET /v1/assets/curated?variants=all` | `GET /v2/assets?include=variants` |
+| `GET /v1/assets/curated?groupBy=mint` | dropped — `GET /v2/assets/{assetId}/variants`, or `include=variants` and flatten client-side |
+| `GET /v1/assets/search?q=` (canonical rows) | `GET /v2/assets?q=` for the curated set; unregistered tokens via [`GET /v2/search`](/docs/v2/endpoints/search) |
+| `GET /v1/assets/:assetId` | `GET /v2/assets/{assetId}` |
+| `GET /v1/assets/solana-<mint>`, `GET /v1/assets/<mint>` | `GET /v2/variants/solana/<mint>` — the variant plus an asset summary; unregistered mints are `404 variant_not_found`, never a synthetic asset |
+| `GET /v1/assets/:assetId/variants` | `GET /v2/assets/{assetId}/variants` |
+| `GET /v1/assets/resolve?ref=` | `GET /v2/assets/{assetId}` (`resolvedBy`) for ids and aliases; `GET /v2/variants/{chain}/{address}` for addresses |
+| `GET /v1/assets/variant-markets?mints=` | `GET /v2/variants?keys=solana:<mint>,…` |
+| `GET /v1/assets/:assetId?include=profile,risk,ohlcv,markets` | not in v2 yet — keep using the v1 route and its `/risk-*`, `/ohlcv`, `/markets` siblings for Solana variants |
+
+### Fields
+
+| v1 | v2 |
+|---|---|
+| `variant.mint` | `variant.key` (`<chain>:<address>`), with `variant.chain` and `variant.address` split out |
+| `asset.variantGroups.spot[]`, `.tokenizedEquity[]`, … | `variants[]`, flat and liquidity-ordered; group on `variant.kind` |
+| `asset.canonicalMarket` | `referenceMarket`; `source: "clickhouse_stock"` → `"stock"`; the PreStocks arm's `mint` → `key` |
+| `asset.stats` (on-Solana aggregate) | `stats` (cross-chain headline); the on-Solana figures are `chainStats.solana` |
+| — | `chains`, `chainStats`, `aggregate`, `primaryVariantByChain`, `variant.issuance`, `variant.explorerUrl` (new) |
+| `resolution` (top-level, detail) / `resolvedBy` (resolve) | `resolvedBy: 'assetId' \| 'alias' \| 'rename'` on the detail response |
+| `advisories[].mint` | `advisories[].key` + `.chain` + `.address` |
+| `symbol?`, `name?`, `issuer?`, `label?` (absent when unknown) | always present, `null` when unknown |
+| `pagination: { hasMore, nextOffset }` | `total` with `limit` / `offset` |
+| `variantsMode=all` | not needed — `/v2/assets/{assetId}/variants` is never capped |
+| `variant.executionQuality`, `variant.pegHealth`, `variant.preStocks` | deferred; not on v2 variants yet (Solana-only data that will arrive capability-gated) |
+| `assetId: "solana-<mint>"` (singletons) | none — every v2 asset is curated |
+| `include=…` / `resolution` | dropped |
+
+Addresses: Solana addresses are case-sensitive base58, exactly as in v1. EVM addresses are
+accepted in any casing and always **returned lowercase** — compare keys, not checksummed strings.

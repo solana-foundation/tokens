@@ -30,6 +30,12 @@ describe('proxy public route allowlist', () => {
             '/api/v2/lists/search-tokens?q=usdc',
             '/api/v2/search?q=usdc',
             '/api/v2/resolve?q=usdc',
+            '/api/v2/chains',
+            '/api/v2/assets?list=majors',
+            '/api/v2/assets/bitcoin',
+            '/api/v2/assets/bitcoin/variants?chain=base',
+            '/api/v2/variants?keys=solana:EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
+            '/api/v2/variants/base/0x833589fcd6edb6e08f4c7c32d4f71b54bda02913',
             // Scheduler-only; guarded by a shared secret in the handler.
             '/api/internal/usage-drain',
         ]) {

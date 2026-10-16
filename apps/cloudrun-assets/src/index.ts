@@ -15,6 +15,10 @@ import {
     makeWebacyDepegClient,
 } from './clients';
 import { makePostgresDepegRepo } from './db/depeg';
+import { makePostgresV2AssetsJobsRepo, makePostgresV2AssetsReadsRepo } from './db/v2Assets';
+import { birdeyeChains, type ChainKind } from '@tokens/asset-registry/chains';
+import type { BirdeyeClient } from './handlers/crons';
+import type { V2AssetsCronDeps } from './handlers/crons.v2Assets';
 import { makePostgresPegGuardRepo } from './db/pegGuard';
 import { parseAdminClerkUserIds, parseAdminEmails } from './adminAuth';
 import {
@@ -118,6 +122,7 @@ let prestocksCronDeps: PrestocksCronDeps | undefined;
 let launchpadCronDeps: LaunchpadCronDeps | undefined;
 let logoSyncCronDeps: LogoSyncCronDeps | undefined;
 let depegCronDeps: DepegCronDeps | undefined;
+let v2AssetsCronDeps: V2AssetsCronDeps | undefined;
 let verifyOidc: ReturnType<typeof makeGoogleOidcVerifier> | undefined;
 
 // Effective curated membership is served on the read path too (the
@@ -229,6 +234,23 @@ if (birdeyeApiKey) {
     // The depeg job group only needs Birdeye (the peg guard prices from it);
     // the Webacy jobs share the token-risk key and return webacy_not_configured
     // via the client's isConfigured() when it is missing.
+    // v2 multichain: one Birdeye client per covered chain (the `x-chain` header
+    // is per instance), sharing the key with the Solana crons.
+    const birdeyeByChain: Partial<Record<ChainKind, BirdeyeClient>> = Object.fromEntries(
+        birdeyeChains().map(chain => [
+            chain,
+            makeBirdeyeClient({
+                apiKey: birdeyeApiKey,
+                chain,
+                ...(process.env.BIRDEYE_ORIGIN ? { origin: process.env.BIRDEYE_ORIGIN } : {}),
+            }),
+        ]),
+    );
+    v2AssetsCronDeps = {
+        repo: makePostgresV2AssetsJobsRepo(sql),
+        birdeyeByChain,
+        now: () => Date.now(),
+    };
     depegCronDeps = {
         webacyDepeg: makeWebacyDepegClient({ apiKey: webacyApiKey ?? '' }),
         repo: makePostgresDepegRepo(sql),
@@ -376,6 +398,7 @@ const app = createApp({
     ohlcvReadsRepo: makePostgresOhlcvReadsRepo(sql),
     prestocksReadsRepo: makePostgresPrestocksReadsRepo(sql),
     launchpadReadsRepo: makePostgresLaunchpadReadsRepo(sql),
+    v2AssetsReadsRepo: makePostgresV2AssetsReadsRepo(sql),
     authToken: bearerTokenCandidates(authToken, process.env.TOKENS_CLOUDRUN_AUTH_TOKEN_PREVIOUS),
     serviceRole,
     checkDatabase: async () => {
@@ -394,6 +417,7 @@ const app = createApp({
     ...(logoSyncCronDeps ? { logoSyncCronDeps } : {}),
     launchpadAdminDeps,
     ...(depegCronDeps ? { depegCronDeps } : {}),
+    ...(v2AssetsCronDeps ? { v2AssetsCronDeps } : {}),
     ...(cacheWarmDeps ? { cacheWarmDeps } : {}),
     ...(adminActionsDeps ? { adminActionsDeps } : {}),
     tokenListsAdminDeps: { adminAllowlist, lists: tokenListsMutationsDeps },

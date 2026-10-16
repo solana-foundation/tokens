@@ -19,6 +19,7 @@ import type { StockInstrumentRow, StockPriceRow, StockReadsRepo } from './handle
 import type { OhlcvCandleRow, OhlcvReadsRepo } from './handlers/ohlcvReads';
 import type { PrestocksReadsRepo } from './handlers/prestocksReads';
 import type { LaunchpadReadsRepo } from './handlers/launchpadReads';
+import type { V2AssetsReadsRepo } from './handlers/v2AssetsReads';
 import type {
     AssetsApiAssetMarketRow,
     AssetsApiAssetRow,
@@ -238,6 +239,29 @@ function emptyStockReadsRepo(): StockReadsRepo {
     };
 }
 
+function emptyV2AssetsReadsRepo(): V2AssetsReadsRepo {
+    return {
+        async chainSummary() {
+            return [];
+        },
+        async findVariantsByAssetIds() {
+            return [];
+        },
+        async findVariantsByKey() {
+            return [];
+        },
+        async findVariantsByKeys() {
+            return [];
+        },
+        async findMarketsByKeys() {
+            return [];
+        },
+        async findRollupsByAssetIds() {
+            return [];
+        },
+    };
+}
+
 function emptyLaunchpadReadsRepo(): LaunchpadReadsRepo {
     return { async listActiveByQuoteMints() { return []; } };
 }
@@ -355,6 +379,7 @@ function deps(overrides: Partial<ServerDeps> = {}): ServerDeps {
         ohlcvReadsRepo: overrides.ohlcvReadsRepo ?? emptyOhlcvReadsRepo(),
         prestocksReadsRepo: overrides.prestocksReadsRepo ?? emptyPrestocksReadsRepo(),
         launchpadReadsRepo: overrides.launchpadReadsRepo ?? emptyLaunchpadReadsRepo(),
+        v2AssetsReadsRepo: overrides.v2AssetsReadsRepo ?? emptyV2AssetsReadsRepo(),
         tokensReadsRepo: overrides.tokensReadsRepo ?? emptyTokensReadsRepo(),
         trendingReadsRepo: overrides.trendingReadsRepo ?? emptyTrendingReadsRepo(),
         fillQualityReadsRepo: overrides.fillQualityReadsRepo ?? emptyFillQualityReadsRepo(),
