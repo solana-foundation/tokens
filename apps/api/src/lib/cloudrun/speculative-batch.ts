@@ -26,12 +26,14 @@ import type { CloudRunError } from './errors';
  * Kill switch: `TOKENS_SPECULATIVE_BATCH=off`.
  */
 
-export type SpeculativeBatchProfile = 'resolve';
+export type SpeculativeBatchProfile = 'resolve' | 'variants' | 'detail' | 'price-chart';
 
 export interface SpeculativeBatchArgs {
     profile: SpeculativeBatchProfile;
     ref?: string;
     mint?: string;
+    /** `variants` only: any filter param changes the mint list, so the server stops after the variant rows. */
+    hasFilters?: boolean;
 }
 
 export interface SpeculativeBatchEntry {
