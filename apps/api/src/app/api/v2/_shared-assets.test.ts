@@ -14,6 +14,7 @@ import {
     decodeChainParam,
     decodeKeysParam,
     decodeListParam,
+    decodePrimaryScopeParam,
     toV2Chain,
     toV2Market,
     toV2PegHealth,
@@ -102,6 +103,11 @@ describe('decoders', () => {
         expect(Effect.runSync(decodeListParam(new URLSearchParams('list=majors')))).toBe('majors');
         expect(failureCode(decodeListParam(new URLSearchParams('list=nope')))).toBe('invalid_list');
     });
+    test('primaryScope param: executable by default, unknown → invalid_primary_scope', () => {
+        expect(Effect.runSync(decodePrimaryScopeParam(new URLSearchParams('')))).toBe('executable');
+        expect(Effect.runSync(decodePrimaryScopeParam(new URLSearchParams('primaryScope=global')))).toBe('global');
+        expect(failureCode(decodePrimaryScopeParam(new URLSearchParams('primaryScope=nope')))).toBe('invalid_primary_scope');
+    });
 });
 
 describe('chain stats', () => {
@@ -140,6 +146,7 @@ describe('chain stats', () => {
         expect(stats.base).toEqual({
             liquidity: 55,
             volume24hUSD: 20,
+            trade24h: null,
             marketCap: 500,
             fdv: null,
             circulatingSupply: 5,
@@ -154,6 +161,20 @@ describe('chain stats', () => {
         expect(aggregate.chainCount).toBe(3);
         expect(aggregate.variantCount).toBe(4);
         expect(aggregate.excludedFromSupplyCount).toBe(2);
+    });
+
+    test('trade24h sums known counts per chain and in the aggregate', () => {
+        const withTrades = new Map<string, ReturnType<typeof market> & { trade24h?: number }>([
+            [`solana:${USDC_SOLANA}`, { ...market(100, 1000), trade24h: 70 }],
+            [`base:${USDC_BASE}`, { ...market(50, 500), trade24h: 5 }],
+            ['base:0x0000000000000000000000000000000000000001', { ...market(5, 50), trade24h: 2 }],
+            ['ethereum:0x0000000000000000000000000000000000000002', market(1, 10)],
+        ]);
+        const stats = computeChainStats(variants, withTrades, null);
+        expect(stats.solana?.trade24h).toBe(70);
+        expect(stats.base?.trade24h).toBe(7);
+        expect(stats.ethereum?.trade24h).toBeNull();
+        expect(aggregateChainStats(stats).trade24h).toBe(77);
     });
 
     test('the Solana worker rollup overrides liquidity / volume for parity with v1', () => {
@@ -298,5 +319,109 @@ describe('detail include= enrichments', () => {
             structuralHealth: null,
         });
         expect(out).toEqual({ provider: 'webacy', referenceKind: 'fixed', tier: 'stable', deviationPct: 0.01, updatedAt: 5, stale: false });
+    });
+});
+
+describe('primary variant selection', () => {
+    const request = new Request('https://api.example.test/api/v2/assets/x');
+    const SOL = 'cbbtcf3aa214zXHbiAZQwf4122FBYbraNdFqgw4iMij';
+    const ETH = '0x2260fac5e5542a773aa44fbcfedf7c193bc2c599';
+    const ARB = '0x0000000000000000000000000000000000000abc';
+    const market = (liquidity: number, volume24hUSD: number, trade24h: number) => ({
+        mint: 'x',
+        source: 'birdeye' as const,
+        lastFetchedAt: 1,
+        liquidity,
+        volume24hUSD,
+        trade24h,
+    });
+    const build = (params: {
+        category?: 'crypto' | 'equity';
+        variants: V2VariantResult[];
+        markets: Array<[string, ReturnType<typeof market>]>;
+        primaryScope?: 'executable' | 'global';
+    }) =>
+        buildV2Asset({
+            request,
+            asset: {
+                assetId: 'study',
+                category: params.category ?? 'crypto',
+                aliases: [],
+                isActive: true,
+                createdAt: 0,
+                updatedAt: 0,
+                name: 'Study',
+                symbol: 'STDY',
+            },
+            variants: params.variants,
+            marketByKey: new Map(params.markets),
+            rollupByChain: null,
+            advisoriesByMint: new Map(),
+            coingeckoPrice: null,
+            stockInstrument: null,
+            stockPrice: null,
+            preStocksByMint: new Map(),
+            requestedStrategy: null,
+            ...(params.primaryScope ? { primaryScope: params.primaryScope } : {}),
+            hideBlocked: false,
+            listChain: null,
+            includeVariants: false,
+            rank: null,
+        })!;
+    const sol = variant('solana', SOL, 'wrapped');
+    const eth = variant('ethereum', ETH, 'wrapped');
+
+    test('a deeper Ethereum variant loses to the active Solana one by default and wins with primaryScope=global', () => {
+        const markets: Array<[string, ReturnType<typeof market>]> = [
+            [`solana:${SOL}`, market(37_000_000, 84_000_000, 200_000)],
+            [`ethereum:${ETH}`, market(392_000_000, 155_000_000, 19_000)],
+        ];
+        const executable = build({ variants: [sol, eth], markets });
+        expect(executable.primaryScope).toBe('executable');
+        expect(executable.primaryVariant?.key).toBe(`solana:${SOL}`);
+        expect(executable.primaryVariantSelection?.pool).toBe('executable_active');
+
+        const global = build({ variants: [sol, eth], markets, primaryScope: 'global' });
+        expect(global.primaryScope).toBe('global');
+        expect(global.primaryVariant?.key).toBe(`ethereum:${ETH}`);
+        expect(global.primaryVariantSelection).toEqual({ pool: 'active', reason: 'liquidity' });
+    });
+
+    test('a dead Solana variant falls back to the live EVM one', () => {
+        const out = build({
+            variants: [sol, eth],
+            markets: [
+                [`solana:${SOL}`, market(7_000, 0, 0)],
+                [`ethereum:${ETH}`, market(1_300_000, 570_000, 14_000)],
+            ],
+        });
+        expect(out.primaryVariant?.key).toBe(`ethereum:${ETH}`);
+        expect(out.primaryVariantSelection?.pool).toBe('active');
+    });
+
+    test('with nothing trading anywhere, the executable chain keeps the primary', () => {
+        const out = build({
+            variants: [sol, eth],
+            markets: [
+                [`solana:${SOL}`, market(400, 10, 1)],
+                [`ethereum:${ETH}`, market(90_000, 20, 1)],
+            ],
+        });
+        expect(out.primaryVariant?.key).toBe(`solana:${SOL}`);
+        expect(out.primaryVariantSelection?.pool).toBe('executable');
+    });
+
+    test('an unpriced EVM xStock never beats a quietly traded Solana xStock', () => {
+        const xstock = (chain: V2VariantResult['chain'], address: string): V2VariantResult => ({
+            ...variant(chain, address, 'tokenized_equity'),
+            stockVariantTier: 'cash_redeemable',
+        });
+        const out = build({
+            category: 'equity',
+            variants: [xstock('arbitrum', ARB), xstock('solana', SOL)],
+            markets: [[`solana:${SOL}`, market(1_700, 44, 2)]],
+            primaryScope: 'global',
+        });
+        expect(out.primaryVariant?.key).toBe(`solana:${SOL}`);
     });
 });

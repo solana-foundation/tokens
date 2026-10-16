@@ -24,6 +24,7 @@ import {
     type V2Asset,
     type V2AssetDetailInclude,
     type V2EnrichmentInputs,
+    type V2PrimaryScope,
     type V2PrimaryVariantStrategy,
 } from './_shared-assets';
 import { chainSupports } from '@tokens/asset-registry/chains';
@@ -113,6 +114,7 @@ export function buildAssetFromDetail(params: {
     advisoriesByMint: ReadonlyMap<string, VariantAdvisory>;
     preStocksByMint: ReadonlyMap<string, PreStocksMintSnapshot>;
     requestedStrategy: V2PrimaryVariantStrategy | null;
+    primaryScope?: V2PrimaryScope;
     includeVariants: boolean;
     enrichments?: V2EnrichmentInputs;
 }): V2Asset | null {
@@ -129,6 +131,7 @@ export function buildAssetFromDetail(params: {
         stockPrice: detail.stockPrice?.snapshot ?? null,
         preStocksByMint: params.preStocksByMint,
         requestedStrategy: params.requestedStrategy,
+        ...(params.primaryScope ? { primaryScope: params.primaryScope } : {}),
         hideBlocked: false,
         listChain: null,
         includeVariants: params.includeVariants,

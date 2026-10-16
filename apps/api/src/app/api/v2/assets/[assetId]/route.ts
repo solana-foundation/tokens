@@ -11,6 +11,7 @@ import { buildAssetFromDetail, loadAdvisories, loadEnrichments, loadPreStocks } 
 import {
     decodeAssetIdPath,
     decodeIncludeParam,
+    decodePrimaryScopeParam,
     decodePrimaryVariantStrategyParam,
     V2_ASSET_DETAIL_INCLUDES,
     type V2AssetResponse,
@@ -56,6 +57,7 @@ export const GET = route(
             const requestedId = yield* decodeAssetIdPath(decodeURIComponent(rawAssetId));
             const url = new URL(request.url);
             const requestedStrategy = yield* decodePrimaryVariantStrategyParam(url.searchParams);
+            const primaryScope = yield* decodePrimaryScopeParam(url.searchParams);
             const include = yield* decodeIncludeParam(url.searchParams, V2_ASSET_DETAIL_INCLUDES);
             const includeKey = [...include].sort().join(',');
 
@@ -83,6 +85,7 @@ export const GET = route(
                     advisoriesByMint,
                     preStocksByMint,
                     requestedStrategy,
+                    primaryScope,
                     includeVariants: true,
                     ...(enrichments ? { enrichments } : {}),
                 });
@@ -107,7 +110,7 @@ export const GET = route(
             return yield* withStaleFallback(
                 {
                     operation: 'v2.assets.detail',
-                    cacheKey: `v2:asset:${requestedId}:${requestedStrategy ?? 'default'}:${includeKey}:${getAdvisoryRevisionSync()}`,
+                    cacheKey: `v2:asset:${requestedId}:${requestedStrategy ?? 'default'}:${primaryScope}:${includeKey}:${getAdvisoryRevisionSync()}`,
                     ttlSeconds: STALE_TTL_SECONDS,
                 },
                 main,

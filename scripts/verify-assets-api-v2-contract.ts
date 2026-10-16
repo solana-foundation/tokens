@@ -8,6 +8,7 @@
  * Usage:
  *   API_BASE_URL=http://localhost:3002 API_KEY=... bun scripts/verify-assets-api-v2-contract.ts
  *   EXPECT_EVM=1 ...   # also require a Base USDC variant under `usd` (after the EVM jobs have run)
+ *                      # and an executable-chain primary for `bitcoin` despite deeper EVM markets
  *   ALLOW_EMPTY_PEG=1 ... # skip the "some Solana `usd` variant has non-null pegHealth" check (no Webacy sync)
  *
  * Only exercises reads (assets:read). The design rules it pins: two nouns
@@ -25,6 +26,7 @@ const DEAD_EVM = '0x000000000000000000000000000000000000dead';
 const FORBIDDEN_V1_KEYS = ['mint', 'variantGroups', 'canonicalMarket'] as const;
 /** `GET /v2/assets/{assetId}?include=` values; each one lands on every variant in the response. */
 const DETAIL_INCLUDES = ['executionQuality', 'pegHealth', 'preStocks'] as const;
+const PRIMARY_POOLS = ['executable_active', 'active', 'executable', 'all'] as const;
 
 function looksLikeSolanaAddress(value: string): boolean {
     return /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(value.trim());
@@ -226,6 +228,7 @@ function assertChainStats(stats: unknown, path: string): number {
     assertObject(stats, path);
     assertNullableNumber(stats.liquidity, `${path}.liquidity`);
     assertNullableNumber(stats.volume24hUSD, `${path}.volume24hUSD`);
+    assertNullableNumber(stats.trade24h, `${path}.trade24h`);
     assertNullableNumber(stats.marketCap, `${path}.marketCap`);
     assert(typeof stats.variantCount === 'number' && stats.variantCount > 0, `${path}.variantCount must be a positive number`);
     assert(typeof stats.issuedVariantCount === 'number', `${path}.issuedVariantCount must be a number`);
@@ -279,6 +282,17 @@ function assertAsset(asset: unknown, path: string, options: { expectVariants: bo
         assert(typeof advisory.key === 'string' && advisory.key === `${String(advisory.chain)}:${String(advisory.address)}`, `${path}.advisories[${i}].key must be '<chain>:<address>'`);
     }
     assert(typeof asset.primaryVariantStrategy === 'string', `${path}.primaryVariantStrategy must be a string`);
+    assert(asset.primaryScope === 'executable' || asset.primaryScope === 'global', `${path}.primaryScope must be executable or global`);
+    assert('primaryVariantSelection' in asset, `${path}.primaryVariantSelection must exist (null allowed)`);
+    if (asset.primaryVariantSelection !== null) {
+        assertObject(asset.primaryVariantSelection, `${path}.primaryVariantSelection`);
+        assert(
+            (PRIMARY_POOLS as readonly unknown[]).includes(asset.primaryVariantSelection.pool),
+            `${path}.primaryVariantSelection.pool must be one of ${PRIMARY_POOLS.join(', ')}`,
+        );
+        assertNullableString(asset.primaryVariantSelection.reason, `${path}.primaryVariantSelection.reason`);
+    }
+    assert((asset.primaryVariant === null) === (asset.primaryVariantSelection === null), `${path}.primaryVariantSelection must be null exactly when primaryVariant is`);
     assert('primaryVariant' in asset, `${path}.primaryVariant must exist`);
     if (asset.primaryVariant !== null) assertVariant(asset.primaryVariant, `${path}.primaryVariant`);
     assertObject(asset.primaryVariantByChain, `${path}.primaryVariantByChain`);
@@ -343,6 +357,7 @@ async function verifyAssetsList(baseUrl: string, apiKey: string): Promise<void> 
     assert(body.list === 'majors', 'assets.list must echo the slug');
     assert(typeof body.total === 'number' && body.total > 0, 'assets.total must be a positive number');
     assert(typeof body.primaryVariantStrategy === 'string', 'assets.primaryVariantStrategy must be a string');
+    assert(body.primaryScope === 'executable', 'assets.primaryScope must default to executable');
     assertArray(body.assets, 'assets.assets');
     assert(body.assets.length > 0 && body.assets.length <= 5, 'assets.assets must honour limit=5 and be non-empty');
     for (const [i, row] of body.assets.entries()) {
@@ -390,6 +405,47 @@ async function verifyChainFilterDoesNotChangeSums(baseUrl: string, apiKey: strin
     }
 }
 
+/**
+ * Primary selection: the default scope ranks executable chains (capabilities.swap) first;
+ * primaryScope=global ranks every chain.
+ */
+async function verifyPrimarySelection(baseUrl: string, apiKey: string, expectEvm: boolean): Promise<void> {
+    const chains = await getJson(baseUrl, apiKey, 'api/v2/chains');
+    assertObject(chains, 'chains response');
+    assertArray(chains.chains, 'chains.chains');
+    const executable = new Set(
+        chains.chains.flatMap(chain => {
+            assertObject(chain, 'chains.chains[]');
+            assertObject(chain.capabilities, 'chains.chains[].capabilities');
+            return chain.capabilities.swap === true ? [String(chain.id)] : [];
+        }),
+    );
+    assert(executable.size > 0, 'at least one chain must support swap');
+
+    const body = await getJson(baseUrl, apiKey, 'api/v2/assets/bitcoin');
+    const asset = assertAsset(body, 'asset(bitcoin)', { expectVariants: true });
+    assert(asset.primaryScope === 'executable', 'asset(bitcoin).primaryScope must default to executable');
+    assertObject(asset.primaryVariant, 'asset(bitcoin).primaryVariant');
+    assertObject(asset.primaryVariantSelection, 'asset(bitcoin).primaryVariantSelection');
+    const pool = asset.primaryVariantSelection.pool;
+    if (pool === 'executable_active' || pool === 'executable') {
+        assert(executable.has(String(asset.primaryVariant.chain)), `asset(bitcoin).primaryVariant must sit on a swap chain when pool=${String(pool)}`);
+    }
+    if (expectEvm) {
+        assert((asset.chains as string[]).some(chain => !executable.has(chain)), 'EXPECT_EVM: asset(bitcoin) must span a non-executable chain');
+        assert(pool === 'executable_active', `EXPECT_EVM: asset(bitcoin) primary must come from executable_active, got ${String(pool)}`);
+    }
+
+    const global = await getJson(baseUrl, apiKey, 'api/v2/assets/bitcoin?primaryScope=global');
+    const globalAsset = assertAsset(global, 'asset(bitcoin, global)', { expectVariants: true });
+    assert(globalAsset.primaryScope === 'global', 'asset(bitcoin, global).primaryScope must echo global');
+    assertObject(globalAsset.primaryVariantSelection, 'asset(bitcoin, global).primaryVariantSelection');
+    assert(
+        globalAsset.primaryVariantSelection.pool === 'active' || globalAsset.primaryVariantSelection.pool === 'all',
+        'asset(bitcoin, global).primaryVariantSelection.pool must be active or all',
+    );
+}
+
 async function verifyAssetDetail(baseUrl: string, apiKey: string, expectEvm: boolean, allowEmptyPeg: boolean): Promise<void> {
     const body = await getJson(baseUrl, apiKey, 'api/v2/assets/usd');
     const asset = assertAsset(body, 'asset(usd)', { expectVariants: true });
@@ -397,8 +453,7 @@ async function verifyAssetDetail(baseUrl: string, apiKey: string, expectEvm: boo
     assert(asset.resolvedBy === 'assetId', `asset(usd).resolvedBy must be 'assetId', got ${String(asset.resolvedBy)}`);
     assert((asset.chains as string[]).includes('solana'), 'asset(usd).chains must include solana');
     assert(asset.stats !== null, 'asset(usd).stats must be non-null');
-    // `usd` is an aggregate canonical (no CoinGecko id), so its reference market is null by design;
-    // bitcoin below asserts the CoinGecko arm.
+    // `usd` is an aggregate canonical (no CoinGecko id), so its reference market is null by design.
     assert(asset.referenceMarket === null || typeof asset.referenceMarket === 'object', 'asset(usd).referenceMarket must be null or an object');
     assert(asset.primaryVariant !== null, 'asset(usd).primaryVariant must be non-null');
     const keys = (asset.variants as unknown[]).map((variant, i) => assertVariant(variant, `asset(usd).variants[${i}]`).key);
@@ -547,6 +602,8 @@ async function verifyErrors(baseUrl: string, apiKey: string): Promise<void> {
     await expectError(baseUrl, apiKey, 'api/v2/assets?include=risk', 400, 'invalid_include');
     await expectError(baseUrl, apiKey, 'api/v2/assets/usd?include=risk', 400, 'invalid_include');
     await expectError(baseUrl, apiKey, 'api/v2/assets?primaryVariantStrategy=nope', 400, 'invalid_primary_variant_strategy');
+    await expectError(baseUrl, apiKey, 'api/v2/assets?primaryScope=nope', 400, 'invalid_primary_scope');
+    await expectError(baseUrl, apiKey, 'api/v2/assets/bitcoin?primaryScope=nope', 400, 'invalid_primary_scope');
     await expectError(baseUrl, apiKey, `api/v2/assets?q=${'x'.repeat(101)}`, 400, 'invalid_query');
     await expectError(baseUrl, apiKey, 'api/v2/assets/usd/variants?sort=nope', 400, 'invalid_sort');
     await expectError(baseUrl, apiKey, 'api/v2/assets/usd/variants?kind=nope', 400, 'invalid_kind');
@@ -580,6 +637,7 @@ async function main(): Promise<void> {
     await verifyAssetsList(baseUrl, apiKey);
     await verifyChainFilterDoesNotChangeSums(baseUrl, apiKey);
     await verifyAssetDetail(baseUrl, apiKey, expectEvm, allowEmptyPeg);
+    await verifyPrimarySelection(baseUrl, apiKey, expectEvm);
     await verifyAssetVariants(baseUrl, apiKey);
     await verifyVariantLookup(baseUrl, apiKey, expectEvm);
     await verifyVariantsBatch(baseUrl, apiKey);

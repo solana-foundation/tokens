@@ -78,6 +78,7 @@ Every `400` and `404` from `/v2/chains`, `/v2/assets*` and `/v2/variants*` carri
 | `invalid_liquidity_tier` | 400 | `liquidityTier=` is not `tier1` / `tier2` / `tier3` |
 | `invalid_stock_variant_tier` | 400 | `stockVariantTier=` is not `share_redeemable` / `cash_redeemable` / `not_redeemable` |
 | `invalid_primary_variant_strategy` | 400 | `primaryVariantStrategy=` is not one of the three strategies — `details.values` |
+| `invalid_primary_scope` | 400 | `primaryScope=` is not `executable` or `global` — `details.values` |
 | `invalid_query` | 400 | `q` is longer than `details.max` (100) characters |
 | `asset_not_found` | 404 | No asset, alias or rename matches `{assetId}` (`details.assetId`) |
 | `variant_not_found` | 404 | A well-formed `{chain}/{address}` is not a registered variant (`details.key`, `.chain`, `.address`); the batch endpoint reports these in `missing[]` instead |
