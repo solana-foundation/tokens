@@ -162,3 +162,104 @@ describe('makeCloudRunCaller (Effect API)', () => {
         expect(sawAbort).toBe(true);
     });
 });
+
+// -----------------------------------------------------------------------------
+// Request-scoped query memo
+// -----------------------------------------------------------------------------
+
+const { CloudRunMemoStore, CloudRunQueryMemo, cloudRunMemoKey } = await import('./client');
+const { Schema } = await import('effect');
+
+describe('request-scoped query memo', () => {
+    function countingFetch(body: unknown = { live: true }) {
+        const calls: Array<{ url: string; body: string }> = [];
+        const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
+            calls.push({ url: String(input), body: String(init?.body ?? '') });
+            return jsonResponse(body);
+        }) as typeof fetch;
+        return { calls, fetchImpl };
+    }
+
+    function withStore<A, E>(store: InstanceType<typeof CloudRunMemoStore> | null, effect: Effect.Effect<A, E>) {
+        return Effect.runPromise(effect.pipe(Effect.provideService(CloudRunQueryMemo, store)));
+    }
+
+    it('a seeded entry answers the query without touching the network', async () => {
+        const { calls, fetchImpl } = countingFetch();
+        const caller = callerWithFetch(fetchImpl);
+        const store = new CloudRunMemoStore();
+        store.put(cloudRunMemoKey('assets', 'getByAssetId', { assetId: 'solana' }), { assetId: 'solana', memo: true });
+
+        const result = await withStore(store, caller.query('assets', 'getByAssetId', { assetId: 'solana' }));
+        expect(result).toEqual({ assetId: 'solana', memo: true });
+        expect(calls.length).toBe(0);
+    });
+
+    it('keys ignore object key order and dropped undefined keys, but respect array order', () => {
+        expect(cloudRunMemoKey('assets', 'x', { b: 1, a: [1, 2] })).toBe(cloudRunMemoKey('assets', 'x', { a: [1, 2], b: 1 }));
+        expect(cloudRunMemoKey('assets', 'x', { a: 1, u: undefined })).toBe(cloudRunMemoKey('assets', 'x', { a: 1 }));
+        expect(cloudRunMemoKey('assets', 'x', { mints: ['a', 'b'] })).not.toBe(
+            cloudRunMemoKey('assets', 'x', { mints: ['b', 'a'] }),
+        );
+        expect(cloudRunMemoKey('assets', 'x', { a: 1 })).not.toBe(cloudRunMemoKey('prices', 'x', { a: 1 }));
+    });
+
+    it('entries are single-use: the second identical query goes to the network', async () => {
+        const { calls, fetchImpl } = countingFetch();
+        const caller = callerWithFetch(fetchImpl);
+        const store = new CloudRunMemoStore();
+        store.put(cloudRunMemoKey('assets', 'listDeletedRefs', { refs: ['x'] }), ['x']);
+
+        const first = await withStore(store, caller.query('assets', 'listDeletedRefs', { refs: ['x'] }));
+        const second = await withStore(store, caller.query('assets', 'listDeletedRefs', { refs: ['x'] }));
+        expect(first).toEqual(['x']);
+        expect(second).toEqual({ live: true });
+        expect(calls.length).toBe(1);
+    });
+
+    it('mutations and non-allowlisted queries never consult the memo', async () => {
+        const { calls, fetchImpl } = countingFetch();
+        const caller = callerWithFetch(fetchImpl);
+        const store = new CloudRunMemoStore();
+        store.put(cloudRunMemoKey('assets', 'getByAssetId', { assetId: 'solana' }), { memo: true });
+        store.put(cloudRunMemoKey('assets', 'assetsApiLoadAssetBaseForApi', { assetId: 'solana' }), { memo: true });
+
+        await withStore(store, caller.mutation('assets', 'getByAssetId', { assetId: 'solana' }));
+        await withStore(store, caller.query('assets', 'assetsApiLoadAssetBaseForApi', { assetId: 'solana' }));
+        expect(calls.length).toBe(2);
+        expect(store.size).toBe(2);
+    });
+
+    it('a memo hit still goes through the strict response schema', async () => {
+        const { calls, fetchImpl } = countingFetch();
+        const caller = callerWithFetch(fetchImpl);
+        const store = new CloudRunMemoStore();
+        store.put(cloudRunMemoKey('assets', 'tokensGetByAddress', { address: 'm' }), { address: 'm', extra: 1 });
+        const schema = Schema.NullOr(Schema.Struct({ address: Schema.String, symbol: Schema.String }));
+
+        const error = await Effect.runPromiseExit(
+            caller
+                .query('assets', 'tokensGetByAddress', { address: 'm' }, { schema })
+                .pipe(Effect.provideService(CloudRunQueryMemo, store)),
+        );
+        expect(Exit.isFailure(error)).toBe(true);
+        expect(calls.length).toBe(0);
+
+        // A conforming payload decodes (and drops excess keys) exactly like a network response.
+        store.put(cloudRunMemoKey('assets', 'tokensGetByAddress', { address: 'm' }), {
+            address: 'm',
+            symbol: 'M',
+            extra: 1,
+        });
+        const decoded = await withStore(store, caller.query('assets', 'tokensGetByAddress', { address: 'm' }, { schema }));
+        expect(decoded).toEqual({ address: 'm', symbol: 'M' });
+    });
+
+    it('without a store (nested runtime) every query goes to the network', async () => {
+        const { calls, fetchImpl } = countingFetch();
+        const caller = callerWithFetch(fetchImpl);
+        await withStore(null, caller.query('assets', 'getByAssetId', { assetId: 'solana' }));
+        await Effect.runPromise(caller.query('assets', 'getByAssetId', { assetId: 'solana' }));
+        expect(calls.length).toBe(2);
+    });
+});
