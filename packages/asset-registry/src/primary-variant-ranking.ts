@@ -46,6 +46,12 @@ export interface PrimaryVariantRankingOptions {
     nowSeconds?: number;
     lexicalTieBreak?: boolean;
     strategy?: PrimaryVariantStrategy;
+    /**
+     * How the activity gate treats a candidate with no volume and no trade data.
+     * `'pass'` (default, v1 behaviour) lets it through; `'fail'` drops it so an
+     * unpriced variant cannot beat a lightly traded one.
+     */
+    missingActivity?: 'pass' | 'fail';
 }
 
 export type PrimaryVariantSelectionReason =
@@ -176,6 +182,7 @@ export function pickPrimaryVariantWithRanking(params: {
         candidates: baseCandidates,
         marketByMint: params.marketByMint,
         fillQualityByMint: params.fillQualityByMint,
+        missingActivity: params.options?.missingActivity ?? 'pass',
     });
     if (candidates.length === 1) {
         return { variant: candidates[0]!, reason: advisoryFiltered ? 'advisory_filter' : 'only_candidate' };
@@ -264,6 +271,7 @@ function filterPrimaryCandidatesByActivity(params: {
     candidates: AssetVariant[];
     marketByMint?: ReadonlyMap<string, VariantMarketRankingSnapshot | null | undefined>;
     fillQualityByMint?: ReadonlyMap<string, VariantFillQualityRankingSnapshot | null | undefined>;
+    missingActivity: 'pass' | 'fail';
 }): AssetVariant[] {
     if (params.candidates.length <= 1) return params.candidates;
 
@@ -272,7 +280,7 @@ function filterPrimaryCandidatesByActivity(params: {
         activity: getActivitySnapshot(variant.mint, params.marketByMint, params.fillQualityByMint),
     }));
 
-    const minimumFiltered = withActivity.filter(row => passesMinimumActivityGate(row.activity));
+    const minimumFiltered = withActivity.filter(row => passesMinimumActivityGate(row.activity, params.missingActivity));
     const afterMinimum = minimumFiltered.length > 0 ? minimumFiltered : withActivity;
     const outlierMints = new Set<string>([
         ...computeRobustActivityOutliers(afterMinimum, 'volume24hUSD'),
@@ -297,10 +305,29 @@ function getActivitySnapshot(
     };
 }
 
-function passesMinimumActivityGate(activity: { volume24hUSD: number | null; trade24h: number | null }): boolean {
+function passesMinimumActivityGate(
+    activity: { volume24hUSD: number | null; trade24h: number | null },
+    missingActivity: 'pass' | 'fail',
+): boolean {
+    if (missingActivity === 'fail' && activity.volume24hUSD === null && activity.trade24h === null) return false;
     if (activity.volume24hUSD !== null && activity.volume24hUSD < MIN_ACTIVITY_VOLUME_24H_USD) return false;
     if (activity.trade24h !== null && activity.trade24h < MIN_ACTIVITY_TRADES_24H) return false;
     return true;
+}
+
+/**
+ * True when a market snapshot shows real trading: both 24h volume and trade
+ * count are known and clear the same minimums the activity gate uses.
+ */
+export function hasPrimaryActivity(market: VariantMarketRankingSnapshot | null | undefined): boolean {
+    const volume24hUSD = finiteNonNegativeOrNull(market?.volume24hUSD);
+    const trade24h = finiteNonNegativeOrNull(market?.trade24h);
+    return (
+        volume24hUSD !== null &&
+        trade24h !== null &&
+        volume24hUSD >= MIN_ACTIVITY_VOLUME_24H_USD &&
+        trade24h >= MIN_ACTIVITY_TRADES_24H
+    );
 }
 
 function computeRobustActivityOutliers(

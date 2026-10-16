@@ -5,18 +5,21 @@ import React from 'react';
 import sharp from 'sharp';
 
 import { getAsset, getAssetByCoingeckoId, getVariantByMint, resolveAlias } from '@tokens/asset-registry';
+import { chainSupports, type ChainKind } from '@tokens/asset-registry/chains';
 import { ADVISORY_COPY, advisoryTone, type AssetAdvisory } from '@/lib/asset-advisory';
 import { getOgInterFonts, OG_FONT_FAMILY_INTER } from '@/lib/og-fonts';
 import { cleanTokenName, getTokenLogoURL } from '@/lib/logo-overrides';
 import { fetchApiAppJsonOrNull } from '@/lib/api-app';
+import type { V2VariantResponse } from '@/lib/api-v2-types';
 import { formatSmallPriceDecimal } from '@/lib/format';
 import { fetchHermesLatestPrice } from '@/lib/realtime-prices/pyth-hermes-server';
+import { requestedVariantFromPathName, type RequestedVariantRef } from '@/lib/requested-variant';
 import {
-    normalizeRequestedSolanaMint,
+    readRequestedVariant,
     resolveSocialAdvisory,
     resolveVariantSocialData,
-    selectVariantForMint,
-    type TokenSocialAssetResponse,
+    selectVariantForKey,
+    type TokenSocialAsset,
     type TokenSocialVariant,
 } from '@/lib/token-social-image-data';
 
@@ -37,8 +40,6 @@ interface CoinDoc {
         image?: { large?: string; small?: string; thumb?: string };
     };
 }
-
-type AssetsV1AssetResponse = TokenSocialAssetResponse;
 
 interface OhlcvCandle {
     time: number;
@@ -401,26 +402,55 @@ async function fetchCoinGeckoCoinData(
     }
 }
 
-async function fetchAssetsV1Asset(
-    origin: string,
-    assetRef: string,
-    mint?: string | null,
-): Promise<AssetsV1AssetResponse | null> {
+/** JSON from the web app's own keyless API proxy (`/api/v2/*` is forwarded to the API). */
+async function fetchOwnApiJson<T>(origin: string, path: string): Promise<T | null> {
     try {
-        const url = new URL(`${origin}/api/v1/assets/${encodeURIComponent(assetRef)}`);
-        const normalizedMint = normalizeRequestedSolanaMint(mint);
-        if (normalizedMint) url.searchParams.set('mint', normalizedMint);
-
-        const res = await fetch(url, {
+        const res = await fetch(new URL(path, origin), {
             next: { revalidate: 60 },
         });
         if (!res.ok) return null;
         const json: unknown = await res.json().catch(() => null);
         if (!json || typeof json !== 'object' || Array.isArray(json)) return null;
-        return json as AssetsV1AssetResponse;
+        return json as T;
     } catch {
         return null;
     }
+}
+
+/** `GET /api/v2/assets/{assetId}`: the asset with every variant (`ref` must be an id or alias, never an address). */
+function fetchV2Asset(origin: string, assetRef: string): Promise<TokenSocialAsset | null> {
+    return fetchOwnApiJson<TokenSocialAsset>(origin, `/api/v2/assets/${encodeURIComponent(assetRef)}`);
+}
+
+/** `GET /api/v2/variants/{chain}/{address}`: the owning asset of a token, or null when unregistered. */
+function fetchV2VariantOwner(origin: string, chain: ChainKind, address: string): Promise<V2VariantResponse | null> {
+    return fetchOwnApiJson<V2VariantResponse>(origin, `/api/v2/variants/${chain}/${encodeURIComponent(address)}`);
+}
+
+/**
+ * The asset id a share-card request is about: a registry alias / coingecko id /
+ * asset id in the path, a bare Solana mint in the path, or (unknown path) the
+ * owner of the requested `?{chain}={address}` variant.
+ */
+async function resolveSocialAssetRef(
+    origin: string,
+    requestedName: string,
+    requestedVariant: RequestedVariantRef | null,
+): Promise<{ assetId: string; registryAsset: ReturnType<typeof getAsset> } | null> {
+    const pathVariant = requestedVariantFromPathName(requestedName);
+    const registryAsset = pathVariant
+        ? (getVariantByMint(pathVariant.address)?.asset ?? null)
+        : (getAssetByCoingeckoId(requestedName) ?? resolveAlias(requestedName) ?? getAsset(requestedName) ?? null);
+    if (registryAsset) return { assetId: registryAsset.assetId, registryAsset };
+
+    const ownerRef = pathVariant ?? requestedVariant;
+    if (!ownerRef) return null;
+    if (ownerRef.chain === 'solana') {
+        const registryMatch = getVariantByMint(ownerRef.address);
+        if (registryMatch) return { assetId: registryMatch.asset.assetId, registryAsset: registryMatch.asset };
+    }
+    const owner = await fetchV2VariantOwner(origin, ownerRef.chain, ownerRef.address);
+    return owner?.asset?.assetId ? { assetId: owner.asset.assetId, registryAsset: null } : null;
 }
 
 async function fetchCanonicalChartForOg(assetId: string): Promise<OhlcvCandle[]> {
@@ -561,42 +591,41 @@ export async function getTokenSocialImageResponse(request: Request, name: string
         const requestHost = getRequestHost(request.headers);
         const origin = getOrigin(request.headers, requestHost);
 
-        const requestedMint = normalizeRequestedSolanaMint(new URL(request.url).searchParams.get('solana'));
-        const assetFromName =
-            getAssetByCoingeckoId(requestedName) ?? resolveAlias(requestedName) ?? getAsset(requestedName);
-        const asset = assetFromName ?? (requestedMint ? (getVariantByMint(requestedMint)?.asset ?? null) : null);
+        // `?{chain}={address}` names the variant the card is about; a bare
+        // Solana mint in the path is that variant when no query key is set.
+        const requestedVariant =
+            readRequestedVariant(new URL(request.url).searchParams) ?? requestedVariantFromPathName(requestedName);
+        const asset = await resolveSocialAssetRef(origin, requestedName, requestedVariant);
+        const registryAsset = asset?.registryAsset ?? null;
 
-        let displayName = cleanTokenName(asset?.name ?? requestedName);
-        let symbol = normalizeOptionalText(asset?.symbol).toUpperCase() || requestedName.toUpperCase();
+        let displayName = cleanTokenName(registryAsset?.name ?? requestedName);
+        let symbol = normalizeOptionalText(registryAsset?.symbol).toUpperCase() || requestedName.toUpperCase();
 
-        let coingeckoId: string | null = normalizeOptionalText(asset?.coingeckoId) || null;
+        let coingeckoId: string | null = normalizeOptionalText(registryAsset?.coingeckoId) || null;
         let fallbackLogoURI: string | undefined;
-        let apiAsset: AssetsV1AssetResponse | null = null;
         let selectedVariant: TokenSocialVariant | null = null;
         let socialAdvisory: AssetAdvisory | null = null;
 
         if (asset) {
-            apiAsset = await fetchAssetsV1Asset(origin, asset.assetId, requestedMint);
-            selectedVariant = requestedMint ? selectVariantForMint(apiAsset?.asset.variantGroups, requestedMint) : null;
-            if (requestedMint && !selectedVariant) {
-                apiAsset = await fetchAssetsV1Asset(origin, asset.assetId);
-            }
+            const apiAsset = await fetchV2Asset(origin, asset.assetId);
+            selectedVariant = requestedVariant ? selectVariantForKey(apiAsset?.variants, requestedVariant.key) : null;
             socialAdvisory = resolveSocialAdvisory({
                 selectedVariant,
-                primaryVariant: apiAsset?.asset.primaryVariant ?? null,
+                primaryVariant: apiAsset?.primaryVariant ?? null,
             });
 
             const apiDisplayName =
-                normalizeOptionalText(apiAsset?.asset.name) ||
-                normalizeOptionalText(apiAsset?.asset.primaryVariant?.name);
+                normalizeOptionalText(apiAsset?.name) || normalizeOptionalText(apiAsset?.primaryVariant?.name);
             const apiSymbol =
-                normalizeOptionalText(apiAsset?.asset.symbol) ||
-                normalizeOptionalText(apiAsset?.asset.primaryVariant?.symbol);
+                normalizeOptionalText(apiAsset?.symbol) || normalizeOptionalText(apiAsset?.primaryVariant?.symbol);
 
-            displayName = cleanTokenName(apiDisplayName || asset.name || requestedName);
-            symbol = (apiSymbol || normalizeOptionalText(asset.symbol)).toUpperCase() || symbol;
-            coingeckoId = normalizeOptionalText(apiAsset?.asset.coingeckoId) || coingeckoId;
-            fallbackLogoURI = apiAsset?.asset.primaryVariant?.market?.logoURI ?? undefined;
+            displayName = cleanTokenName(apiDisplayName || registryAsset?.name || requestedName);
+            symbol = (apiSymbol || normalizeOptionalText(registryAsset?.symbol)).toUpperCase() || symbol;
+            coingeckoId = normalizeOptionalText(apiAsset?.coingeckoId) || coingeckoId;
+            fallbackLogoURI =
+                normalizeOptionalText(apiAsset?.primaryVariant?.logoURI) ||
+                normalizeOptionalText(apiAsset?.imageUrl) ||
+                undefined;
         }
 
         // Only look up CoinGecko for a resolved coingecko id. Previously an
@@ -625,11 +654,16 @@ export async function getTokenSocialImageResponse(request: Request, name: string
         const canonicalDisplayName = displayName;
         const canonicalSymbol = symbol;
         const canonicalLogoSrc = getTokenLogoURL(canonicalSymbol, fallbackLogoURI);
-        const selectedMint = selectedVariant?.mint ?? null;
+        // Per-variant candles exist only on chains with an OHLCV pipeline; the
+        // canonical chart stands in for the rest.
+        const variantWithCandles =
+            selectedVariant && chainSupports(selectedVariant.chain, 'ohlcv') ? selectedVariant : null;
         const [variantCandles, canonicalCandles, liveSpot] = await Promise.all([
-            selectedMint && asset ? fetchVariantOhlcvForOg(asset.assetId, selectedMint) : Promise.resolve([]),
+            variantWithCandles && asset
+                ? fetchVariantOhlcvForOg(asset.assetId, variantWithCandles.address)
+                : Promise.resolve([]),
             asset ? fetchCanonicalChartForOg(asset.assetId) : Promise.resolve([]),
-            selectedMint ? Promise.resolve(null) : fetchHermesLatestPrice({ coingeckoId, symbol }),
+            selectedVariant ? Promise.resolve(null) : fetchHermesLatestPrice({ coingeckoId, symbol }),
         ]);
         const stats = coingeckoId ? (coinLookupId === coingeckoId ? (coinData?.stats ?? null) : null) : null;
 
@@ -686,6 +720,11 @@ export async function getTokenSocialImageResponse(request: Request, name: string
             priceChange = selectedSocialData.priceChange;
             priceChangeLabel = selectedSocialData.priceChangeLabel;
         }
+        // Solana is the default home; only name the chain when it is somewhere else.
+        const chainCaption =
+            selectedVariant && selectedSocialData && selectedVariant.chain !== 'solana'
+                ? `on ${selectedSocialData.chainLabel}`
+                : null;
 
         let logoUrl: string | null = null;
         const logoSrc = selectedSocialData?.logoURI ?? getTokenLogoURL(symbol, fallbackLogoURI);
@@ -820,6 +859,21 @@ export async function getTokenSocialImageResponse(request: Request, name: string
                                 },
                                 displayName,
                             ),
+                            chainCaption
+                                ? h(
+                                      'div',
+                                      {
+                                          style: {
+                                              marginLeft: 14,
+                                              marginTop: 8,
+                                              fontSize: 24,
+                                              fontWeight: 500,
+                                              color: '#6b7280',
+                                          },
+                                      },
+                                      chainCaption,
+                                  )
+                                : null,
                         ),
                         // Right: brand logo
                         h(

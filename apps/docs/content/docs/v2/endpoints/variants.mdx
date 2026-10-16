@@ -150,7 +150,11 @@ curl -sS "$API_BASE_URL/v2/variants?keys=solana:EPjFWdd5AufqSSqeM2qN1xzybapC8G4w
 
 What a variant can carry depends on its chain's capability flags (see
 [Chains](/docs/v2/endpoints/chains)). Today every chain has `markets`, so `market` is populated
-wherever a snapshot exists; OHLCV, risk, DEX market lists, execution quality and swap routing are
-Solana-only and are **not yet exposed on v2 variants** — they remain on the v1 asset routes for
-Solana mints until they arrive here, capability-gated. Advisories are keyed by Solana mint, so EVM
-variants always have `advisory: null`.
+wherever a snapshot exists. Execution quality and peg health are available on the asset detail via
+[`GET /v2/assets/{assetId}?include=executionQuality,pegHealth`](/docs/v2/endpoints/assets#get-v2assetsassetid)
+(plus `preStocks` for Solana PreStocks tokens) and are `null` on chains without the
+`executionQuality` / `risk` capability; the variant routes on this page never carry those keys.
+OHLCV, risk, DEX market lists and swap routing are Solana-only and are **not yet exposed on v2
+variants** — they remain on the v1 asset routes for Solana mints until they arrive here,
+capability-gated. Advisories are keyed by Solana mint, so EVM variants always have
+`advisory: null`.

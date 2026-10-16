@@ -1,53 +1,28 @@
+import { CHAINS, inferAddressFamily } from '@tokens/asset-registry/chains';
 import { normalizeAdvisory, type AssetAdvisory } from '@/lib/asset-advisory';
 import { getMintLogoOverride } from '@/lib/logo-overrides';
-import { looksLikeSolanaMintAddress } from '@/lib/solana-address';
+import type { V2AssetResponse, V2Market, V2Variant } from '@/lib/api-v2-types';
+
+export { readRequestedVariant, type RequestedVariantRef } from '@/lib/requested-variant';
 
 // Bumped whenever the rendered card changes so CDN-cached cards repaint.
 // '4': advisory strip.
-export const TOKEN_SOCIAL_IMAGE_VERSION = '4';
+// '5': chain caption + v2 data.
+export const TOKEN_SOCIAL_IMAGE_VERSION = '5';
 
-export type ApiVariantGroupKey =
-    | 'spot'
-    | 'etf'
-    | 'yield'
-    | 'leveraged'
-    | 'basket'
-    | 'lst'
-    | 'tokenizedEquity';
+/** The slice of a v2 variant the share card / metadata reads. */
+export type TokenSocialVariant = Pick<
+    V2Variant,
+    'key' | 'chain' | 'address' | 'name' | 'symbol' | 'label' | 'logoURI' | 'advisory'
+> & {
+    market: Pick<V2Market, 'price' | 'priceChange24hPercent'> | null;
+};
 
-export interface TokenSocialMarket {
-    price?: number | null;
-    priceChange24hPercent?: number | null;
-    logoURI?: string | null;
-    symbol?: string | null;
-    name?: string | null;
-}
-
-export interface TokenSocialVariant {
-    mint: string;
-    name?: string | null;
-    symbol?: string | null;
-    label?: string | null;
-    market?: TokenSocialMarket | null;
-    /** `{ status, reason, url, since } | null`; decoded via `normalizeAdvisory`. */
-    advisory?: unknown;
-}
-
-export type TokenSocialVariantGroups = Partial<Record<ApiVariantGroupKey, TokenSocialVariant[]>>;
-
-export interface TokenSocialAssetResponse {
-    asset: {
-        assetId: string;
-        name?: string | null;
-        symbol?: string | null;
-        coingeckoId?: string | null;
-        imageUrl?: string | null;
-        primaryVariant?: TokenSocialVariant | null;
-        variantGroups?: TokenSocialVariantGroups;
-        /** Asset-level summary, `[]` when none. */
-        advisories?: unknown;
-    };
-}
+/** The slice of `GET /api/v2/assets/{ref}` the share card / metadata reads. */
+export type TokenSocialAsset = Pick<
+    V2AssetResponse,
+    'assetId' | 'name' | 'symbol' | 'coingeckoId' | 'imageUrl' | 'primaryVariant' | 'variants' | 'advisories'
+>;
 
 /**
  * The advisory the share card / metadata is about. A selected variant wins
@@ -58,8 +33,8 @@ export function resolveSocialAdvisory({
     selectedVariant,
     primaryVariant,
 }: {
-    selectedVariant: TokenSocialVariant | null | undefined;
-    primaryVariant: TokenSocialVariant | null | undefined;
+    selectedVariant: Pick<TokenSocialVariant, 'advisory'> | null | undefined;
+    primaryVariant: Pick<TokenSocialVariant, 'advisory'> | null | undefined;
 }): AssetAdvisory | null {
     if (selectedVariant) return normalizeAdvisory(selectedVariant.advisory);
     return normalizeAdvisory(primaryVariant?.advisory);
@@ -69,47 +44,31 @@ export interface ResolvedVariantSocialData {
     displayName: string;
     symbol: string;
     logoURI?: string;
+    /** Human label of the variant's chain (`CHAINS[chain].label`). */
+    chainLabel: string;
     price: number | null;
     priceChange: number | null;
     priceChangeLabel: string | null;
 }
 
+/** Trimmed text, or '' for placeholders and anything shaped like an address (Solana or EVM). */
 export function normalizeOptionalSocialText(value: string | undefined | null): string {
     const trimmed = (value ?? '').trim();
     if (!trimmed) return '';
     if (trimmed === '—') return '';
     if (trimmed === '???') return '';
-    if (looksLikeSolanaMintAddress(trimmed)) return '';
+    if (inferAddressFamily(trimmed) !== null) return '';
     return trimmed;
 }
 
-export function normalizeRequestedSolanaMint(value: string | undefined | null): string | null {
-    const trimmed = (value ?? '').trim();
-    if (!trimmed) return null;
-    return looksLikeSolanaMintAddress(trimmed) ? trimmed : null;
-}
-
-export function getApiVariantRows(groups: TokenSocialVariantGroups | undefined | null): TokenSocialVariant[] {
-    if (!groups) return [];
-
-    return [
-        ...(groups.spot ?? []),
-        ...(groups.etf ?? []),
-        ...(groups.yield ?? []),
-        ...(groups.leveraged ?? []),
-        ...(groups.basket ?? []),
-        ...(groups.lst ?? []),
-        ...(groups.tokenizedEquity ?? []),
-    ];
-}
-
-export function selectVariantForMint(
-    groups: TokenSocialVariantGroups | undefined | null,
-    mint: string | undefined | null,
-): TokenSocialVariant | null {
-    const normalizedMint = normalizeRequestedSolanaMint(mint);
-    if (!normalizedMint) return null;
-    return getApiVariantRows(groups).find(variant => variant.mint === normalizedMint) ?? null;
+/** The variant with `key` (`<chain>:<address>`), or null. */
+export function selectVariantForKey<T extends Pick<TokenSocialVariant, 'key'>>(
+    variants: readonly T[] | undefined | null,
+    key: string | undefined | null,
+): T | null {
+    const normalizedKey = (key ?? '').trim();
+    if (!normalizedKey || !variants) return null;
+    return variants.find(variant => variant.key === normalizedKey) ?? null;
 }
 
 function finiteNumberOrNull(value: number | undefined | null): number | null {
@@ -139,19 +98,16 @@ export function resolveVariantSocialData({
 }): ResolvedVariantSocialData {
     const displayName =
         normalizeOptionalSocialText(variant.name) ||
-        normalizeOptionalSocialText(variant.market?.name) ||
         normalizeOptionalSocialText(variant.label) ||
         normalizeOptionalSocialText(canonicalDisplayName) ||
         normalizeOptionalSocialText(canonicalSymbol) ||
         'Unknown';
     const symbol =
-        normalizeOptionalSocialText(variant.symbol) ||
-        normalizeOptionalSocialText(variant.market?.symbol) ||
-        normalizeOptionalSocialText(canonicalSymbol) ||
-        displayName;
-    const mintLogo = getMintLogoOverride(variant.mint);
-    const marketLogo = normalizeOptionalSocialText(variant.market?.logoURI);
+        normalizeOptionalSocialText(variant.symbol) || normalizeOptionalSocialText(canonicalSymbol) || displayName;
+    const overrideLogo = variant.chain === 'solana' ? getMintLogoOverride(variant.address) : undefined;
+    const variantLogo = normalizeOptionalSocialText(variant.logoURI);
     const canonicalLogo = normalizeOptionalSocialText(canonicalLogoURI);
+    const logoURI = overrideLogo || variantLogo || canonicalLogo;
     const variantSevenDayChangeValue = finiteNumberOrNull(variantSevenDayChange);
     const variantMarketChange = finiteNumberOrNull(variant.market?.priceChange24hPercent);
     const canonicalChange = finiteNumberOrNull(canonicalPriceChange);
@@ -159,7 +115,8 @@ export function resolveVariantSocialData({
     return {
         displayName,
         symbol,
-        ...(mintLogo || marketLogo || canonicalLogo ? { logoURI: mintLogo || marketLogo || canonicalLogo } : {}),
+        ...(logoURI ? { logoURI } : {}),
+        chainLabel: CHAINS[variant.chain].label,
         price:
             finiteNumberOrNull(variant.market?.price) ??
             finiteNumberOrNull(latestVariantClose) ??
@@ -179,13 +136,14 @@ export function resolveVariantSocialData({
 export function buildShareUrls({
     metadataBase,
     requestedName,
-    selectedMint,
+    selected,
     minuteBucket,
     version = TOKEN_SOCIAL_IMAGE_VERSION,
 }: {
     metadataBase: URL;
     requestedName: string;
-    selectedMint?: string | null;
+    /** The variant the page is about: `?{chain}={address}` on every URL. */
+    selected?: Pick<TokenSocialVariant, 'chain' | 'address'> | null;
     minuteBucket: string;
     version?: string;
 }): {
@@ -196,12 +154,11 @@ export function buildShareUrls({
     const canonicalUrl = new URL(`/${encodeURIComponent(requestedName)}`, metadataBase);
     const ogImageUrl = new URL(`/${encodeURIComponent(requestedName)}/opengraph-image`, metadataBase);
     const twitterImageUrl = new URL(`/${encodeURIComponent(requestedName)}/twitter-image`, metadataBase);
-    const normalizedMint = normalizeRequestedSolanaMint(selectedMint);
 
-    if (normalizedMint) {
-        canonicalUrl.searchParams.set('solana', normalizedMint);
-        ogImageUrl.searchParams.set('solana', normalizedMint);
-        twitterImageUrl.searchParams.set('solana', normalizedMint);
+    if (selected?.address) {
+        canonicalUrl.searchParams.set(selected.chain, selected.address);
+        ogImageUrl.searchParams.set(selected.chain, selected.address);
+        twitterImageUrl.searchParams.set(selected.chain, selected.address);
     }
 
     ogImageUrl.searchParams.set('v', version);

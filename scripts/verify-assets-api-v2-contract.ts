@@ -8,6 +8,8 @@
  * Usage:
  *   API_BASE_URL=http://localhost:3002 API_KEY=... bun scripts/verify-assets-api-v2-contract.ts
  *   EXPECT_EVM=1 ...   # also require a Base USDC variant under `usd` (after the EVM jobs have run)
+ *                      # and an executable-chain primary for `bitcoin` despite deeper EVM markets
+ *   ALLOW_EMPTY_PEG=1 ... # skip the "some Solana `usd` variant has non-null pegHealth" check (no Webacy sync)
  *
  * Only exercises reads (assets:read). The design rules it pins: two nouns
  * (asset / variant), one key `<chain>:<address>` with lowercase EVM addresses,
@@ -22,6 +24,9 @@ const USDC_BASE = '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913';
 const SYSTEM_PROGRAM = '11111111111111111111111111111111'; // base58-shaped, never a registered variant
 const DEAD_EVM = '0x000000000000000000000000000000000000dead';
 const FORBIDDEN_V1_KEYS = ['mint', 'variantGroups', 'canonicalMarket'] as const;
+/** `GET /v2/assets/{assetId}?include=` values; each one lands on every variant in the response. */
+const DETAIL_INCLUDES = ['executionQuality', 'pegHealth', 'preStocks'] as const;
+const PRIMARY_POOLS = ['executable_active', 'active', 'executable', 'all'] as const;
 
 function looksLikeSolanaAddress(value: string): boolean {
     return /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(value.trim());
@@ -98,8 +103,9 @@ function coerceBaseUrl(value: string): string {
 
 async function getJson(baseUrl: string, apiKey: string, path: string): Promise<unknown> {
     const res = await fetch(new URL(path, baseUrl), { headers: { 'x-api-key': apiKey } });
-    assert(res.ok, `GET ${path} failed: HTTP ${res.status} ${await res.text().then(t => t.slice(0, 300))}`);
-    return res.json();
+    const text = await res.text();
+    assert(res.ok, `GET ${path} failed: HTTP ${res.status} ${text.slice(0, 300)}`);
+    return JSON.parse(text) as unknown;
 }
 
 /** Every 4xx on this surface carries a stable `details.code`; the message is not part of the contract. */
@@ -168,10 +174,61 @@ function assertVariant(variant: unknown, path: string, options: { rankMustBeNull
     return { key: variant.key, chain: variant.chain, address: variant.address };
 }
 
+/** Every variant surfaced by the detail route: `variants[]`, `primaryVariant` and each `primaryVariantByChain.*`. */
+function detailVariants(asset: Record<string, unknown>, path: string): Array<{ path: string; variant: Record<string, unknown> }> {
+    const out: Array<{ path: string; variant: Record<string, unknown> }> = [];
+    assertArray(asset.variants, `${path}.variants`);
+    for (const [i, variant] of asset.variants.entries()) {
+        assertObject(variant, `${path}.variants[${i}]`);
+        out.push({ path: `${path}.variants[${i}]`, variant });
+    }
+    if (asset.primaryVariant !== null) {
+        assertObject(asset.primaryVariant, `${path}.primaryVariant`);
+        out.push({ path: `${path}.primaryVariant`, variant: asset.primaryVariant });
+    }
+    assertObject(asset.primaryVariantByChain, `${path}.primaryVariantByChain`);
+    for (const [chain, variant] of Object.entries(asset.primaryVariantByChain)) {
+        assertObject(variant, `${path}.primaryVariantByChain.${chain}`);
+        out.push({ path: `${path}.primaryVariantByChain.${chain}`, variant });
+    }
+    return out;
+}
+
+/** With `include=`, each requested key is on every variant: an object when there is data, `null` off-capability / without data. */
+function assertEnrichment(variant: Record<string, unknown>, key: (typeof DETAIL_INCLUDES)[number], path: string): Record<string, unknown> | null {
+    assert(key in variant, `${path}.${key} must exist when include=${key} was requested (null allowed)`);
+    const value = variant[key];
+    if (value === null) return null;
+    assertObject(value, `${path}.${key}`);
+    if (key === 'executionQuality') {
+        assert(typeof value.quoteKey === 'string' && value.quoteKey.startsWith('solana:'), `${path}.executionQuality.quoteKey must be a solana:<mint> key`);
+        assert(!('quoteMint' in value), `${path}.executionQuality.quoteMint is the v1 name; v2 uses quoteKey`);
+        assert(typeof value.executionScore === 'number', `${path}.executionQuality.executionScore must be a number`);
+        assert(typeof value.lastComputedAt === 'number', `${path}.executionQuality.lastComputedAt must be a number`);
+    } else if (key === 'pegHealth') {
+        assert(typeof value.provider === 'string', `${path}.pegHealth.provider must always be present`);
+        assert(typeof value.referenceKind === 'string', `${path}.pegHealth.referenceKind must always be present`);
+        assert(typeof value.tier === 'string', `${path}.pegHealth.tier must be a string`);
+        assertNullableNumber(value.deviationPct, `${path}.pegHealth.deviationPct`);
+        assert(typeof value.updatedAt === 'number', `${path}.pegHealth.updatedAt must be a number`);
+        assert(typeof value.stale === 'boolean', `${path}.pegHealth.stale must be a boolean`);
+    } else {
+        assert(typeof value.symbol === 'string' && value.symbol.length > 0, `${path}.preStocks.symbol must be a non-empty string`);
+        assertNullableNumber(value.markPriceUsd, `${path}.preStocks.markPriceUsd`);
+        assertNullableNumber(value.markValuationUsd, `${path}.preStocks.markValuationUsd`);
+        assertNullableNumber(value.impliedValuationUsd, `${path}.preStocks.impliedValuationUsd`);
+        assertNullableNumber(value.premiumToMarkPercent, `${path}.preStocks.premiumToMarkPercent`);
+        assert(typeof value.lastFetchedAt === 'number', `${path}.preStocks.lastFetchedAt must be a number`);
+    }
+    assert(variant.chain === 'solana', `${path}.${key} must be null off Solana (capability-gated data)`);
+    return value;
+}
+
 function assertChainStats(stats: unknown, path: string): number {
     assertObject(stats, path);
     assertNullableNumber(stats.liquidity, `${path}.liquidity`);
     assertNullableNumber(stats.volume24hUSD, `${path}.volume24hUSD`);
+    assertNullableNumber(stats.trade24h, `${path}.trade24h`);
     assertNullableNumber(stats.marketCap, `${path}.marketCap`);
     assert(typeof stats.variantCount === 'number' && stats.variantCount > 0, `${path}.variantCount must be a positive number`);
     assert(typeof stats.issuedVariantCount === 'number', `${path}.issuedVariantCount must be a number`);
@@ -225,6 +282,17 @@ function assertAsset(asset: unknown, path: string, options: { expectVariants: bo
         assert(typeof advisory.key === 'string' && advisory.key === `${String(advisory.chain)}:${String(advisory.address)}`, `${path}.advisories[${i}].key must be '<chain>:<address>'`);
     }
     assert(typeof asset.primaryVariantStrategy === 'string', `${path}.primaryVariantStrategy must be a string`);
+    assert(asset.primaryScope === 'executable' || asset.primaryScope === 'global', `${path}.primaryScope must be executable or global`);
+    assert('primaryVariantSelection' in asset, `${path}.primaryVariantSelection must exist (null allowed)`);
+    if (asset.primaryVariantSelection !== null) {
+        assertObject(asset.primaryVariantSelection, `${path}.primaryVariantSelection`);
+        assert(
+            (PRIMARY_POOLS as readonly unknown[]).includes(asset.primaryVariantSelection.pool),
+            `${path}.primaryVariantSelection.pool must be one of ${PRIMARY_POOLS.join(', ')}`,
+        );
+        assertNullableString(asset.primaryVariantSelection.reason, `${path}.primaryVariantSelection.reason`);
+    }
+    assert((asset.primaryVariant === null) === (asset.primaryVariantSelection === null), `${path}.primaryVariantSelection must be null exactly when primaryVariant is`);
     assert('primaryVariant' in asset, `${path}.primaryVariant must exist`);
     if (asset.primaryVariant !== null) assertVariant(asset.primaryVariant, `${path}.primaryVariant`);
     assertObject(asset.primaryVariantByChain, `${path}.primaryVariantByChain`);
@@ -289,6 +357,7 @@ async function verifyAssetsList(baseUrl: string, apiKey: string): Promise<void> 
     assert(body.list === 'majors', 'assets.list must echo the slug');
     assert(typeof body.total === 'number' && body.total > 0, 'assets.total must be a positive number');
     assert(typeof body.primaryVariantStrategy === 'string', 'assets.primaryVariantStrategy must be a string');
+    assert(body.primaryScope === 'executable', 'assets.primaryScope must default to executable');
     assertArray(body.assets, 'assets.assets');
     assert(body.assets.length > 0 && body.assets.length <= 5, 'assets.assets must honour limit=5 and be non-empty');
     for (const [i, row] of body.assets.entries()) {
@@ -336,17 +405,64 @@ async function verifyChainFilterDoesNotChangeSums(baseUrl: string, apiKey: strin
     }
 }
 
-async function verifyAssetDetail(baseUrl: string, apiKey: string, expectEvm: boolean): Promise<void> {
+/**
+ * Primary selection: the default scope ranks executable chains (capabilities.swap) first;
+ * primaryScope=global ranks every chain.
+ */
+async function verifyPrimarySelection(baseUrl: string, apiKey: string, expectEvm: boolean): Promise<void> {
+    const chains = await getJson(baseUrl, apiKey, 'api/v2/chains');
+    assertObject(chains, 'chains response');
+    assertArray(chains.chains, 'chains.chains');
+    const executable = new Set(
+        chains.chains.flatMap(chain => {
+            assertObject(chain, 'chains.chains[]');
+            assertObject(chain.capabilities, 'chains.chains[].capabilities');
+            return chain.capabilities.swap === true ? [String(chain.id)] : [];
+        }),
+    );
+    assert(executable.size > 0, 'at least one chain must support swap');
+
+    const body = await getJson(baseUrl, apiKey, 'api/v2/assets/bitcoin');
+    const asset = assertAsset(body, 'asset(bitcoin)', { expectVariants: true });
+    assert(asset.primaryScope === 'executable', 'asset(bitcoin).primaryScope must default to executable');
+    assertObject(asset.primaryVariant, 'asset(bitcoin).primaryVariant');
+    assertObject(asset.primaryVariantSelection, 'asset(bitcoin).primaryVariantSelection');
+    const pool = asset.primaryVariantSelection.pool;
+    if (pool === 'executable_active' || pool === 'executable') {
+        assert(executable.has(String(asset.primaryVariant.chain)), `asset(bitcoin).primaryVariant must sit on a swap chain when pool=${String(pool)}`);
+    }
+    if (expectEvm) {
+        assert((asset.chains as string[]).some(chain => !executable.has(chain)), 'EXPECT_EVM: asset(bitcoin) must span a non-executable chain');
+        assert(pool === 'executable_active', `EXPECT_EVM: asset(bitcoin) primary must come from executable_active, got ${String(pool)}`);
+    }
+
+    const global = await getJson(baseUrl, apiKey, 'api/v2/assets/bitcoin?primaryScope=global');
+    const globalAsset = assertAsset(global, 'asset(bitcoin, global)', { expectVariants: true });
+    assert(globalAsset.primaryScope === 'global', 'asset(bitcoin, global).primaryScope must echo global');
+    assertObject(globalAsset.primaryVariantSelection, 'asset(bitcoin, global).primaryVariantSelection');
+    assert(
+        globalAsset.primaryVariantSelection.pool === 'active' || globalAsset.primaryVariantSelection.pool === 'all',
+        'asset(bitcoin, global).primaryVariantSelection.pool must be active or all',
+    );
+}
+
+async function verifyAssetDetail(baseUrl: string, apiKey: string, expectEvm: boolean, allowEmptyPeg: boolean): Promise<void> {
     const body = await getJson(baseUrl, apiKey, 'api/v2/assets/usd');
     const asset = assertAsset(body, 'asset(usd)', { expectVariants: true });
     assert(asset.assetId === 'usd', `asset(usd).assetId must be 'usd', got ${String(asset.assetId)}`);
     assert(asset.resolvedBy === 'assetId', `asset(usd).resolvedBy must be 'assetId', got ${String(asset.resolvedBy)}`);
     assert((asset.chains as string[]).includes('solana'), 'asset(usd).chains must include solana');
     assert(asset.stats !== null, 'asset(usd).stats must be non-null');
-    assert(asset.referenceMarket !== null, 'asset(usd).referenceMarket must be present (CoinGecko-backed)');
+    // `usd` is an aggregate canonical (no CoinGecko id), so its reference market is null by design.
+    assert(asset.referenceMarket === null || typeof asset.referenceMarket === 'object', 'asset(usd).referenceMarket must be null or an object');
     assert(asset.primaryVariant !== null, 'asset(usd).primaryVariant must be non-null');
     const keys = (asset.variants as unknown[]).map((variant, i) => assertVariant(variant, `asset(usd).variants[${i}]`).key);
     assert(keys.includes(`solana:${USDC_SOLANA}`), 'asset(usd).variants must include USDC on Solana');
+
+    // Without include= none of the enrichment keys appear anywhere.
+    for (const { path, variant } of detailVariants(asset, 'asset(usd)')) {
+        for (const key of DETAIL_INCLUDES) assert(!(key in variant), `${path}.${key} must be absent without include=${key}`);
+    }
 
     if (expectEvm) {
         assert((asset.chains as string[]).includes('base'), 'EXPECT_EVM: asset(usd).chains must include base');
@@ -355,6 +471,36 @@ async function verifyAssetDetail(baseUrl: string, apiKey: string, expectEvm: boo
         assert(keys.includes(`base:${USDC_BASE}`), 'EXPECT_EVM: asset(usd).variants must include USDC on Base (lowercase key)');
         assertObject(asset.primaryVariantByChain, 'asset(usd).primaryVariantByChain');
         assert('base' in asset.primaryVariantByChain, 'EXPECT_EVM: asset(usd).primaryVariantByChain.base must exist');
+    }
+
+    // include= puts every requested key on every variant; null off-capability (EVM) or without data.
+    const enriched = await getJson(baseUrl, apiKey, `api/v2/assets/usd?include=${DETAIL_INCLUDES.join(',')}`);
+    const enrichedAsset = assertAsset(enriched, 'asset(usd, include)', { expectVariants: true });
+    assert(enrichedAsset.primaryVariant !== null, 'asset(usd, include).primaryVariant must be non-null');
+    let solanaPegHealthSeen = false;
+    let evmVariantsSeen = 0;
+    for (const { path, variant } of detailVariants(enrichedAsset, 'asset(usd, include)')) {
+        const values = Object.fromEntries(DETAIL_INCLUDES.map(key => [key, assertEnrichment(variant, key, path)]));
+        if (variant.chain === 'solana') {
+            if (values.pegHealth !== null) solanaPegHealthSeen = true;
+        } else {
+            evmVariantsSeen += 1;
+            for (const key of DETAIL_INCLUDES) assert(values[key] === null, `${path}.${key} must be null on ${String(variant.chain)} (no capability)`);
+        }
+    }
+    if (!allowEmptyPeg) {
+        assert(solanaPegHealthSeen, 'asset(usd, include): at least one Solana variant must carry non-null pegHealth (usd is a stablecoin); set ALLOW_EMPTY_PEG=1 without the Webacy sync');
+    }
+    if (expectEvm) assert(evmVariantsSeen > 0, 'EXPECT_EVM: asset(usd, include) must surface at least one EVM variant to check null enrichments on');
+    assertNoKeys(enriched, FORBIDDEN_V1_KEYS, 'asset(usd, include)');
+
+    // Repeated params are accepted too and equal the comma form.
+    const repeated = await getJson(baseUrl, apiKey, 'api/v2/assets/usd?include=pegHealth&include=preStocks');
+    const repeatedAsset = assertAsset(repeated, 'asset(usd, include repeated)', { expectVariants: true });
+    for (const { path, variant } of detailVariants(repeatedAsset, 'asset(usd, include repeated)')) {
+        assertEnrichment(variant, 'pegHealth', path);
+        assertEnrichment(variant, 'preStocks', path);
+        assert(!('executionQuality' in variant), `${path}.executionQuality must be absent when not requested`);
     }
 
     // Aliases resolve and say so.
@@ -454,7 +600,10 @@ async function verifyErrors(baseUrl: string, apiKey: string): Promise<void> {
     await expectError(baseUrl, apiKey, 'api/v2/assets?chain=polygon-pos', 400, 'invalid_chain');
     await expectError(baseUrl, apiKey, 'api/v2/assets?category=nope', 400, 'invalid_category');
     await expectError(baseUrl, apiKey, 'api/v2/assets?include=risk', 400, 'invalid_include');
+    await expectError(baseUrl, apiKey, 'api/v2/assets/usd?include=risk', 400, 'invalid_include');
     await expectError(baseUrl, apiKey, 'api/v2/assets?primaryVariantStrategy=nope', 400, 'invalid_primary_variant_strategy');
+    await expectError(baseUrl, apiKey, 'api/v2/assets?primaryScope=nope', 400, 'invalid_primary_scope');
+    await expectError(baseUrl, apiKey, 'api/v2/assets/bitcoin?primaryScope=nope', 400, 'invalid_primary_scope');
     await expectError(baseUrl, apiKey, `api/v2/assets?q=${'x'.repeat(101)}`, 400, 'invalid_query');
     await expectError(baseUrl, apiKey, 'api/v2/assets/usd/variants?sort=nope', 400, 'invalid_sort');
     await expectError(baseUrl, apiKey, 'api/v2/assets/usd/variants?kind=nope', 400, 'invalid_kind');
@@ -480,13 +629,15 @@ async function main(): Promise<void> {
     assert(baseUrlRaw.length > 0, 'Missing env: API_BASE_URL (example: http://localhost:3002)');
     assert(apiKey.length > 0, 'Missing env: API_KEY (or TOKENS_API_KEY)');
     const expectEvm = /^(1|true|yes)$/i.test(process.env.EXPECT_EVM ?? '');
+    const allowEmptyPeg = /^(1|true|yes)$/i.test(process.env.ALLOW_EMPTY_PEG ?? '');
 
     const baseUrl = `${coerceBaseUrl(baseUrlRaw)}/`;
 
     await verifyChains(baseUrl, apiKey);
     await verifyAssetsList(baseUrl, apiKey);
     await verifyChainFilterDoesNotChangeSums(baseUrl, apiKey);
-    await verifyAssetDetail(baseUrl, apiKey, expectEvm);
+    await verifyAssetDetail(baseUrl, apiKey, expectEvm, allowEmptyPeg);
+    await verifyPrimarySelection(baseUrl, apiKey, expectEvm);
     await verifyAssetVariants(baseUrl, apiKey);
     await verifyVariantLookup(baseUrl, apiKey, expectEvm);
     await verifyVariantsBatch(baseUrl, apiKey);

@@ -3,6 +3,8 @@ import type { AssetAdvisory } from '@/lib/asset-advisory';
 export type TrendingWindow = '5m' | '15m' | '1h' | '6h' | '24h';
 
 export interface Token {
+    /** Chain of `address`; absent = solana (the home tables are Solana-only today). */
+    chain?: import('@tokens/asset-registry/chains').ChainKind;
     /** Active admin advisory on this row's mint (already normalized), if any. */
     advisory?: AssetAdvisory | null;
     /**

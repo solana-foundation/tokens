@@ -1,4 +1,4 @@
-import { looksLikeSolanaMintAddress } from '@/lib/solana-address';
+import { inferAddressFamily } from '@tokens/asset-registry/chains';
 
 export function normalizeOptionalText(value: string | undefined | null): string {
     const trimmed = (value ?? '').trim();
@@ -12,7 +12,7 @@ export function pickFirstSymbol(...values: Array<string | undefined | null>): st
     for (const value of values) {
         const cleaned = normalizeOptionalText(value);
         if (!cleaned) continue;
-        if (looksLikeSolanaMintAddress(cleaned)) continue;
+        if (inferAddressFamily(cleaned) !== null) continue;
         return cleaned;
     }
     return '';
@@ -22,7 +22,7 @@ export function pickFirstDisplayName(...values: Array<string | undefined | null>
     for (const value of values) {
         const cleaned = normalizeOptionalText(value);
         if (!cleaned) continue;
-        if (looksLikeSolanaMintAddress(cleaned)) continue;
+        if (inferAddressFamily(cleaned) !== null) continue;
         return cleaned;
     }
     return '';

@@ -1,11 +1,14 @@
 import type { StockVariantTier, VariantKind } from '@tokens/asset-registry';
+import { CHAINS, CHAIN_KINDS, isChainKind, type ChainKind } from '@tokens/asset-registry/chains';
 
 export const SOL_MINT = 'So11111111111111111111111111111111111111112';
 
 const PRE_IPO_TEXT_PATTERN = /pre[-\s]?stocks?|pre[-\s]?ipo/i;
 
 export interface AssetVariantCategorySource {
+    /** Address on `chain` (named `mint` for the Solana-era callers; absent chain = solana). */
     mint: string;
+    chain?: ChainKind | string | null;
     kind?: VariantKind;
     tags?: readonly string[];
     label?: string | null;
@@ -97,14 +100,38 @@ export function getAssetVariantCategory(assetId: string, variant: AssetVariantCa
     return kindCategory(variant.kind);
 }
 
+export function variantChainId(variant: Pick<AssetVariantCategorySource, 'chain'>): ChainKind {
+    return isChainKind(variant.chain) ? variant.chain : 'solana';
+}
+
+export function chainDisplayLabel(chain: ChainKind | string | null | undefined): string {
+    return CHAINS[isChainKind(chain) ? chain : 'solana'].label;
+}
+
+/** True once the variants span more than one chain (then sections are chains, not kinds). */
+export function hasMultipleChains(variants: ReadonlyArray<Pick<AssetVariantCategorySource, 'chain'>>): boolean {
+    const seen = new Set<ChainKind>();
+    for (const variant of variants) {
+        seen.add(variantChainId(variant));
+        if (seen.size > 1) return true;
+    }
+    return false;
+}
+
+export function getAssetVariantChainCategory(variant: Pick<AssetVariantCategorySource, 'chain'>): AssetVariantCategory {
+    const chain = variantChainId(variant);
+    return { id: `chain:${chain}`, label: CHAINS[chain].label, order: CHAIN_KINDS.indexOf(chain) };
+}
+
 export function groupAssetVariantsByDisplayCategory<T extends AssetVariantCategorySource>(
     assetId: string,
     variants: readonly T[],
 ): Array<AssetVariantCategoryGroup<T>> {
     const groupsById = new Map<string, AssetVariantCategoryGroup<T>>();
+    const byChain = hasMultipleChains(variants);
 
     for (const variant of variants) {
-        const category = getAssetVariantCategory(assetId, variant);
+        const category = byChain ? getAssetVariantChainCategory(variant) : getAssetVariantCategory(assetId, variant);
         const existing = groupsById.get(category.id);
         if (existing) {
             existing.variants.push(variant);

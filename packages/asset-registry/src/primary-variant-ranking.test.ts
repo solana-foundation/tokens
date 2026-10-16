@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'bun:test';
 import {
+    hasPrimaryActivity,
     isSpotLikeVariantKind,
     pickPrimaryVariantWithRanking,
     type PrimaryVariantStrategy,
@@ -421,5 +422,47 @@ describe('pickPrimaryVariantWithRanking advisory gate', () => {
             mintRank: new Map(),
         });
         expect(result.reason).toBe('only_candidate');
+    });
+});
+
+describe('pickPrimaryVariantWithRanking missingActivity', () => {
+    // MINT_A has no market data at all; MINT_B trades, but below the activity minimums.
+    const quiet = market({ liquidity: 1_700, volume24hUSD: 44, trade24h: 2 });
+    const run = (missingActivity?: 'pass' | 'fail') =>
+        pickPrimaryVariantWithRanking({
+            asset: asset([variant(MINT_A, 'x:unpriced'), variant(MINT_B, 'x:quiet')]),
+            mintRank: new Map(),
+            marketByMint: new Map([[MINT_B, quiet]]),
+            options: { nowSeconds: NOW, strategy: 'liquidity', missingActivity },
+        }).variant;
+
+    it('lets an unpriced variant through the activity gate by default (v1 behaviour)', () => {
+        expect(run()?.mint).toBe(MINT_A);
+        expect(run('pass')?.mint).toBe(MINT_A);
+    });
+
+    it("drops the unpriced variant with 'fail', so the quiet one wins on liquidity", () => {
+        expect(run('fail')?.mint).toBe(MINT_B);
+    });
+
+    it("still prefers an active variant over an unpriced one with 'fail'", () => {
+        const selected = pickPrimaryVariantWithRanking({
+            asset: asset([variant(MINT_A, 'x:unpriced'), variant(MINT_B, 'x:active')]),
+            mintRank: new Map(),
+            marketByMint: new Map([[MINT_B, market({ liquidity: 10 })]]),
+            options: { nowSeconds: NOW, missingActivity: 'fail' },
+        }).variant;
+        expect(selected?.mint).toBe(MINT_B);
+    });
+});
+
+describe('hasPrimaryActivity', () => {
+    it('needs known volume and trades above the gate minimums', () => {
+        expect(hasPrimaryActivity(market())).toBe(true);
+        expect(hasPrimaryActivity(market({ volume24hUSD: 99 }))).toBe(false);
+        expect(hasPrimaryActivity(market({ trade24h: 4 }))).toBe(false);
+        expect(hasPrimaryActivity(market({ trade24h: null }))).toBe(false);
+        expect(hasPrimaryActivity(null)).toBe(false);
+        expect(hasPrimaryActivity(undefined)).toBe(false);
     });
 });

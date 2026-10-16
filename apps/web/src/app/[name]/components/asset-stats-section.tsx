@@ -41,6 +41,10 @@ interface AssetStatsSectionProps {
     market: AssetMarketSnapshot | null;
     globalStats: GlobalTokenStats | null;
     mode?: 'canonical' | 'variant';
+    /** Label of the active variant's chain for the per-variant tooltip copy (default Solana). */
+    chainLabel?: string;
+    /** "Solana", "Solana and Base", … for the aggregate tooltip copy (default Solana). */
+    chainList?: string;
 }
 
 function pickPositive(primary: number | undefined | null, fallback: number | undefined | null): number | null {
@@ -57,7 +61,13 @@ function pickFinite(primary: number | undefined | null, fallback: number | undef
     return b;
 }
 
-export function AssetStatsSection({ market, globalStats, mode = 'variant' }: AssetStatsSectionProps) {
+export function AssetStatsSection({
+    market,
+    globalStats,
+    mode = 'variant',
+    chainLabel = 'Solana',
+    chainList = 'Solana',
+}: AssetStatsSectionProps) {
     const isCanonical = mode === 'canonical';
 
     const hasSolanaData = Boolean(
@@ -135,7 +145,7 @@ export function AssetStatsSection({ market, globalStats, mode = 'variant' }: Ass
                       market?.marketCapSource === 'company'
                           ? 'Company market cap (stock price × shares outstanding).'
                           : 'Market cap from aggregated variant data. Falls back to CoinGecko when unavailable.',
-                  liquidity: 'Aggregate liquidity across available Solana variant markets.',
+                  liquidity: `Aggregate liquidity across available ${chainList} variant markets.`,
                   volume24h:
                       'Aggregate 24h volume across available on-chain variant markets. For crypto and stock assets, supported canonical provider volume appears as a secondary pill.',
                   price: 'Current price from aggregated variant data. Falls back to CoinGecko when unavailable.',
@@ -146,16 +156,14 @@ export function AssetStatsSection({ market, globalStats, mode = 'variant' }: Ass
                   supply: 'Circulating supply from aggregated variant data. Falls back to CoinGecko when unavailable.',
               }
             : {
-                  marketCap: 'Market cap from Solana markets. Falls back to global data when Solana is unavailable.',
-                  liquidity: 'Liquidity in Solana DEX pools.',
-                  volume24h:
-                      'Volume on Solana DEX pools in the last 24 hours. Falls back to global data when Solana is unavailable.',
-                  price: 'Current price from Solana markets. Falls back to global data when Solana is unavailable.',
-                  priceChange24h:
-                      '24h price change from Solana markets. Falls back to global data when Solana is unavailable.',
-                  fdv: 'Fully diluted valuation from Birdeye. Falls back to global data when Solana is unavailable.',
-                  totalSupply: 'Total supply from Birdeye. Falls back to global data when Solana is unavailable.',
-                  supply: 'Circulating supply from Birdeye. Falls back to global data when Solana is unavailable.',
+                  marketCap: `Market cap from ${chainLabel} markets. Falls back to global data when ${chainLabel} is unavailable.`,
+                  liquidity: `Liquidity in ${chainLabel} DEX pools.`,
+                  volume24h: `Volume on ${chainLabel} DEX pools in the last 24 hours. Falls back to global data when ${chainLabel} is unavailable.`,
+                  price: `Current price from ${chainLabel} markets. Falls back to global data when ${chainLabel} is unavailable.`,
+                  priceChange24h: `24h price change from ${chainLabel} markets. Falls back to global data when ${chainLabel} is unavailable.`,
+                  fdv: `Fully diluted valuation from Birdeye. Falls back to global data when ${chainLabel} is unavailable.`,
+                  totalSupply: `Total supply from Birdeye. Falls back to global data when ${chainLabel} is unavailable.`,
+                  supply: `Circulating supply from Birdeye. Falls back to global data when ${chainLabel} is unavailable.`,
               };
 
     return (
@@ -188,13 +196,7 @@ export function AssetStatsSection({ market, globalStats, mode = 'variant' }: Ass
                 <StatCard label="Liquidity" tooltip={tooltips.liquidity} value={formatUsd(liquidity)} />
                 <StatCard
                     label="24H Volume"
-                    tooltip={
-                        underlyingVolume24h !== null ? (
-                            <CanonicalVolumeTooltipContent />
-                        ) : (
-                            tooltips.volume24h
-                        )
-                    }
+                    tooltip={underlyingVolume24h !== null ? <CanonicalVolumeTooltipContent /> : tooltips.volume24h}
                     value={formatUsd(volume24h)}
                     badge={underlyingVolume24h !== null ? formatUsd(underlyingVolume24h) : undefined}
                 />
@@ -207,7 +209,7 @@ export function AssetStatsSection({ market, globalStats, mode = 'variant' }: Ass
                     tooltip={
                         premiumToMark !== null ? (
                             <div className="max-w-[260px]">
-                                <p>Token price from Solana markets.</p>
+                                <p>Token price from {chainLabel} markets.</p>
                                 <p className="mt-1 text-white/80">
                                     The chip shows the token&apos;s premium or discount to the PreStocks reference
                                     (mark) price{markPrice !== null ? ` of ${formatPrice(markPrice)}` : ''}.

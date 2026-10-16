@@ -3,91 +3,32 @@ import { connection } from 'next/server';
 import type { Metadata } from 'next';
 
 import { getAsset, getAssetByCoingeckoId, getVariantByMint, resolveAlias } from '@tokens/asset-registry';
-import type { CanonicalAsset, LiquidityTier } from '@tokens/asset-registry';
-import { advisoryMetadataPrefix, normalizeAdvisory } from '@/lib/asset-advisory';
+import type { CanonicalAsset } from '@tokens/asset-registry';
+import { CHAINS, CHAIN_KINDS, inferAddressFamily, type ChainKind } from '@tokens/asset-registry/chains';
+
+import { advisoryMetadataPrefix } from '@/lib/asset-advisory';
 import { cleanTokenName } from '@/lib/logo-overrides';
-import { looksLikeSolanaMintAddress } from '@/lib/solana-address';
-import { fetchApiAppJsonOrNull } from '@/lib/api-app';
+import {
+    firstString,
+    readRequestedVariant,
+    requestedVariantFromPathName,
+    type RequestedVariantRef,
+} from '@/lib/requested-variant';
 import {
     buildShareUrls,
-    normalizeRequestedSolanaMint,
     resolveSocialAdvisory,
     resolveVariantSocialData,
-    selectVariantForMint,
-    type TokenSocialAssetResponse,
+    selectVariantForKey,
 } from '@/lib/token-social-image-data';
-import { AssetPage } from './asset-page';
+import { AssetPage, type AssetShellIdentity } from './asset-page';
 import { pickFirstDisplayName, pickFirstSymbol } from './lib/asset-display';
+import { loadV2Asset, loadV2VariantOwner } from './lib/load-v2-asset';
+
+type ChainSearchParams = Partial<Record<ChainKind | 'view', string | string[] | undefined>>;
 
 interface CoinPageProps {
     params: Promise<{ name: string }>;
-    searchParams?: Promise<{
-        solana?: string | string[] | undefined;
-        view?: string | string[] | undefined;
-    }>;
-}
-
-interface AssetsResolveResponse {
-    assetId: string;
-    asset: {
-        assetId: string;
-        name?: string | null;
-        symbol?: string | null;
-        category: CanonicalAsset['category'];
-        aliases: string[];
-    };
-    variant: {
-        mint: string;
-        kind: CanonicalAsset['variants'][number]['kind'];
-        liquidityTier?: LiquidityTier;
-        trustTier: CanonicalAsset['variants'][number]['trustTier'];
-        tags: string[];
-        issuer?: string;
-        issuerUrl?: string;
-        label?: string;
-        symbol?: string;
-        name?: string;
-        /** `{ status, reason, url, since } | null`; direct mint lookups still resolve flagged mints. */
-        advisory?: unknown;
-    } | null;
-}
-
-function canonicalAssetFromResolveResponse(response: AssetsResolveResponse): CanonicalAsset {
-    const name = (response.asset.name ?? '').trim();
-    const symbol = (response.asset.symbol ?? '').trim();
-    const variant = response.variant;
-    const variantAdvisory = variant ? normalizeAdvisory(variant.advisory) : null;
-
-    return {
-        assetId: response.asset.assetId,
-        ...(name ? { name } : {}),
-        ...(symbol ? { symbol } : {}),
-        category: response.asset.category,
-        aliases: response.asset.aliases,
-        variants: variant
-            ? [
-                  {
-                      variantId: `${response.asset.assetId}:${variant.mint.slice(0, 8)}`,
-                      mint: variant.mint,
-                      kind: variant.kind,
-                      trustTier: variant.trustTier,
-                      tags: variant.tags,
-                      ...(variant.issuer ? { issuer: variant.issuer } : {}),
-                      ...(variant.issuerUrl ? { issuerUrl: variant.issuerUrl } : {}),
-                      ...(variant.label ? { label: variant.label } : {}),
-                      ...(variant.symbol ? { symbol: variant.symbol } : {}),
-                      ...(variant.name ? { name: variant.name } : {}),
-                      ...(variantAdvisory ? { advisory: variantAdvisory } : {}),
-                  },
-              ]
-            : [],
-    };
-}
-
-function firstString(value: string | string[] | undefined): string | null {
-    if (typeof value === 'string') return value;
-    if (Array.isArray(value)) return value[0] ?? null;
-    return null;
+    searchParams?: Promise<ChainSearchParams>;
 }
 
 // Static so generateMetadata never touches request headers (keeps the route cacheable/ISR).
@@ -99,43 +40,92 @@ function getMetadataBase(): URL {
     }
 }
 
-async function buildAssetMetadata(
-    requestedName: string,
-    asset: CanonicalAsset,
-    requestedMint?: string | null,
-): Promise<Metadata> {
-    const normalizedRequestedMint = normalizeRequestedSolanaMint(requestedMint);
-    const assetDetailPath = normalizedRequestedMint
-        ? `/api/v1/assets/${encodeURIComponent(asset.assetId)}?mint=${encodeURIComponent(normalizedRequestedMint)}`
-        : `/api/v1/assets/${encodeURIComponent(asset.assetId)}`;
-    let apiAsset = await fetchApiAppJsonOrNull<TokenSocialAssetResponse>(assetDetailPath, {
-        next: { revalidate: 60 },
-    });
-    let selectedVariant = normalizedRequestedMint
-        ? selectVariantForMint(apiAsset?.asset.variantGroups, normalizedRequestedMint)
-        : null;
+/** "Solana", "Solana and Base", "Solana, Ethereum and Base" (canonical chain order). */
+export function formatChainList(chains: readonly ChainKind[]): string {
+    const present = new Set(chains);
+    const labels = CHAIN_KINDS.flatMap(chain => (present.has(chain) ? [CHAINS[chain].label] : []));
+    if (labels.length === 0) return 'Solana';
+    if (labels.length === 1) return labels[0]!;
+    return `${labels.slice(0, -1).join(', ')} and ${labels[labels.length - 1]}`;
+}
 
-    if (normalizedRequestedMint && !selectedVariant) {
-        apiAsset = await fetchApiAppJsonOrNull<TokenSocialAssetResponse>(
-            `/api/v1/assets/${encodeURIComponent(asset.assetId)}`,
-            { next: { revalidate: 60 } },
-        );
-        selectedVariant = null;
+interface ResolvedAssetRef {
+    assetId: string;
+    shell: AssetShellIdentity;
+}
+
+/**
+ * Registry first (synchronous, Solana identity), then v2 as the resolver:
+ * a base58 `name` is a Solana token (owner via /v2/variants), a chainless `0x`
+ * is not resolvable, anything else is an asset id or alias (/v2/assets).
+ */
+async function resolveAssetRef(name: string, requested: RequestedVariantRef | null): Promise<ResolvedAssetRef | null> {
+    const registryAsset: CanonicalAsset | null =
+        getAssetByCoingeckoId(name) ??
+        resolveAlias(name) ??
+        getAsset(name) ??
+        (requested?.chain === 'solana' ? (getVariantByMint(requested.address)?.asset ?? null) : null);
+    if (registryAsset) {
+        return {
+            assetId: registryAsset.assetId,
+            shell: {
+                assetId: registryAsset.assetId,
+                ...(registryAsset.name ? { name: registryAsset.name } : {}),
+                ...(registryAsset.symbol ? { symbol: registryAsset.symbol } : {}),
+                category: registryAsset.category,
+                ...(registryAsset.coingeckoId ? { coingeckoId: registryAsset.coingeckoId } : {}),
+                registryAsset,
+            },
+        };
     }
 
+    const family = inferAddressFamily(name);
+    if (family === 'evm') return null;
+    if (family === 'svm') {
+        const owner = await loadV2VariantOwner('solana', name);
+        if (!owner) return null;
+        const asset = await loadV2Asset(owner.asset.assetId);
+        if (!asset) return null;
+        return { assetId: asset.assetId, shell: shellFromV2(asset) };
+    }
+
+    const asset = await loadV2Asset(name);
+    if (!asset) return null;
+    return { assetId: asset.assetId, shell: shellFromV2(asset) };
+}
+
+function shellFromV2(asset: NonNullable<Awaited<ReturnType<typeof loadV2Asset>>>): AssetShellIdentity {
+    return {
+        assetId: asset.assetId,
+        ...(asset.name ? { name: asset.name } : {}),
+        ...(asset.symbol ? { symbol: asset.symbol } : {}),
+        category: asset.category,
+        ...(asset.coingeckoId ? { coingeckoId: asset.coingeckoId } : {}),
+        registryAsset: null,
+    };
+}
+
+async function buildAssetMetadata(
+    requestedName: string,
+    resolved: ResolvedAssetRef,
+    requested: RequestedVariantRef | null,
+): Promise<Metadata> {
+    const apiAsset = await loadV2Asset(resolved.assetId);
+    const selectedVariant = requested && apiAsset ? selectVariantForKey(apiAsset.variants, requested.key) : null;
+
     const displayNameRaw =
-        pickFirstDisplayName(apiAsset?.asset.name, apiAsset?.asset.primaryVariant?.name, asset.name, requestedName) ||
-        asset.name ||
+        pickFirstDisplayName(apiAsset?.name, apiAsset?.primaryVariant?.name, resolved.shell.name, requestedName) ||
+        resolved.shell.name ||
         requestedName;
     const canonicalDisplayName = cleanTokenName(displayNameRaw);
     const canonicalSymbol =
-        pickFirstSymbol(apiAsset?.asset.symbol, apiAsset?.asset.primaryVariant?.symbol, asset.symbol) || undefined;
+        pickFirstSymbol(apiAsset?.symbol, apiAsset?.primaryVariant?.symbol, resolved.shell.symbol) || undefined;
     const variantSocialData = selectedVariant
         ? resolveVariantSocialData({
               variant: selectedVariant,
               canonicalDisplayName,
               canonicalSymbol,
-              canonicalLogoURI: apiAsset?.asset.imageUrl ?? apiAsset?.asset.primaryVariant?.market?.logoURI,
+              canonicalLogoURI: apiAsset?.imageUrl ?? apiAsset?.primaryVariant?.logoURI ?? undefined,
           })
         : null;
     const displayName = cleanTokenName(variantSocialData?.displayName ?? canonicalDisplayName);
@@ -145,9 +135,12 @@ async function buildAssetMetadata(
     // strip, so the description itself carries the warning.
     const advisory = resolveSocialAdvisory({
         selectedVariant,
-        primaryVariant: apiAsset?.asset.primaryVariant ?? null,
+        primaryVariant: apiAsset?.primaryVariant ?? null,
     });
-    const baseDescription = `View Solana variants for ${displayName}.`;
+    const chains = apiAsset?.chains ?? ['solana'];
+    const baseDescription = selectedVariant
+        ? `View ${symbol ?? displayName} on ${CHAINS[selectedVariant.chain].label}.`
+        : `View ${displayName} variants on ${formatChainList(chains)}.`;
     const description = advisory ? `${advisoryMetadataPrefix(advisory, symbol)} ${baseDescription}` : baseDescription;
     const metadataBase = getMetadataBase();
     // The minute bucket busts share-image caches, so it must read the request-time
@@ -157,7 +150,7 @@ async function buildAssetMetadata(
     const { canonicalUrl, ogImageUrl, twitterImageUrl } = buildShareUrls({
         metadataBase,
         requestedName,
-        selectedMint: selectedVariant ? normalizedRequestedMint : null,
+        selected: selectedVariant ? { chain: selectedVariant.chain, address: selectedVariant.address } : null,
         minuteBucket,
     });
     const imageAlt = symbol ? `${displayName} (${symbol})` : displayName;
@@ -166,7 +159,9 @@ async function buildAssetMetadata(
         metadataBase,
         title,
         description,
-        keywords: [displayName, symbol ?? '', 'Solana', 'Assets', 'Tokens'].filter(Boolean),
+        keywords: [displayName, symbol ?? '', ...chains.map(chain => CHAINS[chain].label), 'Assets', 'Tokens'].filter(
+            Boolean,
+        ),
         alternates: {
             canonical: canonicalUrl,
         },
@@ -201,23 +196,13 @@ async function buildAssetMetadata(
     };
 }
 
-async function resolveCanonicalAsset(requestedName: string, requestedMint?: string): Promise<CanonicalAsset | null> {
-    const url = requestedMint
-        ? `/api/v1/assets/resolve?mint=${encodeURIComponent(requestedMint)}`
-        : `/api/v1/assets/resolve?ref=${encodeURIComponent(requestedName)}`;
-    const resolved = await fetchApiAppJsonOrNull<AssetsResolveResponse>(url, { next: { revalidate: 60 } });
-    if (!resolved?.asset?.assetId) return null;
-    return canonicalAssetFromResolveResponse(resolved);
-}
-
 export async function generateMetadata({ params, searchParams }: CoinPageProps): Promise<Metadata> {
     const { name } = await params;
     const resolvedSearchParams = await searchParams;
-    const requestedMint = normalizeRequestedSolanaMint(firstString(resolvedSearchParams?.solana));
+    const requested = readRequestedVariant(resolvedSearchParams) ?? requestedVariantFromPathName(name);
 
-    const asset =
-        (await resolveCanonicalAsset(name)) ?? (requestedMint ? await resolveCanonicalAsset(name, requestedMint) : null);
-    if (asset) return await buildAssetMetadata(name, asset, requestedMint);
+    const resolved = await resolveAssetRef(name, requested);
+    if (resolved) return await buildAssetMetadata(name, resolved, requested);
 
     return {
         title: 'Token Not Found',
@@ -233,48 +218,24 @@ export default async function CoinPage({ params, searchParams }: CoinPageProps) 
     // Hard-canonicalize legacy route to avoid any xstock/CoinGecko fallbacks.
     if (name === 'sui-xstock') {
         const next = new URLSearchParams();
-        const requestedSolana = firstString(resolvedSearchParams?.solana)?.trim();
-        if (requestedSolana) next.set('solana', requestedSolana);
-        const requestedView = firstString(resolvedSearchParams?.view)?.trim();
-        if (requestedView) next.set('view', requestedView);
+        for (const key of [...CHAIN_KINDS, 'view'] as const) {
+            const value = firstString(resolvedSearchParams?.[key])?.trim();
+            if (value) next.set(key, value);
+        }
         redirect(`/sui${next.size ? `?${next.toString()}` : ''}`);
     }
 
-    const requestedSolanaRaw = firstString(resolvedSearchParams?.solana)?.trim() ?? '';
+    const requested = readRequestedVariant(resolvedSearchParams) ?? requestedVariantFromPathName(name);
+    const resolved = await resolveAssetRef(name, requested);
+    if (!resolved) notFound();
 
-    const requestedMint =
-        requestedSolanaRaw.length > 0 && looksLikeSolanaMintAddress(requestedSolanaRaw)
-            ? requestedSolanaRaw
-            : looksLikeSolanaMintAddress(name)
-              ? name
-              : undefined;
-
-    const assetFromName = getAssetByCoingeckoId(name) ?? resolveAlias(name) ?? getAsset(name);
-    const assetFromRequestedMint =
-        requestedMint && requestedMint.trim().length > 0
-            ? (getVariantByMint(requestedMint)?.asset ?? resolveAlias(requestedMint) ?? getAsset(requestedMint))
-            : null;
-    const asset = assetFromName ?? assetFromRequestedMint;
-    if (asset) {
-        if (looksLikeSolanaMintAddress(name) && asset.category === 'equity' && asset.variants.length === 1) {
-            redirect(`/${encodeURIComponent(asset.assetId)}`);
-        }
-
-        return <AssetPage asset={asset} requestedName={name} requestedMint={requestedMint} />;
+    // A bare mint path for a single-variant equity canonicalizes to the asset page.
+    if (inferAddressFamily(name) === 'svm' && resolved.shell.category === 'equity') {
+        const variantCount = resolved.shell.registryAsset
+            ? resolved.shell.registryAsset.variants.length
+            : ((await loadV2Asset(resolved.assetId))?.variants.length ?? 0);
+        if (variantCount === 1) redirect(`/${encodeURIComponent(resolved.assetId)}`);
     }
 
-    const resolvedAsset = await resolveCanonicalAsset(name, requestedMint);
-    if (resolvedAsset) {
-        if (
-            looksLikeSolanaMintAddress(name) &&
-            resolvedAsset.category === 'equity' &&
-            resolvedAsset.variants.length === 1
-        ) {
-            redirect(`/${encodeURIComponent(resolvedAsset.assetId)}`);
-        }
-
-        return <AssetPage asset={resolvedAsset} requestedName={name} requestedMint={requestedMint} />;
-    }
-
-    notFound();
+    return <AssetPage assetId={resolved.assetId} requestedName={name} requested={requested} shell={resolved.shell} />;
 }

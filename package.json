@@ -24,6 +24,7 @@
         "verify:lists-api-v2": "bun scripts/verify-lists-api-v2-contract.ts",
         "verify:assets-api-v2": "bun scripts/verify-assets-api-v2-contract.ts",
         "dev:run-worker-job": "bun scripts/dev-run-worker-job.ts",
+        "dev:mint-platform-key": "bun scripts/dev-mint-platform-key.ts",
         "verify:asset-registry-hubs": "bun scripts/audit-asset-registry-hubs.ts",
         "format": "prettier --write \"**/*.{ts,tsx,md}\"",
         "postinstall": "node scripts/patch-liveline.mjs && node scripts/setup-git-hooks.mjs",

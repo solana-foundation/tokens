@@ -16,6 +16,7 @@ import {
     decodeChainParam,
     decodeIncludeParam,
     decodeListParam,
+    decodePrimaryScopeParam,
     decodePrimaryVariantStrategyParam,
     decodeQueryParam,
     marketByKeyFrom,
@@ -55,6 +56,7 @@ export const GET = route(
             const category = yield* decodeCategoryParam(params);
             const q = yield* decodeQueryParam(params);
             const requestedStrategy = yield* decodePrimaryVariantStrategyParam(params);
+            const primaryScope = yield* decodePrimaryScopeParam(params);
             const include = yield* decodeIncludeParam(params, INCLUDES);
             const limit = yield* decodeLimit(params.get('limit'), { defaultValue: DEFAULT_LIMIT, max: MAX_LIMIT });
             const offset = yield* decodeOffset(params.get('offset'));
@@ -108,6 +110,7 @@ export const GET = route(
                         stockPrice: stockPriceById.get(asset.assetId) ?? null,
                         preStocksByMint,
                         requestedStrategy: strategy,
+                        primaryScope,
                         hideBlocked: true,
                         listChain: chain,
                         includeVariants,
@@ -125,6 +128,7 @@ export const GET = route(
                     total: ranked.length,
                     list,
                     primaryVariantStrategy: strategy ?? 'liquidity',
+                    primaryScope,
                 };
                 return response;
             });
@@ -137,6 +141,7 @@ export const GET = route(
                         category ?? '',
                         q ?? '',
                         strategy ?? '',
+                        primaryScope,
                         includeVariants ? 'v' : '',
                         limit,
                         offset,

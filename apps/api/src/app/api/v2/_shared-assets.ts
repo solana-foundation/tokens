@@ -22,13 +22,17 @@ import {
     STOCK_VARIANT_TIERS,
     VARIANT_KINDS,
     getVariantByMint,
+    hasPrimaryActivity,
     isAdvisorySource,
     isHiddenAdvisory,
     pickPrimaryVariantWithRanking,
     type AssetCategory,
     type AssetVariant,
     type CanonicalAsset,
+    type CompactPegHealth,
     type LiquidityTier,
+    type StablecoinHealth,
+    type PrimaryVariantSelectionReason,
     type PrimaryVariantStrategy,
     type StockVariantTier,
     type TrustTier,
@@ -39,6 +43,7 @@ import {
     CHAINS,
     CHAIN_KINDS,
     chainAddressKey,
+    chainSupports,
     explorerTokenUrl,
     isChainKind,
     looksLikeEvmAddress,
@@ -55,6 +60,7 @@ import {
 import { BadRequestError } from '@tokens/effect';
 
 import { getAdvisoriesByMintSync, tradeRestrictedMints } from '@/lib/advisories';
+import { toCompactPegHealth } from '@/lib/stablecoin-health';
 import type { V2ChainRollupResult, V2MarketResult, V2VariantResult } from '@/lib/cloudrun';
 import type { PrestocksPriceResult } from '@/lib/cloudrun/prestocksReads';
 import type { AssetResult } from '../../../../../cloudrun-assets/src/handlers/assets';
@@ -66,6 +72,7 @@ import {
     aggregateTokenStats,
     buildCuratedMintRank,
     computeCompanyMarketCapUsd,
+    computePreStocksDerived,
     deriveVariantTierFields,
     isCanonicalPublicEquityAsset,
     mergeAssetStatsWithAggregates,
@@ -78,6 +85,7 @@ import {
     tokenMarketSnapshotFromConvexMarket,
     type AssetStats,
     type TokenMarketSnapshot,
+    type VariantExecutionQualitySnapshot,
 } from '../v1/assets/_asset-helpers';
 import type { PreStocksMintSnapshot } from '../v1/assets/_asset-detail-response';
 import { normalizeCoinGeckoCoinIdForAsset } from '../v1/assets/_coingecko-id';
@@ -176,6 +184,38 @@ export type V2Variant = {
     rank: number | null;
     explorerUrl: string;
     market: V2Market | null;
+} & V2VariantEnrichments;
+
+/** `GET /v2/assets/{id}?include=` values. Each adds one key to EVERY variant in the response. */
+export type V2AssetDetailInclude = 'executionQuality' | 'pegHealth' | 'preStocks';
+export const V2_ASSET_DETAIL_INCLUDES: readonly V2AssetDetailInclude[] = ['executionQuality', 'pegHealth', 'preStocks'];
+
+/** Fill-quality snapshot (ClickHouse, 24h / 5s horizon); chains without `executionQuality` get `null`. */
+export type V2ExecutionQuality = Omit<VariantExecutionQualitySnapshot, 'quoteMint'> & { quoteKey: VariantKey };
+
+/** Compact peg status for stablecoin variants; chains without `risk` get `null`. */
+export type V2PegHealth = Required<Pick<CompactPegHealth, 'provider' | 'referenceKind'>> &
+    Omit<CompactPegHealth, 'provider' | 'referenceKind'>;
+
+/** PreStocks reference mark for a tokenized pre-IPO variant. */
+export type V2VariantPreStocks = {
+    symbol: string;
+    markPriceUsd: number | null;
+    markValuationUsd: number | null;
+    impliedValuationUsd: number | null;
+    premiumToMarkPercent: number | null;
+    lastFetchedAt: number;
+};
+
+/**
+ * Per-variant enrichments. A key is present on every variant only when its
+ * `include=` value was requested; `null` means the chain lacks the capability
+ * or there is no data for the variant.
+ */
+export type V2VariantEnrichments = {
+    executionQuality?: V2ExecutionQuality | null;
+    pegHealth?: V2PegHealth | null;
+    preStocks?: V2VariantPreStocks | null;
 };
 
 export type V2AssetStats = AssetStats;
@@ -183,6 +223,8 @@ export type V2AssetStats = AssetStats;
 export type V2ChainStats = {
     liquidity: number | null;
     volume24hUSD: number | null;
+    /** Sum of the chain's variant 24h trade counts. */
+    trade24h: number | null;
     /** Sum over this chain's issued (non-bridged, non-wrapped) variants. */
     marketCap: number | null;
     fdv: number | null;
@@ -242,6 +284,27 @@ export type V2AssetAdvisory = V2Advisory & { key: VariantKey; chain: ChainId; ad
 
 export type V2PrimaryVariantStrategy = PrimaryVariantStrategy;
 
+/**
+ * Which variants compete for `primaryVariant`. `executable` (default): variants on
+ * chains with the `swap` capability, i.e. the best variant you can trade through
+ * us. `global`: every chain, so the cross-chain liquidity winner.
+ */
+export type V2PrimaryScope = 'executable' | 'global';
+export const V2_PRIMARY_SCOPES: readonly V2PrimaryScope[] = ['executable', 'global'];
+
+/**
+ * The candidate pool the primary was ranked in, first non-empty wins.
+ * executable: executable_active → active → executable → all; global: active → all.
+ * `active` = market data clearing the activity minimums (`hasPrimaryActivity`).
+ */
+export type V2PrimaryVariantPool = 'executable_active' | 'active' | 'executable' | 'all';
+
+export type V2PrimaryVariantSelection = {
+    pool: V2PrimaryVariantPool;
+    /** The ranking rule that decided between the last two candidates. */
+    reason: PrimaryVariantSelectionReason | null;
+};
+
 export type V2Asset = {
     assetId: string;
     name: string | null;
@@ -264,6 +327,8 @@ export type V2Asset = {
     /** Most severe first; names hidden (blocked) siblings too. */
     advisories: V2AssetAdvisory[];
     primaryVariantStrategy: V2PrimaryVariantStrategy;
+    primaryScope: V2PrimaryScope;
+    primaryVariantSelection: V2PrimaryVariantSelection | null;
     primaryVariant: V2Variant | null;
     primaryVariantByChain: Partial<Record<ChainId, V2Variant>>;
     /** 0-based position in the requested curated list; null outside a list context. */
@@ -278,6 +343,7 @@ export type V2AssetsResponse = {
     total: number;
     list: string;
     primaryVariantStrategy: V2PrimaryVariantStrategy;
+    primaryScope: V2PrimaryScope;
 };
 
 export type V2AssetResponse = V2Asset & { resolvedBy: 'assetId' | 'alias' | 'rename' };
@@ -504,6 +570,19 @@ export function decodePrimaryVariantStrategyParam(
           );
 }
 
+export function decodePrimaryScopeParam(params: URLSearchParams): Effect.Effect<V2PrimaryScope, BadRequestError> {
+    const raw = (params.get('primaryScope') ?? '').trim();
+    if (raw === '') return Effect.succeed('executable');
+    return (V2_PRIMARY_SCOPES as readonly string[]).includes(raw)
+        ? Effect.succeed(raw as V2PrimaryScope)
+        : Effect.fail(
+              badRequest(`Invalid primaryScope: ${raw}`, {
+                  code: 'invalid_primary_scope',
+                  values: [...V2_PRIMARY_SCOPES],
+              }),
+          );
+}
+
 // ---------------------------------------------------------------------------
 // Mappers
 // ---------------------------------------------------------------------------
@@ -636,6 +715,7 @@ export function computeChainStats(
         const entry = byChain.get(variant.chain) ?? {
             liquidity: null,
             volume24hUSD: null,
+            trade24h: null,
             marketCap: null,
             fdv: null,
             circulatingSupply: null,
@@ -646,6 +726,7 @@ export function computeChainStats(
         const market = marketByKey.get(variant.key);
         entry.liquidity = addFinite(entry.liquidity, market?.liquidity);
         entry.volume24hUSD = addFinite(entry.volume24hUSD, market?.volume24hUSD);
+        entry.trade24h = addFinite(entry.trade24h, market?.trade24h);
         if (variantIssuance(variant) === 'native') {
             entry.issuedVariantCount += 1;
             entry.marketCap = addFinite(entry.marketCap, market?.marketCap);
@@ -672,6 +753,7 @@ export function aggregateChainStats(chainStats: Partial<Record<ChainId, V2ChainS
     const out: V2Aggregate = {
         liquidity: null,
         volume24hUSD: null,
+        trade24h: null,
         marketCap: null,
         fdv: null,
         circulatingSupply: null,
@@ -688,6 +770,7 @@ export function aggregateChainStats(chainStats: Partial<Record<ChainId, V2ChainS
         out.excludedFromSupplyCount += entry.variantCount - entry.issuedVariantCount;
         out.liquidity = addFinite(out.liquidity, entry.liquidity);
         out.volume24hUSD = addFinite(out.volume24hUSD, entry.volume24hUSD);
+        out.trade24h = addFinite(out.trade24h, entry.trade24h);
         out.marketCap = addFinite(out.marketCap, entry.marketCap);
         out.fdv = addFinite(out.fdv, entry.fdv);
         out.circulatingSupply = addFinite(out.circulatingSupply, entry.circulatingSupply);
@@ -713,12 +796,88 @@ export interface V2AssetBuildContext {
     preStocksByMint: ReadonlyMap<string, PreStocksMintSnapshot>;
     /** Requested strategy, or null for the per-asset default (equities → stock_redeemability). */
     requestedStrategy: V2PrimaryVariantStrategy | null;
+    /** Primary candidate pool; absent = `executable`. */
+    primaryScope?: V2PrimaryScope;
     /** Drop `blocked` variants before assembling (list surfaces). Detail keeps them. */
     hideBlocked: boolean;
     /** Narrow `variants[]` to one chain (stats stay cross-chain). */
     listChain: ChainId | null;
     includeVariants: boolean;
     rank: number | null;
+    /** Requested `include=` enrichments; absent = no enrichment keys on the variants. */
+    enrichments?: V2EnrichmentInputs;
+}
+
+/** Inputs for the `include=` enrichments (mint-keyed: these pipelines are Solana-only today). */
+export interface V2EnrichmentInputs {
+    executionQualityByMint: ReadonlyMap<string, VariantExecutionQualitySnapshot> | null;
+    stablecoinHealthByMint: ReadonlyMap<string, StablecoinHealth> | null;
+    preStocks: boolean;
+}
+
+export function toV2ExecutionQuality(snapshot: VariantExecutionQualitySnapshot | null | undefined): V2ExecutionQuality | null {
+    if (!snapshot) return null;
+    const { quoteMint, ...rest } = snapshot;
+    const out: V2ExecutionQuality = { ...rest, quoteKey: chainAddressKey('solana', quoteMint) };
+    for (const [key, value] of Object.entries(out)) {
+        if (typeof value === 'number' && !Number.isFinite(value)) (out as Record<string, unknown>)[key] = null;
+    }
+    return out;
+}
+
+export function toV2PegHealth(health: StablecoinHealth | null | undefined): V2PegHealth | null {
+    const compact = toCompactPegHealth(health?.pegHealth);
+    if (!compact) return null;
+    return {
+        provider: compact.provider ?? 'webacy',
+        referenceKind: compact.referenceKind ?? 'fixed',
+        tier: compact.tier,
+        deviationPct: compact.deviationPct,
+        updatedAt: compact.updatedAt,
+        stale: compact.stale,
+    };
+}
+
+export function toV2VariantPreStocks(
+    snapshot: PreStocksMintSnapshot | null | undefined,
+    onChainPriceUsd: number | null | undefined,
+): V2VariantPreStocks | null {
+    if (!snapshot) return null;
+    const derived = computePreStocksDerived(snapshot, onChainPriceUsd);
+    return {
+        symbol: snapshot.symbol,
+        markPriceUsd: snapshot.markPriceUsd,
+        markValuationUsd: snapshot.markValuationUsd,
+        impliedValuationUsd: derived.impliedValuationUsd,
+        premiumToMarkPercent: derived.premiumToMarkPercent,
+        lastFetchedAt: snapshot.lastFetchedAt,
+    };
+}
+
+/** The enrichment keys for one variant (only the requested ones, `null` off-capability). */
+export function variantEnrichments(
+    variant: Pick<V2VariantResult, 'chain' | 'address'>,
+    inputs: V2EnrichmentInputs | undefined,
+    preStocksByMint: ReadonlyMap<string, PreStocksMintSnapshot>,
+    onChainPriceUsd: number | null | undefined,
+): V2VariantEnrichments {
+    if (!inputs) return {};
+    const out: V2VariantEnrichments = {};
+    const solanaMint = variant.chain === 'solana' ? variant.address : null;
+    if (inputs.executionQualityByMint) {
+        out.executionQuality =
+            chainSupports(variant.chain, 'executionQuality') && solanaMint
+                ? toV2ExecutionQuality(inputs.executionQualityByMint.get(solanaMint))
+                : null;
+    }
+    if (inputs.stablecoinHealthByMint) {
+        out.pegHealth =
+            chainSupports(variant.chain, 'risk') && solanaMint ? toV2PegHealth(inputs.stablecoinHealthByMint.get(solanaMint)) : null;
+    }
+    if (inputs.preStocks) {
+        out.preStocks = solanaMint ? toV2VariantPreStocks(preStocksByMint.get(solanaMint), onChainPriceUsd) : null;
+    }
+    return out;
 }
 
 /** Registry-keyed adapter: the ranking / aggregation helpers see the variant key as `mint`. */
@@ -846,14 +1005,15 @@ export function buildV2Asset(ctx: V2AssetBuildContext): V2Asset | null {
 
     const strategy: V2PrimaryVariantStrategy =
         ctx.requestedStrategy ?? (asset.category === 'equity' ? 'stock_redeemability' : 'liquidity');
-    const pick = (pool: CanonicalAsset) =>
+    const rank = (pool: CanonicalAsset) =>
         pickPrimaryVariantWithRanking({
             asset: pool,
             mintRank: keyRank,
             marketByMint: tokenByKey,
             excludeMints: excludeKeys,
-            options: { strategy },
-        }).variant;
+            options: { strategy, missingActivity: 'fail' },
+        });
+    const pick = (pool: CanonicalAsset) => rank(pool).variant;
 
     const priceSelectionAsset = ASSET_IDS_PREFERRING_REDEEMABLE_VARIANT_PRICE.has(asset.assetId)
         ? (() => {
@@ -863,7 +1023,9 @@ export function buildV2Asset(ctx: V2AssetBuildContext): V2Asset | null {
               return redeemable.length > 0 ? { ...canonical, variants: redeemable } : canonical;
           })()
         : canonical;
-    const primary = pick(priceSelectionAsset);
+    const scope = ctx.primaryScope ?? 'executable';
+    const selection = selectPrimaryVariant(priceSelectionAsset, scope, tokenByKey, rank);
+    const primary = selection?.variant ?? null;
     const primaryByChain: Partial<Record<ChainId, AssetVariant>> = {};
     for (const chain of CHAIN_KINDS) {
         const pool = canonical.variants.filter(v => v.mint.startsWith(`${chain}:`));
@@ -983,6 +1145,7 @@ export function buildV2Asset(ctx: V2AssetBuildContext): V2Asset | null {
             rank: rankByKey.get(variant.key) ?? 0,
             explorerUrl: explorerTokenUrl(variant.chain, variant.address),
             market: toV2Market(market),
+            ...variantEnrichments(variant, ctx.enrichments, ctx.preStocksByMint, market?.price),
         });
     }
 
@@ -1029,11 +1192,50 @@ export function buildV2Asset(ctx: V2AssetBuildContext): V2Asset | null {
         referenceMarket,
         advisories,
         primaryVariantStrategy: strategy,
+        primaryScope: scope,
+        primaryVariantSelection: selection ? { pool: selection.pool, reason: selection.reason } : null,
         primaryVariant: primary ? (publicByKey.get(primary.mint) ?? null) : null,
         primaryVariantByChain,
         rank: ctx.rank,
         ...(ctx.includeVariants ? { variants: listed.map(v => publicByKey.get(v.key)!) } : {}),
     };
+}
+
+const PRIMARY_POOLS: Record<V2PrimaryScope, readonly V2PrimaryVariantPool[]> = {
+    executable: ['executable_active', 'active', 'executable', 'all'],
+    global: ['active', 'all'],
+};
+
+/**
+ * Ranks the primary inside the first non-empty pool for `scope`. Executable
+ * chains come from `CHAINS` capabilities (`swap`), never a chain literal, so a
+ * chain gains primary eligibility by config. Pools only narrow the candidates;
+ * ranking inside a pool is the registry's (liquidity / redeemability / …).
+ */
+function selectPrimaryVariant(
+    asset: CanonicalAsset,
+    scope: V2PrimaryScope,
+    marketByKey: ReadonlyMap<VariantKey, TokenMarketSnapshot>,
+    rank: (pool: CanonicalAsset) => ReturnType<typeof pickPrimaryVariantWithRanking>,
+): (ReturnType<typeof pickPrimaryVariantWithRanking> & { pool: V2PrimaryVariantPool }) | null {
+    const executable = (v: AssetVariant) => {
+        const chain = v.mint.slice(0, v.mint.indexOf(':'));
+        return isChainKind(chain) && chainSupports(chain, 'swap');
+    };
+    const active = (v: AssetVariant) => hasPrimaryActivity(marketByKey.get(v.mint));
+    const filters: Record<V2PrimaryVariantPool, (v: AssetVariant) => boolean> = {
+        executable_active: v => executable(v) && active(v),
+        active,
+        executable,
+        all: () => true,
+    };
+    for (const pool of PRIMARY_POOLS[scope]) {
+        const variants = asset.variants.filter(filters[pool]);
+        if (variants.length === 0) continue;
+        const result = rank({ ...asset, variants });
+        if (result.variant) return { ...result, pool };
+    }
+    return null;
 }
 
 /**
