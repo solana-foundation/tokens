@@ -35,8 +35,10 @@ const columnHelper = createColumnHelper<RegistryRow>();
 
 const RIGHT_ALIGNED_COLUMNS = new Set(['marketCapUsd']);
 
-// The Token column stays pinned while the table scrolls sideways. Sticky cells need an opaque
-// background (the row/header tints are translucent), so mix the same tint over white.
+// The Token column stays pinned while the table scrolls sideways; on phones the cell is compact
+// (logo + symbol, see TokenCell) so the pinned part leaves most of the viewport to scroll.
+// Sticky cells need an opaque background (the row/header tints are translucent), so mix the
+// same tint over white.
 const PINNED_CELL_CLASS =
     'sticky left-0 z-10 shadow-[inset_-1px_0_0_var(--color-border-light)] bg-white group-hover/row:bg-[color-mix(in_srgb,var(--color-gray-50)_50%,white)]';
 const PINNED_HEADER_CLASS =
@@ -44,22 +46,32 @@ const PINNED_HEADER_CLASS =
 
 function TokenCell({ row }: { row: RegistryRow }) {
     const displayName = row.name ? cleanTokenName(row.name) : row.symbol;
+    // Phones get logo + symbol only (the name is in the Response sheet and on the asset page),
+    // which keeps the pinned column to ~140px; md and up show name + $symbol.
     const content = (
         <>
             <RegistryTokenLogo row={row} />
             <div className="flex min-w-0 items-center gap-2">
-                <span className="truncate text-[16px] font-medium text-text-extra-high" title={displayName}>
+                <span
+                    className="hidden truncate text-[16px] font-medium text-text-extra-high md:inline"
+                    title={displayName}
+                >
                     {displayName}
                 </span>
+                <span className="truncate text-[14px] font-medium text-text-extra-high md:hidden" title={displayName}>
+                    {row.symbol}
+                </span>
                 {row.name ? (
-                    <span className="shrink-0 text-[14px] text-text-extra-low font-medium">${row.symbol}</span>
+                    <span className="hidden shrink-0 text-[14px] text-text-extra-low font-medium md:inline">
+                        ${row.symbol}
+                    </span>
                 ) : null}
             </div>
         </>
     );
 
     if (!row.hasTokenPage) {
-        return <div className="flex max-w-[220px] items-center gap-[8px] md:max-w-[280px]">{content}</div>;
+        return <div className="flex max-w-[120px] items-center gap-[8px] md:max-w-[280px]">{content}</div>;
     }
     // Direct asset-page link (`/{assetId}?solana={mint}`), the same the home table builds;
     // the mint redirect only covers a cached payload from before the API carried assetId.
@@ -68,7 +80,7 @@ function TokenCell({ row }: { row: RegistryRow }) {
         <Link
             href={href}
             prefetch={false}
-            className="flex max-w-[220px] items-center gap-[8px] hover:opacity-80 transition-opacity md:max-w-[280px]"
+            className="flex max-w-[120px] items-center gap-[8px] hover:opacity-80 transition-opacity md:max-w-[280px]"
         >
             {content}
         </Link>
@@ -320,6 +332,9 @@ function RegistryTableInner({ data }: { data: RegistryData }) {
                                                     className={cn(
                                                         'py-3 text-[12px] md:text-[14px] font-medium text-text-high bg-gray-50/80 border-b border-border-light',
                                                         index === 0 && 'pl-4 pr-3 md:pl-6 md:pr-4',
+                                                        // Auto layout hands the min-width surplus to every column;
+                                                        // on phones keep the pinned one at its content width.
+                                                        index === 0 && 'w-px md:w-auto',
                                                         index === 0 && PINNED_HEADER_CLASS,
                                                         index !== 0 && !isLast && 'px-3 md:px-5',
                                                         isLast && 'pl-3 md:pl-5 pr-4 md:pr-8',

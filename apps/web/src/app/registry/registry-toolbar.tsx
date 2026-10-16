@@ -132,38 +132,38 @@ export function RegistryToolbar({
 
     return (
         <div className="flex flex-col gap-3">
-            <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
-                <div className="flex min-w-0 flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center">
-                    <div className="relative sm:w-[300px]">
-                        <SearchIcon className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-text-medium" />
-                        <Input
-                            ref={searchRef}
-                            type="search"
-                            value={state.q}
-                            onChange={event => state.setQ(event.target.value)}
-                            placeholder="Search by name, symbol, or mint"
-                            aria-label="Search registry"
-                            aria-keyshortcuts="/"
-                            className="h-9 w-full rounded-full border-border-medium bg-white pl-9 pr-10 font-sans text-[13px] text-text-extra-high shadow-none placeholder:text-text-low focus-visible:ring-border-medium"
-                        />
-                        {/* Same key-cap treatment as the nav search hint; hidden once there is a query. */}
-                        {state.q ? null : (
-                            <kbd
-                                aria-hidden="true"
-                                className="pointer-events-none absolute right-2.5 top-1/2 hidden size-5 -translate-y-1/2 items-center justify-center rounded-sm bg-gray-100 font-sans text-[11px] font-medium leading-none text-text-medium sm:flex"
-                            >
-                                /
-                            </kbd>
-                        )}
-                    </div>
-                    <RegistryFilterChips state={state} options={options} />
-                    {hasActive ? (
-                        <span className="ml-1 text-[10px] uppercase text-muted-foreground">
-                            press <Kbd className="w-8 font-bold">esc</Kbd> to clear
-                        </span>
-                    ) : null}
+            {/* One wrapping row: on phones the search takes the first line and the filter chips share the
+                second with Export (pushed right); on wide screens everything sits on one line. */}
+            <div className="flex flex-wrap items-center gap-3">
+                <div className="relative w-full sm:w-[300px]">
+                    <SearchIcon className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-text-medium" />
+                    <Input
+                        ref={searchRef}
+                        type="search"
+                        value={state.q}
+                        onChange={event => state.setQ(event.target.value)}
+                        placeholder="Search by name, symbol, or mint"
+                        aria-label="Search registry"
+                        aria-keyshortcuts="/"
+                        className="h-9 w-full rounded-full border-border-medium bg-white pl-9 pr-10 font-sans text-[13px] text-text-extra-high shadow-none placeholder:text-text-low focus-visible:ring-border-medium"
+                    />
+                    {/* Same key-cap treatment as the nav search hint; hidden once there is a query. */}
+                    {state.q ? null : (
+                        <kbd
+                            aria-hidden="true"
+                            className="pointer-events-none absolute right-2.5 top-1/2 hidden size-5 -translate-y-1/2 items-center justify-center rounded-sm bg-gray-100 font-sans text-[11px] font-medium leading-none text-text-medium sm:flex"
+                        >
+                            /
+                        </kbd>
+                    )}
                 </div>
-                <div className="flex shrink-0 lg:justify-end">
+                <RegistryFilterChips state={state} options={options} />
+                {hasActive ? (
+                    <span className="ml-1 hidden text-[10px] uppercase text-muted-foreground sm:inline">
+                        press <Kbd className="w-8 font-bold">esc</Kbd> to clear
+                    </span>
+                ) : null}
+                <div className="ml-auto flex shrink-0">
                     <Button
                         type="button"
                         variant="outline"

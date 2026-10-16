@@ -1,6 +1,6 @@
 'use client';
 
-import type React from 'react';
+import { useState, type ReactNode } from 'react';
 import Image from 'next/image';
 import Link from 'next/link';
 import { ChevronDown, Github, type LucideIcon } from 'lucide-react';
@@ -244,55 +244,66 @@ function MenuColumn({ label, links }: { label: string; links: MenuLink[] }) {
  * Logo + wordmark that opens the site menu on hover or focus: product tiles
  * (Assets API as a full-width card, then Explore and Registry), resource links
  * (Docs, Heat map, Partners), legal, socials.
- * Clicking the logo still goes home. Hover-only by design, so it is not
- * rendered on touch layouts; the header keeps Docs and the Assets API CTA there.
+ * Clicking the logo still goes home. Hover never fires on touch, so the
+ * chevron is a button that toggles the panel there (and works with a mouse
+ * too); the panel is capped to the viewport width so it never runs off a
+ * phone screen.
  */
 interface SiteMenuProps {
     className?: string;
     /** Wordmark next to the logo; the Assets API landing uses its own. */
     label?: string;
     /** Replaces the gradient logo, e.g. the white mark on the dark landing. */
-    logo?: React.ReactNode;
+    logo?: ReactNode;
     /** `dark` renders the trigger for a dark page; the panel itself is always the dark tooltip surface. */
     tone?: 'light' | 'dark';
 }
 
 export function SiteMenu({ className, label = 'Tokens', logo, tone = 'light' }: SiteMenuProps) {
     const isDark = tone === 'dark';
+    const [open, setOpen] = useState(false);
     return (
-        <HoverCard openDelay={60} closeDelay={160}>
+        <HoverCard open={open} onOpenChange={setOpen} openDelay={60} closeDelay={160}>
             <HoverCardTrigger asChild>
-                <Link
-                    href="/"
-                    className={cn(
-                        'group flex items-center gap-2 rounded-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-text-extra-high/30 focus-visible:ring-offset-4 focus-visible:ring-offset-background',
-                        className,
-                    )}
-                    aria-haspopup="true"
-                    onClick={() =>
-                        trackEvent('nav_link_clicked', { destination: 'home', link_url: '/', source: 'header' })
-                    }
-                >
-                    {logo ?? <Logo width={24} height={24} className="" />}
-                    <span className={cn('text-2xl font-semibold', isDark ? 'text-white' : 'text-text-extra-high')}>
-                        {label}
-                    </span>
-                    <ChevronDown
-                        aria-hidden="true"
+                <div className={cn('group flex items-center gap-1', className)}>
+                    <Link
+                        href="/"
+                        className="flex items-center gap-2 rounded-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-text-extra-high/30 focus-visible:ring-offset-4 focus-visible:ring-offset-background"
+                        onClick={() =>
+                            trackEvent('nav_link_clicked', { destination: 'home', link_url: '/', source: 'header' })
+                        }
+                    >
+                        {logo ?? <Logo width={24} height={24} className="" />}
+                        <span className={cn('text-2xl font-semibold', isDark ? 'text-white' : 'text-text-extra-high')}>
+                            {label}
+                        </span>
+                    </Link>
+                    <button
+                        type="button"
+                        aria-label={open ? 'Close site menu' : 'Open site menu'}
+                        aria-haspopup="true"
+                        aria-expanded={open}
+                        onClick={() => setOpen(current => !current)}
                         className={cn(
-                            'size-4 transition-transform duration-200 group-data-[state=open]:rotate-180',
-                            isDark ? 'text-white/60' : 'text-text-low',
+                            '-m-1 flex size-7 items-center justify-center rounded-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-text-extra-high/30',
+                            isDark ? 'text-white/60 hover:text-white' : 'text-text-low hover:text-text-extra-high',
                         )}
-                        strokeWidth={2.25}
-                    />
-                </Link>
+                    >
+                        <ChevronDown
+                            aria-hidden="true"
+                            className={cn('size-4 transition-transform duration-200', open && 'rotate-180')}
+                            strokeWidth={2.25}
+                        />
+                    </button>
+                </div>
             </HoverCardTrigger>
             <HoverCardContent
                 align="start"
                 sideOffset={12}
                 alignOffset={-10}
+                collisionPadding={12}
                 className={cn(
-                    'w-[440px] overflow-hidden rounded-2xl border p-0 text-[var(--tooltip-text)] shadow-[0_16px_48px_rgba(0,0,0,0.12)]',
+                    'w-[min(440px,calc(100vw-24px))] overflow-hidden rounded-2xl border p-0 text-[var(--tooltip-text)] shadow-[0_16px_48px_rgba(0,0,0,0.12)]',
                     // On a near-black page the tooltip surface vanishes; step up to charcoal there.
                     isDark ? 'border-white/10 bg-gray-1300' : 'border-border-strong bg-[var(--tooltip-bg)]',
                 )}
