@@ -478,6 +478,37 @@ function TokenHeaderLinks({
     );
 }
 
+/**
+ * The chain mark on the main logo. Scales up from nothing when a variant is selected and
+ * back down to nothing before unmounting when the selection clears (250ms, globals.css);
+ * `chain === null` means hidden.
+ */
+function ChainMarkBadge({ chain }: { chain: ChainKind | null }) {
+    // Keep the last chain on screen while the exit animation plays.
+    const [shown, setShown] = React.useState<ChainKind | null>(chain);
+    if (chain !== null && chain !== shown) setShown(chain);
+
+    const closing = chain === null && shown !== null;
+
+    if (shown === null) return null;
+
+    return (
+        <div className="absolute bottom-0 right-0 translate-x-1.5 translate-y-1.5">
+            <div
+                data-state={closing ? 'closed' : 'open'}
+                onAnimationEnd={event => {
+                    if (closing && event.animationName === 'token-scale-out') setShown(null);
+                }}
+                className="token-chain-badge flex size-6 items-center justify-center rounded-lg border-2 border-border-extra-light bg-white"
+                title={CHAINS[shown].label}
+                aria-label={CHAINS[shown].label}
+            >
+                <ChainLogo chain={shown} className="h-3.5 w-3.5 text-text-extra-high" />
+            </div>
+        </div>
+    );
+}
+
 export function TokenHeader({
     address,
     chain: chainProp,
@@ -581,17 +612,7 @@ export function TokenHeader({
                         displayLogoURI={displayLogoURI}
                         preferDisplayLogoURI={shouldShowSelectedVariant}
                     />
-                    {showChainBadge && (
-                        <div className="absolute bottom-0 right-0 translate-x-1.5 translate-y-1.5">
-                            <div
-                                className="flex size-6 items-center justify-center rounded-lg border-2 border-border-extra-light bg-white"
-                                title={CHAINS[chain].label}
-                                aria-label={CHAINS[chain].label}
-                            >
-                                <ChainLogo chain={chain} className="h-3.5 w-3.5 text-text-extra-high" />
-                            </div>
-                        </div>
-                    )}
+                    <ChainMarkBadge chain={showChainBadge ? chain : null} />
                 </div>
 
                 {/* Token Info */}
@@ -644,7 +665,7 @@ export function TokenHeader({
                                     token_chain: chain,
                                     source: 'token_header',
                                 }}
-                                className="!bg-transparent hover:!bg-[var(--badge-default-bg)] px-2 py-1 rounded-full gap-1 text-[var(--badge-default-text)] font-medium text-xs"
+                                className="!bg-transparent hover:!bg-[var(--badge-default-bg)] border border-transparent px-2 py-1 rounded-full gap-1 text-[var(--badge-default-text)] font-medium text-xs [&>span]:text-xs [&>span]:leading-4"
                                 displayText={
                                     <TextMorph
                                         as="span"
@@ -674,7 +695,7 @@ export function TokenHeader({
                                         : {}),
                                     source: 'token_header',
                                 }}
-                                className="!bg-transparent hover:!bg-[var(--badge-default-bg)] px-2 py-1 rounded-full gap-1 text-[var(--badge-default-text)] font-medium text-xs"
+                                className="!bg-transparent hover:!bg-[var(--badge-default-bg)] border border-transparent px-2 py-1 rounded-full gap-1 text-[var(--badge-default-text)] font-medium text-xs [&>span]:text-xs [&>span]:leading-4"
                                 displayText={
                                     <TextMorph
                                         as="span"

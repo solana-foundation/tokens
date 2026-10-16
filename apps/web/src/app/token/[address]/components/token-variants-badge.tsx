@@ -236,7 +236,7 @@ function VariantTokenRow({
                 })
             }
             className={cn(
-                'group flex items-center gap-3 rounded-xl px-2 py-2 active:scale-[0.98] transition-[color,background-color,border-color,transform] duration-200 ease-in-out',
+                'group flex items-center gap-3 rounded-xl px-2 py-2 active:scale-[0.98] transition-transform duration-200 ease-in-out motion-reduce:transition-none',
                 isLight ? 'hover:bg-sand-50' : 'hover:bg-white/5',
                 isCurrent && (isLight ? 'bg-sand-100' : 'bg-white/10'),
             )}
@@ -281,7 +281,7 @@ function VariantTokenRow({
             </div>
             <IconChevronRight
                 className={cn(
-                    'ml-1 size-2 transition-colors',
+                    'ml-1 size-2',
                     isLight ? 'fill-sand-400 group-hover:fill-sand-700' : 'fill-white/40 group-hover:fill-white/80',
                 )}
             />
