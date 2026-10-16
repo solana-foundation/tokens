@@ -12,6 +12,7 @@ import * as dashboard from './handlers/dashboard';
 import type { DashboardRepo } from './handlers/dashboard';
 import { dispatchErrorResponse } from '@tokens/cloudrun-shutdown/http-errors';
 import { limitsEnforce } from './handlers/limits';
+import { apiKeysAuthenticateAndEnforce } from './handlers/platformAuthEnforce';
 import { authenticateApiKey, logApiRequest, type PlatformAuthRepo } from './handlers/platformAuth';
 import type { LimitsRedis } from './redis';
 import * as usageDashboard from './handlers/usageDashboard';
@@ -182,6 +183,16 @@ export function createApp(deps: ServerDeps) {
         if (!redis) throw new Error('limitsEnforce: REDIS_HOST not configured');
         return limitsEnforce({ redis }, args);
     };
+    // One round-trip for the apps/api hot path: auth + limits. Limits never
+    // throw here (see the handler), so a Redis blip stays fail-open.
+    mutations.apiKeysAuthenticateAndEnforce = args =>
+        apiKeysAuthenticateAndEnforce(
+            {
+                platformAuth: deps.platformAuth,
+                ...(deps.limitsRedis ? { limitsRedis: deps.limitsRedis } : {}),
+            },
+            args,
+        );
     mutations.ingestUsageAggregates = args => ingestUsageAggregates(deps.usageIngest, args);
     mutations.syncUsageAggregates = args => syncUsageAggregates(deps.usageIngest, args);
     // Dashboard writes (identity-scoped).
