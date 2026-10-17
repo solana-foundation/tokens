@@ -22,7 +22,6 @@ import {
     coingeckoGetPriceLatestByCoinIds,
     curatedPrefetchForApi,
     getByAssetIds as cloudRunGetByAssetIds,
-    listDeletedRefs,
     sanctumListActive,
     tokenMarketsGetLatestByMints,
     variantFillQualityGetLatestByMints,
@@ -39,6 +38,7 @@ import {
     type TokenMarketsGetLatestByMintsResult,
     type VariantMarketsGetLatestByMintsResult,
 } from '@/lib/cloudrun';
+import { listDeletedRefs } from '@/lib/deleted-refs';
 import { isRetryableCloudRunError, type CloudRunError } from '@/lib/cloudrun/errors';
 
 import {
@@ -593,34 +593,44 @@ export const GET = route(
                         marketMetaByMint.set(row.mint, { lastFetchedAt: market.lastFetchedAt });
                         tokenByMint.set(row.mint, tokenMarketSnapshotFromConvexMarket(row.mint, market));
                     }
+                    // Safety net for mints the composite did not cover (old
+                    // server, failed chunk). Normally empty: the prefetch now
+                    // covers every variant mint of the canonical assets. Chunks
+                    // are disjoint per mint, so they run concurrently.
                     const missingMints = uniqueMints.filter(m => !prefetchMints.has(m));
                     if (missingMints.length > 0) {
-                        for (let i = 0; i < missingMints.length; i += 250) {
-                            const chunk = missingMints.slice(i, i + 250);
-                            const rows = yield* variantMarketsGetLatestByMints({ mints: chunk }).pipe(
-                                tapErrorAndDefault(
-                                    'assets.curated.variantMarkets.gapfill',
-                                    [] as VariantMarketsGetLatestByMintsResult,
-                                    { count: chunk.length },
+                        const gapChunks: string[][] = [];
+                        for (let i = 0; i < missingMints.length; i += 250) gapChunks.push(missingMints.slice(i, i + 250));
+                        const marketChunks = yield* Effect.all(
+                            gapChunks.map(chunk =>
+                                variantMarketsGetLatestByMints({ mints: chunk }).pipe(
+                                    tapErrorAndDefault(
+                                        'assets.curated.variantMarkets.gapfill',
+                                        [] as VariantMarketsGetLatestByMintsResult,
+                                        { count: chunk.length },
+                                    ),
                                 ),
-                            );
-                            for (const row of rows) {
-                                const market = row.market;
-                                if (!market) continue;
-                                if (!Number.isFinite(market.lastFetchedAt) || market.lastFetchedAt <= 0) continue;
-                                marketMetaByMint.set(row.mint, { lastFetchedAt: market.lastFetchedAt });
-                                tokenByMint.set(row.mint, tokenMarketSnapshotFromConvexMarket(row.mint, market));
-                            }
+                            ),
+                            { concurrency: 4 },
+                        );
+                        for (const row of marketChunks.flat()) {
+                            const market = row.market;
+                            if (!market) continue;
+                            if (!Number.isFinite(market.lastFetchedAt) || market.lastFetchedAt <= 0) continue;
+                            marketMetaByMint.set(row.mint, { lastFetchedAt: market.lastFetchedAt });
+                            tokenByMint.set(row.mint, tokenMarketSnapshotFromConvexMarket(row.mint, market));
                         }
-                        for (let i = 0; i < missingMints.length; i += 250) {
-                            const chunk = missingMints.slice(i, i + 250);
-                            const rows = yield* variantFillQualityGetLatestByMints({ mints: chunk }).pipe(
-                                tapErrorAndDefault('assets.curated.fillQuality.gapfill', [], { count: chunk.length }),
-                            );
-                            for (const row of rows) {
-                                const snapshot = executionQualitySnapshotFromConvexFillQuality(row.fillQuality);
-                                if (snapshot) fillQualityByMint.set(row.mint, snapshot);
-                            }
+                        const fillChunks = yield* Effect.all(
+                            gapChunks.map(chunk =>
+                                variantFillQualityGetLatestByMints({ mints: chunk }).pipe(
+                                    tapErrorAndDefault('assets.curated.fillQuality.gapfill', [], { count: chunk.length }),
+                                ),
+                            ),
+                            { concurrency: 4 },
+                        );
+                        for (const row of fillChunks.flat()) {
+                            const snapshot = executionQualitySnapshotFromConvexFillQuality(row.fillQuality);
+                            if (snapshot) fillQualityByMint.set(row.mint, snapshot);
                         }
                     }
                     for (const row of prefetch.fillQuality) {

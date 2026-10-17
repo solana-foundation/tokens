@@ -34,6 +34,7 @@ const ENV_KEYS = [
     'TOKENS_USAGE_LOG_MODE',
     'TOKENS_CACHE_WARM_SECRET',
     'TOKENS_SPECULATIVE_BATCH',
+    'TOKENS_DELETED_REFS_MEMO',
     'BIRDEYE_API_KEY',
 ] as const;
 const savedEnv: Record<string, string | undefined> = {};
@@ -134,6 +135,10 @@ beforeEach(() => {
     process.env.TOKENS_CLOUDRUN_USAGE_URL = 'https://usage.example.run.app';
     process.env.TOKENS_PLAYGROUND_PROXY_SECRET = 'test-playground-secret';
     process.env.TOKENS_USAGE_LOG_MODE = 'off';
+    // These tests count Cloud Run calls with the batch on vs off; the
+    // process-wide deleted-refs memo (its own tests cover it) would otherwise
+    // absorb `listDeletedRefs` depending on which test ran first.
+    process.env.TOKENS_DELETED_REFS_MEMO = 'off';
     resetEnvForTests();
     __resetCloudRunClientForTesting();
     __resetSpeculativeBatchForTests();

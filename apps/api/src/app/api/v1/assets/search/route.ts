@@ -20,7 +20,6 @@ import {
     coingeckoGetCoinById,
     coingeckoGetPriceLatestByCoinIds,
     getByAssetId as cloudRunGetByAssetId,
-    listDeletedRefs,
     sanctumResolveRef,
     search as cloudRunSearch,
     searchPrefetchForApi,
@@ -35,6 +34,7 @@ import {
     type StockPricesGetLatestByAssetIdsResult,
     type TokenMarketsGetLatestByMintsResult,
 } from '@/lib/cloudrun';
+import { listDeletedRefs } from '@/lib/deleted-refs';
 
 import type { AssetCategory, CanonicalAsset } from '@tokens/asset-registry';
 import {
@@ -658,26 +658,36 @@ export const GET = route(
                         const snapshot = executionQualitySnapshotFromConvexFillQuality(row.fillQuality);
                         if (snapshot) fillQualityByMint.set(row.mint, snapshot);
                     }
+                    // Safety net for mints the composite did not cover (old
+                    // server, failed chunk). Normally empty: the prefetch now
+                    // covers every variant mint of the combined assets. Chunks
+                    // are disjoint per mint, so they run concurrently.
                     const missingMints = uniqueMints.filter(m => !prefetchMints.has(m));
                     if (missingMints.length > 0) {
-                        for (let i = 0; i < missingMints.length; i += 250) {
-                            const chunk = missingMints.slice(i, i + 250);
-                            const rows = yield* variantMarketsGetLatestByMints({ mints: chunk });
-                            for (const row of rows) {
-                                const market = row.market;
-                                if (!market) continue;
-                                if (!Number.isFinite(market.lastFetchedAt) || market.lastFetchedAt <= 0) continue;
-                                marketMetaByMint.set(row.mint, { lastFetchedAt: market.lastFetchedAt });
-                                tokenByMint.set(row.mint, tokenMarketSnapshotFromConvexMarket(row.mint, market));
-                            }
+                        const gapChunks: string[][] = [];
+                        for (let i = 0; i < missingMints.length; i += 250) gapChunks.push(missingMints.slice(i, i + 250));
+                        const marketChunks = yield* Effect.all(
+                            gapChunks.map(chunk => variantMarketsGetLatestByMints({ mints: chunk })),
+                            { concurrency: 4 },
+                        );
+                        for (const row of marketChunks.flat()) {
+                            const market = row.market;
+                            if (!market) continue;
+                            if (!Number.isFinite(market.lastFetchedAt) || market.lastFetchedAt <= 0) continue;
+                            marketMetaByMint.set(row.mint, { lastFetchedAt: market.lastFetchedAt });
+                            tokenByMint.set(row.mint, tokenMarketSnapshotFromConvexMarket(row.mint, market));
                         }
-                        for (let i = 0; i < missingMints.length; i += 250) {
-                            const chunk = missingMints.slice(i, i + 250);
-                            const rows = yield* variantFillQualityGetLatestByMints({ mints: chunk }).pipe(tapErrorAndDefault('assets.search.fillQuality.gapfill', [], { count: chunk.length }));
-                            for (const row of rows) {
-                                const snapshot = executionQualitySnapshotFromConvexFillQuality(row.fillQuality);
-                                if (snapshot) fillQualityByMint.set(row.mint, snapshot);
-                            }
+                        const fillChunks = yield* Effect.all(
+                            gapChunks.map(chunk =>
+                                variantFillQualityGetLatestByMints({ mints: chunk }).pipe(
+                                    tapErrorAndDefault('assets.search.fillQuality.gapfill', [], { count: chunk.length }),
+                                ),
+                            ),
+                            { concurrency: 4 },
+                        );
+                        for (const row of fillChunks.flat()) {
+                            const snapshot = executionQualitySnapshotFromConvexFillQuality(row.fillQuality);
+                            if (snapshot) fillQualityByMint.set(row.mint, snapshot);
                         }
                     }
                 } else {

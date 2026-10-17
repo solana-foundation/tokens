@@ -3,10 +3,10 @@ import { Effect } from 'effect';
 import { NotFoundError, tapErrorAndDefault } from '@tokens/effect';
 import {
     assetVariantsGetByMint,
-    listDeletedRefs,
     resolveAssetRefForApi as cloudRunResolveAssetRefForApi,
     sanctumResolveRef,
 } from '@/lib/cloudrun';
+import { listDeletedRefs } from '@/lib/deleted-refs';
 import { currentAssetId, loadAssetIdRenames } from '@/lib/asset-id-renames';
 import { getVariantByMint, resolveAlias as resolveRegistryAlias } from '@tokens/asset-registry';
 import { looksLikeSolanaMintAddress, mintToSingletonAssetId, singletonAssetIdToMint } from './_singleton-asset-id';

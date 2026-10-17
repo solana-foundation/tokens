@@ -669,4 +669,139 @@ describe('assetsApiCuratedPrefetchForApi', () => {
         expect(queriedAssetIds).toContain('solana');
         expect(queriedAssetIds).not.toContain('legacy-asset');
     });
+    it('phase-3c: covers the variant mints of canonical assets beyond memberMints, through the limiter, without widening the tokenMarkets scoring input', async () => {
+        const solMint = 'So11111111111111111111111111111111111111112';
+        const lstA = 'LST1111111111111111111111111111111111111111';
+        const lstB = 'LST2222222222222222222222222222222222222222';
+        const seenMarketMintBatches: string[][] = [];
+        const seenFillMintBatches: string[][] = [];
+        const seenTokenMarketsMints: string[][] = [];
+        const deps = makeEmptyDeps({
+            assetCollectionsReadsRepo: {
+                async listMembersBySlug(slug) {
+                    return slug === 'majors' ? [{ asset_id: 'solana' }] : [];
+                },
+                async listMemberMintsBySlug() {
+                    return [];
+                },
+                async getSummariesBySlugs() {
+                    return [];
+                },
+            },
+            assetsRepo: {
+                ...makeEmptyDeps().assetsRepo,
+                async findByAssetIds(assetIds) {
+                    return assetIds.includes('solana') ? [makeAssetRow()] : [];
+                },
+            },
+            assetVariantsRepo: {
+                ...makeEmptyDeps().assetVariantsRepo,
+                async findVariantsByAssetIds(assetIds) {
+                    if (!assetIds.includes('solana')) return [];
+                    return [
+                        makeVariantRow(),
+                        makeVariantRow({ mint: lstA, variant_id: 'solana:lst-a', kind: 'lst' }),
+                        makeVariantRow({ mint: lstB, variant_id: 'solana:lst-b', kind: 'lst' }),
+                    ];
+                },
+            },
+            variantMarketsRepo: {
+                async findLatestByMints(mints) {
+                    seenMarketMintBatches.push([...mints]);
+                    return [];
+                },
+            },
+            fillQualityReadsRepo: {
+                async findLatestByMints(mints) {
+                    seenFillMintBatches.push([...mints]);
+                    return [];
+                },
+            },
+            tokensReadsRepo: {
+                ...makeEmptyDeps().tokensReadsRepo,
+                async findTokenMarketsLatestByMints(mints) {
+                    seenTokenMarketsMints.push([...mints]);
+                    return [];
+                },
+            },
+        });
+        const out = await assetsApiCuratedPrefetchForApi(deps, {
+            listId: 'majors',
+            memberMints: [solMint],
+            memberAssetIds: ['solana'],
+            includeSanctum: false,
+            includeStock: false,
+        });
+        const seenMarketMints = seenMarketMintBatches.flat();
+        expect(seenMarketMints).toContain(solMint);
+        expect(seenMarketMints).toContain(lstA);
+        expect(seenMarketMints).toContain(lstB);
+        expect(seenFillMintBatches.flat()).toContain(lstA);
+        expect(seenFillMintBatches.flat()).toContain(lstB);
+        for (const batch of seenMarketMintBatches) {
+            const hasOriginal = batch.includes(solMint);
+            const hasExtra = batch.includes(lstA) || batch.includes(lstB);
+            expect(hasOriginal && hasExtra).toBe(false);
+        }
+        const returnedMints = new Set(out.variantMarkets.map(row => row.mint));
+        expect(returnedMints.has(lstA)).toBe(true);
+        expect(returnedMints.has(lstB)).toBe(true);
+        expect(new Set(out.fillQuality.map(row => row.mint)).has(lstA)).toBe(true);
+        // Scoring input for the DEX-market fallback stays the memberMints only.
+        expect(seenTokenMarketsMints).toEqual([[solMint]]);
+    });
+
+    it('phase-3c: a non-transient extras failure is dropped, a transient one still fails the call', async () => {
+        const solMint = 'So11111111111111111111111111111111111111112';
+        const lstA = 'LST1111111111111111111111111111111111111111';
+        const makeDeps = (error: Error) =>
+            makeEmptyDeps({
+                assetCollectionsReadsRepo: {
+                    async listMembersBySlug(slug) {
+                        return slug === 'majors' ? [{ asset_id: 'solana' }] : [];
+                    },
+                    async listMemberMintsBySlug() {
+                        return [];
+                    },
+                    async getSummariesBySlugs() {
+                        return [];
+                    },
+                },
+                assetsRepo: {
+                    ...makeEmptyDeps().assetsRepo,
+                    async findByAssetIds(assetIds) {
+                        return assetIds.includes('solana') ? [makeAssetRow()] : [];
+                    },
+                },
+                assetVariantsRepo: {
+                    ...makeEmptyDeps().assetVariantsRepo,
+                    async findVariantsByAssetIds(assetIds) {
+                        return assetIds.includes('solana')
+                            ? [
+                                  makeVariantRow(),
+                                  makeVariantRow({ mint: lstA, variant_id: 'solana:lst-a', kind: 'lst' }),
+                              ]
+                            : [];
+                    },
+                },
+                variantMarketsRepo: {
+                    async findLatestByMints(mints) {
+                        if (mints.includes(lstA)) throw error;
+                        return [];
+                    },
+                },
+            });
+        const args = {
+            listId: 'majors',
+            memberMints: [solMint],
+            memberAssetIds: ['solana'],
+            includeSanctum: false,
+            includeStock: false,
+        };
+        const out = await assetsApiCuratedPrefetchForApi(makeDeps(new Error('markets down')), args);
+        expect(new Set(out.variantMarkets.map(row => row.mint)).has(lstA)).toBe(false);
+
+        const transient = Object.assign(new Error('timeout'), { code: 'CONNECT_TIMEOUT' });
+        await expect(assetsApiCuratedPrefetchForApi(makeDeps(transient), args)).rejects.toThrow('timeout');
+    });
 });

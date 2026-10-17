@@ -485,7 +485,9 @@ export async function assetsApiSearchPrefetchForApi(
     const variantMarkets = variantMarketsChunks.flat();
 
     // DEX-market fallback: same scoring heuristic as the route so both paths
-    // pick the same missing set.
+    // pick the same missing set. Scored over `combinedMints` ONLY — the
+    // phase-3b variant-mint extras below must not widen this input, or the
+    // server would pick a different top-25 than it does today.
     const variantMarketByMint = new Map<string, VariantMarketEntry>();
     for (const entry of variantMarkets) variantMarketByMint.set(entry.mint, entry);
     const scoredMints = combinedMints
@@ -494,11 +496,40 @@ export async function assetsApiSearchPrefetchForApi(
         .sort((a, b) => b.score - a.score)
         .slice(0, 25)
         .map(entry => entry.mint);
-    const tokenMarketsDocs = scoredMints.length > 0
-        ? await getTokenMarketsLatestByMints(deps.tokensReadsRepo, { mints: scoredMints }).catch(
-              (): GetTokenMarketsLatestByMintsEntry[] => [],
-          )
-        : [];
+
+    // Phase 3b: the route builds its mint universe from every variant of the
+    // combined assets (`variantsByAssetId`), not just `combinedMints`. Those
+    // extra mints (e.g. `solana`'s ~1.5k LST variants) used to be gap-filled by
+    // the route in serial 250-mint round-trips; cover them here instead, in
+    // parallel, so the route's gap-fill finds nothing left to fetch. Rows are
+    // appended to the same arrays, so the response shape is unchanged.
+    const combinedMintSet = new Set(combinedMints);
+    const extraMints = uniqueStrings(
+        variantsByAssetId.flatMap(entry => entry.variants.map(variant => variant.mint)),
+    ).filter(mint => !combinedMintSet.has(mint));
+    const chunkedExtraMints = chunkArray(extraMints, 250);
+
+    const [tokenMarketsDocs, extraVariantMarketsChunks, extraFillQualityChunks] = await Promise.all([
+        scoredMints.length > 0
+            ? getTokenMarketsLatestByMints(deps.tokensReadsRepo, { mints: scoredMints }).catch(
+                  (): GetTokenMarketsLatestByMintsEntry[] => [],
+              )
+            : Promise.resolve<GetTokenMarketsLatestByMintsEntry[]>([]),
+        Promise.all(
+            chunkedExtraMints.map(chunk =>
+                variantMarketsGetLatestByMints(deps.variantMarketsRepo, { mints: chunk }).catch(
+                    (): VariantMarketEntry[] => [],
+                ),
+            ),
+        ),
+        Promise.all(
+            chunkedExtraMints.map(chunk =>
+                fillQualityGetLatestByMints(deps.fillQualityReadsRepo, { mints: chunk }).catch(
+                    (): FillQualityEntry[] => [],
+                ),
+            ),
+        ),
+    ]);
 
     return {
         sanctumMatch,
@@ -508,8 +539,8 @@ export async function assetsApiSearchPrefetchForApi(
         variantsByTokenMint,
         extraAssets,
         variantsByAssetId,
-        variantMarkets,
-        fillQuality: fillQualityChunks.flat(),
+        variantMarkets: [...variantMarkets, ...extraVariantMarketsChunks.flat()],
+        fillQuality: [...fillQualityChunks.flat(), ...extraFillQualityChunks.flat()],
         assetAggregates: aggregatesChunks.flat(),
         stockInstruments,
         stockPrices,

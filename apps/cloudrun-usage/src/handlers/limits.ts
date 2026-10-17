@@ -93,7 +93,7 @@ function msUntilNextMonthUtc(now: Date): number {
     return Math.max(0, nextMonthStart.getTime() - now.getTime());
 }
 
-function decodeWindow(value: unknown, label: string): WindowConfig {
+export function decodeWindow(value: unknown, label: string): WindowConfig {
     const obj = value as { requests?: unknown; windowSeconds?: unknown } | null;
     const requests = typeof obj?.requests === 'number' ? obj.requests : NaN;
     const windowSeconds = typeof obj?.windowSeconds === 'number' ? obj.windowSeconds : NaN;
@@ -103,22 +103,27 @@ function decodeWindow(value: unknown, label: string): WindowConfig {
     return { requests: Math.floor(requests), windowSeconds: Math.floor(windowSeconds) };
 }
 
+export function decodeQuota(value: unknown): { requestsPerMonth: number } {
+    const quotaObj = value as { requestsPerMonth?: unknown } | null;
+    const requestsPerMonth = typeof quotaObj?.requestsPerMonth === 'number' ? quotaObj.requestsPerMonth : NaN;
+    if (!Number.isFinite(requestsPerMonth) || requestsPerMonth <= 0) {
+        throw new InvalidArgsError('quota.requestsPerMonth must be a positive number');
+    }
+    return { requestsPerMonth: Math.floor(requestsPerMonth) };
+}
+
 export function decodeLimitsEnforceArgs(raw: unknown): LimitsEnforceArgs {
     const obj = (raw ?? {}) as Record<string, unknown>;
     const apiKeyId = typeof obj.apiKeyId === 'string' ? obj.apiKeyId.trim() : '';
     if (!apiKeyId || apiKeyId.length > 128 || !/^[A-Za-z0-9_-]+$/.test(apiKeyId)) {
         throw new InvalidArgsError('apiKeyId must be a short alphanumeric id');
     }
-    const quotaObj = obj.quota as { requestsPerMonth?: unknown } | null;
-    const requestsPerMonth = typeof quotaObj?.requestsPerMonth === 'number' ? quotaObj.requestsPerMonth : NaN;
-    if (!Number.isFinite(requestsPerMonth) || requestsPerMonth <= 0) {
-        throw new InvalidArgsError('quota.requestsPerMonth must be a positive number');
-    }
+    const quota = decodeQuota(obj.quota);
     return {
         apiKeyId,
         rateLimit: decodeWindow(obj.rateLimit, 'rateLimit'),
         sustainedRateLimit: decodeWindow(obj.sustainedRateLimit, 'sustainedRateLimit'),
-        quota: { requestsPerMonth: Math.floor(requestsPerMonth) },
+        quota,
     };
 }
 
