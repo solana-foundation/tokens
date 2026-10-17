@@ -86,6 +86,8 @@ export function toCanonicalAsset(
         aliases: assetDoc.aliases,
         ...(assetDoc.coingeckoId ? { coingeckoId: assetDoc.coingeckoId } : {}),
         variants,
+        region: assetDoc.region ?? null,
+        industry: assetDoc.industry ?? null,
     };
 }
 

@@ -175,6 +175,8 @@ async function verifySearch(baseUrl: string, apiKey: string, prefix: string, q: 
         assertNoKeys(row, ['aliases', 'symbols'], `search.results[${i}]`);
         const assetId = row.assetId;
         assertNotMintAssetId(assetId, `search.results[${i}].assetId`);
+        assertNullableString(row.region, `search.results[${i}].region`);
+        assertNullableString(row.industry, `search.results[${i}].industry`);
         assertStatsSnapshot(row.stats ?? null, `search.results[${i}].stats`);
         assertCanonicalMarketSnapshot(row.canonicalMarket, `search.results[${i}].canonicalMarket`);
 
@@ -227,6 +229,8 @@ async function verifyCurated(baseUrl: string, apiKey: string, prefix: string): P
         assertNoKeys(row, ['aliases', 'symbols', 'variants'], `curated.assets[${i}]`);
         const assetId = row.assetId;
         assertNotMintAssetId(assetId, `curated.assets[${i}].assetId`);
+        assertNullableString(row.region, `curated.assets[${i}].region`);
+        assertNullableString(row.industry, `curated.assets[${i}].industry`);
         assertStatsSnapshot(row.stats ?? null, `curated.assets[${i}].stats`);
         assertCanonicalMarketSnapshot(row.canonicalMarket, `curated.assets[${i}].canonicalMarket`);
 
@@ -291,6 +295,8 @@ async function verifyDetail(baseUrl: string, apiKey: string, prefix: string, ass
     assertObject(data, 'detail response');
     assertObject(data.asset, 'detail.asset');
     assertNotMintAssetId(data.asset.assetId, 'detail.asset.assetId');
+    assertNullableString(data.asset.region, 'detail.asset.region');
+    assertNullableString(data.asset.industry, 'detail.asset.industry');
     assertCanonicalMarketSnapshot(
         (data.asset as Record<string, unknown>).canonicalMarket,
         'detail.asset.canonicalMarket',

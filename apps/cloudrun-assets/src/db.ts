@@ -196,7 +196,7 @@ export function makePostgresAssetsRepo(sql: Sql): AssetsRepo {
             const rows = await sql<AssetRow[]>`
                 SELECT id, asset_id, category, name, symbol, aliases,
                        coingecko_id, description, image_url, is_active,
-                       created_at, updated_at
+                       created_at, updated_at, region, industry
                 FROM assets
                 WHERE asset_id = ${assetId}
                 LIMIT 1
@@ -209,7 +209,7 @@ export function makePostgresAssetsRepo(sql: Sql): AssetsRepo {
             const rows = await sql<AssetRow[]>`
                 SELECT id, asset_id, category, name, symbol, aliases,
                        coingecko_id, description, image_url, is_active,
-                       created_at, updated_at
+                       created_at, updated_at, region, industry
                 FROM assets
                 WHERE asset_id IN ${sql(assetIds)}
             `;
@@ -226,33 +226,44 @@ export function makePostgresAssetsRepo(sql: Sql): AssetsRepo {
             return rows;
         },
 
-        async findAliasesByFuzzy(query, limit) {
+        async findAliasesByFuzzy(query, limit, filter) {
             const tsq = buildPrefixTsQuery(query) ?? 'noresultsentinel:*';
             const pattern = `%${query}%`;
+            // The asset predicates ride along via a JOIN only when a filter is
+            // set, so the unfiltered query keeps its plan (and its semantics
+            // for aliases whose asset row is gone).
+            const hasFilter = Boolean(filter?.category || filter?.region || filter?.industry);
             const rows = await sql<AssetAliasRow[]>`
-                SELECT alias, normalized, asset_id, priority
-                FROM asset_aliases
-                WHERE to_tsvector('english', alias) @@ to_tsquery('english', ${tsq})
-                   OR alias ILIKE ${pattern}
-                ORDER BY ts_rank_cd(to_tsvector('english', alias), to_tsquery('english', ${tsq})) DESC,
-                         priority DESC,
-                         length(alias) ASC,
-                         alias ASC
+                SELECT al.alias, al.normalized, al.asset_id, al.priority
+                FROM asset_aliases al
+                ${hasFilter ? sql`JOIN assets a ON a.asset_id = al.asset_id` : sql``}
+                WHERE (to_tsvector('english', al.alias) @@ to_tsquery('english', ${tsq})
+                   OR al.alias ILIKE ${pattern})
+                  ${filter?.category ? sql`AND a.category = ${filter.category}` : sql``}
+                  ${filter?.region ? sql`AND a.region = ${filter.region}` : sql``}
+                  ${filter?.industry ? sql`AND a.industry = ${filter.industry}` : sql``}
+                ORDER BY ts_rank_cd(to_tsvector('english', al.alias), to_tsquery('english', ${tsq})) DESC,
+                         al.priority DESC,
+                         length(al.alias) ASC,
+                         al.alias ASC
                 LIMIT ${limit}
             `;
             return rows;
         },
 
-        async findAssetsByNameFuzzy(query, limit) {
+        async findAssetsByNameFuzzy(query, limit, filter) {
             const tsq = buildPrefixTsQuery(query) ?? 'noresultsentinel:*';
             const pattern = `%${query}%`;
             const rows = await sql<AssetRow[]>`
                 SELECT id, asset_id, category, name, symbol, aliases,
                        coingecko_id, description, image_url, is_active,
-                       created_at, updated_at
+                       created_at, updated_at, region, industry
                 FROM assets
-                WHERE to_tsvector('english', coalesce(name, '')) @@ to_tsquery('english', ${tsq})
-                   OR coalesce(name, '') ILIKE ${pattern}
+                WHERE (to_tsvector('english', coalesce(name, '')) @@ to_tsquery('english', ${tsq})
+                   OR coalesce(name, '') ILIKE ${pattern})
+                  ${filter?.category ? sql`AND category = ${filter.category}` : sql``}
+                  ${filter?.region ? sql`AND region = ${filter.region}` : sql``}
+                  ${filter?.industry ? sql`AND industry = ${filter.industry}` : sql``}
                 ORDER BY ts_rank_cd(to_tsvector('english', coalesce(name, '')), to_tsquery('english', ${tsq})) DESC,
                          length(coalesce(name, '')) ASC,
                          asset_id ASC
@@ -261,16 +272,19 @@ export function makePostgresAssetsRepo(sql: Sql): AssetsRepo {
             return rows;
         },
 
-        async findAssetsBySymbolFuzzy(query, limit) {
+        async findAssetsBySymbolFuzzy(query, limit, filter) {
             const tsq = buildPrefixTsQuery(query) ?? 'noresultsentinel:*';
             const pattern = `%${query}%`;
             const rows = await sql<AssetRow[]>`
                 SELECT id, asset_id, category, name, symbol, aliases,
                        coingecko_id, description, image_url, is_active,
-                       created_at, updated_at
+                       created_at, updated_at, region, industry
                 FROM assets
-                WHERE to_tsvector('english', coalesce(symbol, '')) @@ to_tsquery('english', ${tsq})
-                   OR coalesce(symbol, '') ILIKE ${pattern}
+                WHERE (to_tsvector('english', coalesce(symbol, '')) @@ to_tsquery('english', ${tsq})
+                   OR coalesce(symbol, '') ILIKE ${pattern})
+                  ${filter?.category ? sql`AND category = ${filter.category}` : sql``}
+                  ${filter?.region ? sql`AND region = ${filter.region}` : sql``}
+                  ${filter?.industry ? sql`AND industry = ${filter.industry}` : sql``}
                 ORDER BY ts_rank_cd(to_tsvector('english', coalesce(symbol, '')), to_tsquery('english', ${tsq})) DESC,
                          length(coalesce(symbol, '')) ASC,
                          asset_id ASC
@@ -333,7 +347,7 @@ export function makePostgresAssetsRepo(sql: Sql): AssetsRepo {
             const rows = await sql<AssetRow[]>`
                 SELECT id, asset_id, category, name, symbol, aliases,
                        coingecko_id, description, image_url, is_active,
-                       created_at, updated_at
+                       created_at, updated_at, region, industry
                 FROM assets
                 WHERE category = ${category} AND is_active = true
                 ORDER BY asset_id ASC
@@ -346,7 +360,7 @@ export function makePostgresAssetsRepo(sql: Sql): AssetsRepo {
             const rows = await sql<AssetRow[]>`
                 SELECT id, asset_id, category, name, symbol, aliases,
                        coingecko_id, description, image_url, is_active,
-                       created_at, updated_at
+                       created_at, updated_at, region, industry
                 FROM assets
                 WHERE is_active = true
                   AND coingecko_id IS NOT NULL
@@ -2884,7 +2898,7 @@ export function makePostgresAssetsApiRepo(sql: Sql): AssetsApiRepo {
             const rows = await sql<AssetsApiAssetRow[]>`
                 SELECT asset_id, category, name, symbol, aliases,
                        coingecko_id, description, image_url, is_active,
-                       created_at, updated_at
+                       created_at, updated_at, region, industry
                 FROM assets
                 WHERE asset_id = ${assetId}
                 LIMIT 1
@@ -3051,6 +3065,19 @@ function sqlFragmentColumns(cols: readonly string[]): string {
  */
 function logoCdnColumn(keyExpr: string): string {
     return `(SELECT ml.logo_cdn_url FROM mint_logos ml WHERE ml.mint = ${keyExpr}) AS logo_cdn_url`;
+}
+
+/**
+ * Admin-curated `assets.region` / `assets.industry` (migration 0032) for rows
+ * that only carry a denormalized `asset_id` (trending snapshots copy
+ * category/symbol/name at cron time and would otherwise lag admin edits by a
+ * cycle). Correlated unique-index lookups for the same reason as above.
+ */
+function assetTagColumns(keyExpr: string): readonly string[] {
+    return [
+        `(SELECT a.region FROM assets a WHERE a.asset_id = ${keyExpr}) AS region`,
+        `(SELECT a.industry FROM assets a WHERE a.asset_id = ${keyExpr}) AS industry`,
+    ];
 }
 
 export function makePostgresCoingeckoReadsRepo(sql: Sql): CoingeckoReadsRepo {
@@ -3414,6 +3441,7 @@ const TRENDING_MARKET_COLUMNS = sqlFragmentColumns([
     'as_of',
     'last_computed_at',
     logoCdnColumn('trending_markets.mint'),
+    ...assetTagColumns('trending_markets.asset_id'),
 ]);
 
 const FRESH_TRENDING_MARKET_COLUMNS = sqlFragmentColumns([
@@ -3453,6 +3481,7 @@ const FRESH_TRENDING_MARKET_COLUMNS = sqlFragmentColumns([
     'category_rank',
     'last_computed_at',
     logoCdnColumn('fresh_trending_markets.mint'),
+    ...assetTagColumns('fresh_trending_markets.asset_id'),
 ]);
 
 const FILL_QUALITY_COLUMNS = sqlFragmentColumns([

@@ -219,6 +219,16 @@ describe('seedCanonicalAssetsRegistry', () => {
         expect(state.refreshedViewCount).toBe(1);
     });
 
+    it('never writes the admin-owned region/industry tags (migration 0032)', async () => {
+        const { repo, state } = makeRepo();
+        await seedCanonicalAssetsRegistry(makeDeps(repo), {});
+        expect(state.upsertedAssets.length).toBeGreaterThan(0);
+        for (const args of state.upsertedAssets) {
+            expect(Object.keys(args)).not.toContain('region');
+            expect(Object.keys(args)).not.toContain('industry');
+        }
+    });
+
     it('skips tombstoned assets entirely (no upsert)', async () => {
         const { repo, state } = makeRepo();
         state.tombstonedRefs.add(sampleAsset.variants[0]!.mint.toLowerCase());

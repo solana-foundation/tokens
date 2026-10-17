@@ -328,6 +328,8 @@ export function buildAssetDetailResponse(params: BuildAssetDetailResponseParams)
             symbol: responseAssetSymbol,
             ...(params.assetDescription ? { description: params.assetDescription } : {}),
             category: params.asset.category,
+            region: params.asset.region ?? null,
+            industry: params.asset.industry ?? null,
             aliases: params.asset.aliases,
             symbols: responseSymbols,
             imageUrl: params.imageUrl,

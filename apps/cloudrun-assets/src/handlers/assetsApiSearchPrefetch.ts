@@ -34,6 +34,8 @@
  * not aggregation cost.
  */
 
+import { isAssetIndustry, isAssetRegion, type AssetIndustry, type AssetRegion } from '@tokens/asset-registry';
+
 import type { AssetCategory, AssetResult, AssetsRepo, GetByAssetIdsEntry } from './assets';
 import { ASSET_CATEGORIES, InvalidArgsError } from './assets';
 import { getByAssetIds, search as assetsSearch } from './assets';
@@ -105,6 +107,9 @@ export interface SearchPrefetchArgs {
     query: string;
     /** Optional category filter (constrains the assets search). */
     category?: AssetCategory;
+    /** Optional admin-curated tag filters (constrain the assets search; AND-combined). */
+    region?: AssetRegion;
+    industry?: AssetIndustry;
     /** Cap for downstream results — the route uses `Math.min(limit * 2, 50)`. */
     searchLimit: number;
     /** Cap for the tokensSearchTokens call — same effective range as searchLimit. */
@@ -300,6 +305,17 @@ export async function assetsApiSearchPrefetchForApi(
         throw new InvalidArgsError('category must be a valid asset category');
     }
     const category = (categoryRaw ?? null) as AssetCategory | null;
+    const regionRaw = readOptionalString(a, 'region');
+    if (regionRaw !== undefined && !isAssetRegion(regionRaw)) {
+        throw new InvalidArgsError('region must be a valid asset region');
+    }
+    const region: AssetRegion | null = regionRaw !== undefined && isAssetRegion(regionRaw) ? regionRaw : null;
+    const industryRaw = readOptionalString(a, 'industry');
+    if (industryRaw !== undefined && !isAssetIndustry(industryRaw)) {
+        throw new InvalidArgsError('industry must be a valid asset industry');
+    }
+    const industry: AssetIndustry | null =
+        industryRaw !== undefined && isAssetIndustry(industryRaw) ? industryRaw : null;
     const searchLimit = readOptionalNumber(a, 'searchLimit') ?? 40;
     const tokensLimit = readOptionalNumber(a, 'tokensLimit') ?? 40;
     const includeSanctum = readOptionalBoolean(a, 'includeSanctum') ?? true;
@@ -337,6 +353,8 @@ export async function assetsApiSearchPrefetchForApi(
         assetsSearch(deps.assetsRepo, {
             query: effectiveAssetQuery,
             ...(category ? { category } : {}),
+            ...(region ? { region } : {}),
+            ...(industry ? { industry } : {}),
             limit: searchLimit,
         }),
         tokenMints.length > 0

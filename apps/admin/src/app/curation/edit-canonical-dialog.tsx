@@ -11,6 +11,14 @@ import type {
     GenerateCanonicalLogoUploadUrlResult,
     UpdateCanonicalAssetResult,
 } from '@/lib/admin-types';
+import {
+    ASSET_INDUSTRIES,
+    ASSET_INDUSTRY_LABELS,
+    ASSET_REGION_LABELS,
+    ASSET_REGIONS,
+    type AssetIndustry,
+    type AssetRegion,
+} from '@tokens/asset-registry/taxonomy';
 import { Avatar, AvatarFallback, AvatarImage } from '@tokens/ui/avatar';
 import { Button } from '@tokens/ui/button';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@tokens/ui/dialog';
@@ -51,6 +59,8 @@ export function EditCanonicalDialog({
 
     const [nextAssetId, setNextAssetId] = useState('');
     const [category, setCategory] = useState<AssetCategory>('crypto');
+    const [region, setRegion] = useState<AssetRegion | 'none'>('none');
+    const [industry, setIndustry] = useState<AssetIndustry | 'none'>('none');
     const [name, setName] = useState('');
     const [symbol, setSymbol] = useState('');
     const [coingeckoId, setCoingeckoId] = useState('');
@@ -72,6 +82,8 @@ export function EditCanonicalDialog({
         if (!open || !editor) return;
         setNextAssetId(editor.asset.assetId);
         setCategory(editor.asset.category);
+        setRegion(editor.asset.region ?? 'none');
+        setIndustry(editor.asset.industry ?? 'none');
         setName(editor.asset.name ?? '');
         setSymbol(editor.asset.symbol ?? '');
         setCoingeckoId(editor.asset.coingeckoId ?? '');
@@ -160,6 +172,8 @@ export function EditCanonicalDialog({
                 assetId,
                 ...(isRenaming ? { newAssetId: trimmedNextAssetId } : {}),
                 category,
+                region: region === 'none' ? null : region,
+                industry: industry === 'none' ? null : industry,
                 name,
                 symbol,
                 coingeckoId,
@@ -268,6 +282,41 @@ export function EditCanonicalDialog({
                                         <SelectItem value="equity">Equity</SelectItem>
                                         <SelectItem value="etf">ETF</SelectItem>
                                         <SelectItem value="index">Index</SelectItem>
+                                    </SelectContent>
+                                </Select>
+                            </div>
+                            <div className="space-y-1.5">
+                                <Label htmlFor="asset-region">Region</Label>
+                                <Select value={region} onValueChange={value => setRegion(value as AssetRegion | 'none')}>
+                                    <SelectTrigger id="asset-region">
+                                        <SelectValue />
+                                    </SelectTrigger>
+                                    <SelectContent>
+                                        <SelectItem value="none">None</SelectItem>
+                                        {ASSET_REGIONS.map(slug => (
+                                            <SelectItem key={slug} value={slug}>
+                                                {ASSET_REGION_LABELS[slug]}
+                                            </SelectItem>
+                                        ))}
+                                    </SelectContent>
+                                </Select>
+                            </div>
+                            <div className="space-y-1.5">
+                                <Label htmlFor="asset-industry">Industry</Label>
+                                <Select
+                                    value={industry}
+                                    onValueChange={value => setIndustry(value as AssetIndustry | 'none')}
+                                >
+                                    <SelectTrigger id="asset-industry">
+                                        <SelectValue />
+                                    </SelectTrigger>
+                                    <SelectContent>
+                                        <SelectItem value="none">None</SelectItem>
+                                        {ASSET_INDUSTRIES.map(slug => (
+                                            <SelectItem key={slug} value={slug}>
+                                                {ASSET_INDUSTRY_LABELS[slug]}
+                                            </SelectItem>
+                                        ))}
                                     </SelectContent>
                                 </Select>
                             </div>

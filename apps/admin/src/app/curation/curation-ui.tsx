@@ -78,6 +78,7 @@ import { HardDeleteAssetDialog } from './hard-delete-asset-dialog';
 import { CreateCanonicalDialog } from './create-canonical-dialog';
 import { EditCanonicalDialog } from './edit-canonical-dialog';
 import { EditCategoriesDialog } from './edit-categories-dialog';
+import { ImportAssetTagsDialog } from './import-asset-tags-dialog';
 import { AddVariantDialog } from './add-variant-dialog';
 import { EditVariantDialog } from './edit-variant-dialog';
 import { MoveVariantDialog } from './move-variant-dialog';
@@ -346,6 +347,7 @@ export function CurationUi(): React.JSX.Element {
     const [seedDialogOpen, setSeedDialogOpen] = useState(false);
     const [createCanonicalOpen, setCreateCanonicalOpen] = useState(false);
     const [editCategoriesOpen, setEditCategoriesOpen] = useState(false);
+    const [importTagsOpen, setImportTagsOpen] = useState(false);
     const [editingCanonicalId, setEditingCanonicalId] = useState<string | null>(null);
     const [editingVariantMint, setEditingVariantMint] = useState<string | null>(null);
     const [moveVariantMint, setMoveVariantMint] = useState<string | null>(null);
@@ -718,6 +720,14 @@ export function CurationUi(): React.JSX.Element {
                             <IconTrayAndArrowDown className="h-4 w-4 fill-current" aria-hidden="true" />
                             Seed / Add Mint
                         </Button>
+                        <Button
+                            variant="outline"
+                            onClick={() => setImportTagsOpen(true)}
+                            disabled={!isAdmin}
+                            className="border-black/10 bg-white hover:bg-gray-50"
+                        >
+                            Import Region/Industry Tags
+                        </Button>
                         <Button onClick={() => setCreateCanonicalOpen(true)} disabled={!isAdmin} className="shadow-sm">
                             <IconPlusCircleFill className="h-4 w-4 fill-current" aria-hidden="true" />
                             Create Canonical
@@ -1012,6 +1022,7 @@ export function CurationUi(): React.JSX.Element {
             <SeedDialog open={seedDialogOpen} onOpenChange={setSeedDialogOpen} />
             <CreateCanonicalDialog open={createCanonicalOpen} onOpenChange={setCreateCanonicalOpen} />
             <EditCategoriesDialog open={editCategoriesOpen} onOpenChange={setEditCategoriesOpen} />
+            <ImportAssetTagsDialog open={importTagsOpen} onOpenChange={setImportTagsOpen} />
             <EditCanonicalDialog
                 assetId={editingCanonicalId}
                 open={editingCanonicalId !== null}

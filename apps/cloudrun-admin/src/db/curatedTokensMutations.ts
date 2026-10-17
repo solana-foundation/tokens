@@ -207,6 +207,8 @@ interface CurrentAssetRow {
     description: string | null;
     image_url: string | null;
     is_active: boolean;
+    region: string | null;
+    industry: string | null;
 }
 
 interface CurrentVariantRow {
@@ -233,12 +235,14 @@ export function makePostgresAdminMutationsRepo(sql: Sql): AdminMutationsRepo {
                 await tx`
                     INSERT INTO assets (
                         id, asset_id, category, name, symbol, coingecko_id, description,
-                        image_url, is_active, created_at, updated_at, admin_edited_at
+                        image_url, is_active, created_at, updated_at, admin_edited_at,
+                        region, industry
                     )
                     VALUES (
                         ${randomId('ast')}, ${args.assetId}, ${args.category},
                         ${args.name}, ${args.symbol}, ${args.coingeckoId}, ${args.description},
-                        ${args.imageUrl}, true, ${now}, ${now}, ${args.nowMs}
+                        ${args.imageUrl}, true, ${now}, ${now}, ${args.nowMs},
+                        ${args.region}, ${args.industry}
                     )
                 `;
                 await replaceAliasesForKind(tx, {
@@ -276,7 +280,8 @@ export function makePostgresAdminMutationsRepo(sql: Sql): AdminMutationsRepo {
         async updateCanonicalAsset(args) {
             return await sql.begin(async tx => {
                 const rows = await tx<CurrentAssetRow[]>`
-                    SELECT category, name, symbol, coingecko_id, description, image_url, is_active
+                    SELECT category, name, symbol, coingecko_id, description, image_url, is_active,
+                           region, industry
                     FROM assets WHERE asset_id = ${args.assetId}
                     LIMIT 1
                     FOR UPDATE
@@ -308,6 +313,8 @@ export function makePostgresAdminMutationsRepo(sql: Sql): AdminMutationsRepo {
                       ? args.imageUrl
                       : current.image_url;
                 const nextIsActive = args.isActive !== undefined ? args.isActive : current.is_active;
+                const nextRegion = args.region !== undefined ? args.region : current.region;
+                const nextIndustry = args.industry !== undefined ? args.industry : current.industry;
 
                 await tx`
                     UPDATE assets SET
@@ -318,6 +325,8 @@ export function makePostgresAdminMutationsRepo(sql: Sql): AdminMutationsRepo {
                         description = ${nextDescription},
                         image_url = ${nextImageUrl},
                         is_active = ${nextIsActive},
+                        region = ${nextRegion},
+                        industry = ${nextIndustry},
                         updated_at = ${new Date(args.nowMs)},
                         admin_edited_at = ${args.nowMs}
                     WHERE asset_id = ${assetId}

@@ -294,6 +294,8 @@ export const GET = route(
                     aliases: assetDoc.aliases,
                     ...(coingeckoId ? { coingeckoId } : {}),
                     variants: assetVariants,
+                    region: assetDoc.region ?? null,
+                    industry: assetDoc.industry ?? null,
                 };
                 asset = loadedAsset;
 
