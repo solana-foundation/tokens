@@ -607,6 +607,19 @@ export function isHiddenVariant(
     return isHiddenAdvisory(advisoryForVariant(variant, advisoriesByMint));
 }
 
+/**
+ * List surfaces qualify an asset for `chain=` by its *visible* variants: a
+ * chain whose only variants are hidden (blocked) must not list the asset with
+ * an empty `variants[]` and no entry in `chains`.
+ */
+export function hasVisibleVariantOnChain(
+    variants: readonly Pick<V2VariantResult, 'chain' | 'address'>[],
+    chain: ChainId,
+    advisoriesByMint: ReadonlyMap<string, VariantAdvisory>,
+): boolean {
+    return variants.some(v => v.chain === chain && !isHiddenVariant(v, advisoriesByMint));
+}
+
 // ---------------------------------------------------------------------------
 // Chain stats
 // ---------------------------------------------------------------------------

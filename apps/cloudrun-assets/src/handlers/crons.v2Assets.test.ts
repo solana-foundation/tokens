@@ -43,7 +43,7 @@ function fakeRepo(
         touched,
         marketUpserts,
         async mirrorSolanaVariants() {
-            return { inserted: 1, updated: 2 };
+            return { inserted: 1, updated: 2, replaced: 0 };
         },
         async deactivateUnseenSolanaVariants() {
             return 0;
@@ -145,8 +145,20 @@ describe('sync-v2-solana-variants', () => {
         expect(result.ok).toBe(true);
         expect(result.variantsInserted).toBe(1);
         expect(result.variantsUpdated).toBe(2);
+        expect(result.variantsReplaced).toBe(0);
         expect(result.marketsWritten).toBe(3);
         expect(result.rollupsWritten).toBe(1);
+    });
+
+    test('mirror rows removed because v1 re-minted their variant_id are reported as replaced', async () => {
+        const repo = fakeRepo({
+            async mirrorSolanaVariants() {
+                return { inserted: 1, updated: 0, replaced: 1 };
+            },
+        });
+        const result = await syncSolanaVariants(deps(repo), {});
+        expect(result.ok).toBe(true);
+        expect(result.variantsReplaced).toBe(1);
     });
 
     test('a failed variants mirror aborts the run with ok:false and skips markets', async () => {
@@ -296,6 +308,43 @@ describe('sync-v2-evm-variants', () => {
         const kept = await syncEvmVariants(deps(staleRepo), {});
         expect(kept.deactivated).toBe(0);
         expect(kept.keptStale).toBe(1);
+    });
+
+    test('a bounded scan leaves the derived rows of unscanned assets alone', async () => {
+        const otherAssetRow: V2DerivedVariantRow = {
+            chain: 'base',
+            address: '0x1111111111111111111111111111111111111111',
+            assetId: 'other-asset',
+            variantId: 'base:0x1111111111111111111111111111111111111111',
+            isActive: true,
+        };
+        const repoFor = () =>
+            fakeRepo({
+                // One scanned asset (usd-coin), the other active asset fell outside the window.
+                async listAssetsWithCoinPlatforms() {
+                    return [usdcCoin(NOW)];
+                },
+                async listActiveAssets() {
+                    return [
+                        { assetId: 'usd-coin-asset', category: 'stablecoin' },
+                        { assetId: 'other-asset', category: 'crypto' },
+                    ];
+                },
+                async listDerivedVariants() {
+                    return [otherAssetRow];
+                },
+            });
+
+        // maxAssets equals the rows returned: the scan may have been cut short.
+        const bounded = await syncEvmVariants(deps(repoFor()), { maxAssets: 1 });
+        expect(bounded.deactivated).toBe(0);
+        expect(bounded.keptUnscanned).toBe(1);
+
+        // The scan came back short of the bound, so it saw every linked asset:
+        // other-asset really has no coin link any more and loses its row.
+        const complete = await syncEvmVariants(deps(repoFor()), { maxAssets: 10 });
+        expect(complete.deactivated).toBe(1);
+        expect(complete.keptUnscanned).toBe(0);
     });
 
     test('an asset that is no longer active loses its derived rows regardless of coin freshness', async () => {

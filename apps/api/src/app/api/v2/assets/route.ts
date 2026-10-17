@@ -22,6 +22,7 @@ import {
     rollupsByAssetFrom,
     type V2Asset,
     type V2AssetsResponse,
+    hasVisibleVariantOnChain,
 } from '../_shared-assets';
 
 /**
@@ -91,7 +92,7 @@ export const GET = route(
                     if (!asset) continue;
                     const variants = variantsByAsset.get(asset.assetId) ?? [];
                     if (variants.length === 0) continue;
-                    if (chain !== null && !variants.some(v => v.chain === chain)) continue;
+                    if (chain !== null && !hasVisibleVariantOnChain(variants, chain, advisoriesByMint)) continue;
                     const coinId = asset.coingeckoId
                         ? (coingeckoByCoinId.get(asset.coingeckoId) ??
                           coingeckoByCoinId.get(asset.coingeckoId === 'bnb' ? 'binancecoin' : asset.coingeckoId))

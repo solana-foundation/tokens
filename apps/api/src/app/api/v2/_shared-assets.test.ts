@@ -13,6 +13,7 @@ import {
     decodeChainParam,
     decodeKeysParam,
     decodeListParam,
+    hasVisibleVariantOnChain,
     toV2Chain,
     toV2Market,
     variantIssuance,
@@ -49,6 +50,24 @@ function variant(chain: V2VariantResult['chain'], address: string, kind: string,
         explorerUrl: 'https://example.test',
     };
 }
+
+describe('hasVisibleVariantOnChain', () => {
+    const blocked = { status: 'blocked' as const, reason: 'drainer', url: null, since: 1 };
+    const caution = { status: 'caution' as const, reason: 'depeg', url: null, since: 1 };
+    const variants = [variant('solana', USDC_SOLANA, 'stablecoin'), variant('base', USDC_BASE, 'stablecoin')];
+
+    test('a chain whose only variant is blocked does not qualify the asset for chain=', () => {
+        const advisories = new Map([[USDC_SOLANA, blocked]]);
+        expect(hasVisibleVariantOnChain(variants, 'solana', advisories)).toBe(false);
+        expect(hasVisibleVariantOnChain(variants, 'base', advisories)).toBe(true);
+    });
+
+    test('caution advisories and no advisories keep the variant visible', () => {
+        expect(hasVisibleVariantOnChain(variants, 'solana', new Map([[USDC_SOLANA, caution]]))).toBe(true);
+        expect(hasVisibleVariantOnChain(variants, 'solana', new Map())).toBe(true);
+        expect(hasVisibleVariantOnChain(variants, 'ethereum', new Map())).toBe(false);
+    });
+});
 
 describe('decoders', () => {
     test('chain param: absent → null, unknown → invalid_chain', () => {

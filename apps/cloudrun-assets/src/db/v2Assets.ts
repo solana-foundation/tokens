@@ -141,9 +141,31 @@ function toEpochMsOrNull(value: number | string | bigint | null | undefined): nu
 export function makePostgresV2AssetsJobsRepo(sql: Sql): V2AssetsJobsRepo {
     return {
         async mirrorSolanaVariants(nowMs) {
-            // DISTINCT ON guards against a (asset_id, mint) pair appearing twice
-            // in v1 (nothing enforces that there); the active row wins.
-            const rows = await sql<{ inserted: boolean }[]>`
+            return await sql.begin(async tx => {
+                // A v1 variant whose mint was replaced keeps its variant_id, so the
+                // fresh (asset, new mint) row would collide with the stale mirror
+                // row on the (asset_id, variant_id) unique index and fail the whole
+                // INSERT. Drop mirror rows v1 no longer has when v1 now carries
+                // their variant_id on another mint. (Their market rows stay: keyed
+                // by mint, they are unreachable once no variant references them.)
+                const replaced = await tx<{ address: string }[]>`
+                    DELETE FROM v2_asset_variants v
+                    WHERE v.origin = 'solana_v1'
+                      AND v.chain = 'solana'
+                      AND NOT EXISTS (
+                          SELECT 1 FROM asset_variants av
+                          WHERE av.chain = 'solana' AND av.asset_id = v.asset_id AND av.mint = v.address
+                      )
+                      AND EXISTS (
+                          SELECT 1 FROM asset_variants av
+                          WHERE av.chain = 'solana' AND av.asset_id = v.asset_id
+                            AND av.variant_id = v.variant_id AND av.mint <> v.address
+                      )
+                    RETURNING v.address
+                `;
+                // DISTINCT ON guards against a (asset_id, mint) pair appearing twice
+                // in v1 (nothing enforces that there); the active row wins.
+                const rows = await tx<{ inserted: boolean }[]>`
                 INSERT INTO v2_asset_variants (
                     chain, address, asset_id, variant_id, kind, trust_tier, stock_variant_tier, tags,
                     label, issuer, issuer_url, decimals, origin, source, is_active,
@@ -178,9 +200,10 @@ export function makePostgresV2AssetsJobsRepo(sql: Sql): V2AssetsJobsRepo {
                   AND EXCLUDED.last_seen_at >= v2_asset_variants.last_seen_at
                 RETURNING (xmax = 0) AS inserted
             `;
-            let inserted = 0;
-            for (const row of rows) if (row.inserted) inserted += 1;
-            return { inserted, updated: rows.length - inserted };
+                let inserted = 0;
+                for (const row of rows) if (row.inserted) inserted += 1;
+                return { inserted, updated: rows.length - inserted, replaced: replaced.length };
+            });
         },
 
         async deactivateUnseenSolanaVariants(seenBeforeMs, nowMs) {

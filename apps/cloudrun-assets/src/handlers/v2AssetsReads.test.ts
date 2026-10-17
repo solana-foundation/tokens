@@ -319,6 +319,17 @@ describe('v2AssetsGetMarketsByKeys', () => {
         expect(out[1]?.market?.liquidity).toBe(10);
     });
 
+    test('an active variant whose asset is inactive or missing is not returned, as in the single lookup', async () => {
+        const v2 = fakeV2({
+            async findVariantsByKeys() {
+                // Both rows active; only `usd` exists as a live asset in the fake assets repo.
+                return [variantRow(), variantRow({ asset_id: 'ghost' })];
+            },
+        });
+        const out = await v2AssetsGetMarketsByKeys(deps(v2), { keys: [{ chain: 'base', address: USDC_BASE }] });
+        expect(out[0]?.variants.map(v => v.assetId)).toEqual(['usd']);
+    });
+
     test('rejects more than 250 keys', async () => {
         const keys = Array.from({ length: 251 }, () => ({ chain: 'base', address: USDC_BASE }));
         await expect(v2AssetsGetMarketsByKeys(deps(fakeV2()), { keys })).rejects.toThrow(/max 250/);
