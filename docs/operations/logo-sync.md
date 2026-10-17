@@ -21,7 +21,8 @@ contract is unchanged (`logoURI: string | null`).
 ```
 Cloud Scheduler  →  POST /jobs/logo-sync   (cloudrun-assets worker, prd every 15 min, stg daily)
   candidates: mint_logos-aware UNION over variant_markets_latest / tokens /
-              sanctum_lsts_latest / launchpad_tokens_latest / token_list_members
+              sanctum_lsts_latest / launchpad_tokens_latest / token_list_members /
+              solana_data_assets_latest (provider_logo_uri, lowest priority)
               (curated universe first, then mints with a logo fetched in the last 30 days)
   skip:       unchanged source hash + copy < resyncDays old; IPFS copies fetched from the CID never age out
   backoff:    a URL that failed waits 1..7 days (× consecutive attempts); a new upstream URL is tried at once

@@ -183,6 +183,37 @@ resource "google_secret_manager_secret_iam_member" "pinata_gateway_token_accesso
   depends_on = [google_project_service.secretmanager]
 }
 
+# data.solana.com API key for the assets `sync-solana-data-assets` job (the
+# Solana Foundation data team's Project Canon asset registry, issued by the data
+# team; 403 without it). NO version is managed here — seed it out-of-band:
+#   printf '%s' "$SOLANA_DATA_API_KEY" \
+#     | gcloud secrets versions add tokens-solana-data-api-key-<env> --data-file=-
+# Without it the job group answers 404 solana_data_jobs_disabled, so the
+# scheduler entry can exist first. See docs/operations/solana-data-registry.md.
+resource "google_secret_manager_secret" "solana_data_api_key" {
+  project   = var.project_id
+  secret_id = "tokens-solana-data-api-key-${var.env}"
+
+  replication {
+    user_managed {
+      replicas {
+        location = var.region
+      }
+    }
+  }
+
+  depends_on = [google_project_service.secretmanager]
+}
+
+resource "google_secret_manager_secret_iam_member" "solana_data_api_key_accessor" {
+  project   = var.project_id
+  secret_id = google_secret_manager_secret.solana_data_api_key.secret_id
+  role      = "roles/secretmanager.secretAccessor"
+  member    = "serviceAccount:${var.runtime_sa_email}"
+
+  depends_on = [google_project_service.secretmanager]
+}
+
 resource "google_secret_manager_secret" "database_url" {
   project   = var.project_id
   secret_id = "tokens-database-url-${var.env}"

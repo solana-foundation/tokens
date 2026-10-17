@@ -4,7 +4,7 @@ description: API v2 introduces community token lists, risk-aware search, and cha
 ---
 
 API v2 is additive: every v1 endpoint keeps working unchanged. v2 currently covers **token lists**,
-**risk-aware search / resolve** and **multichain assets**.
+**risk-aware search / resolve**, **multichain assets**, and the Solana Foundation's **asset registry**.
 
 - **Base URL**: `https://api.tokens.xyz/v2` — same host and key as v1; only the prefix changes.
 - **Auth**: `x-api-key: <YOUR_API_KEY>`; every v2 endpoint needs only the default `assets:read` scope.
@@ -73,3 +73,13 @@ The rules that follow from that:
 
 See [Chains](/docs/v2/endpoints/chains), [Assets](/docs/v2/endpoints/assets) (including the
 v1 → v2 field map) and [Variants](/docs/v2/endpoints/variants) for the full reference.
+
+## Asset registry
+
+`GET /v2/registry` serves the Solana Foundation data team's canonical registry of classified Solana
+assets: a three-tier taxonomy (`group` › `category` › `assetClass`), the independent Allium and
+RWA.xyz classifications and on-chain values, and the CoinGecko market cap, in the data team's own
+order. We sync it hourly into our index and resolve each row's identity (name, logo, token page)
+from our own data, so the call is a single fast read with optional taxonomy filters.
+
+See [Asset Registry](/docs/v2/endpoints/registry) for the full reference.

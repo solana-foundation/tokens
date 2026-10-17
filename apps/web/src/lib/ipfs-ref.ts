@@ -114,3 +114,16 @@ export function proxiedIpfsLogoUrl(url: string): string | null {
     const uri = toIpfsUri(trimmed);
     return uri ? `/api/image-proxy?src=${encodeURIComponent(uri)}` : null;
 }
+
+/**
+ * Provider registries carry raw `ipfs://` refs, public-gateway URLs and the odd
+ * upper-cased scheme. IPFS refs go through our image proxy (Pinata gateway);
+ * other https URLs pass through; anything else is dropped (next/image is https-only).
+ */
+export function normalizeLogoURI(value: string | null | undefined): string | null {
+    if (!value) return null;
+    const proxied = proxiedIpfsLogoUrl(value);
+    if (proxied) return proxied;
+    if (/^https:\/\//i.test(value)) return `https://${value.slice('https://'.length)}`;
+    return null;
+}

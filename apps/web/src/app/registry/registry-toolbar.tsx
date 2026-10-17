@@ -36,6 +36,25 @@ function ExportCountBadge({ count }: { count: number | null }) {
     );
 }
 
+function SearchIcon({ className }: { className?: string }) {
+    return (
+        <svg
+            aria-hidden="true"
+            className={className}
+            viewBox="0 0 32 32"
+            fill="none"
+            xmlns="http://www.w3.org/2000/svg"
+        >
+            <path
+                fillRule="evenodd"
+                clipRule="evenodd"
+                d="M8 15.22C8 11.23 11.23 8 15.22 8C19.21 8 22.44 11.23 22.44 15.22C22.44 19.21 19.21 22.44 15.22 22.44C11.23 22.44 8 19.21 8 15.22ZM15.22 5.33C9.76 5.33 5.33 9.76 5.33 15.22C5.33 20.68 9.76 25.11 15.22 25.11C17.47 25.11 19.55 24.36 21.21 23.09L24.39 26.28C24.91 26.8 25.76 26.8 26.28 26.28C26.8 25.76 26.8 24.91 26.28 24.39L23.09 21.21C24.36 19.55 25.11 17.47 25.11 15.22C25.11 9.76 20.68 5.33 15.22 5.33Z"
+                fill="currentColor"
+            />
+        </svg>
+    );
+}
+
 function ExportIcon({ className }: { className?: string }) {
     return (
         <svg
@@ -113,37 +132,38 @@ export function RegistryToolbar({
 
     return (
         <div className="flex flex-col gap-3">
-            <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
-                <div className="flex min-w-0 flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center">
-                    <div className="relative sm:w-[280px]">
-                        <Input
-                            ref={searchRef}
-                            type="search"
-                            value={state.q}
-                            onChange={event => state.setQ(event.target.value)}
-                            placeholder="Search by name, symbol, or mint"
-                            aria-label="Search registry"
-                            aria-keyshortcuts="/"
-                            className="h-9 w-full rounded-full border-border-medium bg-white pl-4 pr-10 font-sans text-[13px] text-text-extra-high shadow-none placeholder:text-text-low focus-visible:ring-border-medium"
-                        />
-                        {/* Same key-cap treatment as the nav search hint; hidden once there is a query. */}
-                        {state.q ? null : (
-                            <kbd
-                                aria-hidden="true"
-                                className="pointer-events-none absolute right-2.5 top-1/2 hidden size-5 -translate-y-1/2 items-center justify-center rounded-sm bg-gray-100 font-sans text-[11px] font-medium leading-none text-text-medium sm:flex"
-                            >
-                                /
-                            </kbd>
-                        )}
-                    </div>
-                    <RegistryFilterChips state={state} options={options} />
-                    {hasActive ? (
-                        <span className="ml-1 text-[10px] uppercase text-muted-foreground">
-                            press <Kbd className="w-8 font-bold">esc</Kbd> to clear
-                        </span>
-                    ) : null}
+            {/* One wrapping row: on phones the search takes the first line and the filter chips share the
+                second with Export (pushed right); on wide screens everything sits on one line. */}
+            <div className="flex flex-wrap items-center gap-3">
+                <div className="relative w-full sm:w-[300px]">
+                    <SearchIcon className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-text-medium" />
+                    <Input
+                        ref={searchRef}
+                        type="search"
+                        value={state.q}
+                        onChange={event => state.setQ(event.target.value)}
+                        placeholder="Search by name, symbol, or mint"
+                        aria-label="Search registry"
+                        aria-keyshortcuts="/"
+                        className="h-9 w-full rounded-full border-border-medium bg-white pl-9 pr-10 font-sans text-[13px] text-text-extra-high shadow-none placeholder:text-text-low focus-visible:ring-border-medium"
+                    />
+                    {/* Same key-cap treatment as the nav search hint; hidden once there is a query. */}
+                    {state.q ? null : (
+                        <kbd
+                            aria-hidden="true"
+                            className="pointer-events-none absolute right-2.5 top-1/2 hidden size-5 -translate-y-1/2 items-center justify-center rounded-sm bg-gray-100 font-sans text-[11px] font-medium leading-none text-text-medium sm:flex"
+                        >
+                            /
+                        </kbd>
+                    )}
                 </div>
-                <div className="flex shrink-0 lg:justify-end">
+                <RegistryFilterChips state={state} options={options} />
+                {hasActive ? (
+                    <span className="ml-1 hidden text-[10px] uppercase text-muted-foreground sm:inline">
+                        press <Kbd className="w-8 font-bold">esc</Kbd> to clear
+                    </span>
+                ) : null}
+                <div className="ml-auto flex shrink-0">
                     <Button
                         type="button"
                         variant="outline"

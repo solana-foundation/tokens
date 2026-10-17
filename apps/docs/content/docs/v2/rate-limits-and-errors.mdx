@@ -112,6 +112,7 @@ Successful `GET` responses carry `Cache-Control` and may be served from an edge 
 | Endpoint | `max-age` |
 |---|---|
 | `GET /v2/lists` | 300 s |
+| `GET /v2/registry`, `GET /v2/registry/{mint}` | 300 s |
 | `GET /v2/lists/{slug}`, `GET /v2/lists/tokens` | 60 s |
 | `GET /v2/search`, `GET /v2/resolve`, `GET /v2/lists/search-tokens` | 30 s |
 | `GET /v2/chains` | 3600 s (`stale-while-revalidate` 86400 s) |
@@ -123,7 +124,9 @@ Successful `GET` responses carry `Cache-Control` and may be served from an edge 
 The catalog, list detail, and compose endpoints additionally keep a **last-good copy**: if the list
 backend is unavailable they return the most recent successful payload (up to 10 minutes old) with a
 `200` rather than a `5xx`. Treat `updatedAt` as the freshness signal, and never cache a `check-slug`
-answer — a slug freed by a delete must read as available immediately.
+answer — a slug freed by a delete must read as available immediately. `GET /v2/registry` keeps its
+last-good copy for up to an hour (the registry itself is synced hourly); `syncedAt` is its freshness
+signal.
 
 The asset surface does the same per request shape: `GET /v2/assets` (15 min), `GET /v2/assets/{assetId}`
 (15 min), `GET /v2/assets/{assetId}/variants` (10 min) and `GET /v2/variants/{chain}/{address}`
@@ -144,6 +147,7 @@ metadata, with `variantCount` / `assetCount` as `null` when the counts cannot be
 | `q` length | 100 characters |
 | Search `limit` | 1–50 (values above the max are clamped, not rejected) |
 | List `limit` | 1–500 catalog, 1–2000 detail and compose (clamped) |
+| Registry `limit` | 1–5000 (clamped); `group` / `category` / `class` filters 80 characters |
 | Member `note` | 500 characters |
 | Keys per `GET /v2/variants` call | 50 (`too_many_keys`) |
 | Asset `limit` | 1–500 list, 1–1000 `/variants` sub-route (clamped) |

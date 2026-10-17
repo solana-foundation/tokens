@@ -6,6 +6,7 @@
     "search",
     "chains",
     "assets",
-    "variants"
+    "variants",
+    "registry"
   ]
 }

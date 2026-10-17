@@ -20,6 +20,7 @@ import type { OhlcvCandleRow, OhlcvReadsRepo } from './handlers/ohlcvReads';
 import type { PrestocksReadsRepo } from './handlers/prestocksReads';
 import type { LaunchpadReadsRepo } from './handlers/launchpadReads';
 import type { V2AssetsReadsRepo } from './handlers/v2AssetsReads';
+import type { SolanaDataReadsRepo } from './handlers/solanaDataReads';
 import type {
     AssetsApiAssetMarketRow,
     AssetsApiAssetRow,
@@ -268,6 +269,13 @@ function emptyLaunchpadReadsRepo(): LaunchpadReadsRepo {
     return { async listActiveByQuoteMints() { return []; } };
 }
 
+function emptySolanaDataReadsRepo(): SolanaDataReadsRepo {
+    return {
+        async listActive() { return []; },
+        async findActiveByMint() { return null; },
+    };
+}
+
 function emptyPrestocksReadsRepo(): PrestocksReadsRepo {
     return {
         async findLatestByMints() {
@@ -382,6 +390,7 @@ function deps(overrides: Partial<ServerDeps> = {}): ServerDeps {
         prestocksReadsRepo: overrides.prestocksReadsRepo ?? emptyPrestocksReadsRepo(),
         launchpadReadsRepo: overrides.launchpadReadsRepo ?? emptyLaunchpadReadsRepo(),
         v2AssetsReadsRepo: overrides.v2AssetsReadsRepo ?? emptyV2AssetsReadsRepo(),
+        solanaDataReadsRepo: overrides.solanaDataReadsRepo ?? emptySolanaDataReadsRepo(),
         tokensReadsRepo: overrides.tokensReadsRepo ?? emptyTokensReadsRepo(),
         trendingReadsRepo: overrides.trendingReadsRepo ?? emptyTrendingReadsRepo(),
         fillQualityReadsRepo: overrides.fillQualityReadsRepo ?? emptyFillQualityReadsRepo(),
