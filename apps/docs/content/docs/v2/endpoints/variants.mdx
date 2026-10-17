@@ -1,0 +1,156 @@
+---
+title: Variants
+description: Look up one token on one chain by <chain>/<address>, or batch up to 50 <chain>:<address> keys.
+---
+
+Both endpoints on this page are Platform API endpoints authenticated with `x-api-key` and
+require only the default `assets:read` scope (base URL `https://api.tokens.xyz/v2`; see the
+[Quickstart](/docs/v2/quickstart)).
+
+A **variant** is one token on one chain. Its identifier is the key `<chain>:<address>` — the chain
+is always explicit, so a `0x` address never has to guess which EVM chain it lives on. Solana
+addresses are case-sensitive base58; EVM addresses are accepted in any casing and answered
+lowercase. The `V2Variant` shape and the asset shapes are on [Assets → Shared shapes](/docs/v2/endpoints/assets#shared-shapes).
+
+Only **registered** variants resolve here: a token the registry does not know is `404` with
+`details.code: "variant_not_found"` (single lookup) or listed in `missing[]` (batch). For the
+long tail of unregistered Solana tokens use [`GET /v2/search`](/docs/v2/endpoints/search).
+
+## `GET /v2/variants/{chain}/{address}`
+
+One token and the asset it represents.
+
+- **Scope**: `assets:read`
+- **Path**:
+  - `{chain}`: a chain id from [`GET /v2/chains`](/docs/v2/endpoints/chains) — otherwise `400`
+    with `details.code: "invalid_chain"` (and the valid ids in `details.chains`).
+  - `{address}`: a valid address for that chain's family — base58 for `solana`, `0x` + 40 hex for
+    EVM chains — otherwise `400` with `details.code: "invalid_address"` and
+    `details.expected: "base58" | "0x40hex"`.
+- **Query params**: none
+
+```ts
+interface VariantResponse {
+    variant: V2Variant; // `rank` is set: the asset's full variant set is loaded
+    asset: {
+        assetId: string;
+        name: string | null;
+        symbol: string | null;
+        category: AssetCategory;
+        imageUrl: string | null;
+        chains: ChainId[]; // every chain the asset has a variant on
+    };
+}
+```
+
+The variant carries the same identity, market and advisory fields as it does inside
+`GET /v2/assets/{assetId}`, including its cross-chain liquidity `rank`. Follow `asset.assetId`
+to the full asset view when you need the per-chain stats or the other variants.
+
+A `blocked` variant is served with its advisory; it is only hidden from list surfaces. The
+response is served from a last-good copy (up to 15 minutes old) when the data layer is
+unavailable; a `404` is never cached as good.
+
+### Example
+
+```bash
+# USDC on Solana
+curl -sS "$API_BASE_URL/v2/variants/solana/EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v" \
+  -H "x-api-key: $API_KEY"
+
+# USDC on Base — any casing in, lowercase out
+curl -sS "$API_BASE_URL/v2/variants/base/0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913" \
+  -H "x-api-key: $API_KEY"
+```
+
+```json
+{
+  "variant": {
+    "key": "base:0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
+    "chain": "base",
+    "address": "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
+    "assetId": "usd",
+    "variantId": "base:0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
+    "kind": "stablecoin",
+    "issuance": "native",
+    "symbol": "USDC",
+    "name": "USD Coin",
+    "label": null,
+    "decimals": 6,
+    "logoURI": "https://…",
+    "issuer": "Circle",
+    "issuerUrl": "https://www.circle.com",
+    "trustTier": "tier1",
+    "liquidityTier": "tier1",
+    "stockVariantTier": null,
+    "tags": [],
+    "advisory": null,
+    "rank": 2,
+    "explorerUrl": "https://basescan.org/token/0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
+    "market": { "source": "birdeye", "price": 0.9999, "liquidity": 52000000, "volume24hUSD": 380000000, "...": "..." }
+  },
+  "asset": {
+    "assetId": "usd",
+    "name": "US Dollar",
+    "symbol": "USD",
+    "category": "stablecoin",
+    "imageUrl": "https://…",
+    "chains": ["solana", "ethereum", "base", "arbitrum", "polygon", "bnb"]
+  }
+}
+```
+
+## `GET /v2/variants`
+
+Batch identity + market lookup by key. The multichain successor to
+`GET /v1/assets/variant-markets`.
+
+- **Scope**: `assets:read`
+- **Query params**:
+  - `keys` (**required**): comma-separated `<chain>:<address>`, max 50 (repeating the param is
+    also accepted). Keys are deduped after normalisation and the response keeps **request
+    order**. Errors (`400`): `invalid_key` (missing, or not `<chain>:<address>`), `too_many_keys`
+    (`details.max`, `details.count`), `invalid_chain`, `invalid_address` — any bad key fails the
+    whole call, as the shape is the caller's to get right.
+
+```ts
+interface VariantsBatchResponse {
+    variants: V2Variant[]; // request order; `rank` is null — the asset's full set is not loaded
+    missing: Array<{ key: VariantKey; chain: ChainId; address: string }>; // well-formed keys the registry does not know
+    total: number; // = variants.length
+}
+```
+
+Unknown keys never fail the call: a well-formed key that is not a registered variant is reported
+in `missing[]` in its normalised form. Each variant is returned on its own — identity, market and
+advisory are as in the single lookup, but `rank` is `null` and there is no `asset` summary; use
+`variant.assetId` with `GET /v2/assets/{assetId}` for the asset-level view.
+
+### Example
+
+```bash
+curl -sS "$API_BASE_URL/v2/variants?keys=solana:EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v,ethereum:0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2,base:0x000000000000000000000000000000000000dead" \
+  -H "x-api-key: $API_KEY"
+```
+
+```json
+{
+  "variants": [
+    { "key": "solana:EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", "chain": "solana", "assetId": "usd", "symbol": "USDC", "rank": null, "...": "..." },
+    { "key": "ethereum:0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2", "chain": "ethereum", "assetId": "ethereum", "symbol": "WETH", "rank": null, "...": "..." }
+  ],
+  "missing": [
+    { "key": "base:0x000000000000000000000000000000000000dead", "chain": "base", "address": "0x000000000000000000000000000000000000dead" }
+  ],
+  "total": 2
+}
+```
+
+## Capabilities by chain
+
+What a variant can carry depends on its chain's capability flags (see
+[Chains](/docs/v2/endpoints/chains)). Today every chain has `markets`, so `market` is populated
+wherever a snapshot exists; OHLCV, risk, DEX market lists, execution quality and swap routing are
+Solana-only and are **not yet exposed on v2 variants** — they remain on the v1 asset routes for
+Solana mints until they arrive here, capability-gated. Advisories are keyed by Solana mint, so EVM
+variants always have `advisory: null`.

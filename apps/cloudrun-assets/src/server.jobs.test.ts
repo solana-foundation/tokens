@@ -14,6 +14,7 @@ import type { StockReadsRepo } from './handlers/stockReads';
 import type { OhlcvReadsRepo } from './handlers/ohlcvReads';
 import type { PrestocksReadsRepo } from './handlers/prestocksReads';
 import type { LaunchpadReadsRepo } from './handlers/launchpadReads';
+import type { V2AssetsReadsRepo } from './handlers/v2AssetsReads';
 import type { DepegCronDeps } from './handlers/crons.depeg';
 import type { TokensReadsRepo } from './handlers/tokensReads';
 import type { TrendingReadsRepo } from './handlers/trendingReads';
@@ -171,6 +172,27 @@ const noopOhlcvReadsRepo: OhlcvReadsRepo = {
         return [];
     },
 };
+const noopV2AssetsReadsRepo: V2AssetsReadsRepo = {
+    async chainSummary() {
+        return [];
+    },
+    async findVariantsByAssetIds() {
+        return [];
+    },
+    async findVariantsByKey() {
+        return [];
+    },
+    async findVariantsByKeys() {
+        return [];
+    },
+    async findMarketsByKeys() {
+        return [];
+    },
+    async findRollupsByAssetIds() {
+        return [];
+    },
+};
+
 const noopLaunchpadReadsRepo: LaunchpadReadsRepo = {
     async listActiveByQuoteMints() {
         return [];
@@ -320,6 +342,7 @@ const baseDeps = {
     ohlcvReadsRepo: noopOhlcvReadsRepo,
     prestocksReadsRepo: noopPrestocksReadsRepo,
     launchpadReadsRepo: noopLaunchpadReadsRepo,
+    v2AssetsReadsRepo: noopV2AssetsReadsRepo,
     tokensReadsRepo: noopTokensReadsRepo,
     trendingReadsRepo: noopTrendingReadsRepo,
     fillQualityReadsRepo: noopFillQualityReadsRepo,

@@ -1,0 +1,95 @@
+{
+    "uid": "tokens-assets-v2-solana-sync-stale",
+    "title": "tokens-assets: no successful v2 Solana mirror in 30m",
+    "ruleGroup": "tokens-assets-availability",
+    "folderUID": "tokens",
+    "noDataState": "Alerting",
+    "execErrState": "OK",
+    "for": "0s",
+    "data": [
+        {
+            "refId": "A",
+            "datasourceUid": "grafanacloud-logs",
+            "queryType": "range",
+            "relativeTimeRange": {
+                "from": 1800,
+                "to": 0
+            },
+            "model": {
+                "expr": "sum(count_over_time({service=~\"tokens-assets(-jobs)?-prd-us\"} | json | job=\"sync-v2-solana-variants\" | event=\"v2_solana_sync\" | ok=\"true\" [30m]))",
+                "queryType": "range",
+                "refId": "A"
+            }
+        },
+        {
+            "refId": "B",
+            "datasourceUid": "__expr__",
+            "queryType": "",
+            "relativeTimeRange": {
+                "from": 0,
+                "to": 0
+            },
+            "model": {
+                "type": "reduce",
+                "refId": "B",
+                "expression": "A",
+                "reducer": "last",
+                "settings": {
+                    "mode": "replaceNN",
+                    "replaceWithValue": 0
+                }
+            }
+        },
+        {
+            "refId": "C",
+            "datasourceUid": "__expr__",
+            "queryType": "",
+            "relativeTimeRange": {
+                "from": 0,
+                "to": 0
+            },
+            "model": {
+                "type": "threshold",
+                "refId": "C",
+                "expression": "B",
+                "conditions": [
+                    {
+                        "evaluator": {
+                            "type": "lt",
+                            "params": [1]
+                        },
+                        "operator": {
+                            "type": "and"
+                        },
+                        "query": {
+                            "params": ["B"]
+                        },
+                        "reducer": {
+                            "type": "last",
+                            "params": []
+                        },
+                        "type": "query"
+                    }
+                ]
+            }
+        }
+    ],
+    "condition": "C",
+    "labels": {
+        "service": "tokens-assets",
+        "severity": "warning",
+        "slack": "true"
+    },
+    "notification_settings": {
+        "receiver": "tokens-slack",
+        "group_by": ["grafana_folder", "alertname"],
+        "group_wait": "30s",
+        "group_interval": "5m",
+        "repeat_interval": "4h"
+    },
+    "annotations": {
+        "summary": "The v2 Solana mirror (sync-v2-solana-variants) has not completed successfully in 30 minutes",
+        "description": "No v2_solana_sync log line with ok=true from sync-v2-solana-variants in 30 minutes, i.e. six missed 5-minute ticks. The job copies v1's asset_variants / variant_markets_latest / asset_markets_latest Solana rows into the v2 tables; a run whose variants mirror fails logs ok=false (reason mirror_failed) and does not count. Either the Cloud Scheduler job is failing (check the scheduler run history and the job HTTP status: 404 v2_assets_jobs_disabled means BIRDEYE_API_KEY is missing on the worker; 500 means the mirror statements failed, usually a DB timeout or a v1 column rename), or the worker is down. GET /api/v2/assets and /api/v2/variants/solana/{mint} keep serving the last mirrored rows, so this is v2 lagging v1, not an outage; v1 is unaffected.",
+        "runbook_url": "https://github.com/solana-foundation/tokens/blob/main/docs/operations/v2-multichain-assets.md"
+    }
+}

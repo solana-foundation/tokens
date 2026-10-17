@@ -1,4 +1,5 @@
 import { Duration, Effect, Schema } from 'effect';
+import { CHAINS, type ChainKind } from '@tokens/asset-registry/chains';
 import { fetchJsonWithRetry } from '@tokens/effect';
 import { decodeUpstreamOrWarn } from '@tokens/effect/schema';
 import { withExternalTiming } from './externalTiming';
@@ -54,10 +55,22 @@ const GatewayEnvelopeSchema = Schema.Struct({
     data: Schema.optionalKey(Schema.NullishOr(Schema.Array(Schema.Unknown))),
 });
 
+/**
+ * `x-chain` header for a Birdeye client. The value is the provider slug from
+ * the registry's `CHAINS` table (`bsc` for our `bnb`, …), never our public id.
+ */
+function birdeyeChainHeader(chain: ChainKind | undefined): string {
+    const slug = CHAINS[chain ?? 'solana'].providers.birdeyeChain;
+    if (!slug) throw new Error(`Birdeye does not cover chain ${chain}`);
+    return slug;
+}
+
 interface MakeBirdeyeOptions {
     apiKey: string;
     origin?: string;
     baseUrl?: string;
+    /** Default `solana`. One client instance per chain (the v2 EVM market refresh builds one per covered chain). */
+    chain?: ChainKind;
     /** Test seam for `fetchMultiPrice`. */
     fetchImpl?: typeof fetch;
 }
@@ -122,7 +135,7 @@ export function makeBirdeyeClient(opts: MakeBirdeyeOptions): BirdeyeClient & Bir
     const fetchImpl = opts.fetchImpl ?? fetch;
     const headers: Record<string, string> = {
         'X-API-KEY': opts.apiKey,
-        'x-chain': 'solana',
+        'x-chain': birdeyeChainHeader(opts.chain),
         Accept: 'application/json',
     };
     if (opts.origin) {

@@ -7,6 +7,7 @@
 // SMOKE_RETRY_BACKOFF_MS (delay between attempts, default 1000).
 
 const SOL_MINT = 'So11111111111111111111111111111111111111112';
+const USDC_MINT = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
 
 const apiBaseUrl = (process.env.TOKENS_API_BASE_URL ?? '').trim().replace(/\/$/, '');
 const appBaseUrl = (process.env.TOKENS_APP_BASE_URL ?? '').trim().replace(/\/$/, '');
@@ -127,6 +128,65 @@ const apiProbes: Probe[] = [
                 isObject(json) && typeof json.status === 'string',
                 'expected a resolve envelope with a string status (a 404 here means the /v2 rewrite is missing)',
             );
+        },
+    },
+    {
+        name: 'v2-chains',
+        target: 'api',
+        method: 'GET',
+        path: '/api/v2/chains',
+        auth: true,
+        budgetMs: 3000,
+        assert: ({ json, status }) => {
+            assert(status === 200, `expected 200, got ${status}`);
+            assert(isObject(json) && Array.isArray(json.chains), 'expected { chains: [] }');
+            assert((json.chains as unknown[]).length === 6, `expected exactly 6 chains, got ${(json.chains as unknown[]).length}`);
+        },
+    },
+    {
+        name: 'v2-assets-majors',
+        target: 'api',
+        method: 'GET',
+        path: '/api/v2/assets?list=majors&limit=5',
+        auth: true,
+        budgetMs: 5000,
+        assert: ({ json, status }) => {
+            assert(status === 200, `expected 200, got ${status}`);
+            assert(isObject(json) && Array.isArray(json.assets), 'expected { assets: [] }');
+            assert((json.assets as unknown[]).length > 0, 'v2 majors must be non-empty');
+            assert(
+                (json.assets as unknown[]).every(row => isObject(row) && Array.isArray(row.chains)),
+                'every v2 asset row must carry a chains[] array',
+            );
+        },
+    },
+    {
+        // Public path (`/v2/...` rewrite), as v2-resolve-public-path does for search.
+        name: 'v2-variant-usdc-public-path',
+        target: 'api',
+        method: 'GET',
+        path: `/v2/variants/solana/${USDC_MINT}`,
+        auth: true,
+        budgetMs: 5000,
+        assert: ({ json, status }) => {
+            assert(status === 200, `expected 200 via the /v2 rewrite, got ${status}`);
+            assert(
+                isObject(json) && isObject(json.variant) && json.variant.key === `solana:${USDC_MINT}`,
+                'expected variant.key === "solana:<USDC mint>" (a 404 here means the /v2 rewrite is missing)',
+            );
+        },
+    },
+    {
+        name: 'v2-variants-batch',
+        target: 'api',
+        method: 'GET',
+        path: `/api/v2/variants?keys=solana:${SOL_MINT}`,
+        auth: true,
+        budgetMs: 5000,
+        assert: ({ json, status }) => {
+            assert(status === 200, `expected 200, got ${status}`);
+            assert(isObject(json) && Array.isArray(json.variants), 'expected { variants: [] }');
+            assert((json.variants as unknown[]).length === 1, `expected exactly 1 variant for wrapped SOL, got ${(json.variants as unknown[]).length}`);
         },
     },
     {

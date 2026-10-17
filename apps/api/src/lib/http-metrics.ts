@@ -30,6 +30,29 @@ export function normalizeEndpointPath(pathname: string): string {
         return '/api/v1/assets/:assetId';
     }
 
+    if (parts[0] === 'api' && parts[1] === 'v2') {
+        const family = parts[2];
+        if (family === 'assets') {
+            if (!parts[3]) return '/api/v2/assets';
+            const sub = parts[4];
+            if (!sub) return '/api/v2/assets/:assetId';
+            return sub === 'variants' ? '/api/v2/assets/:assetId/variants' : '/api/v2/assets/:assetId/:sub';
+        }
+        if (family === 'variants') {
+            if (!parts[3]) return '/api/v2/variants';
+            const sub = parts.slice(5).join('/');
+            return sub ? `/api/v2/variants/:chain/:address/${sub}` : '/api/v2/variants/:chain/:address';
+        }
+        if (family === 'lists') {
+            if (!parts[3]) return '/api/v2/lists';
+            if (parts[3] === 'check-slug' || parts[3] === 'search-tokens' || parts[3] === 'tokens')
+                return `/api/v2/lists/${parts[3]}`;
+            if (parts[4] === 'members')
+                return parts[5] ? '/api/v2/lists/:slug/members/:mint' : '/api/v2/lists/:slug/members';
+            return '/api/v2/lists/:slug';
+        }
+    }
+
     if (parts[0] === 'api' && parts[1] === 'token') {
         if (!parts[2]) return '/api/token';
         const suffix = parts.slice(3).join('/');

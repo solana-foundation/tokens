@@ -126,3 +126,24 @@ export {
     isReservedListSlug,
     normalizeCuratedListSlug,
 } from './curated-lists';
+export type { ChainCapabilities, ChainConfig, ChainFamily, ChainKind, ChainProviders, EvmChainKind, VariantKey } from './chains';
+export {
+    CHAINS,
+    CHAIN_KINDS,
+    EVM_CHAIN_KINDS,
+    EVM_NATIVE_ASSET_ADDRESS,
+    birdeyeChains,
+    chainAddressKey,
+    chainSupports,
+    chainsSupporting,
+    explorerTokenUrl,
+    inferAddressFamily,
+    isChainKind,
+    isEvmChainKind,
+    looksLikeEvmAddress,
+    looksLikeSolanaAddress,
+    normalizeAddressForChain,
+    normalizeAddressForLookup,
+    parseChainAddressKey,
+    variantKeyFor,
+} from './chains';

@@ -396,8 +396,8 @@ const CURATED_MEMBERSHIP_TTL_MS = Number(process.env.CURATED_MEMBERSHIP_TTL_MS) 
 /** Coingecko curated-id cache keeps its historical 1h refresh cadence. */
 const CURATED_COINGECKO_IDS_TTL_MS = Number(process.env.CURATED_MINTS_TTL_MS) || 60 * 60_000;
 
-const CURATED_COLLECTION_SLUGS: readonly string[] = CURATED_LIST_SLUGS;
-const CURATED_COLLECTION_SLUGS_SQL_LITERAL = `ARRAY[${CURATED_COLLECTION_SLUGS.map(s => `'${s}'`).join(',')}]::text[]`;
+export const CURATED_COLLECTION_SLUGS: readonly string[] = CURATED_LIST_SLUGS;
+export const CURATED_COLLECTION_SLUGS_SQL_LITERAL = `ARRAY[${CURATED_COLLECTION_SLUGS.map(s => `'${s}'`).join(',')}]::text[]`;
 const NORMAL_CURATED_SLUGS: readonly CuratedListSlug[] = CURATED_LIST_SLUGS.filter(slug => slug !== 'lsts');
 const NORMAL_CURATED_SLUGS_SQL_LITERAL = `ARRAY[${NORMAL_CURATED_SLUGS.map(s => `'${s}'`).join(',')}]::text[]`;
 
@@ -3049,7 +3049,7 @@ function sqlFragmentColumns(cols: readonly string[]): string {
  * (`WHERE mint IN ...` would otherwise collide with `mint_logos.mint`).
  * Handlers prefer it via `resolveLogoUri` (handlers/logoUrl.ts).
  */
-function logoCdnColumn(keyExpr: string): string {
+export function logoCdnColumn(keyExpr: string): string {
     return `(SELECT ml.logo_cdn_url FROM mint_logos ml WHERE ml.mint = ${keyExpr}) AS logo_cdn_url`;
 }
 

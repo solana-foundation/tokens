@@ -3,6 +3,9 @@
   "defaultOpen": true,
   "pages": [
     "lists",
-    "search"
+    "search",
+    "chains",
+    "assets",
+    "variants"
   ]
 }
