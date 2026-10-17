@@ -38,8 +38,6 @@ function variantRow(overrides: Partial<V2VariantDbRow> = {}): V2VariantDbRow {
         origin: 'coingecko',
         source: 'coingecko',
         is_active: true,
-        region: null,
-        industry: null,
         ...overrides,
     };
 }
@@ -102,6 +100,8 @@ const assetRow: AssetRow = {
     description: null,
     image_url: null,
     is_active: true,
+    region: null,
+    industry: null,
     created_at: new Date(0),
     updated_at: new Date(0),
 };
