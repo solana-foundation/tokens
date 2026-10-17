@@ -8,7 +8,7 @@ import type { RegistryRow } from './types';
  */
 
 export type CategoryFieldId = 'group' | 'category' | 'assetClass' | 'rwaClass' | 'alliumClass' | 'hasTokenPage';
-export type UsdFieldId = 'valueUsd' | 'alliumValueUsd' | 'rwaValueUsd' | 'marketCapUsd';
+export type UsdFieldId = 'providerValueUsd' | 'valueUsd' | 'alliumValueUsd' | 'rwaValueUsd' | 'marketCapUsd';
 export type FilterFieldId = CategoryFieldId | UsdFieldId;
 
 export type CategoryOp = 'is' | 'is_not';
@@ -87,10 +87,19 @@ export const FILTER_FIELDS: readonly FilterField[] = [
         read: row => (row.hasTokenPage ? 'yes' : 'no'),
     },
     {
-        id: 'valueUsd',
+        // Same number as the table's "Value" column: Allium, else RWA.xyz; never market cap.
+        id: 'providerValueUsd',
         kind: 'usd',
         label: 'Value',
-        synonyms: ['coalesced', 'ranking', 'size', 'aum', 'tvl'],
+        synonyms: ['onchain value', 'provider value', 'size', 'aum', 'tvl'],
+        read: row => row.providerValueUsd,
+    },
+    {
+        // The data team's ranking key (Allium → RWA.xyz → market cap); distinct from the Value column.
+        id: 'valueUsd',
+        kind: 'usd',
+        label: 'Ranking value',
+        synonyms: ['coalesced', 'ranking', 'rank value', 'market cap fallback'],
         read: row => row.valueUsd,
     },
     {
@@ -295,13 +304,18 @@ export function decodeFilters(raw: string): RegistryFilter[] {
 
 // ---- Sort codec: `sort` = "<columnId>.asc|desc" over the sortable table columns ----
 
-export const SORTABLE_COLUMN_IDS = ['token', 'rwaValueUsd', 'alliumValueUsd', 'marketCapUsd'] as const;
+export const SORTABLE_COLUMN_IDS = ['token', 'providerValueUsd', 'marketCapUsd'] as const;
 export type SortableColumnId = (typeof SORTABLE_COLUMN_IDS)[number];
+
+/** The two provider value columns merged into "Value"; bookmarked sort URLs keep working. */
+const LEGACY_SORT_ALIASES: Readonly<Record<string, SortableColumnId>> = {
+    alliumValueUsd: 'providerValueUsd',
+    rwaValueUsd: 'providerValueUsd',
+};
 
 export const SORT_COLUMN_LABELS: Readonly<Record<SortableColumnId, string>> = {
     token: 'Token',
-    rwaValueUsd: 'RWA.xyz value',
-    alliumValueUsd: 'Allium value',
+    providerValueUsd: 'Value',
     marketCapUsd: 'Market cap',
 };
 
@@ -315,8 +329,10 @@ export function encodeSort(sort: RegistrySort): string {
 }
 
 export function decodeSort(raw: string): RegistrySort | null {
-    const [id, direction] = raw.split('.');
-    if (!id || !(SORTABLE_COLUMN_IDS as readonly string[]).includes(id)) return null;
+    const [rawId, direction] = raw.split('.');
+    if (!rawId) return null;
+    const id = LEGACY_SORT_ALIASES[rawId] ?? rawId;
+    if (!(SORTABLE_COLUMN_IDS as readonly string[]).includes(id)) return null;
     if (direction !== 'asc' && direction !== 'desc') return null;
     return { id: id as SortableColumnId, desc: direction === 'desc' };
 }

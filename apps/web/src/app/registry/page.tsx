@@ -1,16 +1,14 @@
 import type { Metadata } from 'next';
 import { Suspense } from 'react';
-import { connection } from 'next/server';
 
-import { Skeleton } from '@tokens/ui/skeleton';
 import { SiteFooter } from '@/components/site-footer';
 import { fetchRegistry } from './lib/fetch-registry';
 import { RegistryTable } from './registry-table';
+import { RegistryTableSkeleton } from './registry-table-skeleton';
 
 export const metadata: Metadata = {
-    title: 'Asset Registry | Tokens',
-    description:
-        'Canonical registry of Solana assets by group, category, and class, with RWA.xyz and Allium classifications.',
+    title: 'Real World Assets Registry | Tokens',
+    description: 'Canonical RWA registry list for Assets on Solana.',
     robots: { index: false, follow: false },
 };
 
@@ -21,15 +19,15 @@ export default function RegistryPage() {
             <section className="relative mx-auto max-w-7xl px-6 pt-28 mt-12 pb-10">
                 <div className="mx-auto max-w-4xl text-center text-pretty">
                     <h1 className="text-balance text-[44px] leading-[1.02] md:text-[54px] font-medium text-text-extra-high">
-                        Asset Registry
+                        Real World Assets Registry
                     </h1>
                     <p className="mx-auto mt-5 max-w-2xl text-[length:var(--text-body-lg-size)] leading-[var(--leading-normal)] text-text-medium">
-                        Canonical Solana assets with internal, RWA.xyz, and Allium classifications and values.
+                        Canonical RWA registry list for Assets on Solana.
                     </p>
                 </div>
             </section>
 
-            <Suspense fallback={<RegistryFallback />}>
+            <Suspense fallback={<RegistryTableSkeleton />}>
                 <RegistryLoader />
             </Suspense>
 
@@ -43,29 +41,21 @@ export default function RegistryPage() {
 }
 
 /**
- * `connection()` keeps the registry fetch out of the build-time prerender so
- * the static shell never depends on SOLANA_DATA_API_KEY or the upstream
- * being reachable; the hourly `use cache` inside fetchRegistry still applies
- * across requests.
+ * The table is part of the prerendered shell: fetchRegistry is `use cache`
+ * (one GET /api/v2/registry read, revalidated in the background), so a reload
+ * or a prefetched navigation gets the rows from the CDN with no loading state.
+ * When the API is unreachable while prerendering (a preview whose API deploy
+ * is still building, a prod blip) the panel below is what gets prerendered,
+ * and fetchRegistry's one-second cache life makes the next request retry.
  */
 async function RegistryLoader() {
-    await connection();
-    try {
-        const data = await fetchRegistry();
-        return (
-            <section className="relative mx-auto max-w-7xl px-4 md:px-6 pb-12 md:pb-24">
-                <RegistryTable data={data} />
-            </section>
-        );
-    } catch (error) {
-        console.error(
-            JSON.stringify({
-                event: 'asset_registry_fetch_failed',
-                message: error instanceof Error ? error.message : String(error),
-            }),
-        );
-        return <RegistryUnavailable />;
-    }
+    const data = await fetchRegistry();
+    if (!data) return <RegistryUnavailable />;
+    return (
+        <section className="relative mx-auto max-w-7xl px-4 md:px-6 pb-12 md:pb-24">
+            <RegistryTable data={data} />
+        </section>
+    );
 }
 
 function RegistryUnavailable() {
@@ -77,15 +67,6 @@ function RegistryUnavailable() {
                     Please try again in a few minutes.
                 </p>
             </div>
-        </section>
-    );
-}
-
-function RegistryFallback() {
-    return (
-        <section className="relative mx-auto max-w-7xl px-4 md:px-6 pb-12 md:pb-24">
-            <Skeleton className="h-10 w-full max-w-[360px] rounded-full bg-gray-50" />
-            <Skeleton className="mt-4 h-[560px] w-full rounded-[24px] bg-gray-50" />
         </section>
     );
 }

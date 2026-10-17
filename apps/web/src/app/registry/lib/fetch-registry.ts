@@ -1,179 +1,102 @@
 import 'server-only';
 
+import { Effect, Result } from 'effect';
 import { cacheLife } from 'next/cache';
 
-import { fetchApiAppJsonOrNull } from '@/lib/api-app';
-import { looksLikeSolanaMintAddress } from '@/lib/solana-address';
-import { fetchBirdeyeTokenMetadata, normalizeLogoURI, type BirdeyeTokenMetadata } from './birdeye-metadata';
-import type {
-    AssetRegistryApiResponse,
-    AssetRegistryApiRow,
-    CuratedMintEntry,
-    MarketSnapshotEntry,
-    RegistryData,
-    RegistryRow,
-} from './types';
-
-const DEFAULT_REGISTRY_URL = 'https://data.solana.com/v1/assets';
-const FETCH_TIMEOUT_MS = 15_000;
-// Server-side cap on /api/v1/assets/market-snapshots.
-const SNAPSHOT_BATCH_SIZE = 250;
-const SNAPSHOT_CONCURRENCY = 4;
+import { apiAppJson } from '@/lib/api-app';
+import { normalizeLogoURI } from '@/lib/ipfs-ref';
+import type { RegistryData, RegistryRow, V2RegistryItem, V2RegistryResponse } from './types';
 
 /**
- * Throws on any failure so the error is never cached: the page falls back to
- * an "unavailable" panel and the next request retries the upstream.
+ * The registry is synced hourly from data.solana.com into the platform DB by
+ * the assets worker and served as one DB read; the page asks for everything
+ * (the upstream is ~3.3k rows, the endpoint caps at 5000) and keeps the
+ * filter / sort / CSV UX client-side.
  */
-export async function fetchRegistry(): Promise<RegistryData> {
+const REGISTRY_PATH = '/api/v2/registry?limit=5000';
+
+/**
+ * Resolves to `null` instead of throwing on failure. The page is prerendered
+ * with this call inside it, and an error escaping a `use cache` scope fails
+ * the build outright even when the caller catches it, so a failure becomes a
+ * value: it is cached for one second only (the route then revalidates on the
+ * next request) and the page shows an "unavailable" panel until the API
+ * answers again.
+ */
+export async function fetchRegistry(): Promise<RegistryData | null> {
     'use cache';
-    cacheLife('hours');
+    cacheLife('minutes');
 
-    const apiKey = process.env.SOLANA_DATA_API_KEY?.trim();
-    if (!apiKey) {
-        throw new Error('SOLANA_DATA_API_KEY is not configured');
-    }
-    const url = process.env.ASSET_REGISTRY_API_URL?.trim() || DEFAULT_REGISTRY_URL;
-
-    const response = await fetch(url, {
-        headers: { accept: 'application/json', 'x-api-key': apiKey },
-        signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
-    });
-    if (!response.ok) {
-        throw new Error(`Asset registry request failed: ${response.status}`);
-    }
-
-    const payload = (await response.json()) as AssetRegistryApiResponse;
-    const rows = payload?.data?.rows;
-    if (!Array.isArray(rows)) {
-        throw new Error('Asset registry response is missing data.rows');
-    }
-
-    const [snapshots, curated] = await Promise.all([
-        fetchMarketSnapshots(rows.map(row => row.mint_address)),
-        fetchCuratedMints(),
-    ]);
-
-    // Mints the platform does not index yet: fill logo + name straight from Birdeye.
-    const unindexed: string[] = [];
-    for (const { mint_address: mint } of rows) {
-        if (looksLikeSolanaMintAddress(mint) && !hasLogo(snapshots.get(mint), curated.get(mint))) unindexed.push(mint);
-    }
-    const birdeye = await fetchBirdeyeTokenMetadata(unindexed);
-
-    const normalized = rows.map(row =>
-        normalizeRow(
-            row,
-            snapshots.get(row.mint_address),
-            curated.get(row.mint_address),
-            birdeye.get(row.mint_address),
-        ),
+    const started = Date.now();
+    const result = await Effect.runPromise(
+        Effect.result(apiAppJson<V2RegistryResponse>({ path: REGISTRY_PATH, timeout: '20 seconds', retryTimes: 1 })),
     );
+    if (!Result.isSuccess(result)) {
+        return unavailable(`${REGISTRY_PATH} failed: ${result.failure._tag}: ${result.failure.message}`);
+    }
+    const payload = result.success;
+    if (!Array.isArray(payload?.items)) {
+        return unavailable('Asset registry response is missing items');
+    }
+    // Before the first worker sync the endpoint is an empty 200; do not keep that.
+    if (payload.items.length === 0) {
+        return unavailable('Asset registry has not been synced yet');
+    }
+
+    const rows = payload.items.map(toRegistryRow);
+    const generatedAt = payload.generatedAt ?? new Date(payload.syncedAt ?? started).toISOString();
 
     console.info(
         JSON.stringify({
             event: 'asset_registry_loaded',
-            rows: normalized.length,
-            withLogo: normalized.filter(row => row.logoURI).length,
-            withName: normalized.filter(row => row.name).length,
+            rows: rows.length,
+            total: payload.total,
+            withLogo: rows.filter(row => row.logoURI).length,
+            withName: rows.filter(row => row.name).length,
             // Drops to 0 if the upstream classification contract drifts again.
-            withGroup: normalized.filter(row => row.group).length,
-            birdeyeLookups: unindexed.length,
-            birdeyeHits: birdeye.size,
+            withGroup: rows.filter(row => row.group).length,
+            generatedAt,
+            syncedAt: payload.syncedAt,
+            durationMs: Date.now() - started,
         }),
     );
 
-    // Row order is the data team's: their query sorts by coalesce(Allium value,
-    // RWA.xyz value) descending with empties last, then CoinGecko market cap.
-    // We keep it as delivered rather than re-deriving it here.
+    // Row order is the data team's (coalesce(Allium value, RWA.xyz value) desc,
+    // then CoinGecko market cap); the API preserves it as `rank`.
     return {
-        generatedAt: payload.data.generatedAt,
-        truncated: payload.data.truncated === true,
-        rows: normalized,
+        generatedAt,
+        truncated: payload.total > payload.items.length,
+        rows,
     };
 }
 
-/**
- * Second enrichment source: the curated registry keyed by mint. Its
- * `primaryVariant.market.logoURI` is the indexed per-mint logo (the search
- * table behind market-snapshots only covers mints with live Birdeye markets).
- */
-async function fetchCuratedMints(): Promise<Map<string, CuratedMintEntry>> {
-    const response = await fetchApiAppJsonOrNull<{ assets?: CuratedMintEntry[] }>(
-        '/api/v1/assets/curated?list=all&groupBy=mint&variants=all',
-    );
-    const byMint = new Map<string, CuratedMintEntry>();
-    for (const entry of response?.assets ?? []) {
-        const mint = entry?.primaryVariant?.mint;
-        if (mint && !byMint.has(mint)) byMint.set(mint, entry);
-    }
-    return byMint;
+/** Logs the failure and makes sure it does not outlive the next request. */
+function unavailable(message: string): null {
+    console.error(JSON.stringify({ event: 'asset_registry_fetch_failed', message }));
+    // The shortest cacheLife in a scope wins: the failed entry expires at once
+    // so the following request re-fetches instead of serving the panel.
+    cacheLife({ stale: 0, revalidate: 1, expire: 1 });
+    return null;
 }
 
-/**
- * Best-effort enrichment from the Tokens platform API. A failed batch just
- * leaves its mints unenriched rather than failing the whole page.
- */
-async function fetchMarketSnapshots(mints: string[]): Promise<Map<string, MarketSnapshotEntry>> {
-    const unique = [...new Set(mints.filter(looksLikeSolanaMintAddress))];
-    const batches: string[][] = [];
-    for (let index = 0; index < unique.length; index += SNAPSHOT_BATCH_SIZE) {
-        batches.push(unique.slice(index, index + SNAPSHOT_BATCH_SIZE));
-    }
-
-    const byMint = new Map<string, MarketSnapshotEntry>();
-    let cursor = 0;
-    const worker = async () => {
-        while (cursor < batches.length) {
-            const batch = batches[cursor++]!;
-            const entries = await fetchApiAppJsonOrNull<MarketSnapshotEntry[]>('/api/v1/assets/market-snapshots', {
-                method: 'POST',
-                headers: { 'content-type': 'application/json' },
-                body: JSON.stringify({ mints: batch }),
-            });
-            for (const entry of entries ?? []) {
-                if (entry?.address) byMint.set(entry.address, entry);
-            }
-        }
-    };
-    await Promise.all(Array.from({ length: Math.min(SNAPSHOT_CONCURRENCY, batches.length) }, worker));
-    return byMint;
-}
-
-function hasLogo(snapshot: MarketSnapshotEntry | undefined, curated: CuratedMintEntry | undefined): boolean {
-    return Boolean(snapshot?.token?.logoURI || curated?.primaryVariant?.market?.logoURI);
-}
-
-function normalizeRow(
-    row: AssetRegistryApiRow,
-    snapshot: MarketSnapshotEntry | undefined,
-    curated: CuratedMintEntry | undefined,
-    provider: BirdeyeTokenMetadata | undefined,
-): RegistryRow {
-    const token = snapshot?.token ?? null;
-    const variant = curated?.primaryVariant ?? null;
-    const rwaValueUsd = parseUsd(row.rwa_asset_value_usd);
-    const alliumValueUsd = parseUsd(row.allium_asset_value_usd);
-    const marketCapUsd = parseUsd(row.coingecko_market_cap);
+function toRegistryRow(item: V2RegistryItem): RegistryRow {
     return {
-        symbol: row.token,
-        mintAddress: row.mint_address,
-        name: token?.name?.trim() || variant?.name?.trim() || provider?.name || null,
-        logoURI: normalizeLogoURI(token?.logoURI || variant?.market?.logoURI || null) || provider?.logoURI || null,
-        hasTokenPage: token != null || variant != null,
-        group: row.group ?? null,
-        category: row.category ?? null,
-        assetClass: row.class ?? null,
-        rwaClass: row.rwa_asset_class,
-        alliumClass: row.allium_asset_class,
-        rwaValueUsd,
-        alliumValueUsd,
-        marketCapUsd,
-        valueUsd: alliumValueUsd ?? rwaValueUsd ?? marketCapUsd,
+        symbol: item.symbol,
+        mintAddress: item.mint,
+        name: item.name?.trim() || null,
+        logoURI: normalizeLogoURI(item.logoURI),
+        hasTokenPage: item.hasTokenPage,
+        assetId: item.assetId ?? null,
+        group: item.group,
+        category: item.category,
+        assetClass: item.assetClass,
+        rwaClass: item.rwaClass,
+        alliumClass: item.alliumClass,
+        rwaValueUsd: item.rwaValueUsd,
+        alliumValueUsd: item.alliumValueUsd,
+        marketCapUsd: item.marketCapUsd,
+        providerValueUsd: item.alliumValueUsd ?? item.rwaValueUsd,
+        providerValueSource: item.alliumValueUsd !== null ? 'allium' : item.rwaValueUsd !== null ? 'rwa' : null,
+        valueUsd: item.alliumValueUsd ?? item.rwaValueUsd ?? item.marketCapUsd,
     };
-}
-
-function parseUsd(value: string | null): number | null {
-    if (value == null || value === '') return null;
-    const parsed = Number(value);
-    return Number.isFinite(parsed) ? parsed : null;
 }

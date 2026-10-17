@@ -3,6 +3,7 @@
   "defaultOpen": true,
   "pages": [
     "lists",
-    "search"
+    "search",
+    "registry"
   ]
 }

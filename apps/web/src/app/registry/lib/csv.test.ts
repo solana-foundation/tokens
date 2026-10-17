@@ -9,6 +9,7 @@ const baseRow: RegistryRow = {
     name: 'USD Coin',
     logoURI: null,
     hasTokenPage: true,
+    assetId: 'usd',
     group: 'Stablecoins',
     category: 'Fiat-Backed',
     assetClass: 'USD Stablecoins',
@@ -17,6 +18,8 @@ const baseRow: RegistryRow = {
     rwaValueUsd: 1234.5,
     alliumValueUsd: null,
     marketCapUsd: 60_000_000_000,
+    providerValueUsd: null,
+    providerValueSource: null,
     valueUsd: 1234.5,
 };
 

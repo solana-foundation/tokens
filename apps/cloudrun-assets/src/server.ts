@@ -150,6 +150,12 @@ import {
     type LaunchpadAdminDeps,
 } from './handlers/launchpadAdminActions';
 import { listByQuoteMints as launchpadListByQuoteMints, type LaunchpadReadsRepo } from './handlers/launchpadReads';
+import { solanaDataJobs, type SolanaDataCronDeps, type SolanaDataJobHandler } from './handlers/crons.solanaData';
+import {
+    getByMint as solanaDataAssetsGetByMint,
+    listAssets as solanaDataAssetsList,
+    type SolanaDataReadsRepo,
+} from './handlers/solanaDataReads';
 import { depegJobs, type DepegCronDeps, type DepegJobHandler } from './handlers/crons.depeg';
 import { trendingJobs, type TrendingCronDeps, type TrendingJobHandler } from './handlers/crons.trending';
 import {
@@ -206,6 +212,7 @@ export interface ServerDeps {
     ohlcvReadsRepo: OhlcvReadsRepo;
     prestocksReadsRepo: PrestocksReadsRepo;
     launchpadReadsRepo: LaunchpadReadsRepo;
+    solanaDataReadsRepo: SolanaDataReadsRepo;
     /** Current shared bearer, or [current, previous] during a rotation. */
     authToken: string | readonly string[];
     /** API serves RPC routes; worker serves Cloud Scheduler jobs only. */
@@ -227,6 +234,8 @@ export interface ServerDeps {
     launchpadCronDeps?: LaunchpadCronDeps;
     /** First-party logo re-hosting (`/jobs/logo-sync`); absent when GCS_LOGO_BUCKET is unset. */
     logoSyncCronDeps?: LogoSyncCronDeps;
+    /** Project Canon registry sync (`/jobs/sync-solana-data-assets`); absent when SOLANA_DATA_API_KEY is unset. */
+    solanaDataCronDeps?: SolanaDataCronDeps;
     /** stonk.fun lookups for the admin Launches page (allowlist-gated, read-only). */
     launchpadAdminDeps?: LaunchpadAdminDeps;
     /** Webacy depeg reconcile + structural health; present only when WEBACY_API_KEY is set. */
@@ -312,6 +321,8 @@ const ATOMIC_RETRY_QUERY_NAMES = new Set([
     'stockPricesGetLatestByAssetIds',
     'prestocksGetLatestByMints',
     'launchpadListByQuoteMints',
+    'solanaDataAssetsList',
+    'solanaDataAssetsGetByMint',
     'stockOhlcvList',
     'ohlcvBounds',
     'ohlcvList',
@@ -560,6 +571,8 @@ export function createApp(deps: ServerDeps) {
     queries.stockPricesGetLatestByAssetIds = args => stockGetPriceLatestByAssetIds(deps.stockReadsRepo, args);
     queries.prestocksGetLatestByMints = args => prestocksGetLatestByMints(deps.prestocksReadsRepo, args);
     queries.launchpadListByQuoteMints = args => launchpadListByQuoteMints(deps.launchpadReadsRepo, args);
+    queries.solanaDataAssetsList = args => solanaDataAssetsList(deps.solanaDataReadsRepo, args);
+    queries.solanaDataAssetsGetByMint = args => solanaDataAssetsGetByMint(deps.solanaDataReadsRepo, args);
     queries.stockOhlcvList = args => listStockOhlcv(deps.ohlcvReadsRepo, args);
     queries.ohlcvBounds = args => getOhlcvBounds(deps.ohlcvReadsRepo, args);
     queries.ohlcvList = args => listOhlcv(deps.ohlcvReadsRepo, args);
@@ -747,6 +760,7 @@ export function createApp(deps: ServerDeps) {
     };
     const launchpadJobsTable: Record<string, LaunchpadJobHandler> = { ...launchpadJobs };
     const logoSyncJobsTable: Record<string, LogoSyncJobHandler> = { ...logoSyncJobs };
+    const solanaDataJobsTable: Record<string, SolanaDataJobHandler> = { ...solanaDataJobs };
     const depegJobsTable: Record<string, DepegJobHandler> = { ...depegJobs };
 
     interface JobGroup {
@@ -811,6 +825,13 @@ export function createApp(deps: ServerDeps) {
                 ? (name, args) => logoSyncJobsTable[name]!(deps.logoSyncCronDeps!, args)
                 : null,
             disabledError: 'logo_sync_disabled',
+        },
+        {
+            has: name => Object.hasOwn(solanaDataJobsTable, name),
+            run: deps.solanaDataCronDeps
+                ? (name, args) => solanaDataJobsTable[name]!(deps.solanaDataCronDeps!, args)
+                : null,
+            disabledError: 'solana_data_jobs_disabled',
         },
         {
             has: name => Object.hasOwn(depegJobsTable, name),

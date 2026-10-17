@@ -45,3 +45,8 @@ output "pinata_gateway_token_secret_id" {
   value       = google_secret_manager_secret.pinata_gateway_token.secret_id
   description = "Secret Manager secret id for PINATA_GATEWAY_TOKEN (assets logo-sync; version seeded out-of-band)."
 }
+
+output "solana_data_api_key_secret_id" {
+  value       = google_secret_manager_secret.solana_data_api_key.secret_id
+  description = "Secret Manager secret id for SOLANA_DATA_API_KEY (assets sync-solana-data-assets; version seeded out-of-band)."
+}
