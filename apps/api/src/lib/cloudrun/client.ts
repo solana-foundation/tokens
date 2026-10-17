@@ -293,6 +293,14 @@ export function makeCloudRunCaller(cfg: CloudRunClientConfig): CloudRunCaller {
 
             const timeoutMs = options.timeoutMs ?? defaultTimeoutMs;
 
+            // Telemetry wraps the network call only: a memo hit emits its own
+            // single `external_call` event (with `memo_hit`), so dashboards
+            // that count events per provider see one entry per lookup.
+            const live = () =>
+                liveCall<T>(base, service, kind, name, args, timeoutMs, options).pipe(
+                    withCloudRunTelemetry(service, kind, name),
+                );
+
             // Memo hit: a speculative batch already fetched this exact query
             // for this request. Queries only; the payload still goes through
             // the same strict decode as a network response.
@@ -300,16 +308,17 @@ export function makeCloudRunCaller(cfg: CloudRunClientConfig): CloudRunCaller {
                 return Effect.service(CloudRunQueryMemo).pipe(
                     Effect.flatMap(store => {
                         const hit = store?.take(cloudRunMemoKey(service, name, args));
-                        if (!hit) return liveCall<T>(base, service, kind, name, args, timeoutMs, options);
+                        if (!hit) return live();
                         return decodePayload<T>(service, name, options.schema, hit.result).pipe(
-                            Effect.tap(() => emitMemoHit(service, name)),
+                            Effect.tap(() => emitMemoHit(service, name, true)),
+                            Effect.tapError(error => emitMemoHit(service, name, false, (error as { _tag?: string })._tag)),
                         );
                     }),
                 );
             }
 
-            return liveCall<T>(base, service, kind, name, args, timeoutMs, options);
-        }).pipe(withCloudRunTelemetry(service, kind, name));
+            return live();
+        });
     }
 
     function liveCall<T>(
@@ -352,7 +361,7 @@ function shouldLogCloudRunCalls(): boolean {
     return (process.env.TOKENS_LOG_CLOUDRUN_CALLS ?? 'true').trim().toLowerCase() !== 'false';
 }
 
-function emitMemoHit(service: CloudRunService, name: string): Effect.Effect<void> {
+function emitMemoHit(service: CloudRunService, name: string, ok: boolean, errorTag?: string): Effect.Effect<void> {
     if (!shouldLogCloudRunCalls()) return Effect.void;
     return Effect.service(CurrentRequestId).pipe(
         Effect.map(requestId =>
@@ -362,8 +371,9 @@ function emitMemoHit(service: CloudRunService, name: string): Effect.Effect<void
                 endpoint: name,
                 status: null,
                 duration_ms: 0,
-                ok: true,
+                ok,
                 memo_hit: true,
+                ...(errorTag ? { error_tag: errorTag } : {}),
                 ...(requestId ? { request_id: requestId } : {}),
             }),
         ),

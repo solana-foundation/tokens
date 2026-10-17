@@ -217,6 +217,39 @@ describe('request-scoped query memo', () => {
         expect(calls.length).toBe(1);
     });
 
+    it('a memo hit logs exactly one external_call event, flagged memo_hit; a live call logs one without it', async () => {
+        const { fetchImpl } = countingFetch();
+        const caller = callerWithFetch(fetchImpl);
+        const store = new CloudRunMemoStore();
+        store.put(cloudRunMemoKey('assets', 'getByAssetId', { assetId: 'solana' }), { assetId: 'solana' });
+
+        const logs: string[] = [];
+        const originalLog = console.log;
+        console.log = (...args: unknown[]) => {
+            logs.push(String(args[0]));
+        };
+        try {
+            await withStore(store, caller.query('assets', 'getByAssetId', { assetId: 'solana' }));
+            await withStore(store, caller.query('assets', 'getByAssetId', { assetId: 'solana' }));
+        } finally {
+            console.log = originalLog;
+        }
+
+        const events = logs
+            .map(line => JSON.parse(line) as Record<string, unknown>)
+            .filter(line => line.event === 'external_call' && line.endpoint === 'getByAssetId');
+        expect(events.length).toBe(2);
+        const pick = (e: Record<string, unknown>) => ({
+            provider: e.provider,
+            ok: e.ok,
+            memo_hit: e.memo_hit ?? null,
+            duration_ms: e.duration_ms,
+        });
+        expect(pick(events[0]!)).toEqual({ provider: 'cloudrun:assets', ok: true, memo_hit: true, duration_ms: 0 });
+        expect(pick(events[1]!).memo_hit).toBeNull();
+        expect(pick(events[1]!).ok).toBe(true);
+    });
+
     it('mutations and non-allowlisted queries never consult the memo', async () => {
         const { calls, fetchImpl } = countingFetch();
         const caller = callerWithFetch(fetchImpl);
