@@ -14,6 +14,7 @@ import {
 } from '@/lib/cloudrun';
 import type { AuthenticateApiKeyResult } from '@/lib/cloudrun/platformAuth';
 import { loadEnv } from '@/lib/env';
+import { CloudRunMemoStore, CloudRunQueryMemo } from '@/lib/cloudrun/client';
 import { getRedisClient, type RedisClient } from '@/lib/redis';
 import { slidingWindowLimit } from './sliding-window-rate-limit';
 import {
@@ -688,9 +689,15 @@ export function route<T, Ctx = unknown>(
               )
             : handler(request, ctx as Ctx);
 
-        const exit = await Effect.runPromiseExit(effect.pipe(Effect.provideService(CurrentRequestId, requestId)), {
-            signal: request.signal,
-        });
+        const exit = await Effect.runPromiseExit(
+            effect.pipe(
+                Effect.provideService(CurrentRequestId, requestId),
+                // Fresh per request: a speculative batch may seed it, and it
+                // must never outlive the request.
+                Effect.provideService(CloudRunQueryMemo, new CloudRunMemoStore()),
+            ),
+            { signal: request.signal },
+        );
 
         const latencyMs = Date.now() - startedAt;
         const url = (() => {

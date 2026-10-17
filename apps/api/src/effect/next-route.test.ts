@@ -3,7 +3,7 @@ import { Effect } from 'effect';
 
 mock.module('server-only', () => ({}));
 
-const { __resetCloudRunClientForTesting } = await import('@/lib/cloudrun/client');
+const { __resetCloudRunClientForTesting, CloudRunQueryMemo } = await import('@/lib/cloudrun/client');
 const { resetEnvForTests } = await import('@/lib/env');
 const { BadRequestError, NotFoundError } = await import('@tokens/effect');
 const { signPlaygroundProxyAuthPayload } = await import('./playground-proxy-auth');
@@ -159,6 +159,30 @@ describe('route() auth/limits matrices', () => {
         const header = await playgroundHeader(['assets:read']);
         const res = await handler(request({ 'x-tokens-playground-auth': header }), {} as never);
         expect(res.status).toBe(500);
+    });
+});
+
+describe('route() request-scoped query memo', () => {
+    it('provides a fresh memo store per request — nothing leaks between requests', async () => {
+        const seen: Array<number | null> = [];
+        const handler = route(() =>
+            Effect.gen(function* () {
+                const store = yield* Effect.service(CloudRunQueryMemo);
+                if (!store) {
+                    seen.push(null);
+                    return { ok: false };
+                }
+                // Whatever a previous request put must not be visible here.
+                seen.push(store.take('k') ? 1 : 0);
+                store.put('k', 'v');
+                return { ok: true, size: store.size };
+            }),
+        );
+        const first = await handler(request(), {} as never);
+        const second = await handler(request(), {} as never);
+        expect(await first.json()).toEqual({ ok: true, size: 1 });
+        expect(await second.json()).toEqual({ ok: true, size: 1 });
+        expect(seen).toEqual([0, 0]);
     });
 });
 
