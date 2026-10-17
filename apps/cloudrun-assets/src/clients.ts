@@ -38,6 +38,16 @@ import {
     type StonkfunToken,
 } from './handlers/crons.launchpad';
 import type { StructuralHealthBatchEntry, WebacyDepegClient } from './handlers/crons.depeg';
+import {
+    BIRDEYE_METADATA_BATCH_SIZE,
+    DEFAULT_SOLANA_DATA_API_URL,
+    parseBirdeyeMetadataPayload,
+    parseSolanaDataAssetsPayload,
+    type BirdeyeMetadataClient,
+    type BirdeyeMetadataResult,
+    type SolanaDataClient,
+    type SolanaDataFetchResult,
+} from './handlers/crons.solanaData';
 import { extractDepegListItems, normalizeDepegItem, type WebacyDepegItem } from './handlers/depegNormalize';
 import { impliedUsdPerUnit, type PegCurrency } from './handlers/pegReference';
 
@@ -117,7 +127,9 @@ export function parseBirdeyeMultiPrice(json: unknown, requested: readonly string
     return { ok: true, byMint, missing };
 }
 
-export function makeBirdeyeClient(opts: MakeBirdeyeOptions): BirdeyeClient & BirdeyeMultiPriceClient {
+export function makeBirdeyeClient(
+    opts: MakeBirdeyeOptions,
+): BirdeyeClient & BirdeyeMultiPriceClient & BirdeyeMetadataClient {
     const baseUrl = (opts.baseUrl ?? 'https://public-api.birdeye.so').replace(/\/+$/, '');
     const fetchImpl = opts.fetchImpl ?? fetch;
     const headers: Record<string, string> = {
@@ -175,6 +187,40 @@ export function makeBirdeyeClient(opts: MakeBirdeyeOptions): BirdeyeClient & Bir
                 missing.push(...res.missing);
             }
             return { ok: true, byMint, missing };
+        },
+
+        async fetchTokenMetadataMultiple(mints): Promise<BirdeyeMetadataResult> {
+            // Same retry contract as multiPriceChunk: one retry on 429/5xx, the
+            // registry sync re-queues a failed batch on its next hourly tick.
+            const unique = [...new Set(mints.map(m => m.trim()).filter(Boolean))].slice(0, BIRDEYE_METADATA_BATCH_SIZE);
+            if (unique.length === 0) return { ok: true, byMint: new Map() };
+            const url = `${baseUrl}/defi/v3/token/meta-data/multiple?list_address=${encodeURIComponent(unique.join(','))}`;
+            let lastFailure: { status: number; message: string } = { status: 0, message: 'no attempt' };
+            for (let attempt = 0; attempt < 2; attempt++) {
+                try {
+                    const res = await withExternalTiming('birdeye', url, () =>
+                        fetchImpl(url, { headers, signal: AbortSignal.timeout(EXTERNAL_FETCH_TIMEOUT_MS) }),
+                    );
+                    const text = await res.text().catch(() => '');
+                    let json: unknown = null;
+                    try {
+                        json = text ? JSON.parse(text) : null;
+                    } catch {
+                        json = null;
+                    }
+                    if (!res.ok) {
+                        lastFailure = { status: res.status, message: text.slice(0, 300) || res.statusText || 'Request failed' };
+                        if (res.status === 429 || res.status >= 500) continue;
+                        return { ok: false, ...lastFailure };
+                    }
+                    const byMint = parseBirdeyeMetadataPayload(json, unique);
+                    if (!byMint) return { ok: false, status: res.status, message: 'invalid meta-data payload' };
+                    return { ok: true, byMint };
+                } catch (err) {
+                    lastFailure = { status: 0, message: err instanceof Error ? err.message : String(err) };
+                }
+            }
+            return { ok: false, ...lastFailure };
         },
 
         async fetchTokenOverview(mint: string): Promise<BirdeyeOverview | null> {
@@ -1542,6 +1588,52 @@ export function makeStonkfunClient(opts: MakeStonkfunOptions = {}): StonkfunClie
             const payload = res.payload as { data?: { token?: unknown } } | null;
             const token = parseStonkfunToken(payload?.data?.token ?? payload?.data ?? null);
             return { ok: true, items: token ? [token] : [] };
+        },
+    };
+}
+
+interface MakeSolanaDataOptions {
+    apiKey: string;
+    /** Override for tests / staging mirrors; defaults to data.solana.com/v1/assets. */
+    baseUrl?: string;
+    fetchImpl?: typeof fetch;
+}
+
+/**
+ * Project Canon asset registry (data.solana.com, `x-api-key`; ~3.3k rows in one
+ * body, no pagination, 10 req/s limit). All-or-nothing: the sync deactivates
+ * rows the upstream stopped returning, so a partial body must never look like
+ * a smaller registry. Never throws; failures come back in the result.
+ */
+export function makeSolanaDataClient(opts: MakeSolanaDataOptions): SolanaDataClient {
+    const url = (opts.baseUrl ?? DEFAULT_SOLANA_DATA_API_URL).trim();
+    const apiKey = opts.apiKey.trim();
+    const fetchImpl = opts.fetchImpl ?? fetch;
+
+    return {
+        async fetchAssets(): Promise<SolanaDataFetchResult> {
+            if (!apiKey) return { ok: false, reason: 'error', message: 'SOLANA_DATA_API_KEY not configured' };
+            let res: Response;
+            try {
+                res = await withExternalTiming('solana-data', url, () =>
+                    fetchImpl(url, {
+                        headers: { 'x-api-key': apiKey, Accept: 'application/json' },
+                        signal: AbortSignal.timeout(EXTERNAL_FETCH_TIMEOUT_MS),
+                    }),
+                );
+            } catch (err) {
+                return { ok: false, reason: 'error', message: err instanceof Error ? err.message : String(err) };
+            }
+            if (!res.ok) return { ok: false, reason: 'http_error', status: res.status };
+            let json: unknown;
+            try {
+                json = await res.json();
+            } catch {
+                return { ok: false, reason: 'invalid_payload' };
+            }
+            const payload = parseSolanaDataAssetsPayload(json);
+            if (!payload) return { ok: false, reason: 'invalid_payload' };
+            return { ok: true, ...payload };
         },
     };
 }

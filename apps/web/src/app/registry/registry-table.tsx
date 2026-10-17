@@ -1,7 +1,6 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import Image from 'next/image';
 import Link from 'next/link';
 import {
     createColumnHelper,
@@ -13,98 +12,75 @@ import {
     type PaginationState,
     type SortingState,
 } from '@tanstack/react-table';
-import { ArrowUpRight, ChevronDown, ChevronUp, ChevronsUpDown } from 'lucide-react';
+import { ArrowUpRight, Braces, ChevronDown, ChevronUp, ChevronsUpDown } from 'lucide-react';
 
 import { cn, truncateAddress } from '@tokens/ui/cn';
 import { Button } from '@tokens/ui/button';
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@tokens/ui/tooltip';
 import { MarketsPagination } from '@/app/_components/markets/markets-pagination';
+import { buildCoinHref } from '@/lib/coin-href';
 import { formatLargeNumber } from '@/lib/format';
 import { cleanTokenName } from '@/lib/logo-overrides';
-import { normalizeLogoSrc } from '@/lib/normalize-logo-src';
 import { downloadTextFile, registryCsvFilename, registryRowsToCsv } from './lib/csv';
 import { SORTABLE_COLUMN_IDS, applyFilters, type SortableColumnId } from './lib/filters';
 import type { RegistryData, RegistryRow } from './lib/types';
 import type { CategoryOptions } from './registry-filter-editor';
+import { RegistryNuqsAdapter } from './registry-nuqs-adapter';
+import { RegistryResponseSheet } from './registry-response-sheet';
+import { RegistryTokenLogo } from './registry-token-logo';
 import { RegistryToolbar } from './registry-toolbar';
 import { useRegistryUrlState } from './use-registry-url-state';
 
 const columnHelper = createColumnHelper<RegistryRow>();
 
-const RIGHT_ALIGNED_COLUMNS = new Set(['rwaValueUsd', 'alliumValueUsd', 'marketCapUsd']);
+const RIGHT_ALIGNED_COLUMNS = new Set(['marketCapUsd']);
 
-// The Token column stays pinned while the table scrolls sideways. Sticky cells need an opaque
-// background (the row/header tints are translucent), so mix the same tint over white.
+// The Token column stays pinned while the table scrolls sideways; on phones the cell is compact
+// (logo + symbol, see TokenCell) so the pinned part leaves most of the viewport to scroll.
+// Sticky cells need an opaque background (the row/header tints are translucent), so mix the
+// same tint over white.
 const PINNED_CELL_CLASS =
     'sticky left-0 z-10 shadow-[inset_-1px_0_0_var(--color-border-light)] bg-white group-hover/row:bg-[color-mix(in_srgb,var(--color-gray-50)_50%,white)]';
 const PINNED_HEADER_CLASS =
     'sticky left-0 z-20 shadow-[inset_-1px_0_0_var(--color-border-light)] bg-[color-mix(in_srgb,var(--color-gray-50)_80%,white)]';
 
-// next/image only accepts https remote patterns; drop anything else rather than crash the row.
-function renderableLogoSrc(src: string | undefined): string | undefined {
-    const normalized = normalizeLogoSrc(src);
-    if (!normalized) return undefined;
-    return normalized.startsWith('/') || normalized.startsWith('https://') ? normalized : undefined;
-}
-
-// Logos already served by our image proxy are CDN-cached there; skip the optimizer's extra hop.
-function isProxiedLogo(src: string): boolean {
-    return src.startsWith('/api/image-proxy?');
-}
-
-function RegistryTokenLogo({ row }: { row: RegistryRow }) {
-    const [hasError, setHasError] = useState(false);
-    const symbol = row.symbol || row.name || '??';
-    const initials = symbol.slice(0, 2).toUpperCase();
-    const src = renderableLogoSrc(row.logoURI ?? undefined);
-
-    if (!src || hasError) {
-        return (
-            <div className="size-[26px] rounded-full bg-gray-1400 flex items-center justify-center shrink-0">
-                <span className="text-[10px] font-bold text-white">{initials}</span>
-            </div>
-        );
-    }
-
-    return (
-        <Image
-            src={src}
-            alt={symbol}
-            width={26}
-            height={26}
-            className="size-[26px] rounded-full bg-gray-50 object-cover shrink-0"
-            loading="lazy"
-            decoding="async"
-            onError={() => setHasError(true)}
-            referrerPolicy="no-referrer"
-            unoptimized={isProxiedLogo(src)}
-        />
-    );
-}
-
 function TokenCell({ row }: { row: RegistryRow }) {
     const displayName = row.name ? cleanTokenName(row.name) : row.symbol;
+    // Phones get logo + symbol only (the name is in the Response sheet and on the asset page),
+    // which keeps the pinned column to ~140px; md and up show name + $symbol.
     const content = (
         <>
             <RegistryTokenLogo row={row} />
             <div className="flex min-w-0 items-center gap-2">
-                <span className="truncate text-[16px] font-medium text-text-extra-high" title={displayName}>
+                <span
+                    className="hidden truncate text-[16px] font-medium text-text-extra-high md:inline"
+                    title={displayName}
+                >
                     {displayName}
                 </span>
+                <span className="truncate text-[14px] font-medium text-text-extra-high md:hidden" title={displayName}>
+                    {row.symbol}
+                </span>
                 {row.name ? (
-                    <span className="shrink-0 text-[14px] text-text-extra-low font-medium">${row.symbol}</span>
+                    <span className="hidden shrink-0 text-[14px] text-text-extra-low font-medium md:inline">
+                        ${row.symbol}
+                    </span>
                 ) : null}
             </div>
         </>
     );
 
     if (!row.hasTokenPage) {
-        return <div className="flex max-w-[220px] items-center gap-[8px] md:max-w-[280px]">{content}</div>;
+        return <div className="flex max-w-[120px] items-center gap-[8px] md:max-w-[280px]">{content}</div>;
     }
+    // Direct asset-page link (`/{assetId}?solana={mint}`), the same the home table builds;
+    // the mint redirect only covers a cached payload from before the API carried assetId.
+    const href = row.assetId ? buildCoinHref(row.assetId, row.mintAddress) : `/token/${row.mintAddress}`;
     return (
         <Link
-            href={`/token/${row.mintAddress}`}
+            href={href}
             prefetch={false}
-            className="flex max-w-[220px] items-center gap-[8px] hover:opacity-80 transition-opacity md:max-w-[280px]"
+            className="flex max-w-[120px] items-center gap-[8px] hover:opacity-80 transition-opacity md:max-w-[280px]"
         >
             {content}
         </Link>
@@ -129,75 +105,121 @@ function UsdCell({ value }: { value: number | null }) {
     );
 }
 
-const columns = [
-    columnHelper.accessor('symbol', {
-        id: 'token',
-        header: 'Token',
-        cell: info => <TokenCell row={info.row.original} />,
-    }),
-    columnHelper.accessor('mintAddress', {
-        header: 'Address',
-        enableSorting: false,
-        cell: info => {
-            const address = info.getValue();
-            return (
-                <a
-                    href={`https://explorer.solana.com/address/${address}`}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="inline-flex items-center gap-1 font-mono text-[13px] text-text-medium transition-colors hover:text-text-extra-high"
-                    title={address}
-                >
-                    {truncateAddress(address)}
-                    <ArrowUpRight className="h-3 w-3 text-text-extra-low" />
-                </a>
-            );
-        },
-    }),
-    columnHelper.accessor('group', {
-        header: 'Group',
-        enableSorting: false,
-        cell: info => <TextCell value={info.getValue()} />,
-    }),
-    columnHelper.accessor('category', {
-        header: 'Category',
-        enableSorting: false,
-        cell: info => <TextCell value={info.getValue()} />,
-    }),
-    columnHelper.accessor(row => row.marketCapUsd ?? undefined, {
-        id: 'marketCapUsd',
-        header: 'Market Cap',
-        sortUndefined: 'last',
-        cell: info => <UsdCell value={info.row.original.marketCapUsd} />,
-    }),
-    columnHelper.accessor('assetClass', {
-        header: 'Class',
-        enableSorting: false,
-        cell: info => <TextCell value={info.getValue()} />,
-    }),
-    columnHelper.accessor('alliumClass', {
-        header: 'Allium Class',
-        enableSorting: false,
-        cell: info => <TextCell value={info.getValue()} />,
-    }),
-    columnHelper.accessor(row => row.alliumValueUsd ?? undefined, {
-        id: 'alliumValueUsd',
-        header: 'Allium Value',
-        sortUndefined: 'last',
-        cell: info => <UsdCell value={info.row.original.alliumValueUsd} />,
-    }),
-    columnHelper.accessor('rwaClass', {
-        header: 'RWA.xyz Class',
-        enableSorting: false,
-        cell: info => <TextCell value={info.getValue()} />,
-    }),
-    columnHelper.accessor(row => row.rwaValueUsd ?? undefined, {
-        id: 'rwaValueUsd',
-        header: 'RWA.xyz Value',
-        sortUndefined: 'last',
-        cell: info => <UsdCell value={info.row.original.rwaValueUsd} />,
-    }),
-];
+const PROVIDER_LABELS = { allium: 'Allium', rwa: 'RWA.xyz' } as const;
+
+/**
+ * The one on-chain value column. Allium and RWA.xyz measure the same thing, so
+ * the table shows whichever reported (Allium first) with its source; when both
+ * did, hovering lists both numbers.
+ */
+function ProviderValueCell({ row }: { row: RegistryRow }) {
+    if (row.providerValueUsd == null || row.providerValueSource == null) return <EmptyValue />;
+    const both = row.alliumValueUsd != null && row.rwaValueUsd != null;
+    const content = (
+        <span className="flex flex-col items-start leading-tight">
+            <span className="text-[14px] text-[#2D2D2D] font-medium tabular-nums">
+                {formatLargeNumber(row.providerValueUsd)}
+            </span>
+            <span className="text-[11px] font-medium text-text-extra-low">
+                {PROVIDER_LABELS[row.providerValueSource]}
+            </span>
+        </span>
+    );
+    if (!both) return content;
+    return (
+        <Tooltip>
+            <TooltipTrigger asChild>
+                <span className="inline-flex cursor-help">{content}</span>
+            </TooltipTrigger>
+            <TooltipContent
+                side="top"
+                align="start"
+                className="rounded-xl bg-[#111111] px-3 py-2 text-xs leading-5 text-white shadow-[0_10px_30px_rgba(20,20,21,0.18)] tabular-nums"
+            >
+                <div>Allium {formatLargeNumber(row.alliumValueUsd)}</div>
+                <div>RWA.xyz {formatLargeNumber(row.rwaValueUsd)}</div>
+            </TooltipContent>
+        </Tooltip>
+    );
+}
+
+/**
+ * Six data columns. Group is implied by Category and both provider classes are
+ * independent taxonomies with partial coverage, so they live in the filter chips
+ * and the Response sheet rather than in the grid; the two provider values merge
+ * into "Value". CSV columns are unchanged.
+ */
+function buildColumns(onOpenResponse: (row: RegistryRow) => void) {
+    return [
+        columnHelper.accessor('symbol', {
+            id: 'token',
+            header: 'Token',
+            cell: info => <TokenCell row={info.row.original} />,
+        }),
+        columnHelper.accessor('mintAddress', {
+            header: 'Address',
+            enableSorting: false,
+            cell: info => {
+                const address = info.getValue();
+                return (
+                    <a
+                        href={`https://explorer.solana.com/address/${address}`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="inline-flex items-center gap-1 font-mono text-[13px] text-text-medium transition-colors hover:text-text-extra-high"
+                        title={address}
+                    >
+                        {truncateAddress(address)}
+                        <ArrowUpRight className="h-3 w-3 text-text-extra-low" />
+                    </a>
+                );
+            },
+        }),
+        columnHelper.accessor('category', {
+            header: 'Category',
+            enableSorting: false,
+            cell: info => <TextCell value={info.getValue()} />,
+        }),
+        columnHelper.accessor('assetClass', {
+            header: 'Class',
+            enableSorting: false,
+            cell: info => <TextCell value={info.getValue()} />,
+        }),
+        columnHelper.accessor(row => row.providerValueUsd ?? undefined, {
+            id: 'providerValueUsd',
+            header: 'Value',
+            sortUndefined: 'last',
+            cell: info => <ProviderValueCell row={info.row.original} />,
+        }),
+        columnHelper.accessor(row => row.marketCapUsd ?? undefined, {
+            id: 'marketCapUsd',
+            header: 'Market Cap',
+            sortUndefined: 'last',
+            cell: info => <UsdCell value={info.row.original.marketCapUsd} />,
+        }),
+        columnHelper.display({
+            id: 'response',
+            header: () => <span className="sr-only">Response</span>,
+            enableSorting: false,
+            cell: info => {
+                const row = info.row.original;
+                return (
+                    <span className="flex justify-end">
+                        <button
+                            type="button"
+                            onClick={() => onOpenResponse(row)}
+                            aria-label={`View API response for ${row.symbol}`}
+                            title="View API response"
+                            className="inline-flex size-8 items-center justify-center rounded-full border border-border-medium bg-white text-text-medium shadow-none transition-colors hover:bg-gray-50/60 hover:text-text-extra-high focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-border-medium"
+                        >
+                            <Braces className="size-3.5" aria-hidden />
+                        </button>
+                    </span>
+                );
+            },
+        }),
+    ];
+}
 
 function distinctSorted(values: Array<string | null>): string[] {
     return [...new Set(values.filter((value): value is string => !!value))].sort((a, b) => a.localeCompare(b));
@@ -207,10 +229,28 @@ function isSortableColumnId(id: string): id is SortableColumnId {
     return (SORTABLE_COLUMN_IDS as readonly string[]).includes(id);
 }
 
+/**
+ * Wrapped in the registry's own nuqs adapter so the table (toolbar state and
+ * all) renders in the prerendered HTML instead of behind a Suspense fallback.
+ */
 export function RegistryTable({ data }: { data: RegistryData }) {
+    return (
+        <RegistryNuqsAdapter>
+            <RegistryTableInner data={data} />
+        </RegistryNuqsAdapter>
+    );
+}
+
+function RegistryTableInner({ data }: { data: RegistryData }) {
     const urlState = useRegistryUrlState();
     const { q, filters, sort, setSort, clearAll } = urlState;
     const [pagination, setPagination] = useState<PaginationState>({ pageIndex: 0, pageSize: 50 });
+    const [openMint, setOpenMint] = useState<string | null>(null);
+    const columns = useMemo(() => buildColumns(row => setOpenMint(row.mintAddress)), []);
+    const openRow = useMemo(
+        () => (openMint ? (data.rows.find(row => row.mintAddress === openMint) ?? null) : null),
+        [data.rows, openMint],
+    );
 
     const options = useMemo<CategoryOptions>(
         () => ({
@@ -261,129 +301,147 @@ export function RegistryTable({ data }: { data: RegistryData }) {
     };
 
     return (
-        <div className="flex flex-col gap-4">
-            <RegistryToolbar
-                state={urlState}
-                options={options}
-                isFiltered={filteredRows.length !== data.rows.length}
-                matchedCount={filteredRows.length}
-                onExportCsv={handleExportCsv}
-            />
+        <TooltipProvider delayDuration={150}>
+            <div className="flex flex-col gap-4">
+                <RegistryToolbar
+                    state={urlState}
+                    options={options}
+                    isFiltered={filteredRows.length !== data.rows.length}
+                    matchedCount={filteredRows.length}
+                    onExportCsv={handleExportCsv}
+                />
 
-            <div className="bg-white rounded-[24px] border border-border-medium shadow-[0_8px_40px_rgba(0,0,0,0.03)] overflow-hidden">
-                <div className="overflow-x-auto">
-                    <table className="w-full min-w-[1400px] text-left border-collapse">
-                        <thead>
-                            {table.getHeaderGroups().map(headerGroup => (
-                                <tr key={headerGroup.id} className="border-b border-border-extra-light bg-gray-50/80">
-                                    {headerGroup.headers.map((header, index) => {
-                                        const canSort = header.column.getCanSort();
-                                        const sortDirection = header.column.getIsSorted();
-                                        const isLast = index === headerGroup.headers.length - 1;
-                                        const alignRight = RIGHT_ALIGNED_COLUMNS.has(header.column.id);
+                <div className="bg-white rounded-[24px] border border-border-medium shadow-[0_8px_40px_rgba(0,0,0,0.03)] overflow-hidden">
+                    <div className="overflow-x-auto">
+                        <table className="w-full min-w-[1040px] text-left border-collapse">
+                            <thead>
+                                {table.getHeaderGroups().map(headerGroup => (
+                                    <tr
+                                        key={headerGroup.id}
+                                        className="border-b border-border-extra-light bg-gray-50/80"
+                                    >
+                                        {headerGroup.headers.map((header, index) => {
+                                            const canSort = header.column.getCanSort();
+                                            const sortDirection = header.column.getIsSorted();
+                                            const isLast = index === headerGroup.headers.length - 1;
+                                            const alignRight = RIGHT_ALIGNED_COLUMNS.has(header.column.id);
 
-                                        return (
-                                            <th
-                                                key={header.id}
-                                                className={cn(
-                                                    'py-3 text-[12px] md:text-[14px] font-medium text-text-high bg-gray-50/80 border-b border-border-light',
-                                                    index === 0 && 'pl-4 pr-3 md:pl-6 md:pr-4',
-                                                    index === 0 && PINNED_HEADER_CLASS,
-                                                    index !== 0 && !isLast && 'px-3 md:px-5',
-                                                    isLast && 'pl-3 md:pl-5 pr-4 md:pr-8',
-                                                    alignRight && 'text-right',
-                                                )}
-                                            >
-                                                <button
-                                                    type="button"
-                                                    className={cn(
-                                                        'inline-flex text-nowrap items-center gap-1',
-                                                        canSort &&
-                                                            'cursor-pointer hover:text-text-extra-high select-none',
-                                                        alignRight && 'justify-end w-full',
-                                                    )}
-                                                    onClick={header.column.getToggleSortingHandler()}
-                                                    disabled={!canSort}
-                                                >
-                                                    {flexRender(header.column.columnDef.header, header.getContext())}
-                                                    {canSort && (
-                                                        <span className="text-text-extra-low">
-                                                            {sortDirection === 'asc' ? (
-                                                                <ChevronUp className="h-4 w-4" />
-                                                            ) : sortDirection === 'desc' ? (
-                                                                <ChevronDown className="h-4 w-4" />
-                                                            ) : (
-                                                                <ChevronsUpDown className="h-3.5 w-3.5" />
-                                                            )}
-                                                        </span>
-                                                    )}
-                                                </button>
-                                            </th>
-                                        );
-                                    })}
-                                </tr>
-                            ))}
-                        </thead>
-                        <tbody className="divide-y divide-border-extra-light">
-                            {visibleRows.length === 0 ? (
-                                <tr>
-                                    <td colSpan={columns.length} className="px-6 py-12 text-center">
-                                        <p className="text-text-low text-[14px] md:text-[16px]">
-                                            No assets match your filters
-                                        </p>
-                                        <p className="text-text-extra-low text-[12px] md:text-[14px] mt-2">
-                                            Try a different symbol, name, or mint address, or loosen a filter
-                                        </p>
-                                        <Button
-                                            type="button"
-                                            variant="outline"
-                                            size="sm"
-                                            className="mt-4 h-9 rounded-full border-border-medium bg-white px-4 font-sans text-[13px] text-text-extra-high shadow-none hover:bg-gray-50/60"
-                                            onClick={clearAll}
-                                        >
-                                            Clear filters
-                                        </Button>
-                                    </td>
-                                </tr>
-                            ) : (
-                                visibleRows.map(row => (
-                                    <tr key={row.id} className="group/row hover:bg-gray-50/50 transition-colors">
-                                        {row.getVisibleCells().map((cell, index) => {
-                                            const isLast = index === row.getVisibleCells().length - 1;
                                             return (
-                                                <td
-                                                    key={cell.id}
+                                                <th
+                                                    key={header.id}
                                                     className={cn(
-                                                        'py-3.5',
+                                                        'py-3 text-[12px] md:text-[14px] font-medium text-text-high bg-gray-50/80 border-b border-border-light',
                                                         index === 0 && 'pl-4 pr-3 md:pl-6 md:pr-4',
-                                                        index === 0 && PINNED_CELL_CLASS,
+                                                        // Auto layout hands the min-width surplus to every column;
+                                                        // on phones keep the pinned one at its content width.
+                                                        index === 0 && 'w-px md:w-auto',
+                                                        index === 0 && PINNED_HEADER_CLASS,
                                                         index !== 0 && !isLast && 'px-3 md:px-5',
                                                         isLast && 'pl-3 md:pl-5 pr-4 md:pr-8',
+                                                        alignRight && 'text-right',
                                                     )}
                                                 >
-                                                    {flexRender(cell.column.columnDef.cell, cell.getContext())}
-                                                </td>
+                                                    <button
+                                                        type="button"
+                                                        className={cn(
+                                                            'inline-flex text-nowrap items-center gap-1',
+                                                            canSort &&
+                                                                'cursor-pointer hover:text-text-extra-high select-none',
+                                                            alignRight && 'justify-end w-full',
+                                                        )}
+                                                        onClick={header.column.getToggleSortingHandler()}
+                                                        disabled={!canSort}
+                                                    >
+                                                        {flexRender(
+                                                            header.column.columnDef.header,
+                                                            header.getContext(),
+                                                        )}
+                                                        {canSort && (
+                                                            <span className="text-text-extra-low">
+                                                                {sortDirection === 'asc' ? (
+                                                                    <ChevronUp className="h-4 w-4" />
+                                                                ) : sortDirection === 'desc' ? (
+                                                                    <ChevronDown className="h-4 w-4" />
+                                                                ) : (
+                                                                    <ChevronsUpDown className="h-3.5 w-3.5" />
+                                                                )}
+                                                            </span>
+                                                        )}
+                                                    </button>
+                                                </th>
                                             );
                                         })}
                                     </tr>
-                                ))
-                            )}
-                        </tbody>
-                    </table>
+                                ))}
+                            </thead>
+                            <tbody className="divide-y divide-border-extra-light">
+                                {visibleRows.length === 0 ? (
+                                    <tr>
+                                        <td colSpan={columns.length} className="px-6 py-12 text-center">
+                                            <p className="text-text-low text-[14px] md:text-[16px]">
+                                                No assets match your filters
+                                            </p>
+                                            <p className="text-text-extra-low text-[12px] md:text-[14px] mt-2">
+                                                Try a different symbol, name, or mint address, or loosen a filter
+                                            </p>
+                                            <Button
+                                                type="button"
+                                                variant="outline"
+                                                size="sm"
+                                                className="mt-4 h-9 rounded-full border-border-medium bg-white px-4 font-sans text-[13px] text-text-extra-high shadow-none hover:bg-gray-50/60"
+                                                onClick={clearAll}
+                                            >
+                                                Clear filters
+                                            </Button>
+                                        </td>
+                                    </tr>
+                                ) : (
+                                    visibleRows.map(row => (
+                                        <tr key={row.id} className="group/row hover:bg-gray-50/50 transition-colors">
+                                            {row.getVisibleCells().map((cell, index) => {
+                                                const isLast = index === row.getVisibleCells().length - 1;
+                                                return (
+                                                    <td
+                                                        key={cell.id}
+                                                        className={cn(
+                                                            'py-3.5',
+                                                            index === 0 && 'pl-4 pr-3 md:pl-6 md:pr-4',
+                                                            index === 0 && PINNED_CELL_CLASS,
+                                                            index !== 0 && !isLast && 'px-3 md:px-5',
+                                                            isLast && 'pl-3 md:pl-5 pr-4 md:pr-8',
+                                                        )}
+                                                    >
+                                                        {flexRender(cell.column.columnDef.cell, cell.getContext())}
+                                                    </td>
+                                                );
+                                            })}
+                                        </tr>
+                                    ))
+                                )}
+                            </tbody>
+                        </table>
+                    </div>
+                    <MarketsPagination
+                        state={{
+                            pageIndex: pagination.pageIndex,
+                            pageSize: pagination.pageSize,
+                            total: filteredRows.length,
+                            visibleCount: visibleRows.length,
+                            itemLabel: 'assets',
+                            isLoading: false,
+                            onPageChange: pageIndex => setPagination(current => ({ ...current, pageIndex })),
+                            onPageSizeChange: pageSize => setPagination({ pageIndex: 0, pageSize }),
+                        }}
+                    />
                 </div>
-                <MarketsPagination
-                    state={{
-                        pageIndex: pagination.pageIndex,
-                        pageSize: pagination.pageSize,
-                        total: filteredRows.length,
-                        visibleCount: visibleRows.length,
-                        itemLabel: 'assets',
-                        isLoading: false,
-                        onPageChange: pageIndex => setPagination(current => ({ ...current, pageIndex })),
-                        onPageSizeChange: pageSize => setPagination({ pageIndex: 0, pageSize }),
+                <RegistryResponseSheet
+                    mint={openMint}
+                    row={openRow}
+                    onOpenChange={open => {
+                        if (!open) setOpenMint(null);
                     }}
                 />
             </div>
-        </div>
+        </TooltipProvider>
     );
 }

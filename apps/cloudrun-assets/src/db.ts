@@ -45,6 +45,17 @@ import type {
     LogoSyncSuccess,
 } from './handlers/crons.logoSync';
 import type { LaunchpadReadsRepo, LaunchpadTokenRow } from './handlers/launchpadReads';
+import type {
+    SolanaDataAssetUpsert,
+    SolanaDataJobsRepo,
+    SolanaDataProviderMetadataUpdate,
+} from './handlers/crons.solanaData';
+import type {
+    SolanaDataAssetDetailRow,
+    SolanaDataAssetReadRow,
+    SolanaDataAssetsListFilters,
+    SolanaDataReadsRepo,
+} from './handlers/solanaDataReads';
 import type { TokenUpsertFromBirdeye } from './handlers/tokenUpsert';
 import type {
     AssetsApiAssetMarketRow,
@@ -5553,6 +5564,10 @@ const LOGO_SOURCE_TABLES_SQL = `
       FROM token_list_members m
       JOIN token_lists tl ON tl.id = m.list_id AND tl.status = 'published'
      WHERE m.logo_uri IS NOT NULL AND m.logo_uri <> ''
+    UNION ALL
+    SELECT mint, provider_logo_uri, 6, 'solana_data_assets_latest', provider_fetched_at
+      FROM solana_data_assets_latest
+     WHERE is_active = true AND provider_logo_uri IS NOT NULL AND provider_logo_uri <> ''
 `;
 
 function timestamptzToMs(value: unknown): number | null {
@@ -5705,6 +5720,244 @@ export function makePostgresLogoSyncRepo(sql: Sql): LogoSyncRepo {
                     last_error = EXCLUDED.last_error,
                     updated_at = EXCLUDED.updated_at
             `;
+        },
+    };
+}
+
+// ---------------------------------------------------------------------------
+// Project Canon asset registry (`solana_data_assets_latest`, migration 0031).
+// Sync side: crons.solanaData.ts; read side: solanaDataReads.ts.
+// ---------------------------------------------------------------------------
+
+export function makePostgresSolanaDataJobsRepo(sql: Sql): SolanaDataJobsRepo {
+    return {
+        async listActiveCount() {
+            const rows = await sql<{ count: number }[]>`
+                SELECT COUNT(*)::int AS count FROM solana_data_assets_latest WHERE is_active = true
+            `;
+            return rows[0]?.count ?? 0;
+        },
+
+        async upsertLatest(rows: readonly SolanaDataAssetUpsert[]) {
+            if (rows.length === 0) return;
+            const values = rows.map(row => ({
+                mint: row.mint,
+                symbol: row.symbol,
+                group_name: row.groupName,
+                category: row.category,
+                asset_class: row.assetClass,
+                allium_asset_class: row.alliumClass,
+                rwa_asset_class: row.rwaClass,
+                allium_asset_value_usd: row.alliumValueUsd,
+                rwa_asset_value_usd: row.rwaValueUsd,
+                coingecko_market_cap_usd: row.marketCapUsd,
+                source_rank: row.sourceRank,
+                source_generated_at: row.sourceGeneratedAt,
+                raw_json: row.rawJson,
+                is_active: true,
+                last_seen_at: row.lastSeenAt,
+                last_synced_at: row.lastSyncedAt,
+            }));
+            // The SET list deliberately omits provider_name / provider_logo_uri /
+            // provider_fetched_at: the Birdeye fallback is owned by the provider
+            // phase and must survive every hourly upsert. The WHERE makes an
+            // older run's write a no-op on rows a newer run already touched
+            // (there is no job lock; last_seen_at is the run's start time).
+            await sql`
+                INSERT INTO solana_data_assets_latest ${sql(values)}
+                ON CONFLICT (mint) DO UPDATE SET
+                    symbol = EXCLUDED.symbol,
+                    group_name = EXCLUDED.group_name,
+                    category = EXCLUDED.category,
+                    asset_class = EXCLUDED.asset_class,
+                    allium_asset_class = EXCLUDED.allium_asset_class,
+                    rwa_asset_class = EXCLUDED.rwa_asset_class,
+                    allium_asset_value_usd = EXCLUDED.allium_asset_value_usd,
+                    rwa_asset_value_usd = EXCLUDED.rwa_asset_value_usd,
+                    coingecko_market_cap_usd = EXCLUDED.coingecko_market_cap_usd,
+                    source_rank = EXCLUDED.source_rank,
+                    source_generated_at = EXCLUDED.source_generated_at,
+                    raw_json = EXCLUDED.raw_json,
+                    is_active = true,
+                    last_seen_at = EXCLUDED.last_seen_at,
+                    last_synced_at = EXCLUDED.last_synced_at,
+                    updated_at = NOW()
+                WHERE solana_data_assets_latest.last_seen_at <= EXCLUDED.last_seen_at
+            `;
+        },
+
+        async deactivateMissing(mints, lastSyncedAt) {
+            if (mints.length === 0) return 0;
+            // Collect the active set first so the NOT IN never has to carry
+            // 3.3k parameters in one statement. Rows a newer run has already
+            // seen (last_seen_at >= this run's start) are left alone: there is
+            // no job lock, so a slow hourly run must not undo a manual backfill
+            // that landed a fresher snapshot while it was in flight.
+            const active = await sql<{ mint: string }[]>`
+                SELECT mint FROM solana_data_assets_latest
+                WHERE is_active = true AND last_seen_at < ${lastSyncedAt}
+            `;
+            const present = new Set(mints);
+            const missing = active.map(row => row.mint).filter(mint => !present.has(mint));
+            if (missing.length === 0) return 0;
+            let deactivated = 0;
+            for (const part of chunkStrings(missing, 500)) {
+                const rows = await sql<{ count: number }[]>`
+                    WITH updated AS (
+                        UPDATE solana_data_assets_latest
+                        SET is_active = false, last_synced_at = ${lastSyncedAt}, updated_at = NOW()
+                        WHERE is_active = true
+                          AND last_seen_at < ${lastSyncedAt}
+                          AND mint IN ${sql([...part])}
+                        RETURNING 1
+                    )
+                    SELECT COUNT(*)::int AS count FROM updated
+                `;
+                deactivated += rows[0]?.count ?? 0;
+            }
+            return deactivated;
+        },
+
+        async listMintsNeedingProviderMetadata(limit, staleBeforeMs) {
+            if (limit <= 0) return [];
+            const rows = await sql<{ mint: string }[]>`
+                SELECT r.mint
+                FROM solana_data_assets_latest r
+                LEFT JOIN variant_markets_latest vm ON vm.mint = r.mint
+                LEFT JOIN tokens t ON t.address = r.mint
+                WHERE r.is_active = true
+                  AND (r.provider_fetched_at IS NULL OR r.provider_fetched_at < ${staleBeforeMs})
+                  AND COALESCE(
+                        NULLIF(vm.logo_uri, ''),
+                        NULLIF(t.logo_uri, ''),
+                        -- A mint_logos copy that logo-sync made FROM this table's
+                        -- provider_logo_uri is not an independent source: the mint
+                        -- must keep refreshing so a changed upstream logo/name lands.
+                        (SELECT ml.logo_cdn_url FROM mint_logos ml
+                          WHERE ml.mint = r.mint AND ml.source_table IS DISTINCT FROM 'solana_data_assets_latest')
+                      ) IS NULL
+                ORDER BY r.source_rank ASC
+                LIMIT ${limit}
+            `;
+            return rows.map(row => row.mint);
+        },
+
+        async updateProviderMetadata(rows: readonly SolanaDataProviderMetadataUpdate[]) {
+            if (rows.length === 0) return;
+            const payload = rows.map(row => ({
+                mint: row.mint,
+                name: row.name,
+                logo_uri: row.logoURI,
+                fetched_at: row.fetchedAt,
+            }));
+            await sql`
+                UPDATE solana_data_assets_latest AS r
+                SET provider_name = v.name,
+                    provider_logo_uri = v.logo_uri,
+                    provider_fetched_at = v.fetched_at,
+                    updated_at = NOW()
+                FROM jsonb_to_recordset(${sql.json(payload as never)})
+                    AS v(mint text, name text, logo_uri text, fetched_at bigint)
+                WHERE r.mint = v.mint
+            `;
+        },
+    };
+}
+
+/**
+ * Canonical tokens.xyz asset id for a registry mint: the active curated asset
+ * that owns the mint (`asset_variants` → `assets`, tombstones excluded), lowest
+ * id first so a mint listed under two assets resolves the same way every read.
+ * Null when no curated asset owns the mint; the API maps those to singleton ids.
+ */
+function registryAssetIdColumn(mintExpr: string): string {
+    return `(
+        SELECT av.asset_id
+        FROM asset_variants av
+        JOIN assets a ON a.asset_id = av.asset_id AND a.is_active = true
+        WHERE av.mint = ${mintExpr}
+          AND av.is_active = true
+          AND NOT EXISTS (SELECT 1 FROM asset_deletion_tombstones dt WHERE dt.asset_id = av.asset_id)
+        ORDER BY av.asset_id ASC
+        LIMIT 1
+    ) AS asset_id`;
+}
+
+export function makePostgresSolanaDataReadsRepo(sql: Sql): SolanaDataReadsRepo {
+    return {
+        async listActive(filters: SolanaDataAssetsListFilters) {
+            // One statement: `meta` always yields a row, so an offset past the end
+            // still reports total / timestamps (the page columns come back null).
+            return sql<SolanaDataAssetReadRow[]>`
+                WITH filtered AS (
+                    SELECT r.*
+                    FROM solana_data_assets_latest r
+                    WHERE r.is_active = true
+                      ${filters.group !== undefined ? sql`AND r.group_name = ${filters.group}` : sql``}
+                      ${filters.category !== undefined ? sql`AND r.category = ${filters.category}` : sql``}
+                      ${filters.assetClass !== undefined ? sql`AND r.asset_class = ${filters.assetClass}` : sql``}
+                ),
+                meta AS (
+                    SELECT COUNT(*)::int AS total,
+                           MAX(last_synced_at) AS meta_last_synced_at,
+                           MAX(source_generated_at) AS meta_source_generated_at
+                    FROM filtered
+                ),
+                page AS (
+                    SELECT f.mint, f.symbol,
+                           COALESCE(NULLIF(vm.name, ''), NULLIF(t.name, ''), f.provider_name) AS name,
+                           COALESCE(NULLIF(vm.logo_uri, ''), NULLIF(t.logo_uri, ''), f.provider_logo_uri) AS logo_uri,
+                           ${sql.unsafe(logoCdnColumn('f.mint'))},
+                           (
+                               t.address IS NOT NULL
+                               OR vm.mint IS NOT NULL
+                               OR EXISTS (SELECT 1 FROM asset_variants av WHERE av.mint = f.mint AND av.is_active = true)
+                           ) AS has_token_page,
+                           ${sql.unsafe(registryAssetIdColumn('f.mint'))},
+                           f.group_name, f.category, f.asset_class,
+                           f.allium_asset_class, f.rwa_asset_class,
+                           f.allium_asset_value_usd, f.rwa_asset_value_usd, f.coingecko_market_cap_usd,
+                           f.source_rank
+                    FROM filtered f
+                    LEFT JOIN variant_markets_latest vm ON vm.mint = f.mint
+                    LEFT JOIN tokens t ON t.address = f.mint
+                    ORDER BY f.source_rank ASC
+                    LIMIT ${filters.limit} OFFSET ${filters.offset}
+                )
+                SELECT meta.total, meta.meta_last_synced_at, meta.meta_source_generated_at, page.*
+                FROM meta
+                LEFT JOIN page ON true
+                ORDER BY page.source_rank ASC NULLS LAST
+            `;
+        },
+
+        async findActiveByMint(mint: string) {
+            // Same identity resolution as the page query, for one row, plus the
+            // stored upstream snapshot (`raw_json`) and the provider fallback.
+            const rows = await sql<SolanaDataAssetDetailRow[]>`
+                SELECT r.mint, r.symbol,
+                       COALESCE(NULLIF(vm.name, ''), NULLIF(t.name, ''), r.provider_name) AS name,
+                       COALESCE(NULLIF(vm.logo_uri, ''), NULLIF(t.logo_uri, ''), r.provider_logo_uri) AS logo_uri,
+                       ${sql.unsafe(logoCdnColumn('r.mint'))},
+                       (
+                           t.address IS NOT NULL
+                           OR vm.mint IS NOT NULL
+                           OR EXISTS (SELECT 1 FROM asset_variants av WHERE av.mint = r.mint AND av.is_active = true)
+                       ) AS has_token_page,
+                       ${sql.unsafe(registryAssetIdColumn('r.mint'))},
+                       r.group_name, r.category, r.asset_class,
+                       r.allium_asset_class, r.rwa_asset_class,
+                       r.allium_asset_value_usd, r.rwa_asset_value_usd, r.coingecko_market_cap_usd,
+                       r.source_rank,
+                       r.raw_json, r.source_generated_at, r.last_synced_at,
+                       r.provider_name, r.provider_logo_uri, r.provider_fetched_at
+                FROM solana_data_assets_latest r
+                LEFT JOIN variant_markets_latest vm ON vm.mint = r.mint
+                LEFT JOIN tokens t ON t.address = r.mint
+                WHERE r.mint = ${mint} AND r.is_active = true
+                LIMIT 1
+            `;
+            return rows[0] ?? null;
         },
     };
 }

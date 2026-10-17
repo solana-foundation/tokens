@@ -3,17 +3,20 @@
 import { createContext, useContext, useState, useCallback, useMemo, ReactNode } from 'react';
 
 interface SearchVisibilityContextType {
-    isHeroSearchVisible: boolean;
-    setHeroSearchVisible: (visible: boolean) => void;
+    /** `null` until the hero search has measured itself (or when no hero search is mounted). */
+    isHeroSearchVisible: boolean | null;
+    setHeroSearchVisible: (visible: boolean | null) => void;
 }
 
 const SearchVisibilityContext = createContext<SearchVisibilityContextType | undefined>(undefined);
 
 export function SearchVisibilityProvider({ children }: { children: ReactNode }) {
-    // Default to false so header search shows on pages without a hero search
-    const [isHeroSearchVisible, setIsHeroSearchVisible] = useState(false);
+    // `null` = no measurement yet. Pages without a hero search treat it as "show the header search";
+    // the home page treats it as "hero is in view" so the header search doesn't flash before the
+    // IntersectionObserver reports.
+    const [isHeroSearchVisible, setIsHeroSearchVisible] = useState<boolean | null>(null);
 
-    const setHeroSearchVisible = useCallback((visible: boolean) => {
+    const setHeroSearchVisible = useCallback((visible: boolean | null) => {
         setIsHeroSearchVisible(visible);
     }, []);
 
