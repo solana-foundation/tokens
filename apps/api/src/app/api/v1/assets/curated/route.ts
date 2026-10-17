@@ -22,7 +22,6 @@ import {
     coingeckoGetPriceLatestByCoinIds,
     curatedPrefetchForApi,
     getByAssetIds as cloudRunGetByAssetIds,
-    listDeletedRefs,
     sanctumListActive,
     tokenMarketsGetLatestByMints,
     variantFillQualityGetLatestByMints,
@@ -39,6 +38,7 @@ import {
     type TokenMarketsGetLatestByMintsResult,
     type VariantMarketsGetLatestByMintsResult,
 } from '@/lib/cloudrun';
+import { listDeletedRefs } from '@/lib/deleted-refs';
 import { isRetryableCloudRunError, type CloudRunError } from '@/lib/cloudrun/errors';
 
 import {

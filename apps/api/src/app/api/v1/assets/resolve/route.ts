@@ -9,10 +9,10 @@ import { getByAssetId as cloudRunGetByAssetId } from '@/lib/cloudrun/assets';
 import {
     assetVariantsGetByMint,
     assetVariantsListByAssetIds,
-    listDeletedRefs,
     stockInstrumentsGetByAssetId,
     variantMarketsGetLatestByMints,
 } from '@/lib/cloudrun';
+import { listDeletedRefs } from '@/lib/deleted-refs';
 import {
     buildCuratedMintRank,
     optionalSymbol,

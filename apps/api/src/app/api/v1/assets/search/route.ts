@@ -20,7 +20,6 @@ import {
     coingeckoGetCoinById,
     coingeckoGetPriceLatestByCoinIds,
     getByAssetId as cloudRunGetByAssetId,
-    listDeletedRefs,
     sanctumResolveRef,
     search as cloudRunSearch,
     searchPrefetchForApi,
@@ -35,6 +34,7 @@ import {
     type StockPricesGetLatestByAssetIdsResult,
     type TokenMarketsGetLatestByMintsResult,
 } from '@/lib/cloudrun';
+import { listDeletedRefs } from '@/lib/deleted-refs';
 
 import type { AssetCategory, CanonicalAsset } from '@tokens/asset-registry';
 import {
