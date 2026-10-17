@@ -21,6 +21,7 @@ import {
 import { loadAssetBaseForApi, type AssetsApiRepo } from './handlers/assetsApi';
 import { assetsApiCuratedPrefetchForApi } from './handlers/assetsApiCuratedPrefetch';
 import { assetsApiSearchPrefetchForApi } from './handlers/assetsApiSearchPrefetch';
+import { assetsApiSpeculativeBatchForApi } from './handlers/assetsApiSpeculativeBatch';
 import { setAssetDescriptionByAssetId } from './handlers/assetsMutations';
 import { listDeletedRefs, type AssetDeletionTombstonesRepo } from './handlers/assetDeletionTombstones';
 import { listAdvisories, type AssetAdvisoriesRepo } from './handlers/assetAdvisoriesReads';
@@ -503,6 +504,24 @@ export function createApp(deps: ServerDeps) {
                 fillQualityReadsRepo: deps.fillQualityReadsRepo,
                 assetMarketsRepo: deps.assetMarketsRepo,
                 stockReadsRepo: deps.stockReadsRepo,
+                coingeckoReadsRepo: deps.coingeckoReadsRepo,
+            },
+            args,
+        );
+    // Speculative batch for apps/api multi-hop routes. Deliberately NOT in
+    // ATOMIC_RETRY_QUERY_NAMES: it fans out, so a replay is not cheap.
+    queries.assetsApiSpeculativeBatchForApi = args =>
+        assetsApiSpeculativeBatchForApi(
+            {
+                assetsRepo: deps.repo,
+                assetVariantsRepo: deps.assetVariantsRepo,
+                deletionTombstonesRepo: deps.deletionTombstonesRepo,
+                sanctumLstsRepo: deps.sanctumLstsRepo,
+                stockReadsRepo: deps.stockReadsRepo,
+                tokensReadsRepo: deps.tokensReadsRepo,
+                variantMarketsRepo: deps.variantMarketsRepo,
+                fillQualityReadsRepo: deps.fillQualityReadsRepo,
+                assetMarketsRepo: deps.assetMarketsRepo,
                 coingeckoReadsRepo: deps.coingeckoReadsRepo,
             },
             args,

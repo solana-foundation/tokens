@@ -5,6 +5,7 @@ import { BadRequestError, ForbiddenError, NotFoundError } from '@tokens/effect';
 import { decodeLimit, decodeOffset } from '@tokens/effect';
 import { tapErrorAndDefault } from '@tokens/effect';
 import { annotateAssetAdvisories, loadAdvisoriesOrEmpty, summarizeAssetAdvisories } from '@/lib/advisories';
+import { seedSpeculativeMemo } from '@/lib/cloudrun/speculative-batch';
 import { loadStablecoinHealthOrEmpty } from '@/lib/stablecoin-health';
 import { getByAssetId as cloudRunGetByAssetId } from '@/lib/cloudrun/assets';
 import {
@@ -127,6 +128,9 @@ export const GET = route(
             const mintRank = buildCuratedMintRank();
 
             const { assetId: assetRef } = yield* Effect.tryPromise(() => ctx.params);
+            // One round-trip pre-answers the chain of lookups below (see
+            // `speculative-batch.ts`); every call still runs exactly as written.
+            yield* seedSpeculativeMemo({ profile: 'detail', ref: assetRef });
             const resolutionContext = yield* resolveAssetRefContext(assetRef);
             const assetId = resolutionContext.assetId;
             const tokenByMint = new Map<string, TokenMarketSnapshot>();
@@ -290,6 +294,8 @@ export const GET = route(
                     aliases: assetDoc.aliases,
                     ...(coingeckoId ? { coingeckoId } : {}),
                     variants: assetVariants,
+                    region: assetDoc.region ?? null,
+                    industry: assetDoc.industry ?? null,
                 };
                 asset = loadedAsset;
 

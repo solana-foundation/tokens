@@ -5,14 +5,15 @@ import { BadRequestError, NotFoundError } from '@tokens/effect';
 import { decodeUnknownOrBadRequest, SolanaAddress } from '@tokens/effect';
 import { tapErrorAndDefault } from '@tokens/effect';
 import { loadAdvisoriesOrEmpty } from '@/lib/advisories';
+import { seedSpeculativeMemo } from '@/lib/cloudrun/speculative-batch';
 import { getByAssetId as cloudRunGetByAssetId } from '@/lib/cloudrun/assets';
 import {
     assetVariantsGetByMint,
     assetVariantsListByAssetIds,
-    listDeletedRefs,
     stockInstrumentsGetByAssetId,
     variantMarketsGetLatestByMints,
 } from '@/lib/cloudrun';
+import { listDeletedRefs } from '@/lib/deleted-refs';
 import {
     buildCuratedMintRank,
     optionalSymbol,
@@ -73,6 +74,12 @@ export const GET = route(
             if (!mintRaw && !refRaw) {
                 return yield* Effect.fail(new BadRequestError({ message: 'mint or ref is required' }));
             }
+
+            // One round-trip pre-answers the chain of lookups below (see
+            // `speculative-batch.ts`); every call still runs exactly as
+            // written and simply hits the request memo when the server
+            // walked the same path.
+            yield* seedSpeculativeMemo({ profile: 'resolve', ...(mintRaw ? { mint: mintRaw } : { ref: refRaw }) });
 
             // Every emitted `variant` carries `advisory` (null when none). Flagged
             // mints still resolve — the advisory travels with the variant.

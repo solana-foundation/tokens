@@ -24,11 +24,11 @@ import { getCuratedListSlugsByMint } from '@/lib/curated-membership';
 
 import { searchProviderTokens, type ProviderSearchToken } from '@/lib/birdeye-search';
 import {
-    listDeletedRefs,
     tokensSearchTokens,
     variantFillQualityGetLatestByMints,
     variantMarketsGetLatestByMints,
 } from '@/lib/cloudrun';
+import { listDeletedRefs } from '@/lib/deleted-refs';
 
 import {
     executionQualitySnapshotFromConvexFillQuality,

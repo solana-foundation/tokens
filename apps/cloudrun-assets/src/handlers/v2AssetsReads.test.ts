@@ -38,6 +38,8 @@ function variantRow(overrides: Partial<V2VariantDbRow> = {}): V2VariantDbRow {
         origin: 'coingecko',
         source: 'coingecko',
         is_active: true,
+        region: null,
+        industry: null,
         ...overrides,
     };
 }

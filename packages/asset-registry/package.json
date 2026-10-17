@@ -15,7 +15,8 @@
     "./compat": "./src/compat.ts",
     "./curated-lists": "./src/curated-lists.ts",
     "./chains": "./src/chains.ts",
-    "./chain-deployments": "./src/data/chain-deployments.ts"
+    "./chain-deployments": "./src/data/chain-deployments.ts",
+    "./taxonomy": "./src/taxonomy.ts"
   },
   "files": [
     "src"

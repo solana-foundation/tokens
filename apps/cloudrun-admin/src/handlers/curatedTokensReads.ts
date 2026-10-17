@@ -14,9 +14,17 @@
  * `x-tokens-identity` caller (defense in depth on top of the Next.js proxy).
  */
 
-import { classifyLiquidityTier, getAsset as getRegistryAsset, getCanonicalFallbackLogoPath } from '@tokens/asset-registry';
+import {
+    classifyLiquidityTier,
+    getAsset as getRegistryAsset,
+    getCanonicalFallbackLogoPath,
+    toAssetIndustryOrNull,
+    toAssetRegionOrNull,
+} from '@tokens/asset-registry';
 import type {
     AssetCategory,
+    AssetIndustry,
+    AssetRegion,
     LiquidityTier,
     PegProvider,
     PegReferenceKind,
@@ -58,6 +66,9 @@ export interface AssetRow {
     description: string | null;
     imageUrl: string | null;
     isActive: boolean;
+    /** Admin-curated segmentation tags (migration 0032); raw column text. */
+    region: string | null;
+    industry: string | null;
 }
 
 export interface VariantMarketRow {
@@ -408,6 +419,9 @@ export interface CanonicalEditorResult {
         fallbackImageUrl?: string;
         fallbackLogoSource: LogoSource;
         isActive: boolean;
+        /** Admin-curated segmentation tags; unknown stored values read as null. */
+        region: AssetRegion | null;
+        industry: AssetIndustry | null;
         /**
          * Set when the asset is defined in the static registry, under this id
          * (its current id, or a former one if it was renamed). Renaming such
@@ -468,6 +482,8 @@ export async function getCanonicalEditor(
             ...(fallbackImageUrl ? { fallbackImageUrl } : {}),
             fallbackLogoSource,
             isActive: asset.isActive,
+            region: toAssetRegionOrNull(asset.region),
+            industry: toAssetIndustryOrNull(asset.industry),
             ...(registryAssetId ? { registryAssetId } : {}),
         },
         aliases,

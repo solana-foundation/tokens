@@ -5,6 +5,15 @@ description: Search, curated lists, mint resolution, snapshots, and aggregate ri
 
 All endpoints on this page are Platform API endpoints unless noted otherwise.
 
+## Region and industry tags
+
+Every asset row on `/v1/assets/search`, `/v1/assets/curated`, `/v1/assets/trending` and `/v1/assets/:assetId` carries two admin-curated segmentation tags, `region` and `industry` (`string | null`). They are single-valued, come from a fixed vocabulary, and are `null` for assets that have not been tagged (crypto natives, LSTs, and singleton Solana tokens never carry them). Search and curated accept them as exact-match filters that AND-combine, e.g. `?region=asia&industry=manufacturing`; an unknown value returns `400` with the allowed list under `details.regions` / `details.industries`.
+
+- `region`: `north_america`, `latin_america`, `europe`, `middle_east`, `africa`, `asia`, `oceania`, `global` (broad funds with no home market)
+- `industry`: `software`, `semiconductors`, `internet`, `hardware`, `defense`, `aerospace`, `manufacturing`, `automotive`, `energy`, `materials`, `utilities`, `banking`, `fintech`, `asset_management`, `insurance`, `pharma`, `biotech`, `healthcare`, `retail`, `consumer_goods`, `food_beverage`, `media`, `telecom`, `travel_leisure`, `real_estate`, `crypto_mining`, `crypto_exchange`, `crypto_treasury`, `conglomerate`, `index_fund`
+
+Region is where the issuer is headquartered; thematic ETFs take their theme and broad or multi-issuer funds are `index_fund`. Tags are informational metadata, not investment advice, and the vocabulary may grow over time (new slugs are additive).
+
 ```ts
 type VariantExecutionQuality = {
     source: 'clickhouse_fill_quality';
@@ -109,6 +118,8 @@ Search assets by text query (canonical assets plus singleton Solana tokens when 
 - `q` (required): search string
 - `limit` (optional): integer \(1–50\), default `20`
 - `category` (optional): must be one of the supported asset categories
+- `region` (optional): one of the [region slugs](#region-and-industry-tags); unknown values return `400` with `details.regions`
+- `industry` (optional): one of the [industry slugs](#region-and-industry-tags); unknown values return `400` with `details.industries`. Combines with `region` as AND. When either filter is set, untagged results (including singleton Solana tokens) are excluded.
 - `variants=all` (optional): include every known variant for each returned canonical asset. By default only `primaryVariant` is returned.
 - `primaryVariantStrategy` (optional): `liquidity` (default), `execution_quality`, or `stock_redeemability`
 
@@ -118,12 +129,16 @@ Search assets by text query (canonical assets plus singleton Solana tokens when 
 interface AssetsSearchResponse {
     query: string;
     category: string | null;
+    region: string | null;
+    industry: string | null;
     primaryVariantStrategy: 'liquidity' | 'execution_quality' | 'stock_redeemability';
     results: Array<{
         assetId: string;
         name?: string;
         symbol?: string;
         category: string;
+        region: string | null;
+        industry: string | null;
         imageUrl: string | null;
         stats: null | {
             price: number | null;
@@ -512,6 +527,8 @@ interface AssetsTrendingResponse {
         name: string;
         decimals: number;
         category: string;
+        region: string | null;
+        industry: string | null;
         imageUrl: string | null;
         market: {
             source: 'clickhouse_trades';
@@ -630,6 +647,7 @@ Get curated assets from a list.
 - `variantsMode=all` (optional): disable the default Solana LST liquidity filter (applies to `groupBy=mint` rows and to nested `variants[]`)
 - `variants=all` (optional): include every known variant for each canonical asset as `variants[]` (each with per-variant `market` and `executionQuality`, sorted by `market.liquidity` descending). Only applies to `groupBy=asset`; ignored for `groupBy=mint`. By default only `primaryVariant` is returned. Composes with `limit`/`offset`; because every variant carries its own `market` snapshot and `executionQuality`, responses are substantially larger (`list=stocks` is roughly 1 MB uncompressed, versus roughly 560 KB without), so pagination is recommended for large lists.
 - `primaryVariantStrategy` (optional): `liquidity` (default), `execution_quality`, or `stock_redeemability`
+- `region` / `industry` (optional): exact-match [tag filters](#region-and-industry-tags), AND-combined. Applied after list membership is expanded and before pagination, so `pagination.total` is the filtered count. Members without tags are excluded whenever a filter is set. Unknown values return `400` with `details.regions` / `details.industries`.
 
 ### Notes
 
@@ -665,6 +683,8 @@ interface AssetsCuratedResponse {
         name?: string;
         symbol?: string;
         category: string;
+        region: string | null;
+        industry: string | null;
         imageUrl: string | null;
         stats: null | {
             price: number | null;

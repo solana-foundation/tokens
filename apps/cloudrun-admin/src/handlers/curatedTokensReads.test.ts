@@ -30,6 +30,8 @@ function asset(overrides: Partial<AssetRow> = {}): AssetRow {
         description: null,
         imageUrl: null,
         isActive: true,
+        region: null,
+        industry: null,
         ...overrides,
     };
 }
@@ -461,11 +463,23 @@ describe('getCanonicalEditor', () => {
                 fallbackImageUrl: '/logos/popular/bitcoin.png',
                 fallbackLogoSource: 'override',
                 isActive: true,
+                region: null,
+                industry: null,
                 registryAssetId: 'bitcoin',
             },
             aliases: ['digital gold'],
             collections: ['majors'],
         });
+    });
+
+    it('returns region/industry tags and coerces unknown stored values to null', async () => {
+        const tagged = makeDeps({ assets: [asset({ region: 'asia', industry: 'semiconductors' })] });
+        const taggedResult = await getCanonicalEditor(tagged.deps, { assetId: 'bitcoin' }, ADMIN);
+        expect(taggedResult?.asset).toMatchObject({ region: 'asia', industry: 'semiconductors' });
+
+        const legacy = makeDeps({ assets: [asset({ region: 'mars', industry: 'Defense' })] });
+        const legacyResult = await getCanonicalEditor(legacy.deps, { assetId: 'bitcoin' }, ADMIN);
+        expect(legacyResult?.asset).toMatchObject({ region: null, industry: null });
     });
 
     it('falls back to the best-variant logo when there is no override', async () => {

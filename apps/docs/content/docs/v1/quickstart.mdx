@@ -108,6 +108,7 @@ The asset detail endpoint also supports fine-grained scopes for its include bloc
     - `q` (required): search text
     - `limit` (optional, default 20, max 50)
     - `category` (optional): filters by asset category (invalid values return a 400 with allowed categories)
+    - `region` / `industry` (optional): admin-curated segmentation tags, exact match and AND-combined (e.g. `region=asia&industry=manufacturing`); invalid values return a 400 with the allowed slugs
     - `variants=all` (optional): include every known variant per returned canonical asset
     - `primaryVariantStrategy` (optional): `liquidity` (default), `execution_quality`, or `stock_redeemability`
 

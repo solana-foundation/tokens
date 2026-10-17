@@ -15,6 +15,7 @@ const {
     toStructuralHealthSummary,
 } = await import('./_risk-loader');
 const { __resetCloudRunClientForTesting } = await import('@/lib/cloudrun/client');
+const { __resetRiskLiveCacheForTests } = await import('./_risk-live-fallback');
 const { resetEnvForTests } = await import('@/lib/env');
 type AssetRiskPayload = import('./_risk-loader').AssetRiskPayload;
 
@@ -204,6 +205,7 @@ describe('loadAssetRisk', () => {
         process.env.BIRDEYE_API_KEY = 'test-key';
         resetEnvForTests();
         __resetCloudRunClientForTesting();
+        __resetRiskLiveCacheForTests();
 
         snapshot = null;
         overview = null;

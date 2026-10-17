@@ -47,6 +47,70 @@ function jsonParams(query: RecordedQuery | undefined): unknown[] {
 
 const NOW = 1_760_000_000_000;
 
+describe('makePostgresAdminMutationsRepo asset region/industry', () => {
+    const current = {
+        category: 'equity',
+        name: 'ASML',
+        symbol: 'ASML',
+        coingecko_id: null,
+        description: null,
+        image_url: null,
+        is_active: true,
+        region: 'europe',
+        industry: 'semiconductors',
+    };
+
+    it('updateCanonicalAsset keeps current tags when untouched and binds null when cleared', async () => {
+        {
+            const { sql, queries } = makeFakeSql(text => (text.includes('FOR UPDATE') ? [current] : []));
+            const repo = makePostgresAdminMutationsRepo(sql);
+            expect(await repo.updateCanonicalAsset({ assetId: 'asml', name: 'ASML Holding', clearImage: false, nowMs: NOW })).toBe(
+                'updated',
+            );
+            const update = queries.find(q => q.text.startsWith('UPDATE assets SET'));
+            expect(update).toBeDefined();
+            expect(update!.text).toContain('region = $');
+            expect(update!.params).toContain('europe');
+            expect(update!.params).toContain('semiconductors');
+        }
+        {
+            const { sql, queries } = makeFakeSql(text => (text.includes('FOR UPDATE') ? [current] : []));
+            const repo = makePostgresAdminMutationsRepo(sql);
+            expect(
+                await repo.updateCanonicalAsset({ assetId: 'asml', region: null, industry: 'hardware', clearImage: false, nowMs: NOW }),
+            ).toBe('updated');
+            const update = queries.find(q => q.text.startsWith('UPDATE assets SET'));
+            expect(update!.params).not.toContain('europe');
+            expect(update!.params).not.toContain('semiconductors');
+            expect(update!.params).toContain('hardware');
+        }
+    });
+
+    it('createCanonicalAsset inserts region/industry columns', async () => {
+        const { sql, queries } = makeFakeSql(() => []);
+        const repo = makePostgresAdminMutationsRepo(sql);
+        await repo.createCanonicalAsset({
+            assetId: 'sk-hynix',
+            category: 'equity',
+            name: 'SK Hynix',
+            symbol: 'SKHY',
+            coingeckoId: null,
+            description: null,
+            imageUrl: null,
+            region: 'asia',
+            industry: 'semiconductors',
+            aliases: [],
+            collections: [],
+            nowMs: NOW,
+        });
+        const insert = queries.find(q => q.text.startsWith('INSERT INTO assets'));
+        expect(insert).toBeDefined();
+        expect(insert!.text).toContain('region, industry');
+        expect(insert!.params).toContain('asia');
+        expect(insert!.params).toContain('semiconductors');
+    });
+});
+
 describe('makePostgresAdminMutationsRepo variant tags', () => {
     it('createVariant binds tags through sql.json', async () => {
         const { sql, queries } = makeFakeSql(text => (text.startsWith('SELECT 1 FROM assets') ? [{ '?column?': 1 }] : []));

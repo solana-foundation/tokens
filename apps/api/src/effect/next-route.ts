@@ -5,8 +5,16 @@ import { NextResponse } from 'next/server';
 
 import { runAfterResponse } from './after-response';
 
-import { authenticateApiKey, limitsEnforce, logApiRequest, syncUsageAggregates } from '@/lib/cloudrun';
+import {
+    authenticateAndEnforce,
+    authenticateApiKey,
+    limitsEnforce,
+    logApiRequest,
+    syncUsageAggregates,
+} from '@/lib/cloudrun';
+import type { AuthenticateApiKeyResult } from '@/lib/cloudrun/platformAuth';
 import { loadEnv } from '@/lib/env';
+import { CloudRunMemoStore, CloudRunQueryMemo } from '@/lib/cloudrun/client';
 import { getRedisClient, type RedisClient } from '@/lib/redis';
 import { slidingWindowLimit } from './sliding-window-rate-limit';
 import {
@@ -131,40 +139,111 @@ function hasAllScopes(scopes: string[], required: string[]): boolean {
     return true;
 }
 
-function isPlatformAuthContext(value: unknown): value is PlatformAuthContext {
-    if (!value || typeof value !== 'object') return false;
-    const auth = value as Partial<PlatformAuthContext>;
-    return (
-        typeof auth.apiKeyId === 'string' &&
-        typeof auth.keyPrefix === 'string' &&
-        typeof auth.projectId === 'string' &&
-        typeof auth.ownerClerkUserId === 'string' &&
-        Array.isArray(auth.scopes) &&
-        auth.scopes.every(scope => typeof scope === 'string')
-    );
+function toPlatformAuthContext(auth: AuthenticateApiKeyResult): PlatformAuthContext {
+    return {
+        apiKeyId: auth.apiKeyId,
+        keyPrefix: auth.keyPrefix,
+        projectId: auth.projectId,
+        ownerClerkUserId: auth.ownerClerkUserId,
+        scopes: auth.scopes,
+        ...(auth.limits ? { limits: auth.limits } : {}),
+    };
 }
 
-function getCachedPlatformAuth(keyHash: string): Effect.Effect<PlatformAuthContext | null, unknown> {
-    return Effect.gen(function* () {
-        const ttl = loadEnv().authCacheTtlSeconds;
-        if (ttl <= 0) return null;
+type LimitMeta = {
+    rateLimit: { limit: number; remaining: number; resetMs: number };
+    quota: { limit: number; used: number; remaining: number; resetMs: number };
+};
 
-        const redis = yield* getRedisClientEffect();
-        const cached = yield* Effect.tryPromise(() =>
-            redis.get<string | PlatformAuthContext>(`api-auth:v1:${keyHash}`),
+/** What the merged auth+limits call learned about limits, if anything. */
+type LimitsOutcome =
+    /** Merged path not taken: run `enforceLimits` as before. */
+    | { kind: 'pending' }
+    | { kind: 'ok'; meta: LimitMeta }
+    | { kind: 'limited'; error: RateLimitedError }
+    /** The limits half failed server-side: fail open, as a failed `limitsEnforce` would. */
+    | { kind: 'degraded'; reason: string };
+
+/** After a 404 (older usage service without the merged mutation), skip it for a while. */
+const MERGED_UNAVAILABLE_BACKOFF_MS = 5 * 60_000;
+let mergedUnavailableUntilMs = 0;
+
+function mergedAuthLimitsEnabled(): boolean {
+    if (process.env.TOKENS_LIMITS_BACKEND?.trim().toLowerCase() !== 'usage') return false;
+    if (process.env.TOKENS_MERGED_AUTH_LIMITS?.trim().toLowerCase() === 'off') return false;
+    return Date.now() >= mergedUnavailableUntilMs;
+}
+
+function isUnknownMutation(error: unknown): boolean {
+    const tagged = error as { _tag?: unknown; status?: unknown };
+    return tagged?._tag === 'CloudRunHttpError' && tagged.status === 404;
+}
+
+/**
+ * Auth and limits in one usage-service round-trip when the backend supports
+ * it. Falls back to today's two calls for this request on a 404 (and
+ * remembers that per process); every other transport failure is auth's and
+ * fails closed exactly as `authenticateApiKey` does.
+ */
+function requirePlatformAuthAndLimits(
+    request: Request,
+    callOverride?: typeof authenticateAndEnforce,
+): Effect.Effect<{ auth: PlatformAuthContext; limits: LimitsOutcome }, unknown> {
+    return Effect.gen(function* () {
+        const rawKey = request.headers.get('x-api-key')?.trim() ?? '';
+        if (!rawKey || !mergedAuthLimitsEnabled()) {
+            const auth = yield* requirePlatformAuth(request);
+            return { auth, limits: { kind: 'pending' as const } };
+        }
+
+        const env = loadEnv();
+        const keyHash = yield* Effect.tryPromise(() => sha256Hex(rawKey));
+        const call = callOverride ?? authenticateAndEnforce;
+        const outcome = yield* call({
+            keyHash,
+            defaults: {
+                rateLimit: env.defaultRateLimit,
+                sustainedRateLimit: env.defaultSustainedRateLimit,
+                quota: env.defaultQuota,
+            },
+        }).pipe(
+            Effect.map(result => ({ ok: true as const, result })),
+            Effect.catch(error => {
+                if (!isUnknownMutation(error)) return Effect.fail(error);
+                mergedUnavailableUntilMs = Date.now() + MERGED_UNAVAILABLE_BACKOFF_MS;
+                return Effect.succeed({ ok: false as const });
+            }),
         );
-        const value = typeof cached === 'string' ? JSON.parse(cached) : cached;
-        return isPlatformAuthContext(value) ? value : null;
-    });
-}
+        if (!outcome.ok) {
+            const auth = yield* requirePlatformAuth(request);
+            return { auth, limits: { kind: 'pending' as const } };
+        }
 
-function cachePlatformAuth(keyHash: string, auth: PlatformAuthContext): Effect.Effect<void, unknown> {
-    return Effect.gen(function* () {
-        const ttl = loadEnv().authCacheTtlSeconds;
-        if (ttl <= 0) return;
-
-        const redis = yield* getRedisClientEffect();
-        yield* Effect.tryPromise(() => redis.set(`api-auth:v1:${keyHash}`, JSON.stringify(auth), { ex: ttl }));
+        const { result } = outcome;
+        if (!result.auth) {
+            return yield* Effect.fail(new UnauthorizedError({ message: 'Invalid API key' }));
+        }
+        const auth = toPlatformAuthContext(result.auth);
+        if (!result.limits) {
+            return { auth, limits: { kind: 'degraded' as const, reason: result.limitsError ?? 'limits unavailable' } };
+        }
+        if (!result.limits.allowed) {
+            return {
+                auth,
+                limits: {
+                    kind: 'limited' as const,
+                    error: new RateLimitedError({
+                        service: result.limits.service,
+                        message: result.limits.service === 'quota' ? 'Monthly quota exceeded' : 'Rate limited',
+                        retryAfterMs: result.limits.retryAfterMs,
+                    }),
+                },
+            };
+        }
+        return {
+            auth,
+            limits: { kind: 'ok' as const, meta: { rateLimit: result.limits.rateLimit, quota: result.limits.quota } },
+        };
     });
 }
 
@@ -174,26 +253,12 @@ function requirePlatformAuth(request: Request) {
 
         if (rawKey) {
             const keyHash = yield* Effect.tryPromise(() => sha256Hex(rawKey));
-            const cachedAuth = yield* getCachedPlatformAuth(keyHash).pipe(Effect.catch(() => Effect.succeed(null)));
-            if (cachedAuth) return cachedAuth;
-
             const auth = yield* authenticateApiKey(keyHash);
             if (!auth) {
                 return yield* Effect.fail(new UnauthorizedError({ message: 'Invalid API key' }));
             }
 
-            const authContext = {
-                apiKeyId: auth.apiKeyId,
-                keyPrefix: auth.keyPrefix,
-                projectId: auth.projectId,
-                ownerClerkUserId: auth.ownerClerkUserId,
-                scopes: auth.scopes,
-                ...(auth.limits ? { limits: auth.limits } : {}),
-            } satisfies PlatformAuthContext;
-
-            yield* cachePlatformAuth(keyHash, authContext).pipe(Effect.catch(() => Effect.succeed(undefined)));
-
-            return authContext;
+            return toPlatformAuthContext(auth);
         }
 
         const playgroundAuth = yield* Effect.tryPromise(() =>
@@ -564,14 +629,29 @@ export function route<T, Ctx = unknown>(
         const requiredScopes = options.platform?.requiredScopes ?? [];
 
         const effect = options.platform
-            ? requirePlatformAuth(request).pipe(
-                  Effect.tap(auth =>
+            ? requirePlatformAuthAndLimits(request).pipe(
+                  Effect.tap(({ auth }) =>
                       Effect.sync(() => {
                           platformAuth = auth;
                       }),
                   ),
-                  Effect.flatMap(auth =>
-                      enforceLimits(auth).pipe(
+                  Effect.flatMap(({ auth, limits }) => {
+                      // Merged path already settled limits for this request.
+                      if (limits.kind === 'ok') {
+                          limitMeta = limits.meta as unknown as { rateLimit: unknown; quota: unknown };
+                          return Effect.succeed(auth);
+                      }
+                      if (limits.kind === 'limited') return Effect.fail(limits.error);
+                      if (limits.kind === 'degraded') {
+                          logRateLimitDegraded({
+                              requestId,
+                              apiKeyId: auth.apiKeyId,
+                              projectId: auth.projectId,
+                              reason: limits.reason,
+                          });
+                          return Effect.succeed(auth);
+                      }
+                      return enforceLimits(auth).pipe(
                           Effect.tap(meta =>
                               Effect.sync(() => {
                                   limitMeta = meta as unknown as { rateLimit: unknown; quota: unknown };
@@ -593,8 +673,8 @@ export function route<T, Ctx = unknown>(
                                     }),
                           ),
                           Effect.as(auth),
-                      ),
-                  ),
+                      );
+                  }),
                   Effect.flatMap(auth =>
                       hasAllScopes(auth.scopes, requiredScopes)
                           ? Effect.succeed(auth)
@@ -609,9 +689,15 @@ export function route<T, Ctx = unknown>(
               )
             : handler(request, ctx as Ctx);
 
-        const exit = await Effect.runPromiseExit(effect.pipe(Effect.provideService(CurrentRequestId, requestId)), {
-            signal: request.signal,
-        });
+        const exit = await Effect.runPromiseExit(
+            effect.pipe(
+                Effect.provideService(CurrentRequestId, requestId),
+                // Fresh per request: a speculative batch may seed it, and it
+                // must never outlive the request.
+                Effect.provideService(CloudRunQueryMemo, new CloudRunMemoStore()),
+            ),
+            { signal: request.signal },
+        );
 
         const latencyMs = Date.now() - startedAt;
         const url = (() => {
@@ -800,9 +886,13 @@ export function route<T, Ctx = unknown>(
 /** @internal test-only exports for the auth/limits hot-path matrices. */
 export const __internals = {
     requirePlatformAuth,
+    requirePlatformAuthAndLimits,
     enforceUpstashLimits,
     enforceCloudRunLimits,
     enforceLimits,
-    getCachedPlatformAuth,
-    cachePlatformAuth,
 };
+
+/** Test hook: clear the "merged mutation unavailable" backoff. */
+export function __resetMergedAuthLimitsForTests(): void {
+    mergedUnavailableUntilMs = 0;
+}

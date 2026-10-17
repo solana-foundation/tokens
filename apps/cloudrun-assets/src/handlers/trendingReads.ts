@@ -1,3 +1,10 @@
+import {
+    toAssetIndustryOrNull,
+    toAssetRegionOrNull,
+    type AssetIndustry,
+    type AssetRegion,
+} from '@tokens/asset-registry';
+
 import { InvalidArgsError } from './assets';
 import { resolveLogoUri } from './logoUrl';
 
@@ -39,6 +46,9 @@ export interface TrendingMarketRow {
     decimals: number | null;
     logo_uri: string | null;
     logo_cdn_url?: string | null;
+    /** Correlated `assets.region` / `assets.industry` lookups (db.ts `assetTagColumns`). */
+    region?: string | null;
+    industry?: string | null;
     source: string;
     scoring_version: string;
     price: number | null;
@@ -75,6 +85,9 @@ export interface FreshTrendingMarketRow {
     decimals: number | null;
     logo_uri: string | null;
     logo_cdn_url?: string | null;
+    /** Correlated `assets.region` / `assets.industry` lookups (db.ts `assetTagColumns`). */
+    region?: string | null;
+    industry?: string | null;
     source: string;
     metrics_source: string | null;
     scoring_version: string;
@@ -122,6 +135,8 @@ export interface TrendingMarketResult {
     assetId: string;
     variantId: string;
     category: AssetCategory;
+    region: AssetRegion | null;
+    industry: AssetIndustry | null;
     symbol: string;
     name: string;
     decimals?: number;
@@ -157,6 +172,8 @@ export interface FreshTrendingMarketResult {
     assetId: string;
     variantId: string;
     category: AssetCategory;
+    region: AssetRegion | null;
+    industry: AssetIndustry | null;
     symbol: string;
     name: string;
     decimals?: number;
@@ -212,6 +229,8 @@ function rowToTrendingResult(row: TrendingMarketRow): TrendingMarketResult | nul
         assetId: row.asset_id,
         variantId: row.variant_id,
         category: row.category,
+        region: toAssetRegionOrNull(row.region),
+        industry: toAssetIndustryOrNull(row.industry),
         symbol: row.symbol,
         name: row.name,
         source: 'clickhouse_trades',
@@ -253,6 +272,8 @@ function rowToFreshTrendingResult(row: FreshTrendingMarketRow): FreshTrendingMar
         assetId: row.asset_id,
         variantId: row.variant_id,
         category: row.category,
+        region: toAssetRegionOrNull(row.region),
+        industry: toAssetIndustryOrNull(row.industry),
         symbol: row.symbol,
         name: row.name,
         source: row.source,

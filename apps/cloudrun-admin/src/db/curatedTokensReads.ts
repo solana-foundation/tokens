@@ -39,6 +39,8 @@ interface PgAssetRow {
     description: string | null;
     image_url: string | null;
     is_active: boolean;
+    region: string | null;
+    industry: string | null;
 }
 
 function mapAssetRow(row: PgAssetRow): AssetRow {
@@ -51,6 +53,8 @@ function mapAssetRow(row: PgAssetRow): AssetRow {
         description: row.description,
         imageUrl: row.image_url,
         isActive: row.is_active,
+        region: row.region,
+        industry: row.industry,
     };
 }
 
@@ -321,7 +325,8 @@ export function makePostgresAdminReadsRepo(sql: Sql): AdminReadsRepo {
     return {
         async listAssets({ includeInactive, limit }) {
             const rows = await sql<PgAssetRow[]>`
-                SELECT asset_id, category, name, symbol, coingecko_id, description, image_url, is_active
+                SELECT asset_id, category, name, symbol, coingecko_id, description, image_url, is_active,
+                       region, industry
                 FROM (
                     SELECT * FROM assets ORDER BY asset_id COLLATE "C" ASC LIMIT ${limit}
                 ) a
@@ -404,7 +409,8 @@ export function makePostgresAdminReadsRepo(sql: Sql): AdminReadsRepo {
 
         async getAssetByAssetId(assetId) {
             const rows = await sql<PgAssetRow[]>`
-                SELECT asset_id, category, name, symbol, coingecko_id, description, image_url, is_active
+                SELECT asset_id, category, name, symbol, coingecko_id, description, image_url, is_active,
+                       region, industry
                 FROM assets
                 WHERE asset_id = ${assetId}
                 LIMIT 1

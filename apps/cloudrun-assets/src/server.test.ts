@@ -62,6 +62,8 @@ const sampleRow = (overrides: Partial<AssetRow> = {}): AssetRow => ({
     is_active: true,
     created_at: NOW,
     updated_at: NOW,
+    region: null,
+    industry: null,
     ...overrides,
 });
 
@@ -626,6 +628,8 @@ describe('getByAssetId', () => {
             symbol: 'JUP',
             coingeckoId: 'jupiter-exchange-solana',
             imageUrl: 'https://example.test/jup.png',
+            region: null,
+            industry: null,
         });
     });
 
@@ -2522,6 +2526,8 @@ describe('assetsApiLoadAssetBaseForApi', () => {
         is_active: true,
         created_at: NOW,
         updated_at: NOW,
+        region: null,
+        industry: null,
     };
     const jupMint = 'JUPyiwrYJFskUPiHa7hkeR8VUtAeFoSYbKedZNsDvCN';
     const jupVariantRow: AssetsApiVariantRow = {

@@ -20,6 +20,8 @@ import * as variantAdvisoriesHandlers from './handlers/variantAdvisories';
 import type { VariantAdvisoriesRepo } from './handlers/variantAdvisories';
 import * as launchpadApprovalsHandlers from './handlers/launchpadApprovals';
 import type { LaunchpadApprovalsRepo } from './handlers/launchpadApprovals';
+import * as assetTagsImportHandlers from './handlers/assetTagsImport';
+import type { AssetTagsImportRepo } from './handlers/assetTagsImport';
 import * as logoUploadsHandlers from './handlers/logoUploads';
 import type { LogoUploadSigner } from './handlers/logoUploads';
 
@@ -39,6 +41,7 @@ export interface ServerDeps {
     tokenListsAdmin: TokenListsAdminRepo;
     variantAdvisories: VariantAdvisoriesRepo;
     launchpadApprovals: LaunchpadApprovalsRepo;
+    assetTagsImport: AssetTagsImportRepo;
     /** GCS signed-PUT signer for logo uploads; absent → uploads unavailable. */
     logoSigner?: LogoUploadSigner;
     /** Admin allowlist (TOKENS_ADMIN_CLERK_USER_IDS ∪ TOKENS_ADMIN_EMAILS). */
@@ -125,6 +128,11 @@ export function createApp(deps: ServerDeps) {
         adminAllowlist: deps.adminAllowlist,
         now: () => Date.now(),
     };
+    const assetTagsImportDeps: assetTagsImportHandlers.AssetTagsImportDeps = {
+        repo: deps.assetTagsImport,
+        adminAllowlist: deps.adminAllowlist,
+        now: () => Date.now(),
+    };
 
     // Every handler (queries and mutations alike) calls requireAdmin(identity)
     // first — defense in depth on top of the Next.js proxy's own admin check.
@@ -133,6 +141,8 @@ export function createApp(deps: ServerDeps) {
     queries.listCanonicalAssets = (args, identity) => reads.listCanonicalAssets(readsDeps, args, identity);
     queries.listVariantsByAssetIds = (args, identity) => reads.listVariantsByAssetIds(readsDeps, args, identity);
     queries.getCanonicalEditor = (args, identity) => reads.getCanonicalEditor(readsDeps, args, identity);
+    queries.previewAssetTagsImport = (args, identity) =>
+        assetTagsImportHandlers.previewAssetTagsImport(assetTagsImportDeps, args, identity);
     queries.getVariantEditor = (args, identity) => reads.getVariantEditor(readsDeps, args, identity);
     queries.searchCanonicalAssets = (args, identity) => reads.searchCanonicalAssets(readsDeps, args, identity);
     queries.previewMint = (args, identity) => reads.previewMint(readsDeps, args, identity);
@@ -162,6 +172,8 @@ export function createApp(deps: ServerDeps) {
     mutations.updateCollectionMeta = (args, identity) =>
         mutationsHandlers.updateCollectionMeta(mutationsDeps, args, identity);
     mutations.hardDeleteAsset = (args, identity) => hardDeleteHandlers.hardDeleteAsset(hardDeleteDeps, args, identity);
+    mutations.applyAssetTagsImport = (args, identity) =>
+        assetTagsImportHandlers.applyAssetTagsImport(assetTagsImportDeps, args, identity);
     mutations.adminArchiveTokenList = (args, identity) =>
         tokenListsAdminHandlers.adminArchiveTokenList(tokenListsAdminDeps, args, identity);
     mutations.adminUnlockTokenList = (args, identity) =>

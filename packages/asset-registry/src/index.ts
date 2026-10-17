@@ -1,3 +1,14 @@
+export type { AssetIndustry, AssetRegion } from './taxonomy';
+export {
+    ASSET_INDUSTRIES,
+    ASSET_INDUSTRY_LABELS,
+    ASSET_REGION_LABELS,
+    ASSET_REGIONS,
+    isAssetIndustry,
+    isAssetRegion,
+    toAssetIndustryOrNull,
+    toAssetRegionOrNull,
+} from './taxonomy';
 export type {
     AdvisorySource,
     AdvisoryStatus,

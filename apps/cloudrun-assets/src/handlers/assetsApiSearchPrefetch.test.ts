@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'bun:test';
 
 import { assetsApiSearchPrefetchForApi, type SearchPrefetchDeps } from './assetsApiSearchPrefetch';
-import type { AssetsRepo, AssetRow, AssetAliasRow } from './assets';
+import type { AssetAliasRow, AssetRow, AssetSearchFilter, AssetsRepo } from './assets';
 import type { AssetVariantDocRow, AssetVariantsRepo } from './assetVariants';
 import type { SanctumLstRow, SanctumLstsRepo } from './sanctumLsts';
 import type { TokenRow, TokensReadsRepo } from './tokensReads';
@@ -27,6 +27,8 @@ function makeAssetRow(overrides: Partial<AssetRow> = {}): AssetRow {
         is_active: true,
         created_at: NOW,
         updated_at: NOW,
+        region: null,
+        industry: null,
         ...overrides,
     };
 }
@@ -291,6 +293,23 @@ describe('assetsApiSearchPrefetchForApi', () => {
                 includeTokensSearch: true,
             }),
         ).rejects.toThrow(/category must be/);
+    });
+
+    it('rejects invalid region and industry', async () => {
+        const deps = makeEmptyDeps();
+        const base = {
+            query: 'sol',
+            searchLimit: 40,
+            tokensLimit: 40,
+            includeSanctum: true,
+            includeTokensSearch: true,
+        };
+        await expect(assetsApiSearchPrefetchForApi(deps, { ...base, region: 'mars' })).rejects.toThrow(
+            /region must be/,
+        );
+        await expect(assetsApiSearchPrefetchForApi(deps, { ...base, industry: 'ASIA' })).rejects.toThrow(
+            /industry must be/,
+        );
     });
 
     it('returns empty envelopes when nothing matches', async () => {
@@ -693,6 +712,113 @@ describe('assetsApiSearchPrefetchForApi', () => {
         expect(seenCoinIds).toContain('bitcoin');
     });
 
+    it('honors region/industry filters on assets search (AND-combined)', async () => {
+        const deps = makeEmptyDeps({
+            assetsRepo: {
+                ...makeEmptyDeps().assetsRepo,
+                async findAliasesByNormalized(normalized) {
+                    if (normalized === 'hynix') {
+                        return [
+                            {
+                                asset_id: 'sk-hynix',
+                                alias: 'SKHY',
+                                normalized: 'hynix',
+                                priority: 100,
+                            } as AssetAliasRow,
+                        ];
+                    }
+                    return [];
+                },
+                async findByAssetIds(ids) {
+                    return ids.includes('sk-hynix')
+                        ? [
+                              makeAssetRow({
+                                  asset_id: 'sk-hynix',
+                                  category: 'equity',
+                                  region: 'asia',
+                                  industry: 'semiconductors',
+                              }),
+                          ]
+                        : [];
+                },
+            },
+        });
+        const base = {
+            query: 'hynix',
+            searchLimit: 40,
+            tokensLimit: 40,
+            includeSanctum: false,
+            includeTokensSearch: false,
+        };
+        const matching = await assetsApiSearchPrefetchForApi(deps, {
+            ...base,
+            region: 'asia',
+            industry: 'semiconductors',
+        });
+        expect(matching.assets.map(a => a.assetId)).toEqual(['sk-hynix']);
+        expect(matching.assets[0]).toMatchObject({ region: 'asia', industry: 'semiconductors' });
+
+        const wrongRegion = await assetsApiSearchPrefetchForApi(deps, { ...base, region: 'europe' });
+        expect(wrongRegion.assets).toEqual([]);
+
+        // Region matches but industry does not: AND semantics drop the row.
+        const wrongIndustry = await assetsApiSearchPrefetchForApi(deps, {
+            ...base,
+            region: 'asia',
+            industry: 'defense',
+        });
+        expect(wrongIndustry.assets).toEqual([]);
+    });
+
+    it('pushes region/industry/category into the fuzzy repo queries so SQL filters before LIMIT', async () => {
+        const seenFilters: Array<AssetSearchFilter | undefined> = [];
+        const deps = makeEmptyDeps({
+            assetsRepo: {
+                ...makeEmptyDeps().assetsRepo,
+                async findAliasesByFuzzy(_query, _limit, filter) {
+                    seenFilters.push(filter);
+                    return [];
+                },
+                async findAssetsBySymbolFuzzy(_query, _limit, filter) {
+                    seenFilters.push(filter);
+                    return [];
+                },
+                async findAssetsByNameFuzzy(_query, limit, filter) {
+                    seenFilters.push(filter);
+                    // Simulate the database applying the predicate before LIMIT:
+                    // 40 untagged rows would otherwise fill the limit*4 window.
+                    const filler = Array.from({ length: 40 }, (_, i) =>
+                        makeAssetRow({ asset_id: `filler-${i}`, category: 'equity' }),
+                    );
+                    const tagged = makeAssetRow({
+                        asset_id: 'tsmc',
+                        category: 'equity',
+                        region: 'asia',
+                        industry: 'semiconductors',
+                    });
+                    const rows = [...filler, tagged].filter(
+                        row =>
+                            (!filter?.region || row.region === filter.region) &&
+                            (!filter?.industry || row.industry === filter.industry) &&
+                            (!filter?.category || row.category === filter.category),
+                    );
+                    return rows.slice(0, limit);
+                },
+            },
+        });
+        const base = { query: 'zzz', searchLimit: 10, tokensLimit: 10, includeSanctum: false, includeTokensSearch: false };
+        const unfiltered = await assetsApiSearchPrefetchForApi(deps, base);
+        expect(unfiltered.assets.map(a => a.assetId)).not.toContain('tsmc');
+        expect(seenFilters.every(f => f !== undefined && Object.keys(f).length === 0)).toBe(true);
+
+        seenFilters.length = 0;
+        const filtered = await assetsApiSearchPrefetchForApi(deps, { ...base, region: 'asia', category: 'equity' });
+        expect(filtered.assets.map(a => a.assetId)).toEqual(['tsmc']);
+        expect(seenFilters.every(f => f?.region === 'asia' && f?.category === 'equity' && !('industry' in f))).toBe(
+            true,
+        );
+    });
+
     it('honors category filter on assets search', async () => {
         const deps = makeEmptyDeps({
             assetsRepo: {
@@ -725,5 +851,159 @@ describe('assetsApiSearchPrefetchForApi', () => {
             includeTokensSearch: false,
         });
         expect(out.assets).toEqual([]);
+    });
+    it('phase-3b: covers the variant mints of combined assets without widening the tokenMarkets scoring input', async () => {
+        const solMint = 'So11111111111111111111111111111111111111112';
+        const lstA = 'LST1111111111111111111111111111111111111111';
+        const lstB = 'LST2222222222222222222222222222222222222222';
+        const seenMarketMintBatches: string[][] = [];
+        const seenFillMintBatches: string[][] = [];
+        const seenTokenMarketsMints: string[][] = [];
+        const deps = makeEmptyDeps({
+            assetsRepo: {
+                ...makeEmptyDeps().assetsRepo,
+                async findAliasesByNormalized(normalized) {
+                    if (normalized === 'sol') {
+                        return [
+                            {
+                                asset_id: 'solana',
+                                alias: 'SOL',
+                                normalized: 'sol',
+                                priority: 100,
+                            } as AssetAliasRow,
+                        ];
+                    }
+                    return [];
+                },
+                async findByAssetIds(ids) {
+                    return ids.includes('solana') ? [makeAssetRow()] : [];
+                },
+            },
+            tokensReadsRepo: {
+                ...makeEmptyDeps().tokensReadsRepo,
+                async searchTokensBySymbol(q) {
+                    return q.toLowerCase().includes('sol') ? [makeTokenRow()] : [];
+                },
+                async findTokenMarketsLatestByMints(mints) {
+                    seenTokenMarketsMints.push([...mints]);
+                    return [];
+                },
+            },
+            assetVariantsRepo: {
+                ...makeEmptyDeps().assetVariantsRepo,
+                async findVariantsByMints(mints) {
+                    return mints.includes(solMint) ? [makeVariantRow()] : [];
+                },
+                async findVariantsByAssetIds(ids) {
+                    if (!ids.includes('solana')) return [];
+                    return [
+                        makeVariantRow(),
+                        makeVariantRow({ mint: lstA, variant_id: 'solana:lst-a', kind: 'lst' }),
+                        makeVariantRow({ mint: lstB, variant_id: 'solana:lst-b', kind: 'lst' }),
+                    ];
+                },
+                async findAssetIsActive() {
+                    return true;
+                },
+            },
+            variantMarketsRepo: {
+                async findLatestByMints(mints) {
+                    seenMarketMintBatches.push([...mints]);
+                    return [];
+                },
+            },
+            fillQualityReadsRepo: {
+                async findLatestByMints(mints) {
+                    seenFillMintBatches.push([...mints]);
+                    return [];
+                },
+            },
+        });
+        const out = await assetsApiSearchPrefetchForApi(deps, {
+            query: 'sol',
+            searchLimit: 40,
+            tokensLimit: 40,
+            includeSanctum: false,
+            includeTokensSearch: true,
+        });
+
+        // The token-search mint is the original universe; the two LST variant
+        // mints discovered via variantsByAssetId are covered in a later phase.
+        const seenMarketMints = seenMarketMintBatches.flat();
+        expect(seenMarketMints).toContain(solMint);
+        expect(seenMarketMints).toContain(lstA);
+        expect(seenMarketMints).toContain(lstB);
+        expect(seenFillMintBatches.flat()).toContain(lstA);
+        expect(seenFillMintBatches.flat()).toContain(lstB);
+        // Extras never share a batch with the original universe.
+        for (const batch of seenMarketMintBatches) {
+            const hasOriginal = batch.includes(solMint);
+            const hasExtra = batch.includes(lstA) || batch.includes(lstB);
+            expect(hasOriginal && hasExtra).toBe(false);
+        }
+        // The returned rows (one per requested mint) cover every variant mint,
+        // so the route's gap-fill finds nothing left to fetch.
+        const returnedMints = new Set(out.variantMarkets.map(row => row.mint));
+        expect(returnedMints.has(solMint)).toBe(true);
+        expect(returnedMints.has(lstA)).toBe(true);
+        expect(returnedMints.has(lstB)).toBe(true);
+        expect(new Set(out.fillQuality.map(row => row.mint)).has(lstB)).toBe(true);
+        // The DEX-market fallback scoring input is unchanged: only the original
+        // universe is scored, never the extras.
+        expect(seenTokenMarketsMints).toEqual([[solMint]]);
+    });
+
+    it('phase-3b: a failed extras chunk is dropped, leaving the route to gap-fill those mints', async () => {
+        const solMint = 'So11111111111111111111111111111111111111112';
+        const lstA = 'LST1111111111111111111111111111111111111111';
+        const deps = makeEmptyDeps({
+            assetsRepo: {
+                ...makeEmptyDeps().assetsRepo,
+                async findAliasesByNormalized(normalized) {
+                    return normalized === 'sol'
+                        ? [{ asset_id: 'solana', alias: 'SOL', normalized: 'sol', priority: 100 } as AssetAliasRow]
+                        : [];
+                },
+                async findByAssetIds(ids) {
+                    return ids.includes('solana') ? [makeAssetRow()] : [];
+                },
+            },
+            tokensReadsRepo: {
+                ...makeEmptyDeps().tokensReadsRepo,
+                async searchTokensBySymbol() {
+                    return [makeTokenRow()];
+                },
+            },
+            assetVariantsRepo: {
+                ...makeEmptyDeps().assetVariantsRepo,
+                async findVariantsByMints(mints) {
+                    return mints.includes(solMint) ? [makeVariantRow()] : [];
+                },
+                async findVariantsByAssetIds(ids) {
+                    return ids.includes('solana')
+                        ? [makeVariantRow(), makeVariantRow({ mint: lstA, variant_id: 'solana:lst-a', kind: 'lst' })]
+                        : [];
+                },
+                async findAssetIsActive() {
+                    return true;
+                },
+            },
+            variantMarketsRepo: {
+                async findLatestByMints(mints) {
+                    if (mints.includes(lstA)) throw new Error('markets down');
+                    return [];
+                },
+            },
+        });
+        const out = await assetsApiSearchPrefetchForApi(deps, {
+            query: 'sol',
+            searchLimit: 40,
+            tokensLimit: 40,
+            includeSanctum: false,
+            includeTokensSearch: true,
+        });
+        const returnedMints = new Set(out.variantMarkets.map(row => row.mint));
+        expect(returnedMints.has(solMint)).toBe(true);
+        expect(returnedMints.has(lstA)).toBe(false);
     });
 });

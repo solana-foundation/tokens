@@ -7,6 +7,7 @@ import { makePostgresHardDeleteRepo } from './db/hardDelete';
 import { makePostgresTokenListsAdminRepo } from './db/tokenListsAdmin';
 import { makePostgresVariantAdvisoriesRepo } from './db/variantAdvisories';
 import { makePostgresLaunchpadApprovalsRepo } from './db/launchpadApprovals';
+import { makePostgresAssetTagsImportRepo } from './db/assetTagsImport';
 import { makeGcsLogoSigner } from './gcs';
 import { makeGoogleOidcVerifier } from './oidc';
 import { createApp } from './server';
@@ -50,6 +51,7 @@ const app = createApp({
     tokenListsAdmin: makePostgresTokenListsAdminRepo(sql),
     variantAdvisories: makePostgresVariantAdvisoriesRepo(sql),
     launchpadApprovals: makePostgresLaunchpadApprovalsRepo(sql),
+    assetTagsImport: makePostgresAssetTagsImportRepo(sql),
     ...(gcsLogoBucket
         ? { logoSigner: makeGcsLogoSigner(gcsLogoBucket, process.env.GCS_LOGO_PUBLIC_BASE_URL?.trim()) }
         : {}),
