@@ -11,6 +11,7 @@ const { __resetCloudRunClientForTesting } = await import('@/lib/cloudrun/client'
 const { resetEnvForTests } = await import('@/lib/env');
 const { signPlaygroundProxyAuthPayload } = await import('@/effect/playground-proxy-auth');
 const { GET } = await import('./route');
+const { __resetRiskLiveCacheForTests } = await import('../_risk-live-fallback');
 
 const SOL_MINT = 'So11111111111111111111111111111111111111112';
 const JUP_MINT = 'JUPyiwrYJFskUPiHa7hkeR8VUtAeFoSYbKedZNsDvCN';
@@ -83,6 +84,7 @@ beforeEach(() => {
     process.env.TOKENS_USAGE_LOG_MODE = 'off';
     resetEnvForTests();
     __resetCloudRunClientForTesting();
+    __resetRiskLiveCacheForTests();
 
     snapshotByMint = {};
     snapshotCalls = 0;
