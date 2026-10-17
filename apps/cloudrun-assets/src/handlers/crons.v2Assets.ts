@@ -360,6 +360,8 @@ interface EvmVariantsSyncSummary {
     keptStale: number;
     /** Active derived rows left alone because their asset fell outside a bounded (`maxAssets`) scan. */
     keptUnscanned: number;
+    /** Rows due for deactivation but kept because a replacement row for the same asset was not written this run. */
+    keptPendingWrite: number;
     failed: number;
     byChain: Partial<Record<ChainKind, { desired: number }>>;
     duration_ms: number;
@@ -533,9 +535,19 @@ export async function syncEvmVariants(deps: V2AssetsCronDeps, rawArgs: unknown):
     let updated = 0;
     let skippedOwned = 0;
     let failed = 0;
+    // Assets whose desired rows were not all written this run (a failed upsert,
+    // or a shutdown before their turn). When CoinGecko moves a token to a new
+    // address the old row is in `toDeactivate`; removing it before the new row
+    // exists would hide the token until the next successful run.
+    const unwrittenAssets = new Set<string>();
     if (!args.dryRun) {
-        for (const upsert of desired.values()) {
-            if (isShuttingDown()) break;
+        const pending = Array.from(desired.values());
+        for (let i = 0; i < pending.length; i++) {
+            const upsert = pending[i]!;
+            if (isShuttingDown()) {
+                for (const rest of pending.slice(i)) unwrittenAssets.add(rest.assetId);
+                break;
+            }
             try {
                 const outcome = await deps.repo.upsertDerivedVariant(upsert);
                 if (outcome === 'inserted') inserted += 1;
@@ -543,6 +555,7 @@ export async function syncEvmVariants(deps: V2AssetsCronDeps, rawArgs: unknown):
                 else skippedOwned += 1;
             } catch (err) {
                 failed += 1;
+                unwrittenAssets.add(upsert.assetId);
                 console.error(
                     `[${V2_EVM_VARIANTS_SYNC_JOB}] upsert failed for ${upsert.assetId} ${upsert.chain}:${upsert.address}`,
                     err instanceof Error ? err.message : String(err),
@@ -550,8 +563,12 @@ export async function syncEvmVariants(deps: V2AssetsCronDeps, rawArgs: unknown):
             }
         }
     }
+    const safeToDeactivate = toDeactivate.filter(row => !unwrittenAssets.has(row.assetId));
+    const keptPendingWrite = toDeactivate.length - safeToDeactivate.length;
     const deactivated =
-        args.dryRun || toDeactivate.length === 0 ? 0 : await deps.repo.deactivateDerivedVariants(toDeactivate, start);
+        args.dryRun || safeToDeactivate.length === 0
+            ? 0
+            : await deps.repo.deactivateDerivedVariants(safeToDeactivate, start);
 
     const byChain: Partial<Record<ChainKind, { desired: number }>> = {};
     for (const upsert of desired.values()) {
@@ -585,6 +602,7 @@ export async function syncEvmVariants(deps: V2AssetsCronDeps, rawArgs: unknown):
         deactivated: args.dryRun ? toDeactivate.length : deactivated,
         keptStale,
         keptUnscanned,
+        keptPendingWrite,
         failed,
         byChain,
         duration_ms: deps.now() - start,
@@ -606,6 +624,7 @@ export async function syncEvmVariants(deps: V2AssetsCronDeps, rawArgs: unknown):
         deactivated: summary.deactivated,
         keptStale,
         keptUnscanned,
+        keptPendingWrite,
         failed,
         byChain,
         ...(failed > 0 ? { partial: true } : {}),

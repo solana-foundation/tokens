@@ -347,6 +347,45 @@ describe('sync-v2-evm-variants', () => {
         expect(complete.keptUnscanned).toBe(0);
     });
 
+    test('a replaced address is not deactivated while its replacement write failed', async () => {
+        const oldBase: V2DerivedVariantRow = {
+            chain: 'base',
+            address: '0x2222222222222222222222222222222222222222',
+            assetId: 'usd-coin-asset',
+            variantId: 'base:0x2222222222222222222222222222222222222222',
+            isActive: true,
+        };
+        const goneRow: V2DerivedVariantRow = {
+            chain: 'base',
+            address: '0x3333333333333333333333333333333333333333',
+            assetId: 'gone',
+            variantId: 'base:0x3333333333333333333333333333333333333333',
+            isActive: true,
+        };
+        const repo = fakeRepo({
+            async listAssetsWithCoinPlatforms() {
+                return [usdcCoin(NOW)];
+            },
+            async listActiveAssets() {
+                return [{ assetId: 'usd-coin-asset', category: 'stablecoin' }];
+            },
+            async listDerivedVariants() {
+                return [oldBase, goneRow];
+            },
+            async upsertDerivedVariant(args) {
+                if (args.chain === 'base') throw new Error('write failed');
+                return 'inserted';
+            },
+        });
+        const result = await syncEvmVariants(deps(repo), { chains: ['ethereum', 'base'] });
+        expect(result.failed).toBe(1);
+        // usd-coin's old Base row stays until its new Base row is actually written…
+        expect(result.keptPendingWrite).toBe(1);
+        // …while the inactive asset's row, unaffected by the failure, is still removed.
+        expect(result.deactivated).toBe(1);
+        expect(repo.deactivated).toEqual([{ chain: 'base', address: goneRow.address, assetId: 'gone' }]);
+    });
+
     test('an asset that is no longer active loses its derived rows regardless of coin freshness', async () => {
         const repo = fakeRepo({
             async listDerivedVariants() {

@@ -14,6 +14,7 @@ import {
     decodeKeysParam,
     decodeListParam,
     hasVisibleVariantOnChain,
+    headlineOnChainStats,
     toV2Chain,
     toV2Market,
     variantIssuance,
@@ -66,6 +67,56 @@ describe('hasVisibleVariantOnChain', () => {
         expect(hasVisibleVariantOnChain(variants, 'solana', new Map([[USDC_SOLANA, caution]]))).toBe(true);
         expect(hasVisibleVariantOnChain(variants, 'solana', new Map())).toBe(true);
         expect(hasVisibleVariantOnChain(variants, 'ethereum', new Map())).toBe(false);
+    });
+});
+
+describe('headlineOnChainStats', () => {
+    const v1 = {
+        price: 1,
+        liquidity: 1,
+        volume24hUSD: 1,
+        volume30dUSD: null,
+        marketCap: 1560,
+        fdv: 1600,
+        priceChange24hPercent: null,
+        priceChange1hPercent: null,
+        totalSupply: 1600,
+        circulatingSupply: 1560,
+    };
+    const aggregate = (excludedFromSupplyCount: number) => ({
+        liquidity: 156,
+        volume24hUSD: 40,
+        marketCap: 1500,
+        fdv: 1500,
+        circulatingSupply: 1500,
+        variantCount: 4,
+        issuedVariantCount: 4 - excludedFromSupplyCount,
+        chainCount: 3,
+        excludedFromSupplyCount,
+    });
+
+    test('with wrapped or bridged claims present, supply figures come from the issuance-aware aggregate', () => {
+        const out = headlineOnChainStats(v1, aggregate(2), 7);
+        expect(out?.liquidity).toBe(156);
+        expect(out?.volume24hUSD).toBe(40);
+        expect(out?.volume30dUSD).toBe(7);
+        expect(out?.marketCap).toBe(1500);
+        expect(out?.fdv).toBe(1500);
+        expect(out?.circulatingSupply).toBe(1500);
+        expect(out?.totalSupply).toBe(1600);
+    });
+
+    test('with only native variants, v1 supply figures stand', () => {
+        const out = headlineOnChainStats(v1, aggregate(0), null);
+        expect(out?.marketCap).toBe(1560);
+        expect(out?.circulatingSupply).toBe(1560);
+        expect(out?.liquidity).toBe(156);
+    });
+
+    test('a null aggregate figure replaces a double-counted v1 one rather than keeping it', () => {
+        const out = headlineOnChainStats(v1, { ...aggregate(1), marketCap: null, fdv: null, circulatingSupply: null }, null);
+        expect(out?.marketCap).toBeNull();
+        expect(out?.circulatingSupply).toBeNull();
     });
 });
 

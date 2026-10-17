@@ -708,6 +708,33 @@ export function aggregateChainStats(chainStats: Partial<Record<ChainId, V2ChainS
     return out;
 }
 
+/**
+ * Headline on-chain stats for `stats`: v1's aggregation, with liquidity and
+ * volume from the chain stats, and, whenever some variants are claims on supply
+ * issued elsewhere, supply / market cap / FDV from the issuance-aware
+ * `aggregate`. Otherwise `stats` would count a wrapped or bridged claim on top
+ * of the native supply it represents and disagree with `aggregate` in the same
+ * response. (`totalSupply` keeps v1's figure: the chain stats do not carry it.)
+ */
+export function headlineOnChainStats(
+    v1Stats: AssetStats | null,
+    aggregate: V2Aggregate,
+    volume30dUSD: number | null,
+): AssetStats | null {
+    const merged = mergeAssetStatsWithAggregates(v1Stats, {
+        liquidity: aggregate.liquidity ?? 0,
+        volume24hUSD: aggregate.volume24hUSD ?? 0,
+        volume30dUSD,
+    });
+    if (!merged || aggregate.excludedFromSupplyCount === 0) return merged;
+    return {
+        ...merged,
+        marketCap: aggregate.marketCap,
+        fdv: aggregate.fdv,
+        circulatingSupply: aggregate.circulatingSupply,
+    };
+}
+
 // ---------------------------------------------------------------------------
 // Assembly
 // ---------------------------------------------------------------------------
@@ -891,11 +918,11 @@ export function buildV2Asset(ctx: V2AssetBuildContext): V2Asset | null {
     const aggregate = aggregateChainStats(chainStats);
     const primaryToken = primary ? tokenByKey.get(primary.mint) : undefined;
     const solanaRollup = ctx.rollupByChain?.get('solana') ?? null;
-    const onChainStats = mergeAssetStatsWithAggregates(aggregateTokenStats(canonical, tokenByKey, primaryToken), {
-        liquidity: aggregate.liquidity ?? 0,
-        volume24hUSD: aggregate.volume24hUSD ?? 0,
-        volume30dUSD: solanaRollup?.volume30dUSD ?? null,
-    });
+    const onChainStats = headlineOnChainStats(
+        aggregateTokenStats(canonical, tokenByKey, primaryToken),
+        aggregate,
+        solanaRollup?.volume30dUSD ?? null,
+    );
 
     const preStocksMints = selectPreStocksMints(visible.filter(v => v.chain === 'solana').map(v => v.address));
     const preStocksMarket =
