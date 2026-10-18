@@ -1,17 +1,43 @@
-import { describe, expect, it } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
+import { Effect } from 'effect';
 
-import { toRegistryItem } from './_shared';
+import { __resetCloudRunClientForTesting } from '@/lib/cloudrun/client';
+import { resetEnvForTests } from '@/lib/env';
 
-const MINT = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
+import { __resetRegisteredOnlyForTests } from '../../v1/assets/_registered-only';
+import { toRegistryItems } from './_shared';
 
-function row(overrides: Partial<Parameters<typeof toRegistryItem>[0]> = {}): Parameters<typeof toRegistryItem>[0] {
+const USDC = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v'; // compiled registry (usd)
+const DB_OWNED = 'DBOWNED1111111111111111111111111111111111111';
+const MINT_ID_ASSET = 'M1NTD111111111111111111111111111111111111111'; // base58-shaped
+const LAUNCH = 'LAUNCH11111111111111111111111111111111111111';
+const INDEX_ONLY = 'INDEXONLY11111111111111111111111111111111111';
+const UNKNOWN = 'UNKNOWN1111111111111111111111111111111111111';
+
+const ORIGINAL_FETCH = globalThis.fetch;
+const ENV_KEYS = [
+    'TOKENS_CLOUDRUN_AUTH_TOKEN',
+    'TOKENS_CLOUDRUN_ASSETS_URL',
+    'TOKENS_CLOUDRUN_PRICES_URL',
+    'TOKENS_CLOUDRUN_USAGE_URL',
+    'TOKENS_DELETED_REFS_MEMO',
+] as const;
+const savedEnv: Record<string, string | undefined> = {};
+let calls: Array<{ name: string; body: Record<string, unknown> }> = [];
+
+function json(body: unknown, status = 200): Response {
+    return new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
+}
+
+type Row = Parameters<typeof toRegistryItems>[0][number];
+function row(mint: string, overrides: Partial<Row> = {}): Row {
     return {
-        mint: MINT,
-        symbol: 'USDC',
-        name: 'USD Coin',
+        mint,
+        symbol: 'X',
+        name: null,
         logoURI: null,
         hasTokenPage: true,
-        assetId: 'usd',
+        assetId: null,
         group: null,
         category: null,
         assetClass: null,
@@ -22,25 +48,80 @@ function row(overrides: Partial<Parameters<typeof toRegistryItem>[0]> = {}): Par
         marketCapUsd: null,
         rank: 0,
         ...overrides,
-    } as Parameters<typeof toRegistryItem>[0];
+    } as Row;
 }
 
-describe('toRegistryItem: assetId / hasTokenPage follow the registered asset only', () => {
-    it('a registered asset id is passed through and marks the page as present', () => {
-        const item = toRegistryItem(row({ assetId: 'usd' }));
-        expect(item.assetId).toBe('usd');
-        expect(item.hasTokenPage).toBe(true);
+beforeEach(() => {
+    for (const key of ENV_KEYS) {
+        savedEnv[key] = process.env[key];
+        delete process.env[key];
+    }
+    process.env.TOKENS_CLOUDRUN_AUTH_TOKEN = 'tok';
+    process.env.TOKENS_CLOUDRUN_ASSETS_URL = 'https://assets.example.run.app';
+    process.env.TOKENS_CLOUDRUN_PRICES_URL = 'https://prices.example.run.app';
+    process.env.TOKENS_CLOUDRUN_USAGE_URL = 'https://usage.example.run.app';
+    process.env.TOKENS_DELETED_REFS_MEMO = 'off';
+    resetEnvForTests();
+    __resetCloudRunClientForTesting();
+    __resetRegisteredOnlyForTests();
+    calls = [];
+    globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+        const name = /\/query\/([A-Za-z]+)$/.exec(String(input))?.[1] ?? '';
+        const body = init?.body ? (JSON.parse(String(init.body)) as Record<string, unknown>) : {};
+        calls.push({ name, body });
+        switch (name) {
+            case 'assetVariantsListByMints':
+                return json((body.mints as string[]).map(mint => ({ mint, variant: null })));
+            case 'listDeletedRefs':
+            case 'sanctumListActive':
+                return json([]);
+            case 'launchpadApprovedMints':
+                return json({ mints: (body.mints as string[]).filter(m => m === LAUNCH) });
+            default:
+                throw new Error(`unexpected cloud run call: ${name}`);
+        }
+    }) as typeof fetch;
+});
+
+afterEach(() => {
+    globalThis.fetch = ORIGINAL_FETCH;
+    for (const key of ENV_KEYS) {
+        if (savedEnv[key] === undefined) delete process.env[key];
+        else process.env[key] = savedEnv[key];
+    }
+    resetEnvForTests();
+    __resetCloudRunClientForTesting();
+    __resetRegisteredOnlyForTests();
+});
+
+describe('toRegistryItems: assetId / hasTokenPage follow the same registration tiers as v1', () => {
+    it('places each row by DB asset, compiled registry, or a batched later-tier check; unknown mints get no page', async () => {
+        const items = await Effect.runPromise(
+            toRegistryItems([
+                row(DB_OWNED, { assetId: 'tesla' }),
+                row(MINT_ID_ASSET, { assetId: MINT_ID_ASSET }),
+                row(USDC),
+                row(LAUNCH),
+                row(INDEX_ONLY),
+                row(UNKNOWN, { hasTokenPage: false }),
+            ]),
+        );
+        expect(items.map(i => [i.mint, i.assetId, i.hasTokenPage])).toEqual([
+            [DB_OWNED, 'tesla', true],
+            [MINT_ID_ASSET, `solana-${MINT_ID_ASSET}`, true],
+            [USDC, 'usd', true],
+            [LAUNCH, `solana-${LAUNCH}`, true],
+            [INDEX_ONLY, null, false],
+            [UNKNOWN, null, false],
+        ]);
+        // Only the rows the platform knows but tiers 1-2 did not place reach Cloud Run, in one batch.
+        const launch = calls.filter(c => c.name === 'launchpadApprovedMints');
+        expect(launch.map(c => c.body)).toEqual([{ mints: [LAUNCH, INDEX_ONLY] }]);
     });
 
-    it('a registered asset whose id is the raw mint is exposed under its solana-<mint> id', () => {
-        const item = toRegistryItem(row({ assetId: MINT }));
-        expect(item.assetId).toBe(`solana-${MINT}`);
-        expect(item.hasTokenPage).toBe(true);
-    });
-
-    it('a mint the token index knows but no registered asset owns has no page, whatever the SQL flag said', () => {
-        const item = toRegistryItem(row({ assetId: null, hasTokenPage: true }));
-        expect(item.assetId).toBeNull();
-        expect(item.hasTokenPage).toBe(false);
+    it('makes no Cloud Run call when every row is placed in-process', async () => {
+        const items = await Effect.runPromise(toRegistryItems([row(DB_OWNED, { assetId: 'tesla' }), row(USDC)]));
+        expect(items.every(i => i.hasTokenPage)).toBe(true);
+        expect(calls).toEqual([]);
     });
 });

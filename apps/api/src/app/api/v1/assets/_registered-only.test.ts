@@ -24,6 +24,7 @@ const ENV_KEYS = [
 const savedEnv: Record<string, string | undefined> = {};
 let calls: Array<{ name: string; body: Record<string, unknown> }> = [];
 let variantsStatus = 200;
+let sanctumStatus = 200;
 
 function json(body: unknown, status = 200): Response {
     return new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
@@ -44,6 +45,7 @@ beforeEach(() => {
     __resetRegisteredOnlyForTests();
     calls = [];
     variantsStatus = 200;
+    sanctumStatus = 200;
     globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
         const name = /\/query\/([A-Za-z]+)$/.exec(String(input))?.[1] ?? '';
         const body = init?.body ? (JSON.parse(String(init.body)) as Record<string, unknown>) : {};
@@ -54,12 +56,25 @@ beforeEach(() => {
                 return json(
                     (body.mints as string[]).map(mint => ({
                         mint,
-                        variant: mint === DB_MINT ? { assetId: 'db-asset', chain: 'solana', mint, variantId: 'db:1', kind: 'native', trustTier: 'tier2', tags: [], isActive: true } : null,
+                        variant:
+                            mint === DB_MINT
+                                ? {
+                                      assetId: 'db-asset',
+                                      chain: 'solana',
+                                      mint,
+                                      variantId: 'db:1',
+                                      kind: 'native',
+                                      trustTier: 'tier2',
+                                      tags: [],
+                                      isActive: true,
+                                  }
+                                : null,
                     })),
                 );
             case 'listDeletedRefs':
                 return json([]);
             case 'sanctumListActive':
+                if (sanctumStatus !== 200) return json({ error: 'down' }, sanctumStatus);
                 return json([{ mint: LST_MINT, symbol: 'lstSOL', name: 'LST', sourceRank: 1 }]);
             case 'launchpadApprovedMints':
                 return json({ mints: (body.mints as string[]).filter(m => m === LAUNCH) });
@@ -97,7 +112,12 @@ describe('partitionRegisteredMints', () => {
         expect(out.registered).toEqual([LAUNCH, USDC, LST_MINT, DB_MINT]);
         expect(out.unregistered).toEqual([UNREG]);
         const names = calls.map(c => c.name);
-        expect(names).toEqual(['assetVariantsListByMints', 'listDeletedRefs', 'sanctumListActive', 'launchpadApprovedMints']);
+        expect(names).toEqual([
+            'assetVariantsListByMints',
+            'listDeletedRefs',
+            'sanctumListActive',
+            'launchpadApprovedMints',
+        ]);
         // Only the mints the earlier tiers missed reach the launch tier.
         expect(calls.find(c => c.name === 'launchpadApprovedMints')?.body.mints).toEqual([UNREG, LAUNCH]);
     });
@@ -111,7 +131,9 @@ describe('partitionRegisteredMints', () => {
     it('chunks the DB lookup at 250 mints', async () => {
         const many = Array.from({ length: 251 }, (_, i) => `M${String(i).padStart(43, '1')}`.slice(0, 44));
         await Effect.runPromise(partitionRegisteredMints(many));
-        const sizes = calls.filter(c => c.name === 'assetVariantsListByMints').map(c => (c.body.mints as string[]).length);
+        const sizes = calls
+            .filter(c => c.name === 'assetVariantsListByMints')
+            .map(c => (c.body.mints as string[]).length);
         expect(sizes).toEqual([250, 1]);
     });
 
@@ -119,6 +141,13 @@ describe('partitionRegisteredMints', () => {
         variantsStatus = 500;
         const out = await Effect.runPromise(partitionRegisteredMints([UNREG, DB_MINT]));
         expect(out).toEqual({ registered: [UNREG, DB_MINT], unregistered: [] });
+    });
+
+    it('fails open (everything registered) when the Sanctum list read errors', async () => {
+        sanctumStatus = 500;
+        const out = await Effect.runPromise(partitionRegisteredMints([UNREG, LST_MINT]));
+        expect(out).toEqual({ registered: [UNREG, LST_MINT], unregistered: [] });
+        expect(calls.map(c => c.name)).not.toContain('launchpadApprovedMints');
     });
 
     it('returns empty partitions for no input without any call', async () => {

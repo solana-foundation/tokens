@@ -19,7 +19,7 @@ const LEGACY_MINT_ID = 'LEGACY11111111111111111111111111111111111111';
  * variant lookup: a miss (default), a legacy asset whose id is the raw mint,
  * or an outage (500) to exercise the fail-open path.
  */
-type StubMode = 'miss' | 'legacy-mint-id' | 'outage';
+type StubMode = 'miss' | 'legacy-mint-id' | 'outage' | 'sanctum-outage';
 let stubMode: StubMode = 'miss';
 let approvedLaunchMints: string[] = [];
 let launchStatus = 200;
@@ -84,6 +84,7 @@ beforeEach(() => {
                 }
                 return json(null);
             case 'sanctumResolveRef':
+                if (stubMode === 'sanctum-outage') return json({ error: 'sanctum down' }, 500);
                 return json(null);
             case 'launchpadApprovedMints':
                 if (launchStatus !== 200) return json({ error: 'unknown query' }, launchStatus);
@@ -131,13 +132,22 @@ describe('resolveAssetRefContext', () => {
     });
 
     it('rejects an unregistered mint with 404 asset_not_registered after walking every tier', async () => {
-        const error = (await failure(UNKNOWN_MINT)) as { _tag: string; message: string; details?: Record<string, unknown> };
+        const error = (await failure(UNKNOWN_MINT)) as {
+            _tag: string;
+            message: string;
+            details?: Record<string, unknown>;
+        };
         expect(error._tag).toBe('NotFoundError');
         expect(error.message).toBe('Asset not registered');
         expect(error.details?.code).toBe('asset_not_registered');
         expect(error.details?.mint).toBe(UNKNOWN_MINT);
         expect(String(error.details?.hint)).toContain('/v2/lists');
-        expect(calls).toEqual(['listDeletedRefs', 'assetVariantsGetByMint', 'sanctumResolveRef', 'launchpadApprovedMints']);
+        expect(calls).toEqual([
+            'listDeletedRefs',
+            'assetVariantsGetByMint',
+            'sanctumResolveRef',
+            'launchpadApprovedMints',
+        ]);
     });
 
     it('rejects an unregistered solana-<mint> ref the same way', async () => {
@@ -171,6 +181,13 @@ describe('resolveAssetRefContext', () => {
         expect(result.assetId).toBe(`solana-${LEGACY_MINT_ID}`);
         expect(result.resolvedBy).toBe('singleton');
         expect(calls).toEqual(['listDeletedRefs', 'assetVariantsGetByMint']);
+    });
+
+    it('fails open to the singleton when the Sanctum lookup errors (an LST may be registered only there)', async () => {
+        stubMode = 'sanctum-outage';
+        const result = await Effect.runPromise(resolveAssetRefContext(UNKNOWN_MINT));
+        expect(result.assetId).toBe(`solana-${UNKNOWN_MINT}`);
+        expect(result.resolvedBy).toBe('singleton');
     });
 
     it('fails open to the singleton when the variant lookup itself errors', async () => {

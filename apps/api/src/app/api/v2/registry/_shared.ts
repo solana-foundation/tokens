@@ -1,4 +1,8 @@
+import { Effect } from 'effect';
+
 import type { SolanaDataAssetResult } from '@/lib/cloudrun';
+import { getVariantByMint } from '@tokens/asset-registry';
+import { partitionRegisteredMints } from '../../v1/assets/_registered-only';
 import { looksLikeSolanaMintAddress, mintToSingletonAssetId } from '../../v1/assets/_singleton-asset-id';
 
 /** Shapes shared by GET /api/v2/registry and GET /api/v2/registry/{mint}. */
@@ -41,26 +45,66 @@ export type V2RegistryResponse = {
     items: V2RegistryItem[];
 };
 
-/**
- * Mirrors `/v1/assets/resolve?mint=`: the registered asset that owns the mint
- * (`registryAssetIdColumn` joins active variants, active assets and tombstones),
- * exposed under its per-mint id when the asset id is itself a mint. A mint the
- * token index knows but no registered asset owns has no page: v1 serves
- * registered assets only.
- */
-function publicAssetId(row: SolanaDataAssetResult): string | null {
-    if (!row.assetId) return null;
-    return looksLikeSolanaMintAddress(row.assetId) ? mintToSingletonAssetId(row.assetId) : row.assetId;
+/** `solana-<mint>` when the owning asset's id is itself a mint, else the id as is. */
+function publicIdFor(assetId: string): string {
+    return looksLikeSolanaMintAddress(assetId) ? mintToSingletonAssetId(assetId) : assetId;
 }
 
-export function toRegistryItem(row: SolanaDataAssetResult): V2RegistryItem {
+/**
+ * Mirrors `/v1/assets/resolve?mint=` (v1 serves registered assets only), using
+ * the same registration tiers as `_registered-only.ts`:
+ *   1. the DB asset that owns the mint (`registryAssetIdColumn`: active variant,
+ *      active asset, no tombstone) — already on the row;
+ *   2. the compiled registry (in-process);
+ *   3. Sanctum LSTs and admin-approved launch coins — one batched Cloud Run
+ *      check, only for rows the platform knows (`row.hasTokenPage`, which the
+ *      SQL sets from the token index) that tiers 1-2 did not place. Those get
+ *      their per-mint `solana-<mint>` id, which v1 resolves.
+ * A mint none of the tiers knows has no page: `assetId: null`, `hasTokenPage: false`.
+ */
+export function resolvePublicAssetIds(
+    rows: readonly SolanaDataAssetResult[],
+): Effect.Effect<Map<string, string | null>, never> {
+    return Effect.gen(function* () {
+        const out = new Map<string, string | null>();
+        const pending: string[] = [];
+        for (const row of rows) {
+            if (row.assetId) {
+                out.set(row.mint, publicIdFor(row.assetId));
+                continue;
+            }
+            const registry = getVariantByMint(row.mint);
+            if (registry) {
+                out.set(row.mint, publicIdFor(registry.asset.assetId));
+                continue;
+            }
+            if (row.hasTokenPage) pending.push(row.mint);
+            else out.set(row.mint, null);
+        }
+        if (pending.length > 0) {
+            const { registered } = yield* partitionRegisteredMints(pending);
+            const registeredSet = new Set(registered);
+            for (const mint of pending) out.set(mint, registeredSet.has(mint) ? mintToSingletonAssetId(mint) : null);
+        }
+        return out;
+    });
+}
+
+/** Items for a page of rows, with `assetId` / `hasTokenPage` from `resolvePublicAssetIds`. */
+export function toRegistryItems(rows: readonly SolanaDataAssetResult[]): Effect.Effect<V2RegistryItem[], never> {
+    return resolvePublicAssetIds(rows).pipe(
+        Effect.map(ids => rows.map(row => toRegistryItem(row, ids.get(row.mint) ?? null))),
+    );
+}
+
+export function toRegistryItem(row: SolanaDataAssetResult, assetId: string | null): V2RegistryItem {
     return {
         mint: row.mint,
         symbol: row.symbol,
         name: row.name,
         logoURI: row.logoURI,
-        hasTokenPage: publicAssetId(row) !== null,
-        assetId: publicAssetId(row),
+        hasTokenPage: assetId !== null,
+        assetId,
         group: row.group,
         category: row.category,
         assetClass: row.assetClass,

@@ -5,7 +5,7 @@ import { withStaleFallback } from '@/effect/stale-response-cache';
 import { BadRequestError, decodeLimit, decodeOffset } from '@tokens/effect';
 import { solanaDataAssetsList } from '@/lib/cloudrun';
 
-import { toRegistryItem, type V2RegistryResponse } from './_shared';
+import { toRegistryItems, type V2RegistryResponse } from './_shared';
 
 /**
  * GET /api/v2/registry — the Project Canon asset registry: every Solana asset the
@@ -60,7 +60,7 @@ export const GET = route(
                     generatedAt: result.generatedAt,
                     syncedAt: result.syncedAt,
                     total: result.total,
-                    items: result.items.map(toRegistryItem),
+                    items: yield* toRegistryItems(result.items),
                 };
                 return response;
             });

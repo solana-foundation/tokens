@@ -120,14 +120,16 @@ export function classifyMint(
         }
 
         const sanctum = yield* sanctumResolveRef({ ref: mint }).pipe(
-            tapErrorAndDefault('assets.registeredOnly.sanctumMintRef', null, { mint }),
+            tapErrorAndDefault('assets.registeredOnly.sanctumMintRef', 'error' as const, { mint }),
         );
-        if (sanctum) return { kind: 'sanctum' } as const;
+        const sanctumFailed = sanctum === 'error';
+        if (!sanctumFailed && sanctum) return { kind: 'sanctum' } as const;
 
         const approved = yield* approvedLaunchMints([mint]);
         if (approved?.has(mint)) return { kind: 'launch' } as const;
 
-        if (dbFailed || approved === null) return { kind: 'unavailable' } as const;
+        // Any tier that could not answer leaves the mint possibly registered: fail open.
+        if (dbFailed || sanctumFailed || approved === null) return { kind: 'unavailable' } as const;
         return { kind: 'unregistered' } as const;
     });
 }
@@ -170,8 +172,8 @@ function chunk<T>(items: readonly T[], size: number): T[][] {
 /**
  * Batch form for the list routes: which of `mints` are registered, by the same
  * four tiers, each tier consulted only for mints the previous ones missed.
- * Input order is preserved in both outputs. A failed DB lookup fails open
- * (every mint counted as registered), matching `classifyMint`.
+ * Input order is preserved in both outputs. A failed DB, Sanctum or launch
+ * lookup fails open (every mint counted as registered), matching `classifyMint`.
  */
 export function partitionRegisteredMints(
     mints: readonly string[],
@@ -214,8 +216,10 @@ export function partitionRegisteredMints(
         let remaining = mints.filter(mint => !registered.has(mint));
         if (remaining.length > 0) {
             const lsts = yield* sanctumListActive({}).pipe(
-                tapErrorAndDefault('assets.registeredOnly.sanctumList', [] as Array<{ mint: string }>, {}),
+                tapErrorAndDefault('assets.registeredOnly.sanctumList', null, {}),
             );
+            // A failed list read leaves every remaining mint possibly registered: fail open.
+            if (lsts === null) return { registered: [...mints], unregistered: [] };
             const lstMints = new Set(lsts.map(entry => entry.mint));
             for (const mint of remaining) if (lstMints.has(mint)) registered.add(mint);
             remaining = mints.filter(mint => !registered.has(mint));

@@ -26,7 +26,9 @@ const MINT_A = 'ZZQX111111111111111111111111111111111111111';
 const MINT_B = 'ZZQX222222222222222222222222222222222222222';
 // A token-index hit that is neither a DB variant nor in the compiled registry.
 const UNREG_TOKEN = 'ZZQX333333333333333333333333333333333333333';
+const LAUNCH_TOKEN = 'ZZQX444444444444444444444444444444444444444';
 let tokenMatches: Array<Record<string, unknown>> = [];
+let approvedLaunchMints: string[] = [];
 const NOW = 1_760_000_000_000;
 
 const ORIGINAL_FETCH = globalThis.fetch;
@@ -146,6 +148,7 @@ beforeEach(() => {
 
     coveredMints = [];
     tokenMatches = [];
+    approvedLaunchMints = [];
     calls = [];
     globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
         const url = String(input);
@@ -166,7 +169,12 @@ beforeEach(() => {
             case 'listDeletedRefs':
             case 'prestocksGetLatestByMints':
             case 'listAssetIdRenames':
+            case 'sanctumListActive':
                 return json([]);
+            case 'assetVariantsListByMints':
+                return json((body.mints as string[]).map(mint => ({ mint, variant: null })));
+            case 'launchpadApprovedMints':
+                return json({ mints: (body.mints as string[]).filter(m => approvedLaunchMints.includes(m)) });
             default:
                 // Fail-open loaders (advisories, …) log and continue; anything
                 // else failing loudly here means the route grew a new call.
@@ -268,7 +276,8 @@ describe('GET /v1/assets/search — registered assets only', () => {
         priceChange24hPercent: 0,
         marketCap: 100_000,
     };
-    const assetIds = (body: unknown) => ((body as { results: Array<{ assetId: string }> }).results ?? []).map(a => a.assetId);
+    const assetIds = (body: unknown) =>
+        ((body as { results: Array<{ assetId: string }> }).results ?? []).map(a => a.assetId);
 
     it('does not synthesize a solana-<mint> asset for an unregistered token-index match', async () => {
         coveredMints = [MINT_A, MINT_B];
@@ -276,6 +285,22 @@ describe('GET /v1/assets/search — registered assets only', () => {
         const res = await search();
         expect(res.status).toBe(200);
         expect(assetIds(res.body)).toEqual([ASSET_ID]);
+    });
+
+    it('an approved launch coin in the token index keeps its solana-<mint> result', async () => {
+        coveredMints = [MINT_A, MINT_B];
+        approvedLaunchMints = [LAUNCH_TOKEN];
+        tokenMatches = [
+            unregisteredHit,
+            { ...unregisteredHit, address: LAUNCH_TOKEN, symbol: 'LNCH', name: 'Launch Coin' },
+        ];
+        const res = await search();
+        expect(res.status).toBe(200);
+        expect(assetIds(res.body)).toEqual([ASSET_ID, `solana-${LAUNCH_TOKEN}`]);
+        // One batched registration check for the candidates, not one per token.
+        expect(calls.filter(c => c.name === 'launchpadApprovedMints').map(c => c.body)).toEqual([
+            { mints: [UNREG_TOKEN, LAUNCH_TOKEN] },
+        ]);
     });
 
     it('TOKENS_V1_REGISTERED_ONLY=off pads the page with the singleton as before', async () => {
