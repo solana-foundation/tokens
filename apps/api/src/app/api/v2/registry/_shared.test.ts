@@ -4,6 +4,8 @@ import { Effect } from 'effect';
 import { __resetCloudRunClientForTesting } from '@/lib/cloudrun/client';
 import { resetEnvForTests } from '@/lib/env';
 
+import { getVariantByMint } from '@tokens/asset-registry';
+
 import { __resetRegisteredOnlyForTests } from '../../v1/assets/_registered-only';
 import { toRegistryItems } from './_shared';
 
@@ -13,6 +15,8 @@ const MINT_ID_ASSET = 'M1NTD111111111111111111111111111111111111111'; // base58-
 const LAUNCH = 'LAUNCH11111111111111111111111111111111111111';
 const INDEX_ONLY = 'INDEXONLY11111111111111111111111111111111111';
 const UNKNOWN = 'UNKNOWN1111111111111111111111111111111111111';
+const TESLA_XSTOCK = 'XsDoVfqeBukxuZHWhdvWHBhgEHjGNst4MLodqsJHzoB'; // compiled registry (tesla)
+let deletedRefs: string[] = [];
 
 const ORIGINAL_FETCH = globalThis.fetch;
 const ENV_KEYS = [
@@ -65,6 +69,7 @@ beforeEach(() => {
     __resetCloudRunClientForTesting();
     __resetRegisteredOnlyForTests();
     calls = [];
+    deletedRefs = [];
     globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
         const name = /\/query\/([A-Za-z]+)$/.exec(String(input))?.[1] ?? '';
         const body = init?.body ? (JSON.parse(String(init.body)) as Record<string, unknown>) : {};
@@ -73,6 +78,7 @@ beforeEach(() => {
             case 'assetVariantsListByMints':
                 return json((body.mints as string[]).map(mint => ({ mint, variant: null })));
             case 'listDeletedRefs':
+                return json(deletedRefs);
             case 'sanctumListActive':
                 return json([]);
             case 'launchpadApprovedMints':
@@ -119,9 +125,20 @@ describe('toRegistryItems: assetId / hasTokenPage follow the same registration t
         expect(launch.map(c => c.body)).toEqual([{ mints: [LAUNCH, INDEX_ONLY] }]);
     });
 
-    it('makes no Cloud Run call when every row is placed in-process', async () => {
+    it('a compiled-registry asset an admin removed gets no page (tombstone), unless a later tier still registers it', async () => {
+        // Tombstones are keyed the way classifyMint keys them: coingeckoId, else assetId.
+        const tesla = getVariantByMint(TESLA_XSTOCK)!.asset;
+        deletedRefs = [(tesla.coingeckoId ?? tesla.assetId).toLowerCase()];
+        const items = await Effect.runPromise(toRegistryItems([row(TESLA_XSTOCK), row(USDC)]));
+        expect(items.map(i => [i.mint, i.assetId, i.hasTokenPage])).toEqual([
+            [TESLA_XSTOCK, null, false],
+            [USDC, 'usd', true],
+        ]);
+    });
+
+    it('registry matches cost one memoised tombstone lookup and no other Cloud Run call', async () => {
         const items = await Effect.runPromise(toRegistryItems([row(DB_OWNED, { assetId: 'tesla' }), row(USDC)]));
         expect(items.every(i => i.hasTokenPage)).toBe(true);
-        expect(calls).toEqual([]);
+        expect(calls.map(c => c.name)).toEqual(['listDeletedRefs']);
     });
 });

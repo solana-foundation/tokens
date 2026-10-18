@@ -137,6 +137,28 @@ describe('partitionRegisteredMints', () => {
         expect(sizes).toEqual([250, 1]);
     });
 
+    it('chunks the launch-tier lookup at the server cap of 500 and merges the answers', async () => {
+        const many = Array.from({ length: 501 }, (_, i) => `L${String(i).padStart(43, '1')}`.slice(0, 44));
+        const last = many[500]!;
+        globalThis.fetch = ((orig: typeof fetch) =>
+            (async (input: string | URL | Request, init?: RequestInit) => {
+                const name = /\/query\/([A-Za-z]+)$/.exec(String(input))?.[1] ?? '';
+                if (name === 'launchpadApprovedMints') {
+                    const body = JSON.parse(String(init?.body)) as { mints: string[] };
+                    calls.push({ name, body });
+                    return json({ mints: body.mints.filter(m => m === last) });
+                }
+                return orig(input, init);
+            }) as typeof fetch)(globalThis.fetch);
+        const out = await Effect.runPromise(partitionRegisteredMints(many));
+        const sizes = calls
+            .filter(c => c.name === 'launchpadApprovedMints')
+            .map(c => (c.body.mints as string[]).length);
+        expect(sizes).toEqual([500, 1]);
+        expect(out.registered).toEqual([last]);
+        expect(out.unregistered.length).toBe(500);
+    });
+
     it('fails open (everything registered) when the DB lookup errors', async () => {
         variantsStatus = 500;
         const out = await Effect.runPromise(partitionRegisteredMints([UNREG, DB_MINT]));

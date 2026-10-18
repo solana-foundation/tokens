@@ -2,6 +2,7 @@ import { Effect } from 'effect';
 
 import type { SolanaDataAssetResult } from '@/lib/cloudrun';
 import { getVariantByMint } from '@tokens/asset-registry';
+import { listDeletedRefs } from '@/lib/deleted-refs';
 import { partitionRegisteredMints } from '../../v1/assets/_registered-only';
 import { looksLikeSolanaMintAddress, mintToSingletonAssetId } from '../../v1/assets/_singleton-asset-id';
 
@@ -55,7 +56,8 @@ function publicIdFor(assetId: string): string {
  * the same registration tiers as `_registered-only.ts`:
  *   1. the DB asset that owns the mint (`registryAssetIdColumn`: active variant,
  *      active asset, no tombstone) — already on the row;
- *   2. the compiled registry (in-process);
+ *   2. the compiled registry (in-process), minus assets an admin removed
+ *      (deletion tombstones, one memoised lookup for the page);
  *   3. Sanctum LSTs and admin-approved launch coins — one batched Cloud Run
  *      check, only for rows the platform knows (`row.hasTokenPage`, which the
  *      SQL sets from the token index) that tiers 1-2 did not place. Those get
@@ -68,6 +70,8 @@ export function resolvePublicAssetIds(
     return Effect.gen(function* () {
         const out = new Map<string, string | null>();
         const pending: string[] = [];
+        // Compiled-registry matches, keyed by mint → { assetId, tombstone ref }.
+        const registryHits = new Map<string, { assetId: string; ref: string; knownToIndex: boolean }>();
         for (const row of rows) {
             if (row.assetId) {
                 out.set(row.mint, publicIdFor(row.assetId));
@@ -75,11 +79,29 @@ export function resolvePublicAssetIds(
             }
             const registry = getVariantByMint(row.mint);
             if (registry) {
-                out.set(row.mint, publicIdFor(registry.asset.assetId));
+                registryHits.set(row.mint, {
+                    assetId: registry.asset.assetId,
+                    ref: (registry.asset.coingeckoId ?? registry.asset.assetId).trim().toLowerCase(),
+                    knownToIndex: row.hasTokenPage,
+                });
                 continue;
             }
             if (row.hasTokenPage) pending.push(row.mint);
             else out.set(row.mint, null);
+        }
+        if (registryHits.size > 0) {
+            const deleted = new Set(
+                yield* listDeletedRefs({
+                    refs: Array.from(new Set(Array.from(registryHits.values(), h => h.ref))),
+                }).pipe(Effect.catch(() => Effect.succeed([] as string[]))),
+            );
+            for (const [mint, hit] of registryHits) {
+                if (!deleted.has(hit.ref)) out.set(mint, publicIdFor(hit.assetId));
+                // Removed by an admin: it may still be registered through a later
+                // tier (approved launch coin), otherwise it has no page.
+                else if (hit.knownToIndex) pending.push(mint);
+                else out.set(mint, null);
+            }
         }
         if (pending.length > 0) {
             const { registered } = yield* partitionRegisteredMints(pending);

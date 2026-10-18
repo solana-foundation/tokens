@@ -68,6 +68,12 @@ export type MintClassification =
 
 export type IsDeletedRef = (ref: string) => Effect.Effect<boolean, never>;
 
+function chunk<T>(items: readonly T[], size: number): T[][] {
+    const out: T[][] = [];
+    for (let i = 0; i < items.length; i += size) out.push(items.slice(i, i + size));
+    return out;
+}
+
 /** After a 404 from an older assets service without the handler, skip the launch tier for a while. */
 const LAUNCH_TIER_UNAVAILABLE_BACKOFF_MS = 5 * 60_000;
 let launchTierUnavailableUntilMs = 0;
@@ -77,21 +83,34 @@ export function __resetRegisteredOnlyForTests(): void {
     launchTierUnavailableUntilMs = 0;
 }
 
+/** The assets service considers at most this many mints per `launchpadApprovedMints` call. */
+const LAUNCH_RPC_CHUNK = 500;
+
+/** `null` = the lookup failed (fail open upstream); otherwise the approved subset. */
 function approvedLaunchMints(mints: readonly string[]): Effect.Effect<Set<string> | null, never> {
     if (mints.length === 0) return Effect.succeed(new Set<string>());
     if (Date.now() < launchTierUnavailableUntilMs) return Effect.succeed(new Set<string>());
-    return launchpadApprovedMints({ mints: [...mints] }).pipe(
-        Effect.map(result => new Set(result.mints)),
-        Effect.catch(error => {
-            const tagged = error as { _tag?: string; status?: number };
-            if (tagged._tag === 'CloudRunHttpError' && tagged.status === 404) {
-                // Older server: the tier does not exist yet, which is a miss, not an outage.
-                launchTierUnavailableUntilMs = Date.now() + LAUNCH_TIER_UNAVAILABLE_BACKOFF_MS;
-                return Effect.succeed(new Set<string>());
-            }
-            return Effect.succeed(null);
-        }),
-    );
+    return Effect.gen(function* () {
+        const approved = new Set<string>();
+        for (const part of chunk(mints, LAUNCH_RPC_CHUNK)) {
+            if (Date.now() < launchTierUnavailableUntilMs) break;
+            const result = yield* launchpadApprovedMints({ mints: [...part] }).pipe(
+                Effect.map(r => r.mints),
+                Effect.catch(error => {
+                    const tagged = error as { _tag?: string; status?: number };
+                    if (tagged._tag === 'CloudRunHttpError' && tagged.status === 404) {
+                        // Older server: the tier does not exist yet, which is a miss, not an outage.
+                        launchTierUnavailableUntilMs = Date.now() + LAUNCH_TIER_UNAVAILABLE_BACKOFF_MS;
+                        return Effect.succeed([] as string[]);
+                    }
+                    return Effect.succeed(null);
+                }),
+            );
+            if (result === null) return null;
+            for (const mint of result) approved.add(mint);
+        }
+        return approved;
+    });
 }
 
 /**
@@ -162,12 +181,6 @@ export function isRegisteredMintStandalone(mint: string): Effect.Effect<boolean,
 }
 
 const BATCH_CHUNK = 250;
-
-function chunk<T>(items: readonly T[], size: number): T[][] {
-    const out: T[][] = [];
-    for (let i = 0; i < items.length; i += size) out.push(items.slice(i, i + size));
-    return out;
-}
 
 /**
  * Batch form for the list routes: which of `mints` are registered, by the same
