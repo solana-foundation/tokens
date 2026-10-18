@@ -1,7 +1,7 @@
 import { Effect, Schema } from 'effect';
 
 import { route } from '@/effect/next-route';
-import { decodeUnknownOrBadRequest, SolanaAddress } from '@tokens/effect';
+import { decodeUnknownOrBadRequest, readJsonBody, SolanaAddress } from '@tokens/effect';
 import { tokensGetSearchTokensByAddresses } from '@/lib/cloudrun';
 
 
@@ -24,7 +24,7 @@ function dedupe(values: readonly string[]): string[] {
 export const POST = route(
     (request: Request) =>
         Effect.gen(function* () {
-            const json = yield* Effect.tryPromise(() => request.json());
+            const json = yield* readJsonBody(request);
             const body = yield* decodeUnknownOrBadRequest(bodySchema, json, 'Invalid body');
 
             const values = body.mints ?? body.addresses ?? [];

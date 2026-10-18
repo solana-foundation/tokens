@@ -2,7 +2,7 @@ import { Effect, Schema } from 'effect';
 
 import { route, type PlatformAuthContext } from '@/effect/next-route';
 import { withStaleFallback } from '@/effect/stale-response-cache';
-import { NotFoundError, decodeLimit, decodeOffset, decodeUnknownOrBadRequest } from '@tokens/effect';
+import { NotFoundError, decodeLimit, decodeOffset, decodeUnknownOrBadRequest, readJsonBody } from '@tokens/effect';
 import { loadAdvisoriesOrEmpty } from '@/lib/advisories';
 import { tokenListsDelete, tokenListsGetBySlug, tokenListsGetMembers, tokenListsUpdate } from '@/lib/cloudrun';
 
@@ -115,7 +115,7 @@ export const PATCH = route(
     (request: Request, ctx: RouteCtx) =>
         Effect.gen(function* () {
             const { slug } = yield* Effect.tryPromise(() => ctx.params);
-            const json = yield* Effect.tryPromise(() => request.json());
+            const json = yield* readJsonBody(request);
             const body = yield* decodeUnknownOrBadRequest(patchBodySchema, json, 'Invalid body');
 
             const outcome = yield* tokenListsUpdate({
