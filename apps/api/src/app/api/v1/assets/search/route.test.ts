@@ -24,6 +24,9 @@ const { GET } = await import('./route');
 const ASSET_ID = 'zzqx-coin';
 const MINT_A = 'ZZQX111111111111111111111111111111111111111';
 const MINT_B = 'ZZQX222222222222222222222222222222222222222';
+// A token-index hit that is neither a DB variant nor in the compiled registry.
+const UNREG_TOKEN = 'ZZQX333333333333333333333333333333333333333';
+let tokenMatches: Array<Record<string, unknown>> = [];
 const NOW = 1_760_000_000_000;
 
 const ORIGINAL_FETCH = globalThis.fetch;
@@ -40,6 +43,7 @@ const ENV_KEYS = [
     'TOKENS_PLAYGROUND_PROXY_SECRET',
     'TOKENS_USAGE_LOG_MODE',
     'TOKENS_CACHE_WARM_SECRET',
+    'TOKENS_V1_REGISTERED_ONLY',
     'BIRDEYE_API_KEY',
 ] as const;
 const savedEnv: Record<string, string | undefined> = {};
@@ -107,7 +111,7 @@ function prefetchFixture(coveredMints: string[]) {
                 symbol: 'ZZQX',
             },
         ],
-        tokens: [],
+        tokens: tokenMatches,
         variantsByTokenMint: [],
         extraAssets: [],
         variantsByAssetId: [
@@ -141,6 +145,7 @@ beforeEach(() => {
     __resetCloudRunClientForTesting();
 
     coveredMints = [];
+    tokenMatches = [];
     calls = [];
     globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
         const url = String(input);
@@ -248,5 +253,37 @@ describe('GET /v1/assets/search — prefetch variant-mint coverage', () => {
         const gapMarketCalls = gappedCalls.filter(c => c.name === 'variantMarketsGetLatestByMints');
         expect(gapMarketCalls.map(c => (c.body as { mints: string[] }).mints)).toEqual([[MINT_B]]);
         expect(coveredCalls.some(c => c.name === 'variantMarketsGetLatestByMints')).toBe(false);
+    });
+});
+
+describe('GET /v1/assets/search — registered assets only', () => {
+    const unregisteredHit = {
+        address: UNREG_TOKEN,
+        symbol: 'ZZQXX',
+        name: 'Zzqx Lookalike',
+        decimals: 6,
+        liquidity: 5_000,
+        volume24hUSD: 1_000,
+        price: 0.01,
+        priceChange24hPercent: 0,
+        marketCap: 100_000,
+    };
+    const assetIds = (body: unknown) => ((body as { results: Array<{ assetId: string }> }).results ?? []).map(a => a.assetId);
+
+    it('does not synthesize a solana-<mint> asset for an unregistered token-index match', async () => {
+        coveredMints = [MINT_A, MINT_B];
+        tokenMatches = [unregisteredHit];
+        const res = await search();
+        expect(res.status).toBe(200);
+        expect(assetIds(res.body)).toEqual([ASSET_ID]);
+    });
+
+    it('TOKENS_V1_REGISTERED_ONLY=off pads the page with the singleton as before', async () => {
+        process.env.TOKENS_V1_REGISTERED_ONLY = 'off';
+        coveredMints = [MINT_A, MINT_B];
+        tokenMatches = [unregisteredHit];
+        const res = await search();
+        expect(res.status).toBe(200);
+        expect(assetIds(res.body)).toEqual([ASSET_ID, `solana-${UNREG_TOKEN}`]);
     });
 });

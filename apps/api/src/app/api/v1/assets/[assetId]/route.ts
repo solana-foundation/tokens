@@ -140,6 +140,8 @@ export const GET = route(
 
             const assetDoc = yield* cloudRunGetByAssetId({ assetId });
             if (!assetDoc) {
+                // Reached only for registered per-mint assets (approved launch coins, admin `solana-<mint>` ids);
+                // unregistered mints are rejected upstream in _resolve-asset-ref.ts.
                 const singletonMint = singletonAssetIdToMint(assetId);
                 const registryAsset = singletonMint ? null : resolveRegistryAlias(assetId);
                 const resolvedAsset: CanonicalAsset | null = singletonMint

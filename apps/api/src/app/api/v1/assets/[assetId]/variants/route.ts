@@ -399,6 +399,8 @@ export const GET = route(
             // they carry their advisory instead of disappearing.
             const advisoriesByMint = yield* loadAdvisoriesOrEmpty();
 
+            // Reached only for registered per-mint assets (approved launch coins, admin `solana-<mint>` ids);
+            // unregistered mints are rejected upstream in _resolve-asset-ref.ts.
             const singletonMint = singletonAssetIdToMint(assetId);
             if (singletonMint) {
                 if (kind && kind !== 'native') return { assetId, sortBy, variants: [] };

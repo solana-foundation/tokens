@@ -36,6 +36,7 @@ const ENV_KEYS = [
     'TOKENS_CACHE_WARM_SECRET',
     'TOKENS_SPECULATIVE_BATCH',
     'TOKENS_DELETED_REFS_MEMO',
+    'TOKENS_V1_REGISTERED_ONLY',
     'BIRDEYE_API_KEY',
 ] as const;
 const savedEnv: Record<string, string | undefined> = {};
@@ -109,6 +110,8 @@ function respond(name: string, body: Record<string, unknown>): unknown {
         case 'tokensGetByAddress':
         case 'sanctumResolveRef':
             return null;
+        case 'launchpadApprovedMints':
+            return { mints: [] };
         case 'resolveAssetRefForApi':
             return body.ref === ASSET_ID ? { assetId: ASSET_ID, ref: ASSET_ID, resolvedBy: 'assetId' } : null;
         default:
@@ -256,13 +259,23 @@ describe('GET /v1/assets/:assetId/variants — speculative batch memo', () => {
         ).toBe(true);
     });
 
-    it('singleton: identical body, zero live lookups', async () => {
+    it('unregistered mint: 404 asset_not_registered, no market reads', async () => {
+        const res = await get(UNKNOWN_MINT);
+        expect(res.status).toBe(404);
+        const body = res.body as { error: { details: Record<string, unknown> } };
+        expect(body.error.details.code).toBe('asset_not_registered');
+        expect(liveLookups().some(c => c.startsWith('variantMarketsGetLatestByMints'))).toBe(false);
+    });
+
+    it('unregistered mint (TOKENS_V1_REGISTERED_ONLY=off): singleton body, zero live lookups with the batch', async () => {
+        process.env.TOKENS_V1_REGISTERED_ONLY = 'off';
         const { onCalls } = await compare(
             UNKNOWN_MINT,
             seeded([
                 { name: 'listDeletedRefs', args: { refs: [UNKNOWN_MINT.toLowerCase()] } },
                 { name: 'assetVariantsGetByMint', args: { mint: UNKNOWN_MINT } },
                 { name: 'sanctumResolveRef', args: { ref: UNKNOWN_MINT } },
+                { name: 'launchpadApprovedMints', args: { mints: [UNKNOWN_MINT] } },
                 { name: 'variantMarketsGetLatestByMints', args: { mints: [UNKNOWN_MINT] } },
                 { name: 'tokenMarketsGetLatestByMint', args: { mint: UNKNOWN_MINT } },
                 { name: 'tokensGetByAddress', args: { address: UNKNOWN_MINT } },

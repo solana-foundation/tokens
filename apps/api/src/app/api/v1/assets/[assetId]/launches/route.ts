@@ -31,6 +31,8 @@ export const GET = route(
             const limit = yield* decodeLimit(url.searchParams.get('limit'), { defaultValue: '25', max: 100 });
 
             const assetId = yield* resolveAssetIdFromRef(assetRef);
+            // Reached only for registered per-mint assets (approved launch coins, admin `solana-<mint>` ids);
+            // unregistered mints are rejected upstream in _resolve-asset-ref.ts.
             const singletonMint = singletonAssetIdToMint(assetId);
 
             let outAssetId = assetId;

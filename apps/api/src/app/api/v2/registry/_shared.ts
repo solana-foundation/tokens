@@ -9,11 +9,12 @@ export type V2RegistryItem = {
     symbol: string;
     name: string | null;
     logoURI: string | null;
-    /** True when tokens.xyz has a page for the mint: `tokens.xyz/{assetId}?solana={mint}`. */
+    /** True when the mint is a registered asset, i.e. tokens.xyz has a page: `tokens.xyz/{assetId}?solana={mint}`. */
     hasTokenPage: boolean;
     /**
-     * tokens.xyz asset id the mint resolves to (`GET /v1/assets/resolve?mint=` agrees): the curated
-     * asset that owns the mint, else the `solana-{mint}` singleton id; null when `hasTokenPage` is false.
+     * tokens.xyz asset id the mint resolves to (`GET /v1/assets/resolve?mint=` agrees): the registered
+     * asset that owns the mint (a `solana-{mint}` id when that asset is a per-mint one); null when the
+     * mint is not registered. v1 serves registered assets only, so null also means "no v1 data".
      */
     assetId: string | null;
     /** Foundation taxonomy, top to leaf. */
@@ -41,12 +42,15 @@ export type V2RegistryResponse = {
 };
 
 /**
- * Mirrors `/v1/assets/resolve?mint=`: a curated asset id wins; a mint we know only
- * from the token index (or a curated id that is itself a mint) is a singleton.
+ * Mirrors `/v1/assets/resolve?mint=`: the registered asset that owns the mint
+ * (`registryAssetIdColumn` joins active variants, active assets and tombstones),
+ * exposed under its per-mint id when the asset id is itself a mint. A mint the
+ * token index knows but no registered asset owns has no page: v1 serves
+ * registered assets only.
  */
 function publicAssetId(row: SolanaDataAssetResult): string | null {
-    if (row.assetId && !looksLikeSolanaMintAddress(row.assetId)) return row.assetId;
-    return row.hasTokenPage ? mintToSingletonAssetId(row.mint) : null;
+    if (!row.assetId) return null;
+    return looksLikeSolanaMintAddress(row.assetId) ? mintToSingletonAssetId(row.assetId) : row.assetId;
 }
 
 export function toRegistryItem(row: SolanaDataAssetResult): V2RegistryItem {
@@ -55,7 +59,7 @@ export function toRegistryItem(row: SolanaDataAssetResult): V2RegistryItem {
         symbol: row.symbol,
         name: row.name,
         logoURI: row.logoURI,
-        hasTokenPage: row.hasTokenPage,
+        hasTokenPage: publicAssetId(row) !== null,
         assetId: publicAssetId(row),
         group: row.group,
         category: row.category,

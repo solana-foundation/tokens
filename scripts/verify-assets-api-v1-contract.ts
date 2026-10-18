@@ -386,6 +386,52 @@ async function verifyDetailAssetId(
     assertNotMintAssetId((data.asset as Record<string, unknown>).assetId, 'detail.asset.assetId');
 }
 
+async function fetchStatus(
+    baseUrl: string,
+    path: string,
+    apiKey: string,
+    init: RequestInit = {},
+): Promise<{ status: number; body: unknown }> {
+    const url = new URL(path, baseUrl);
+    const res = await fetch(url, { ...init, headers: { 'x-api-key': apiKey, ...(init.headers ?? {}) } });
+    const text = await res.text();
+    return { status: res.status, body: text ? (JSON.parse(text) as unknown) : null };
+}
+
+function assertNotRegistered(result: { status: number; body: unknown }, mint: string, path: string): void {
+    assert(result.status === 404, `${path} must be 404 for an unregistered mint, got ${result.status}`);
+    assertObject(result.body, `${path} body`);
+    assertObject(result.body.error, `${path}.error`);
+    assert(result.body.error._tag === 'NotFoundError', `${path}.error._tag must be NotFoundError`);
+    assertObject(result.body.error.details, `${path}.error.details`);
+    assert(result.body.error.details.code === 'asset_not_registered', `${path}.error.details.code must be asset_not_registered`);
+    assert(result.body.error.details.mint === mint, `${path}.error.details.mint must echo the mint`);
+    assert(typeof result.body.error.details.hint === 'string', `${path}.error.details.hint must be a string`);
+}
+
+async function verifyUnregisteredMint(baseUrl: string, apiKey: string, prefix: string, mint: string): Promise<void> {
+    const m = encodeURIComponent(mint);
+    const paths = [
+        `${prefix}/assets/resolve?mint=${m}`,
+        `${prefix}/assets/${m}`,
+        `${prefix}/assets/solana-${m}`,
+        `${prefix}/assets/solana-${m}/price-chart?interval=1D`,
+        `${prefix}/assets/risk-summary?mint=${m}`,
+    ];
+    for (const path of paths) {
+        assertNotRegistered(await fetchStatus(baseUrl, path, apiKey), mint, path);
+    }
+    const snapshots = await fetchStatus(baseUrl, `${prefix}/assets/market-snapshots`, apiKey, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ mints: [mint] }),
+    });
+    assert(snapshots.status === 200, `market-snapshots must be 200, got ${snapshots.status}`);
+    assert(Array.isArray(snapshots.body) && snapshots.body.length === 1, 'market-snapshots must keep one row per input');
+    const rowOut = snapshots.body[0] as Record<string, unknown>;
+    assert(rowOut.address === mint && rowOut.token === null, 'market-snapshots must answer an unregistered mint with token: null');
+}
+
 async function verifyResolve(baseUrl: string, apiKey: string, prefix: string, ref: string): Promise<string> {
     const data = await fetchJson(baseUrl, `${prefix}/assets/resolve?ref=${encodeURIComponent(ref)}`, apiKey);
     assertObject(data, 'resolve response');
@@ -457,11 +503,19 @@ async function main(): Promise<void> {
     );
     await verifyDetail(baseUrl, apiKey, prefix, resolvedAnduril);
 
-    // Optional singleton mint check (for tokens outside a canonical asset).
-    const singletonMint = process.env.SINGLETON_MINT?.trim() ?? '';
-    if (singletonMint) {
-        const singletonAssetId = await verifyResolve(baseUrl, apiKey, prefix, singletonMint);
-        await verifyDetail(baseUrl, apiKey, prefix, singletonAssetId);
+    // Optional unregistered-mint check: v1 serves registered assets only, so
+    // a mint outside the registry must 404 with `asset_not_registered` on every
+    // mint-keyed route and come back as `token: null` from market-snapshots.
+    // EXPECT_SINGLETONS=1 runs the pre-rule expectation instead (a deployment
+    // with TOKENS_V1_REGISTERED_ONLY=off).
+    const unregisteredMint = process.env.UNREGISTERED_MINT?.trim() ?? process.env.SINGLETON_MINT?.trim() ?? '';
+    if (unregisteredMint) {
+        if (/^(1|true|yes)$/i.test(process.env.EXPECT_SINGLETONS ?? '')) {
+            const singletonAssetId = await verifyResolve(baseUrl, apiKey, prefix, unregisteredMint);
+            await verifyDetail(baseUrl, apiKey, prefix, singletonAssetId);
+        } else {
+            await verifyUnregisteredMint(baseUrl, apiKey, prefix, unregisteredMint);
+        }
     }
 
     // Optional flagged-mint check (skipped when no fixture mint is flagged).

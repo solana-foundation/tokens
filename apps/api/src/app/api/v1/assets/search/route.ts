@@ -81,6 +81,7 @@ import {
     selectPreStocksMints,
 } from '../_prestocks-canonical';
 import { looksLikeSolanaMintAddress, mintToSingletonAssetId } from '../_singleton-asset-id';
+import { v1RegisteredOnlyEnabled } from '../_registered-only';
 import { normalizeCoinGeckoCoinIdForAsset } from '../_coingecko-id';
 
 function parseCategory(raw: string | null): AssetCategory | null {
@@ -645,6 +646,11 @@ export const GET = route(
                         }
                         continue;
                     }
+
+                    // v1 serves registered assets only: a token-index match that is
+                    // neither a DB variant nor in the registry is not synthesized
+                    // into a `solana-<mint>` asset.
+                    if (v1RegisteredOnlyEnabled()) continue;
 
                     const singletonAssetId = mintToSingletonAssetId(mint);
                     if (seenSingletonAssetIds.has(singletonAssetId)) continue;

@@ -17,6 +17,7 @@ const ENV_KEYS = [
     'TOKENS_CLOUDRUN_USAGE_URL',
     'TOKENS_PLAYGROUND_PROXY_SECRET',
     'TOKENS_USAGE_LOG_MODE',
+    'TOKENS_V1_REGISTERED_ONLY',
 ] as const;
 const savedEnv: Record<string, string | undefined> = {};
 const ORIGINAL_FETCH = globalThis.fetch;
@@ -26,6 +27,8 @@ let upstreamCalls: Array<{ name: string; body: unknown }> = [];
 
 const SOL = 'So11111111111111111111111111111111111111112';
 const USDC = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
+// Not in the compiled registry and not a stubbed DB variant: unregistered.
+const UNREG = 'UNKN111111111111111111111111111111111111111';
 
 beforeEach(() => {
     for (const key of ENV_KEYS) {
@@ -51,7 +54,17 @@ beforeEach(() => {
         const json = (payload: unknown) =>
             new Response(JSON.stringify(payload), { status: 200, headers: { 'content-type': 'application/json' } });
         if (name === 'limitsEnforce') return json({ allowed: true });
-        if (name === 'tokensGetSearchTokensByAddresses') return json([{ address: SOL, symbol: 'SOL' }]);
+        if (name === 'tokensGetSearchTokensByAddresses') {
+            const { addresses } = (init?.body ? JSON.parse(String(init.body)) : { addresses: [] }) as { addresses: string[] };
+            return json(addresses.map(address => ({ address, token: { address, symbol: address === SOL ? 'SOL' : 'USDC' }, hasMarket: true })));
+        }
+        // Registry tiers: SOL and USDC are compiled-registry assets (no DB row in this stub).
+        if (name === 'assetVariantsListByMints') {
+            const { mints } = JSON.parse(String(init?.body)) as { mints: string[] };
+            return json(mints.map(mint => ({ mint, variant: null })));
+        }
+        if (name === 'listDeletedRefs' || name === 'sanctumListActive') return json([]);
+        if (name === 'launchpadApprovedMints') return json({ mints: [] });
         return json(null);
     }) as typeof fetch;
 });
@@ -101,6 +114,32 @@ describe('POST /v1/assets/market-snapshots — request body handling', () => {
         const upstream = upstreamCalls.find(c => c.name === 'tokensGetSearchTokensByAddresses');
         expect(upstream?.body).toEqual({ addresses: [SOL, USDC] });
         expect(apiErrorLog() === undefined).toBe(true);
+    });
+
+    it('unregistered mints keep their row, in input order, as token: null; only registered mints go upstream', async () => {
+        const res = await post(JSON.stringify({ mints: [UNREG, SOL, USDC] }));
+        expect(res.status).toBe(200);
+        const rows = (await res.json()) as Array<{ address: string; token: unknown; hasMarket: boolean }>;
+        expect(rows.map(r => r.address)).toEqual([UNREG, SOL, USDC]);
+        expect(rows[0]).toEqual({ address: UNREG, token: null, hasMarket: false });
+        expect(rows[1]?.token).not.toBeNull();
+        const upstream = upstreamCalls.find(c => c.name === 'tokensGetSearchTokensByAddresses');
+        expect(upstream?.body).toEqual({ addresses: [SOL, USDC] });
+    });
+
+    it('an all-unregistered body makes no upstream snapshot call at all', async () => {
+        const res = await post(JSON.stringify({ mints: [UNREG] }));
+        expect(res.status).toBe(200);
+        expect(await res.json()).toEqual([{ address: UNREG, token: null, hasMarket: false }]);
+        expect(upstreamCalls.some(c => c.name === 'tokensGetSearchTokensByAddresses')).toBe(false);
+    });
+
+    it('TOKENS_V1_REGISTERED_ONLY=off forwards every mint as before', async () => {
+        process.env.TOKENS_V1_REGISTERED_ONLY = 'off';
+        const res = await post(JSON.stringify({ mints: [UNREG, SOL] }));
+        expect(res.status).toBe(200);
+        const upstream = upstreamCalls.find(c => c.name === 'tokensGetSearchTokensByAddresses');
+        expect(upstream?.body).toEqual({ addresses: [UNREG, SOL] });
     });
 
     it('malformed JSON is the caller’s error: 400, not a 500 wrapped SyntaxError', async () => {

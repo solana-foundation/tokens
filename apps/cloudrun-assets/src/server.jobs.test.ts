@@ -176,6 +176,9 @@ const noopLaunchpadReadsRepo: LaunchpadReadsRepo = {
     async listActiveByQuoteMints() {
         return [];
     },
+    async listApprovedActiveMints() {
+        return [];
+    },
 };
 const noopSolanaDataReadsRepo: SolanaDataReadsRepo = {
     async listActive() {
