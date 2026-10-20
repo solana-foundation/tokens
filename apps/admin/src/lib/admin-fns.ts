@@ -28,12 +28,14 @@ export const ADMIN_FNS: Record<string, AdminFnSpec> = {
     adminListTokenLists: { service: 'admin', kind: 'query' },
     listVariantAdvisories: { service: 'admin', kind: 'query' },
     listLaunchpadCandidates: { service: 'admin', kind: 'query' },
+    previewAssetTagsImport: { service: 'admin', kind: 'query' },
 
     // cloudrun-admin mutations
     createCanonicalAsset: { service: 'admin', kind: 'mutation' },
     updateCanonicalAsset: { service: 'admin', kind: 'mutation' },
     deleteCanonicalAsset: { service: 'admin', kind: 'mutation' },
     hardDeleteAsset: { service: 'admin', kind: 'mutation', timeoutMs: 60_000 },
+    applyAssetTagsImport: { service: 'admin', kind: 'mutation', timeoutMs: 60_000 },
     createVariant: { service: 'admin', kind: 'mutation' },
     updateVariant: { service: 'admin', kind: 'mutation' },
     deleteVariant: { service: 'admin', kind: 'mutation' },

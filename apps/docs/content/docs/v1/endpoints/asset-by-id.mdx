@@ -5,13 +5,13 @@ description: Endpoints under /assets/:assetId for variants, markets, OHLCV, and 
 
 All endpoints on this page are Platform API endpoints.
 
-## Asset (canonical or singleton): `GET /v1/assets/:assetId`
+## Registered asset: `GET /v1/assets/:assetId`
 
 Fetch an asset and, optionally, attach additional “include” blocks in one request.
 
-- `assetId` may be a canonical slug (for example: `solana`, `usd`, `tesla`), an alias, a raw Solana mint, or a deterministic singleton ref of the form `solana-<mint>`.
-- Known mint refs return the canonical asset group. For example, `/v1/assets/solana-EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v` returns `asset.assetId: "usd"`.
-- Unknown mints still return singleton assets with IDs of the form `solana-<mint>`.
+- `assetId` may be a canonical slug (for example: `solana`, `usd`, `tesla`), an alias, a raw Solana mint, or a `solana-<mint>` ref. Whatever the form, it must resolve to a **registered** asset.
+- Registered mint refs return the asset group. For example, `/v1/assets/solana-EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v` returns `asset.assetId: "usd"`.
+- A mint that is not a variant of a registered asset returns `404` with `details.code: "asset_not_registered"`, here and on every sub-route below (envelope on [Rate Limits & Errors](/docs/v1/rate-limits-and-errors#unregistered-assets)). The API does not synthesize a `solana-<mint>` asset for an unknown mint; that id form appears only for registered assets exposed under a per-mint id (an admin-approved launch coin, for example). To track other tokens, use [Token Lists](/docs/v2/endpoints/lists).
 
 - **Auth**: `x-api-key`
 - **Scope**: `assets:read`
@@ -48,6 +48,7 @@ When using includes, additional params apply:
 - `asset.imageUrl` is curated canonical imagery (storage-backed where configured). `asset.primaryVariant.market.logoURI` is a best-effort per-token icon from indexed/cache sources and may be `null` (the server may fall back to `asset.imageUrl` when missing). When tokens.xyz holds a first-party copy of the artwork, `logoURI` points at tokens.xyz-controlled storage (256px WebP) instead of the upstream registry URL.
 - `asset.primaryVariant` is chosen deterministically from the asset’s spot-like variants (`native`, `wrapped`, `bridged`, `stablecoin`, `lst`, `tokenized_equity`, `basket`) by highest liquidity, then trust tier, then 24h volume, then curated mint rank unless an opt-in primary strategy applies. Variants flagged `compromised` or `blocked` are skipped by every strategy (see [Advisories](#advisories)).
 - `asset.primaryVariant.advisory` and every variant object under `asset.variantGroups.*[]` carry `advisory: { status, reason, url, since } | null`. The key is always present; `null` means the mint is not flagged.
+- `asset.region` and `asset.industry` are always present (`string | null`): admin-curated segmentation tags from the fixed vocabulary described in [Region and industry tags](/docs/v1/endpoints/assets#region-and-industry-tags); `null` when the asset is untagged.
 - `asset.advisories` is always present: an array of `{ mint, variantId, status, reason, url, since, source }` for every flagged variant of the asset (`[]` when none). It includes variants that list surfaces hide, so a page can show a “sibling flagged” notice even when the primary variant is fine.
 - For assets with `category: "stablecoin"` only, `asset.primaryVariant` and every variant object under `asset.variantGroups.*[]` carry `pegHealth: { provider, referenceKind, tier, deviationPct, updatedAt, stale } | null`, a compact per-mint view of the live depeg monitor (`null` when that mint is not monitored). The key is absent on every other category. The full block, plus the structural-health grade, lives on `include=risk` and the `/risk-*` routes; see [Stablecoin health](#stablecoin-health).
 - `primaryVariantStrategy=stock_redeemability` applies to equities and tokenized equities. It favors `share_redeemable` over `cash_redeemable` over `not_redeemable` or missing stock tiers when the higher-tier variant has zero/unknown liquidity on both sides or is within `5x` of the more liquid variant.
@@ -129,7 +130,7 @@ Treat `source` as informational (attribution, copy) and keep branching on `statu
 
 ### Guarantees
 
-- **This endpoint never 404s a flagged mint.** `GET /v1/assets/:assetId`, `GET /v1/assets/:assetId?mint=<flagged>`, `GET /v1/assets/solana-<flagged>`, and `/variants` keep returning `blocked` and `compromised` variants with `advisory` populated, so a shared link to the token still lands on the warning rather than on “not found”. Hard removals use a different mechanism (inactive variants and deletion tombstones) and are the only things that 404.
+- **This endpoint never 404s a registered flagged mint.** `GET /v1/assets/:assetId`, `GET /v1/assets/:assetId?mint=<flagged>`, `GET /v1/assets/solana-<flagged>`, and `/variants` keep returning `blocked` and `compromised` variants with `advisory` populated, so a shared link to the token still lands on the warning rather than on “not found”. Only two things 404: hard removals (inactive variants and deletion tombstones) and mints that are not a variant of any registered asset (`asset_not_registered`). An advisory is set on a registered mint, so flagging never turns a working link into a 404.
 - A `compromised` or `blocked` variant is never chosen as `primaryVariant` while another eligible variant exists. When every variant of an asset is flagged, the API falls back to the normal ranking instead of returning `null`, and `primaryVariant.advisory` tells you why you should not use it.
 - `asset.advisories` reflects the full asset, including variants a list surface hid; `advisory` on each variant object reflects only that mint.
 - Advisory changes propagate to this endpoint within roughly a minute (server-side cache plus HTTP `max-age`); `/curated` and `/trending` are similar or faster.
@@ -140,7 +141,7 @@ Treat `compromised` and `blocked` as **do-not-trade**: disable buy/sell/swap act
 
 ## Variants: `GET /v1/assets/:assetId/variants`
 
-List variants for an asset (canonical or singleton), optionally filtered.
+List variants for a registered asset, optionally filtered.
 
 - **Auth**: `x-api-key`
 - **Scope**: `assets:read`
@@ -325,8 +326,10 @@ Return a market-based score derived from cached market snapshots, plus stablecoi
 
 - `risk-details` includes more inputs in the response (for debugging/scoring transparency), including `marketScoreInput`, `advisory`, and the full `structuralHealth` block.
 - Both routes carry `risk.pegHealth` and `risk.structuralHealth` on the `ok: true` arm; see [Stablecoin health](#stablecoin-health) for shapes and the summary-vs-details projection.
-- A mint without a cached market snapshot is scored from a live market read. When neither is available the
-  response is `risk: { ok: false, reason: "not_found" }`.
+- The asset ref must resolve to a registered asset; otherwise the route is `404` with `details.code: "asset_not_registered"`
+  and nothing is scored (see [Unregistered assets](/docs/v1/rate-limits-and-errors#unregistered-assets)).
+- A registered mint without a cached market snapshot is scored from a live market read. When neither is available
+  the response is `risk: { ok: false, reason: "not_found" }`.
 - When `risk.ok` is `true`, check `risk.marketScore.hasInsufficientData` before reading the grade — see
   [`GET /v1/assets/risk-summary`](/docs/v1/endpoints/assets#get-v1assetsrisk-summary).
 
@@ -473,7 +476,7 @@ interface AssetLaunchesResponse {
   normal answer, not an error.
 - `blocked` mints are omitted; `caution` / `compromised` launches are returned with `advisory`
   populated. Treat `compromised` as do-not-trade.
-- Accepts every asset ref form (`assetId`, alias, mint, `solana-<mint>`). Unknown assets 404.
+- Accepts every asset ref form (`assetId`, alias, mint, `solana-<mint>`); the ref must resolve to a registered asset. Unregistered refs 404 with `details.code: "asset_not_registered"`. An approved launch coin keeps its own `solana-<mint>` asset page while it is approved.
 
 ## Description: `GET /v1/assets/:assetId/description`
 

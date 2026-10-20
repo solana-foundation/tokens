@@ -11,6 +11,7 @@ const { __resetCloudRunClientForTesting } = await import('@/lib/cloudrun/client'
 const { resetEnvForTests } = await import('@/lib/env');
 const { signPlaygroundProxyAuthPayload } = await import('@/effect/playground-proxy-auth');
 const { GET } = await import('./route');
+const { __resetRiskLiveCacheForTests } = await import('../_risk-live-fallback');
 
 const SOL_MINT = 'So11111111111111111111111111111111111111112';
 const JUP_MINT = 'JUPyiwrYJFskUPiHa7hkeR8VUtAeFoSYbKedZNsDvCN';
@@ -32,6 +33,7 @@ const ENV_KEYS = [
     'TOKENS_PLAYGROUND_PROXY_SECRET',
     'TOKENS_USAGE_LOG_MODE',
     'TOKENS_CACHE_WARM_SECRET',
+    'TOKENS_V1_REGISTERED_ONLY',
     'BIRDEYE_API_KEY',
 ] as const;
 const savedEnv: Record<string, string | undefined> = {};
@@ -51,6 +53,9 @@ let snapshotCalls = 0;
 // Provider (Birdeye token overview) responses by mint; unset means "not stubbed".
 let overviewByMint: Record<string, () => Response> = {};
 let overviewCalls: string[] = [];
+// Mints the stubbed DB knows as active variants of active assets (the rest are unregistered).
+const REGISTERED_IN_DB = new Set([JUP_MINT, RAY_MINT, PUMP_MINT]);
+let registryCalls: string[] = [];
 
 function json(body: unknown, status = 200): Response {
     return new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
@@ -83,13 +88,33 @@ beforeEach(() => {
     process.env.TOKENS_USAGE_LOG_MODE = 'off';
     resetEnvForTests();
     __resetCloudRunClientForTesting();
+    __resetRiskLiveCacheForTests();
 
     snapshotByMint = {};
     snapshotCalls = 0;
     overviewByMint = {};
     overviewCalls = [];
+    registryCalls = [];
     globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
         const url = String(input);
+        if (url.includes('/query/assetVariantsGetByMint')) {
+            const { mint } = JSON.parse(String(init?.body)) as { mint: string };
+            registryCalls.push(`variant:${mint}`);
+            return json(
+                REGISTERED_IN_DB.has(mint)
+                    ? { assetId: 'stub-asset', chain: 'solana', mint, variantId: `stub:${mint}`, kind: 'native', trustTier: 'tier2', tags: [], isActive: true }
+                    : null,
+            );
+        }
+        if (url.includes('/query/listDeletedRefs')) return json([]);
+        if (url.includes('/query/sanctumResolveRef')) {
+            registryCalls.push('sanctum');
+            return json(null);
+        }
+        if (url.includes('/query/launchpadApprovedMints')) {
+            registryCalls.push('launch');
+            return json({ mints: [] });
+        }
         if (url.includes('/query/variantMarketsGetLatestByMints')) {
             snapshotCalls += 1;
             const { mints } = JSON.parse(String(init?.body)) as { mints: string[] };
@@ -203,8 +228,8 @@ describe('GET /v1/assets/risk-summary', () => {
     });
 
     // Regression: a mint with no snapshot used to be scored as SOL (100 / A / Established).
-    it('reports a mint with no snapshot as unscored, never as grade A', async () => {
-        for (const mint of [JUP_MINT, RAY_MINT, UNKNOWN_MINT]) {
+    it('reports a registered mint with no snapshot as unscored, never as grade A', async () => {
+        for (const mint of [JUP_MINT, RAY_MINT, PUMP_MINT]) {
             const res = await get(`?mint=${mint}`);
             expect(res.status).toBe(200);
             expect((await res.json()) as RiskBody).toEqual(INSUFFICIENT);
@@ -313,7 +338,21 @@ describe('GET /v1/assets/risk-summary — no snapshot, live provider read', () =
         expect(overviewCalls).toEqual([]);
     });
 
-    it('reports a mint the provider does not know as unscored', async () => {
+    it('rejects an unregistered mint before any snapshot or provider read', async () => {
+        overviewByMint[UNKNOWN_MINT] = () => overview(DEEP_MARKET);
+        const res = await get(`?mint=${UNKNOWN_MINT}`);
+        expect(res.status).toBe(404);
+        const body = (await res.json()) as { error: { _tag: string; details: Record<string, unknown> } };
+        expect(body.error._tag).toBe('NotFoundError');
+        expect(body.error.details.code).toBe('asset_not_registered');
+        expect(body.error.details.mint).toBe(UNKNOWN_MINT);
+        expect(snapshotCalls).toBe(0);
+        expect(overviewCalls).toEqual([]);
+        expect(registryCalls).toEqual([`variant:${UNKNOWN_MINT}`, 'sanctum', 'launch']);
+    });
+
+    it('a registered mint the provider does not know is unscored, not 404', async () => {
+        // PUMP is a DB variant with no snapshot: the budgeted live read still runs.
         const unknown = [
             () => json({ success: true, data: {} }),
             () => json({ success: false, message: 'Not found' }),
@@ -321,11 +360,22 @@ describe('GET /v1/assets/risk-summary — no snapshot, live provider read', () =
             () => overview({ liquidity: 0, marketCap: 0, holder: 0, volume24hUSD: 0 }),
         ];
         for (const respond of unknown) {
-            overviewByMint[UNKNOWN_MINT] = respond;
-            const res = await get(`?mint=${UNKNOWN_MINT}`);
+            __resetRiskLiveCacheForTests();
+            overviewByMint[PUMP_MINT] = respond;
+            const res = await get(`?mint=${PUMP_MINT}`);
             expect(res.status).toBe(200);
             expect((await res.json()) as RiskBody).toEqual(INSUFFICIENT);
         }
+    });
+
+    it('TOKENS_V1_REGISTERED_ONLY=off scores an unregistered mint from the live read as before', async () => {
+        process.env.TOKENS_V1_REGISTERED_ONLY = 'off';
+        overviewByMint[UNKNOWN_MINT] = () => overview(DEEP_MARKET);
+        const res = await get(`?mint=${UNKNOWN_MINT}`);
+        expect(res.status).toBe(200);
+        expect(((await res.json()) as RiskBody).grade).toBe('A');
+        expect(overviewCalls).toEqual([UNKNOWN_MINT]);
+        expect(registryCalls).toEqual([]);
     });
 
     it('reports live data below the data floor as unscored', async () => {

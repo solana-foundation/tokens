@@ -3,8 +3,8 @@
  * Semantics mirror the private helpers in `convex/adminCuratedTokens.ts`.
  */
 
-import { getCanonicalFallbackLogoPath } from '@tokens/asset-registry';
-import type { AssetCategory, StockVariantTier, VariantKind } from '@tokens/asset-registry';
+import { ASSET_INDUSTRIES, ASSET_REGIONS, getCanonicalFallbackLogoPath } from '@tokens/asset-registry';
+import type { AssetCategory, AssetIndustry, AssetRegion, StockVariantTier, VariantKind } from '@tokens/asset-registry';
 import { ADMIN_ASSIGNABLE_CURATED_SLUGS, CURATED_LIST_SLUGS } from '@tokens/asset-registry/curated-lists';
 import type { AdminAssignableCuratedSlug } from '@tokens/asset-registry/curated-lists';
 
@@ -28,6 +28,11 @@ export const ASSET_ALIAS_KINDS = [
     'variantId',
     'custom',
 ] as const;
+
+/** Admin-curated segmentation tags (migration 0032); vocabulary owned by `@tokens/asset-registry/taxonomy`. */
+export const ASSET_REGION_VALUES: readonly AssetRegion[] = ASSET_REGIONS;
+export const ASSET_INDUSTRY_VALUES: readonly AssetIndustry[] = ASSET_INDUSTRIES;
+export type { AssetIndustry, AssetRegion };
 
 export const ASSET_CATEGORY_VALUES: readonly AssetCategory[] = [
     'crypto',

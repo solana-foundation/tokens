@@ -34,14 +34,37 @@ Platform endpoints use a stable error shape:
 }
 ```
 
-`details` is optional. Some errors use an object for `details` with a stable `code` field (for example list mutations and advisory refusals below); branch on `_tag` first, then `details.code`.
+`details` is optional. Some errors use an object for `details` with a stable `code` field (for example list mutations, unregistered assets, and advisory refusals below); branch on `_tag` first, then `details.code`.
+
+## Unregistered assets
+
+v1 serves **registered assets only**: the assets the Tokens team registers (and their mints), the compiled asset registry, Sanctum LST mints (which resolve to `solana`), and admin-approved launch coins. A mint that is not a variant of a registered asset is a `404` with `_tag: "NotFoundError"` and `details.code: "asset_not_registered"`:
+
+```json
+{
+  "error": {
+    "_tag": "NotFoundError",
+    "message": "Asset not registered",
+    "details": {
+      "code": "asset_not_registered",
+      "mint": "<mint>",
+      "hint": "v1 serves registered assets only. To track other tokens, add them to a token list (POST /v2/lists, then PUT /v2/lists/{slug}/members/{mint}) and read them with GET /v2/lists/tokens?lists={slug}."
+    }
+  }
+}
+```
+
+- Emitted by `GET /v1/assets/resolve`, `GET /v1/assets/risk-summary?mint=`, and `GET /v1/assets/:assetId` together with every sub-route under it (`/variants`, `/ohlcv`, `/price-chart`, `/markets`, `/profile`, `/risk-summary`, `/risk-details`, `/launches`, `/variant-top-markets`, and so on) when the ref does not land on a registered asset.
+- Batch endpoints do not fail the request. `POST /v1/assets/market-snapshots` keeps the row as `{ "address": "<mint>", "token": null, "hasMarket": false }`; `GET /v1/assets/variant-markets` keeps the row with `assetId: null`, `chain: null`, `market: null`, `executionQuality: null`. `GET /v1/assets/search` returns registered assets only and never pads the page with synthesized tokens.
+- Do not retry: a mint does not become registered with time. The API no longer synthesizes a `solana-<mint>` asset for an unknown mint.
+- To track tokens outside the registered set, use [Token Lists](/docs/v2/endpoints/lists): create a list (`POST /v2/lists`), add the mint (`PUT /v2/lists/{slug}/members/{mint}`), and read it with `GET /v2/lists/tokens?lists={slug}`.
 
 ## Common status codes
 
 - `400` Bad request (invalid query/body/params)
 - `401` Unauthorized (missing/invalid API key)
 - `403` Forbidden (missing required scopes, or an advisory refusal — see below)
-- `404` Not found (unknown resource or mapping)
+- `404` Not found (unknown resource or mapping, or an unregistered asset — see above)
 - `429` Rate-limited or quota exceeded
 - `500` Internal server error
 

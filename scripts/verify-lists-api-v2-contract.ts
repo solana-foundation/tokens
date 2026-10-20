@@ -1,8 +1,9 @@
 /* eslint-disable no-console */
 
 /**
- * Live contract check for the v2 API: lists ("lists as plugins") plus the
- * public judged search (`/v2/search`, `/v2/resolve`).
+ * Live contract check for the v2 API: lists ("lists as plugins"), the public
+ * judged search (`/v2/search`, `/v2/resolve`) and the asset registry
+ * (`/v2/registry`).
  *
  * Usage:
  *   API_BASE_URL=http://localhost:3002 API_KEY=... bun scripts/verify-lists-api-v2-contract.ts
@@ -46,7 +47,12 @@ function coerceBaseUrl(value: string): string {
 
 async function getJson(baseUrl: string, apiKey: string, path: string): Promise<unknown> {
     const res = await fetch(new URL(path, baseUrl), { headers: { 'x-api-key': apiKey } });
-    assert(res.ok, `GET ${path} failed: HTTP ${res.status} ${await res.text().then(t => t.slice(0, 300))}`);
+    // Read the body only on failure: the template literal below would otherwise
+    // consume it eagerly and the res.json() that follows would throw.
+    if (!res.ok) {
+        const text = await res.text().catch(() => '');
+        throw new Error(`GET ${path} failed: HTTP ${res.status} ${text.slice(0, 300)}`);
+    }
     return res.json();
 }
 
@@ -197,7 +203,10 @@ async function verifySearch(baseUrl: string, apiKey: string): Promise<void> {
 async function verifyPublicPathRewrite(baseUrl: string, apiKey: string): Promise<void> {
     const body = await getJson(baseUrl, apiKey, 'v2/search?q=USDC&limit=1');
     assertObject(body, 'public-path search response');
-    assert(Array.isArray(body.results) && body.results.length === 1, '/v2/search must serve the same handler as /api/v2/search');
+    assert(
+        Array.isArray(body.results) && body.results.length === 1,
+        '/v2/search must serve the same handler as /api/v2/search',
+    );
 }
 
 async function verifyResolve(baseUrl: string, apiKey: string): Promise<void> {
@@ -211,7 +220,10 @@ async function verifyResolve(baseUrl: string, apiKey: string): Promise<void> {
     assert(Array.isArray(body.candidates), 'resolve.candidates must be an array');
     if (body.status === 'resolved') {
         assertObject(body.best, 'resolve.best');
-        assert(body.best.mint === USDC_MINT, `resolve(USDC) must resolve to the canonical mint, got ${String(body.best.mint)}`);
+        assert(
+            body.best.mint === USDC_MINT,
+            `resolve(USDC) must resolve to the canonical mint, got ${String(body.best.mint)}`,
+        );
         assert(
             typeof body.best.confidence === 'number' && body.best.confidence > 0 && body.best.confidence <= 1,
             'resolve.best.confidence must be in (0, 1]',
@@ -225,7 +237,101 @@ async function verifyResolve(baseUrl: string, apiKey: string): Promise<void> {
     assertObject(exact, 'resolve(mint)');
     assert(exact.status === 'resolved', `resolve(<USDC mint>) must be resolved, got ${String(exact.status)}`);
     assertObject(exact.best, 'resolve(mint).best');
-    assert(exact.best.mint === USDC_MINT && exact.best.confidence === 1, 'mint lookup must return that mint with confidence 1');
+    assert(
+        exact.best.mint === USDC_MINT && exact.best.confidence === 1,
+        'mint lookup must return that mint with confidence 1',
+    );
+}
+
+function assertRegistryItem(item: unknown, path: string): { mint: string; rank: number } {
+    assertObject(item, path);
+    assert(
+        typeof item.mint === 'string' && looksLikeSolanaMintAddress(item.mint),
+        `${path}.mint must be a base58 mint address`,
+    );
+    assert(typeof item.symbol === 'string' && item.symbol.length > 0, `${path}.symbol must be a non-empty string`);
+    assertNullableString(item.name, `${path}.name`);
+    assertNullableString(item.logoURI, `${path}.logoURI`);
+    assert(typeof item.hasTokenPage === 'boolean', `${path}.hasTokenPage must be a boolean`);
+    assertNullableString(item.assetId, `${path}.assetId`);
+    assert(
+        (item.assetId !== null) === item.hasTokenPage,
+        `${path}.assetId must be set exactly when hasTokenPage is true`,
+    );
+    for (const key of ['group', 'category', 'assetClass', 'alliumClass', 'rwaClass']) {
+        assertNullableString(item[key], `${path}.${key}`);
+    }
+    for (const key of ['alliumValueUsd', 'rwaValueUsd', 'marketCapUsd']) {
+        assert(item[key] === null || typeof item[key] === 'number', `${path}.${key} must be a number or null`);
+    }
+    assert(
+        typeof item.rank === 'number' && Number.isInteger(item.rank) && item.rank >= 0,
+        `${path}.rank must be a non-negative integer`,
+    );
+    return { mint: item.mint, rank: item.rank };
+}
+
+/** `/v2/registry` is the DB-backed Project Canon asset registry (synced hourly from data.solana.com). */
+async function verifyRegistry(baseUrl: string, apiKey: string): Promise<void> {
+    const body = await getJson(baseUrl, apiKey, 'api/v2/registry?limit=5');
+    assertObject(body, 'registry response');
+    assertNullableString(body.generatedAt, 'registry.generatedAt');
+    assert(body.syncedAt === null || typeof body.syncedAt === 'number', 'registry.syncedAt must be a number or null');
+    assert(typeof body.total === 'number', 'registry.total must be a number');
+    assert(Array.isArray(body.items), 'registry.items must be an array');
+    assert(body.items.length <= 5, 'registry.items must honour limit=5');
+    if (body.total === 0) {
+        console.warn('registry: no rows synced yet (total=0); skipping content checks');
+        return;
+    }
+    assert(body.items.length > 0, 'registry.items must be non-empty when total > 0');
+    const items = body.items.map((item, i) => assertRegistryItem(item, `registry.items[${i}]`));
+    assert(items[0]!.rank === 0, 'first page must start at rank 0 (upstream order)');
+    for (let i = 1; i < items.length; i++) {
+        assert(items[i]!.rank > items[i - 1]!.rank, 'registry.items must be in ascending rank order');
+    }
+    assert(
+        items.some(item => item.mint === USDC_MINT),
+        'the first five registry rows must include USDC',
+    );
+
+    const page2 = await getJson(baseUrl, apiKey, 'api/v2/registry?limit=5&offset=5');
+    assertObject(page2, 'registry(offset=5)');
+    assert(page2.total === body.total, 'total must be stable across pages');
+    assert(Array.isArray(page2.items) && page2.items.length > 0, 'offset=5 must return rows');
+    assertRegistryItem(page2.items[0], 'registry(offset=5).items[0]');
+    assert((page2.items[0] as { rank: number }).rank === 5, 'offset=5 must start at rank 5');
+
+    const filtered = await getJson(baseUrl, apiKey, 'api/v2/registry?group=Stablecoins&limit=2');
+    assertObject(filtered, 'registry(group=Stablecoins)');
+    assert(typeof filtered.total === 'number' && filtered.total < body.total, 'group filter must narrow total');
+    assert(Array.isArray(filtered.items), 'filtered items must be an array');
+    for (const [i, item] of filtered.items.entries()) {
+        assertObject(item, `registry(group).items[${i}]`);
+        assert(item.group === 'Stablecoins', 'every filtered row must match the group');
+    }
+
+    const res = await fetch(new URL('api/v2/registry?limit=abc', baseUrl), { headers: { 'x-api-key': apiKey } });
+    assert(res.status === 400, `non-numeric limit must 400, got ${res.status}`);
+
+    // Detail: same item shape plus the upstream row verbatim.
+    const detail = await getJson(baseUrl, apiKey, `api/v2/registry/${USDC_MINT}`);
+    assertObject(detail, 'registry detail');
+    const detailItem = assertRegistryItem(detail, 'registry detail');
+    assert(detailItem.mint === USDC_MINT, 'detail.mint must echo the path mint');
+    assertObject(detail.upstream, 'registry detail.upstream');
+    assert(detail.upstream.mint_address === USDC_MINT, 'detail.upstream.mint_address must be the raw upstream mint');
+    assert(typeof detail.upstream.token === 'string', 'detail.upstream.token must be the raw upstream symbol');
+    assertNullableString(detail.generatedAt, 'registry detail.generatedAt');
+    assert(detail.syncedAt === null || typeof detail.syncedAt === 'number', 'detail.syncedAt must be a number or null');
+    assertObject(detail.provider, 'registry detail.provider');
+
+    const missing = await fetch(new URL('api/v2/registry/11111111111111111111111111111111', baseUrl), {
+        headers: { 'x-api-key': apiKey },
+    });
+    assert(missing.status === 404, `unknown mint must 404, got ${missing.status}`);
+    const malformed = await fetch(new URL('api/v2/registry/not-a-mint', baseUrl), { headers: { 'x-api-key': apiKey } });
+    assert(malformed.status === 400, `malformed mint must 400, got ${malformed.status}`);
 }
 
 async function main(): Promise<void> {
@@ -245,9 +351,10 @@ async function main(): Promise<void> {
     await verifyCompose(baseUrl, apiKey);
     await verifySearch(baseUrl, apiKey);
     await verifyResolve(baseUrl, apiKey);
+    await verifyRegistry(baseUrl, apiKey);
     await verifyPublicPathRewrite(baseUrl, apiKey);
 
-    console.log('Lists + search API v2 contract verification passed.');
+    console.log('Lists + search + registry API v2 contract verification passed.');
 }
 
 main().catch(err => {

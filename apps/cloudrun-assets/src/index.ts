@@ -11,6 +11,7 @@ import {
     makeRwaXyzClient,
     makeSanctumClient,
     makeStonkfunClient,
+    makeSolanaDataClient,
     makeWebacyClient,
     makeWebacyDepegClient,
 } from './clients';
@@ -47,6 +48,8 @@ import {
     makePostgresOhlcvReadsRepo,
     makePostgresSanctumLstsRepo,
     makePostgresSeedRepo,
+    makePostgresSolanaDataJobsRepo,
+    makePostgresSolanaDataReadsRepo,
     makePostgresTokenListsMutationsRepo,
     makePostgresTokenListsReadsRepo,
     makePostgresTokensReadsRepo,
@@ -75,6 +78,7 @@ import type { ClickhouseExtrasCronDeps } from './handlers/crons.clickhouse.extra
 import type { PrestocksCronDeps } from './handlers/crons.prestocks';
 import type { LaunchpadCronDeps } from './handlers/crons.launchpad';
 import type { LogoSyncCronDeps } from './handlers/crons.logoSync';
+import type { SolanaDataCronDeps } from './handlers/crons.solanaData';
 import { makeSharpLogoNormalizer } from './handlers/logoImage';
 import { makeGcsLogoStore } from './logoStore';
 import type { LaunchpadAdminDeps } from './handlers/launchpadAdminActions';
@@ -107,6 +111,8 @@ const birdeyeApiKey = process.env.BIRDEYE_API_KEY?.trim();
 const sanctumApiKey = process.env.SANCTUM_API_KEY?.trim();
 const webacyApiKey = process.env.WEBACY_API_KEY?.trim();
 const rwaApiKey = process.env.RWA_API_KEY?.trim();
+const solanaDataApiKey = process.env.SOLANA_DATA_API_KEY?.trim();
+const solanaDataApiUrl = process.env.SOLANA_DATA_API_URL?.trim();
 
 const cronInvokerSa = process.env.TOKENS_CRON_INVOKER_SA?.trim() || undefined;
 const cronAudience = process.env.SCHEDULER_OIDC_AUDIENCE?.trim() || undefined;
@@ -121,6 +127,7 @@ let clickhouseExtrasCronDeps: ClickhouseExtrasCronDeps | undefined;
 let prestocksCronDeps: PrestocksCronDeps | undefined;
 let launchpadCronDeps: LaunchpadCronDeps | undefined;
 let logoSyncCronDeps: LogoSyncCronDeps | undefined;
+let solanaDataCronDeps: SolanaDataCronDeps | undefined;
 let depegCronDeps: DepegCronDeps | undefined;
 let v2AssetsCronDeps: V2AssetsCronDeps | undefined;
 let verifyOidc: ReturnType<typeof makeGoogleOidcVerifier> | undefined;
@@ -208,6 +215,22 @@ if (birdeyeApiKey) {
         repo: makePostgresLaunchpadJobsRepo(sql),
         stonkfun: makeStonkfunClient(),
     };
+    // Project Canon asset registry (data.solana.com). Lives in this block because
+    // the provider phase fills missing logos from Birdeye; the sync itself only
+    // needs the data team's key.
+    if (solanaDataApiKey) {
+        solanaDataCronDeps = {
+            repo: makePostgresSolanaDataJobsRepo(sql),
+            solanaData: makeSolanaDataClient({
+                apiKey: solanaDataApiKey,
+                ...(solanaDataApiUrl ? { baseUrl: solanaDataApiUrl } : {}),
+            }),
+            birdeye,
+            now: () => Date.now(),
+        };
+    } else {
+        console.warn('[cloudrun-assets] SOLANA_DATA_API_KEY not set — /jobs/sync-solana-data-assets disabled');
+    }
     // First-party logo copies land in the public asset-logo bucket (same one
     // cloudrun-admin signs uploads for) via the runtime SA's default
     // credentials, so the only optional inputs are the Pinata gateway.
@@ -399,6 +422,7 @@ const app = createApp({
     prestocksReadsRepo: makePostgresPrestocksReadsRepo(sql),
     launchpadReadsRepo: makePostgresLaunchpadReadsRepo(sql),
     v2AssetsReadsRepo: makePostgresV2AssetsReadsRepo(sql),
+    solanaDataReadsRepo: makePostgresSolanaDataReadsRepo(sql),
     authToken: bearerTokenCandidates(authToken, process.env.TOKENS_CLOUDRUN_AUTH_TOKEN_PREVIOUS),
     serviceRole,
     checkDatabase: async () => {
@@ -415,6 +439,7 @@ const app = createApp({
     ...(prestocksCronDeps ? { prestocksCronDeps } : {}),
     ...(launchpadCronDeps ? { launchpadCronDeps } : {}),
     ...(logoSyncCronDeps ? { logoSyncCronDeps } : {}),
+    ...(solanaDataCronDeps ? { solanaDataCronDeps } : {}),
     launchpadAdminDeps,
     ...(depegCronDeps ? { depegCronDeps } : {}),
     ...(v2AssetsCronDeps ? { v2AssetsCronDeps } : {}),

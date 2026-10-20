@@ -9,6 +9,7 @@ import {
     encodeSort,
     formatFilter,
     parseUsdInput,
+    type RegistryFilter,
 } from './filters';
 import type { RegistryRow } from './types';
 
@@ -19,6 +20,7 @@ function row(overrides: Partial<RegistryRow>): RegistryRow {
         name: null,
         logoURI: null,
         hasTokenPage: false,
+        assetId: null,
         group: 'RWA',
         category: 'Equities',
         assetClass: 'Stocks',
@@ -27,6 +29,8 @@ function row(overrides: Partial<RegistryRow>): RegistryRow {
         rwaValueUsd: null,
         alliumValueUsd: null,
         marketCapUsd: null,
+        providerValueUsd: null,
+        providerValueSource: null,
         valueUsd: null,
         ...overrides,
     };
@@ -197,12 +201,35 @@ describe('filter url codec', () => {
     });
 });
 
+describe('value fields', () => {
+    test('"Value" filters the same number the Value column shows, never the market-cap fallback', () => {
+        const mcapOnly = row({ alliumValueUsd: null, rwaValueUsd: null, marketCapUsd: 5_000_000, valueUsd: 5_000_000 });
+        const withProvider = row({
+            alliumValueUsd: null,
+            rwaValueUsd: 2_000_000,
+            providerValueUsd: 2_000_000,
+            providerValueSource: 'rwa',
+            valueUsd: 2_000_000,
+        });
+        const filters: RegistryFilter[] = [{ field: 'providerValueUsd', op: 'gt', value: 1_000_000 }];
+        expect(applyFilters([mcapOnly, withProvider], { q: '', filters })).toEqual([withProvider]);
+        const ranking: RegistryFilter[] = [{ field: 'valueUsd', op: 'gt', value: 1_000_000 }];
+        expect(applyFilters([mcapOnly, withProvider], { q: '', filters: ranking })).toEqual([mcapOnly, withProvider]);
+    });
+});
+
 describe('sort url codec', () => {
     test('round-trips sortable columns only', () => {
         expect(decodeSort(encodeSort({ id: 'marketCapUsd', desc: true }))).toEqual({ id: 'marketCapUsd', desc: true });
         expect(decodeSort('token.asc')).toEqual({ id: 'token', desc: false });
+        expect(decodeSort('providerValueUsd.desc')).toEqual({ id: 'providerValueUsd', desc: true });
         expect(decodeSort('valueUsd.desc')).toBeNull();
         expect(decodeSort('marketCapUsd.sideways')).toBeNull();
         expect(decodeSort('')).toBeNull();
+    });
+
+    test('maps the retired per-provider sort ids onto the merged Value column', () => {
+        expect(decodeSort('alliumValueUsd.desc')).toEqual({ id: 'providerValueUsd', desc: true });
+        expect(decodeSort('rwaValueUsd.asc')).toEqual({ id: 'providerValueUsd', desc: false });
     });
 });

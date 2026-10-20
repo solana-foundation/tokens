@@ -1,4 +1,10 @@
-import { normalizeLegacyTier } from '@tokens/asset-registry';
+import {
+    normalizeLegacyTier,
+    toAssetIndustryOrNull,
+    toAssetRegionOrNull,
+    type AssetIndustry,
+    type AssetRegion,
+} from '@tokens/asset-registry';
 
 import { InvalidArgsError } from './assets';
 import { resolveLogoUri } from './logoUrl';
@@ -61,6 +67,8 @@ export interface AssetsApiAssetRow {
     is_active: boolean;
     created_at: Date;
     updated_at: Date;
+    region: string | null;
+    industry: string | null;
 }
 
 export interface AssetsApiVariantRow {
@@ -210,6 +218,8 @@ export interface AssetApiResult {
     isActive: boolean;
     createdAt: number;
     updatedAt: number;
+    region: AssetRegion | null;
+    industry: AssetIndustry | null;
     name?: string;
     symbol?: string;
     coingeckoId?: string;
@@ -408,6 +418,8 @@ function assetRowToResult(row: AssetsApiAssetRow): AssetApiResult {
         isActive: row.is_active,
         createdAt: row.created_at.getTime(),
         updatedAt: row.updated_at.getTime(),
+        region: toAssetRegionOrNull(row.region),
+        industry: toAssetIndustryOrNull(row.industry),
     };
     if (row.name !== null) result.name = row.name;
     if (row.symbol !== null) result.symbol = row.symbol;

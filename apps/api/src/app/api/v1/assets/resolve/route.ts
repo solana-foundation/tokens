@@ -5,14 +5,15 @@ import { BadRequestError, NotFoundError } from '@tokens/effect';
 import { decodeUnknownOrBadRequest, SolanaAddress } from '@tokens/effect';
 import { tapErrorAndDefault } from '@tokens/effect';
 import { loadAdvisoriesOrEmpty } from '@/lib/advisories';
+import { seedSpeculativeMemo } from '@/lib/cloudrun/speculative-batch';
 import { getByAssetId as cloudRunGetByAssetId } from '@/lib/cloudrun/assets';
 import {
     assetVariantsGetByMint,
     assetVariantsListByAssetIds,
-    listDeletedRefs,
     stockInstrumentsGetByAssetId,
     variantMarketsGetLatestByMints,
 } from '@/lib/cloudrun';
+import { listDeletedRefs } from '@/lib/deleted-refs';
 import {
     buildCuratedMintRank,
     optionalSymbol,
@@ -31,6 +32,7 @@ import {
 } from '@tokens/asset-registry';
 import { canonicalizeAsset, canonicalizeAssetVariants } from '../_canonical-overrides';
 import { resolveAssetRefContext, type AssetRefResolutionContext } from '../_resolve-asset-ref';
+import { classifyMint, unregisteredMintError, v1RegisteredOnlyEnabled } from '../_registered-only';
 import { looksLikeSolanaMintAddress, mintToSingletonAssetId, singletonAssetIdToMint } from '../_singleton-asset-id';
 import { loadSingletonIdentity } from '../_singleton-identity';
 
@@ -73,6 +75,12 @@ export const GET = route(
             if (!mintRaw && !refRaw) {
                 return yield* Effect.fail(new BadRequestError({ message: 'mint or ref is required' }));
             }
+
+            // One round-trip pre-answers the chain of lookups below (see
+            // `speculative-batch.ts`); every call still runs exactly as
+            // written and simply hits the request memo when the server
+            // walked the same path.
+            yield* seedSpeculativeMemo({ profile: 'resolve', ...(mintRaw ? { mint: mintRaw } : { ref: refRaw }) });
 
             // Every emitted `variant` carries `advisory` (null when none). Flagged
             // mints still resolve — the advisory travels with the variant.
@@ -131,14 +139,10 @@ export const GET = route(
                 });
             }
 
-            if (!mintRaw) {
-                const resolved = yield* resolveAssetRefContext(refRaw, { deletedRefCache });
-
-                const singletonMint = singletonAssetIdToMint(resolved.assetId);
-                if (singletonMint) {
-                    return yield* buildSingletonResponse(singletonMint, resolved);
-                }
-
+            // Everything after resolution for a canonical (non-singleton) asset;
+            // shared by the `ref` path and the Sanctum branch of the `mint` path.
+            const respondForResolution = (resolved: AssetRefResolutionContext) =>
+                Effect.gen(function* () {
                 const assetDoc = yield* cloudRunGetByAssetId({ assetId: resolved.assetId });
                 if (!assetDoc) {
                     const registryAsset = registryAssetFromRef(resolved.assetId) ?? registryAssetFromRef(refRaw);
@@ -295,6 +299,17 @@ export const GET = route(
                           )
                         : null,
                 };
+                });
+
+            if (!mintRaw) {
+                const resolved = yield* resolveAssetRefContext(refRaw, { deletedRefCache });
+
+                const singletonMint = singletonAssetIdToMint(resolved.assetId);
+                if (singletonMint) {
+                    return yield* buildSingletonResponse(singletonMint, resolved);
+                }
+
+                return yield* respondForResolution(resolved);
             }
 
             const mint = yield* decodeUnknownOrBadRequest(SolanaAddress, mintRaw, 'Invalid mint');
@@ -333,6 +348,16 @@ export const GET = route(
                             },
                         };
                     }
+                }
+                // Not a DB variant and not in the compiled registry: the shared
+                // tier walk decides (Sanctum LST → `solana`, approved launch coin
+                // → its per-mint page, otherwise 404 `asset_not_registered`).
+                const classified = yield* classifyMint(mint, isDeletedRef, { dbVariant: null });
+                if (classified.kind === 'sanctum') {
+                    return yield* respondForResolution({ assetId: 'solana', ref: mint, resolvedBy: 'sanctum', mint });
+                }
+                if (classified.kind === 'unregistered' && v1RegisteredOnlyEnabled()) {
+                    return yield* Effect.fail(unregisteredMintError(mint));
                 }
                 return yield* buildSingletonResponse(mint, { ref: mint, resolvedBy: 'singleton', mint });
             }

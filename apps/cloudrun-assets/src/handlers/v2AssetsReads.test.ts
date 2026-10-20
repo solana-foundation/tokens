@@ -100,6 +100,8 @@ const assetRow: AssetRow = {
     description: null,
     image_url: null,
     is_active: true,
+    region: null,
+    industry: null,
     created_at: new Date(0),
     updated_at: new Date(0),
 };
@@ -315,6 +317,17 @@ describe('v2AssetsGetMarketsByKeys', () => {
         expect(out[0]?.market).toBeNull();
         expect(out[1]?.variants.map(v => v.assetId)).toEqual(['usd']);
         expect(out[1]?.market?.liquidity).toBe(10);
+    });
+
+    test('an active variant whose asset is inactive or missing is not returned, as in the single lookup', async () => {
+        const v2 = fakeV2({
+            async findVariantsByKeys() {
+                // Both rows active; only `usd` exists as a live asset in the fake assets repo.
+                return [variantRow(), variantRow({ asset_id: 'ghost' })];
+            },
+        });
+        const out = await v2AssetsGetMarketsByKeys(deps(v2), { keys: [{ chain: 'base', address: USDC_BASE }] });
+        expect(out[0]?.variants.map(v => v.assetId)).toEqual(['usd']);
     });
 
     test('rejects more than 250 keys', async () => {

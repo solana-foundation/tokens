@@ -15,6 +15,7 @@ import type { OhlcvReadsRepo } from './handlers/ohlcvReads';
 import type { PrestocksReadsRepo } from './handlers/prestocksReads';
 import type { LaunchpadReadsRepo } from './handlers/launchpadReads';
 import type { V2AssetsReadsRepo } from './handlers/v2AssetsReads';
+import type { SolanaDataReadsRepo } from './handlers/solanaDataReads';
 import type { DepegCronDeps } from './handlers/crons.depeg';
 import type { TokensReadsRepo } from './handlers/tokensReads';
 import type { TrendingReadsRepo } from './handlers/trendingReads';
@@ -197,6 +198,17 @@ const noopLaunchpadReadsRepo: LaunchpadReadsRepo = {
     async listActiveByQuoteMints() {
         return [];
     },
+    async listApprovedActiveMints() {
+        return [];
+    },
+};
+const noopSolanaDataReadsRepo: SolanaDataReadsRepo = {
+    async listActive() {
+        return [];
+    },
+    async findActiveByMint() {
+        return null;
+    },
 };
 
 const noopPrestocksReadsRepo: PrestocksReadsRepo = {
@@ -343,6 +355,7 @@ const baseDeps = {
     prestocksReadsRepo: noopPrestocksReadsRepo,
     launchpadReadsRepo: noopLaunchpadReadsRepo,
     v2AssetsReadsRepo: noopV2AssetsReadsRepo,
+    solanaDataReadsRepo: noopSolanaDataReadsRepo,
     tokensReadsRepo: noopTokensReadsRepo,
     trendingReadsRepo: noopTrendingReadsRepo,
     fillQualityReadsRepo: noopFillQualityReadsRepo,

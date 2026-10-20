@@ -42,13 +42,11 @@ Known mints reverse-resolve into their canonical asset group. For example, the S
 
 Many endpoints are asset-scoped but accept an optional `mint=` query param to target a specific token variant. If you provide `mint`, it must be a variant of that asset (otherwise you’ll get a `BadRequestError`). When you call an asset detail route with a known mint ref like `solana-<mint>`, that mint is used as the default variant for include computations. For mapped public equities, detail `include=ohlcv` uses canonical stock-market candles unless you pass `mint` explicitly.
 
-### Singleton assets (`solana-<mint>`)
+### Registered assets only
 
-If an on-chain token doesn’t map to a known canonical asset, the API represents it as a deterministic “singleton” asset:
+v1 serves assets the Tokens team has registered: canonical asset groups and their mints, the compiled asset registry, Sanctum LST mints (which resolve to `solana`), and admin-approved launch coins. Some registered assets are exposed under a per-mint id of the form `solana-<mint>` (an approved launch coin, for example); that is the only place you will see such an id.
 
-- **Singleton `assetId` format**: `solana-<mint>`
-
-This makes it safe to link to and cache “unknown” tokens without ever using the raw mint as a canonical `assetId`.
+A mint that is not a variant of a registered asset is not synthesized into an asset. `resolve`, `risk-summary`, and every `/v1/assets/:assetId` route return `404` with `details.code: "asset_not_registered"`, and the batch endpoints keep a `null` row for it (see [Unregistered assets](/docs/v1/rate-limits-and-errors#unregistered-assets)). To track tokens outside the registered set, create a [Token List](/docs/v2/endpoints/lists), add the mints as members, and read them with `GET /v2/lists/tokens?lists={slug}`.
 
 For wallet balances, use the resolved `assetId` as your grouping key:
 
@@ -76,7 +74,7 @@ curl -sS "$API_BASE_URL/v1/health"
 curl -sS "$API_BASE_URL/v1/assets/search?q=bitcoin&limit=5" \
   -H "x-api-key: $API_KEY"
 
-# Resolve user input -> canonical assetId (or singleton solana-<mint>)
+# Resolve user input -> registered assetId (404 asset_not_registered otherwise)
 curl -sS "$API_BASE_URL/v1/assets/resolve?ref=btc" \
   -H "x-api-key: $API_KEY"
 
@@ -108,6 +106,7 @@ The asset detail endpoint also supports fine-grained scopes for its include bloc
     - `q` (required): search text
     - `limit` (optional, default 20, max 50)
     - `category` (optional): filters by asset category (invalid values return a 400 with allowed categories)
+    - `region` / `industry` (optional): admin-curated segmentation tags, exact match and AND-combined (e.g. `region=asia&industry=manufacturing`); invalid values return a 400 with the allowed slugs
     - `variants=all` (optional): include every known variant per returned canonical asset
     - `primaryVariantStrategy` (optional): `liquidity` (default), `execution_quality`, or `stock_redeemability`
 
@@ -188,6 +187,7 @@ If a canonical source exists for the asset, this endpoint prefers it; otherwise 
 - **Mint-scoped quick score**
     - **`GET /v1/assets/risk-summary?mint=<solanaMint>`**
     - Requires either `assets:read` or `assets:risk:read`
+    - `404` `asset_not_registered` when the mint is not a variant of a registered asset
 
 ## Curated lists + batch endpoints
 

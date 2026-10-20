@@ -8,6 +8,8 @@
  * Birdeye/Convex; the registry focuses on stable IDs + grouping.
  */
 
+import type { AssetIndustry, AssetRegion } from './taxonomy';
+
 export const ASSET_CATEGORIES = [
     'crypto',
     'stablecoin',
@@ -168,6 +170,14 @@ export interface CanonicalAsset {
     aliases: string[];
     coingeckoId?: string;
     variants: AssetVariant[];
+
+    /**
+     * Admin-curated segmentation tags (see `taxonomy.ts`). Never set in compiled
+     * registry data; the API attaches them from the `assets` row and serializes
+     * `null` when absent.
+     */
+    region?: AssetRegion | null;
+    industry?: AssetIndustry | null;
 }
 
 export interface VariantMatch {

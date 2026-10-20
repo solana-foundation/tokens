@@ -6,6 +6,7 @@ import type { DashboardRepo } from './handlers/dashboard';
 import type { PlatformAuthRepo } from './handlers/platformAuth';
 import type { UsageDashboardRepo } from './handlers/usageDashboard';
 import type { UsageIngestRepo } from './handlers/usageIngest';
+import type { LimitsRedis } from './redis';
 import { createApp, decodeIdentityHeader } from './server';
 
 const noopPlatformAuth: PlatformAuthRepo = {
@@ -98,10 +99,12 @@ function makeApp(
         identitySigningSecret?: string | null;
         identitySigningSecretPrevious?: string;
         acceptUnsignedIdentity?: boolean;
+        limitsRedis?: LimitsRedis;
     } = {},
 ) {
     const signingSecret = overrides.identitySigningSecret === undefined ? SIGNING_SECRET : overrides.identitySigningSecret;
     return createApp({
+        ...(overrides.limitsRedis ? { limitsRedis: overrides.limitsRedis } : {}),
         platformAuth: overrides.platformAuth ?? noopPlatformAuth,
         usageIngest: overrides.usageIngest ?? noopUsageIngest,
         dashboard: overrides.dashboard ?? noopDashboard,
@@ -525,3 +528,64 @@ describe('createApp', () => {
         expect(payload.message).toBeUndefined();
     });
 });
+
+describe('POST /mutation/apiKeysAuthenticateAndEnforce', () => {
+    const DEFAULTS = {
+        rateLimit: { requests: 400, windowSeconds: 10 },
+        sustainedRateLimit: { requests: 1_000, windowSeconds: 60 },
+        quota: { requestsPerMonth: 1_000_000_000 },
+    };
+
+    it('401 without the bearer', async () => {
+        const res = await call(makeApp(), '/mutation/apiKeysAuthenticateAndEnforce', {
+            method: 'POST',
+            body: JSON.stringify({ keyHash: 'a'.repeat(64), defaults: DEFAULTS }),
+        });
+        expect(res.status).toBe(401);
+    });
+
+    it('400 on invalid defaults', async () => {
+        const res = await call(makeApp(), '/mutation/apiKeysAuthenticateAndEnforce', {
+            method: 'POST',
+            headers: { authorization: 'Bearer tok', 'content-type': 'application/json' },
+            body: JSON.stringify({ keyHash: 'a'.repeat(64), defaults: { quota: { requestsPerMonth: 1 } } }),
+        });
+        expect(res.status).toBe(400);
+    });
+
+    it('unknown key → { auth: null } (200)', async () => {
+        const res = await call(makeApp(), '/mutation/apiKeysAuthenticateAndEnforce', {
+            method: 'POST',
+            headers: { authorization: 'Bearer tok', 'content-type': 'application/json' },
+            body: JSON.stringify({ keyHash: 'a'.repeat(64), defaults: DEFAULTS }),
+        });
+        expect(res.status).toBe(200);
+        expect(await res.json()).toEqual({ auth: null });
+    });
+
+    it('known key without Redis → auth with limits null (fail-open signal), never a 500', async () => {
+        const platformAuth: PlatformAuthRepo = {
+            ...noopPlatformAuth,
+            findApiKeyByHash: async () => ({
+                id: 'kh7test',
+                keyPrefix: 'tk_test',
+                projectId: 'prj_1',
+                ownerClerkUserId: 'user_1',
+                scopes: ['assets:read'],
+                revokedAt: null,
+            }),
+            getProject: async () => ({ limits: null }),
+        };
+        const res = await call(makeApp({ platformAuth }), '/mutation/apiKeysAuthenticateAndEnforce', {
+            method: 'POST',
+            headers: { authorization: 'Bearer tok', 'content-type': 'application/json' },
+            body: JSON.stringify({ keyHash: 'a'.repeat(64), defaults: DEFAULTS }),
+        });
+        expect(res.status).toBe(200);
+        const body = (await res.json()) as { auth: { apiKeyId: string } | null; limits: unknown; limitsError?: string };
+        expect(body.auth?.apiKeyId).toBe('kh7test');
+        expect(body.limits).toBeNull();
+        expect(body.limitsError).toContain('REDIS_HOST');
+    });
+});
+

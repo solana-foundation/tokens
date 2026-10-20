@@ -27,6 +27,44 @@
 @plugin '@toolwind/corner-shape';
 @source "../../../../packages/ui/src/**/*.{ts,tsx}";
 
+/*
+ * Full-width slide utilities for @tokens/ui Sheet. The design system's
+ * globals.css defines animate-in/out, fade, zoom and the 0.5rem `-2` slides
+ * for popovers, but not the 100% variants a side sheet needs; Tailwind drops
+ * unknown classes silently, so without these the sheet snaps open and shut.
+ */
+@utility slide-in-from-top {
+    --tw-enter-translate-y: -100%;
+}
+
+@utility slide-in-from-bottom {
+    --tw-enter-translate-y: 100%;
+}
+
+@utility slide-in-from-left {
+    --tw-enter-translate-x: -100%;
+}
+
+@utility slide-in-from-right {
+    --tw-enter-translate-x: 100%;
+}
+
+@utility slide-out-to-top {
+    --tw-exit-translate-y: -100%;
+}
+
+@utility slide-out-to-bottom {
+    --tw-exit-translate-y: 100%;
+}
+
+@utility slide-out-to-left {
+    --tw-exit-translate-x: -100%;
+}
+
+@utility slide-out-to-right {
+    --tw-exit-translate-x: 100%;
+}
+
 /* Disable faux bold/italic synthesis so a missing variable-axis match never renders heavier than spec. */
 html {
     font-synthesis-weight: none;

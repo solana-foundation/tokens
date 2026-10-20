@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'bun:test';
 
-import { listByQuoteMints, type LaunchpadReadsRepo, type LaunchpadTokenRow } from './launchpadReads';
+import { approvedMints, listByQuoteMints, type LaunchpadReadsRepo, type LaunchpadTokenRow } from './launchpadReads';
 
 const NVDAX = 'Xsc9qvGR1efVDFGLrVsmkzv3qi45LTBjeUKSPmx9qEh';
 const COIN_A = '4MMQY9bwkxxTtsK3W227Q5ABT6yFY8Pmn9Ze7wmAXKY8';
@@ -39,6 +39,9 @@ function repoWith(
         async listActiveByQuoteMints(quoteMints, limit) {
             calls.push({ quoteMints, limit });
             return rows;
+        },
+        async listApprovedActiveMints() {
+            return [];
         },
     };
 }
@@ -91,5 +94,39 @@ describe('launchpadListByQuoteMints', () => {
         await expect(listByQuoteMints(repoWith([]), null)).rejects.toThrow('args must be an object');
         await expect(listByQuoteMints(repoWith([]), { quoteMints: 'x' })).rejects.toThrow('quoteMints');
         await expect(listByQuoteMints(repoWith([]), { quoteMints: [NVDAX], limit: 'ten' })).rejects.toThrow('limit');
+    });
+});
+
+describe('launchpadApprovedMints', () => {
+    const COIN_B = '7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU';
+    function approvalsRepo(approvedActive: string[], seen: string[][] = []): LaunchpadReadsRepo {
+        return {
+            async listActiveByQuoteMints() {
+                return [];
+            },
+            async listApprovedActiveMints(mints) {
+                seen.push([...mints]);
+                return mints.filter(m => approvedActive.includes(m));
+            },
+        };
+    }
+
+    it('returns only the requested mints that are approved and still active, deduplicated and trimmed', async () => {
+        const seen: string[][] = [];
+        const out = await approvedMints(approvalsRepo([COIN_A], seen), { mints: [` ${COIN_A} `, COIN_B, COIN_A, ''] });
+        expect(out).toEqual({ mints: [COIN_A] });
+        expect(seen).toEqual([[COIN_A, COIN_B]]);
+    });
+
+    it('short-circuits to [] without hitting the repo when nothing remains', async () => {
+        const seen: string[][] = [];
+        expect(await approvedMints(approvalsRepo([COIN_A], seen), { mints: ['  '] })).toEqual({ mints: [] });
+        expect(seen).toEqual([]);
+    });
+
+    it('rejects malformed args', async () => {
+        await expect(approvedMints(approvalsRepo([]), null)).rejects.toThrow(/args must be an object/);
+        await expect(approvedMints(approvalsRepo([]), { mints: 'x' })).rejects.toThrow(/mints must be an array/);
+        await expect(approvedMints(approvalsRepo([]), { mints: [1] })).rejects.toThrow(/mints must be an array/);
     });
 });

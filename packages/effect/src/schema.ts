@@ -44,6 +44,22 @@ export function decodeUnknownOrBadRequest<S extends Schema.ConstraintDecoder<unk
     );
 }
 
+/**
+ * Read a JSON request body. A body that is empty or not valid JSON is the
+ * caller's mistake, so it maps to a 400 `BadRequestError` (with the parser's
+ * reason in `details`) instead of surfacing as an `UnknownError` 500.
+ */
+export function readJsonBody(request: Request, message = 'Invalid JSON body'): Effect.Effect<unknown, BadRequestError> {
+    return Effect.tryPromise({
+        try: () => request.json() as Promise<unknown>,
+        catch: error =>
+            new BadRequestError({
+                message,
+                details: { reason: error instanceof Error ? error.message : String(error) },
+            }),
+    });
+}
+
 export function decodeRequiredSearchParam<S extends Schema.ConstraintDecoder<unknown>>(
     schema: S,
     params: URLSearchParams,

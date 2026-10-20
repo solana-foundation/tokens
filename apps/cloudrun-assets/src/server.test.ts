@@ -20,6 +20,7 @@ import type { OhlcvCandleRow, OhlcvReadsRepo } from './handlers/ohlcvReads';
 import type { PrestocksReadsRepo } from './handlers/prestocksReads';
 import type { LaunchpadReadsRepo } from './handlers/launchpadReads';
 import type { V2AssetsReadsRepo } from './handlers/v2AssetsReads';
+import type { SolanaDataReadsRepo } from './handlers/solanaDataReads';
 import type {
     AssetsApiAssetMarketRow,
     AssetsApiAssetRow,
@@ -62,6 +63,8 @@ const sampleRow = (overrides: Partial<AssetRow> = {}): AssetRow => ({
     is_active: true,
     created_at: NOW,
     updated_at: NOW,
+    region: null,
+    industry: null,
     ...overrides,
 });
 
@@ -263,7 +266,14 @@ function emptyV2AssetsReadsRepo(): V2AssetsReadsRepo {
 }
 
 function emptyLaunchpadReadsRepo(): LaunchpadReadsRepo {
-    return { async listActiveByQuoteMints() { return []; } };
+    return { async listActiveByQuoteMints() { return []; }, async listApprovedActiveMints() { return []; } };
+}
+
+function emptySolanaDataReadsRepo(): SolanaDataReadsRepo {
+    return {
+        async listActive() { return []; },
+        async findActiveByMint() { return null; },
+    };
 }
 
 function emptyPrestocksReadsRepo(): PrestocksReadsRepo {
@@ -380,6 +390,7 @@ function deps(overrides: Partial<ServerDeps> = {}): ServerDeps {
         prestocksReadsRepo: overrides.prestocksReadsRepo ?? emptyPrestocksReadsRepo(),
         launchpadReadsRepo: overrides.launchpadReadsRepo ?? emptyLaunchpadReadsRepo(),
         v2AssetsReadsRepo: overrides.v2AssetsReadsRepo ?? emptyV2AssetsReadsRepo(),
+        solanaDataReadsRepo: overrides.solanaDataReadsRepo ?? emptySolanaDataReadsRepo(),
         tokensReadsRepo: overrides.tokensReadsRepo ?? emptyTokensReadsRepo(),
         trendingReadsRepo: overrides.trendingReadsRepo ?? emptyTrendingReadsRepo(),
         fillQualityReadsRepo: overrides.fillQualityReadsRepo ?? emptyFillQualityReadsRepo(),
@@ -626,6 +637,8 @@ describe('getByAssetId', () => {
             symbol: 'JUP',
             coingeckoId: 'jupiter-exchange-solana',
             imageUrl: 'https://example.test/jup.png',
+            region: null,
+            industry: null,
         });
     });
 
@@ -2522,6 +2535,8 @@ describe('assetsApiLoadAssetBaseForApi', () => {
         is_active: true,
         created_at: NOW,
         updated_at: NOW,
+        region: null,
+        industry: null,
     };
     const jupMint = 'JUPyiwrYJFskUPiHa7hkeR8VUtAeFoSYbKedZNsDvCN';
     const jupVariantRow: AssetsApiVariantRow = {

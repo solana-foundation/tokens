@@ -61,6 +61,9 @@ These require environment variables such as:
 
 - `API_BASE_URL` or `TOKENS_API_BASE_URL`
 - `API_KEY` or `TOKENS_API_KEY`
+- optional `UNREGISTERED_MINT`: a mint outside the registry; the contract script asserts the v1
+  `404 asset_not_registered` behaviour for it (set `EXPECT_SINGLETONS=1` against a deployment running
+  with `TOKENS_V1_REGISTERED_ONLY=off` to assert the legacy singleton behaviour instead)
 
 You do not need these credentials to run the public checks or work with a fork.
 Maintainers run the data-dependent checks during internal review where relevant.

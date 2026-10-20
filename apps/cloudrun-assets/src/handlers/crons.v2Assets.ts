@@ -121,9 +121,12 @@ export interface V2AssetsJobsRepo {
      * Upsert every Solana `asset_variants` row (active or not) into
      * `v2_asset_variants` with `origin='solana_v1'` and `last_seen_at=nowMs`.
      * Must not touch rows another origin owns, and must not let an older
-     * overlapping run (smaller nowMs) overwrite a newer one.
+     * overlapping run (smaller nowMs) overwrite a newer one. Mirror rows whose
+     * variant_id v1 now carries on a different mint are removed first
+     * (`replaced`) so the (asset_id, variant_id) unique index cannot reject
+     * the whole statement.
      */
-    mirrorSolanaVariants(nowMs: number): Promise<{ inserted: number; updated: number }>;
+    mirrorSolanaVariants(nowMs: number): Promise<{ inserted: number; updated: number; replaced: number }>;
     /** Deactivate solana_v1 rows no run has seen since `seenBeforeMs` (hard-deleted in v1); returns the count. */
     deactivateUnseenSolanaVariants(seenBeforeMs: number, nowMs: number): Promise<number>;
     /** Copy `variant_markets_latest` rows for mirrored Solana variants whose fetch stamps changed; returns rows written. */
@@ -202,6 +205,7 @@ interface SolanaSyncSummary {
     reason?: string;
     variantsInserted: number;
     variantsUpdated: number;
+    variantsReplaced: number;
     variantsDeactivated: number;
     marketsWritten: number;
     rollupsWritten: number;
@@ -224,12 +228,13 @@ export async function syncSolanaVariants(deps: V2AssetsCronDeps, rawArgs: unknow
         event: V2_SOLANA_SYNC_EVENT,
         variantsInserted: 0,
         variantsUpdated: 0,
+        variantsReplaced: 0,
         variantsDeactivated: 0,
         marketsWritten: 0,
         rollupsWritten: 0,
     } satisfies Omit<SolanaSyncSummary, 'ok' | 'duration_ms'>;
 
-    let variants: { inserted: number; updated: number };
+    let variants: { inserted: number; updated: number; replaced: number };
     try {
         variants = await deps.repo.mirrorSolanaVariants(start);
     } catch (err) {
@@ -270,6 +275,7 @@ export async function syncSolanaVariants(deps: V2AssetsCronDeps, rawArgs: unknow
         ...(failures.length > 0 ? { reason: `${failures.join('+')}_failed` } : {}),
         variantsInserted: variants.inserted,
         variantsUpdated: variants.updated,
+        variantsReplaced: variants.replaced,
         variantsDeactivated: deactivated,
         marketsWritten,
         rollupsWritten,
@@ -282,6 +288,7 @@ export async function syncSolanaVariants(deps: V2AssetsCronDeps, rawArgs: unknow
         durationMs: summary.duration_ms,
         variantsInserted: variants.inserted,
         variantsUpdated: variants.updated,
+        variantsReplaced: variants.replaced,
         variantsDeactivated: deactivated,
         marketsWritten,
         rollupsWritten,
@@ -351,6 +358,10 @@ interface EvmVariantsSyncSummary {
     skippedInvalid: number;
     deactivated: number;
     keptStale: number;
+    /** Active derived rows left alone because their asset fell outside a bounded (`maxAssets`) scan. */
+    keptUnscanned: number;
+    /** Rows due for deactivation but kept because a replacement row for the same asset was not written this run. */
+    keptPendingWrite: number;
     failed: number;
     byChain: Partial<Record<ChainKind, { desired: number }>>;
     duration_ms: number;
@@ -379,6 +390,10 @@ export async function syncEvmVariants(deps: V2AssetsCronDeps, rawArgs: unknown):
     const freshnessCutoff = start - COIN_LIST_FRESHNESS_WINDOW_MS;
 
     const assets = await deps.repo.listAssetsWithCoinPlatforms(args.maxAssets);
+    // `maxAssets` bounds the scan. An asset outside the window was never
+    // examined, so "no longer linked to a coin" is only a DB fact when the
+    // scan came back short of the bound (i.e. it saw everything).
+    const scanComplete = assets.length < args.maxAssets;
     const activeAssets = await deps.repo.listActiveAssets();
     const existing = await deps.repo.listDerivedVariants(chains);
 
@@ -488,14 +503,24 @@ export async function syncEvmVariants(deps: V2AssetsCronDeps, rawArgs: unknown):
     const assetById = new Map(assets.map(a => [a.assetId, a] as const));
     const toDeactivate: Array<V2VariantKeyRef & { assetId: string }> = [];
     let keptStale = 0;
+    let keptUnscanned = 0;
     for (const row of existing) {
         if (!row.isActive) continue;
         if (desired.has(desiredKey(row.assetId, row.chain, row.address))) continue;
         const asset = assetById.get(row.assetId);
         const aggregateSyncedAt = aggregateFreshness.get(row.assetId);
-        if (!activeById.has(row.assetId) || (!asset && aggregateSyncedAt === undefined)) {
-            // No longer active / registered / linked to a coin id: a DB fact, safe to deactivate.
+        if (!activeById.has(row.assetId)) {
+            // No longer active / registered: `listActiveAssets` is unbounded, so this is a DB fact.
             toDeactivate.push({ chain: row.chain, address: row.address, assetId: row.assetId });
+            continue;
+        }
+        if (!asset && aggregateSyncedAt === undefined) {
+            if (scanComplete) {
+                // Active but no longer linked to a coin id: a DB fact only because the scan saw every linked asset.
+                toDeactivate.push({ chain: row.chain, address: row.address, assetId: row.assetId });
+            } else {
+                keptUnscanned += 1;
+            }
             continue;
         }
         const syncedAt = asset ? asset.coinLastSyncedAt : (aggregateSyncedAt ?? null);
@@ -510,9 +535,19 @@ export async function syncEvmVariants(deps: V2AssetsCronDeps, rawArgs: unknown):
     let updated = 0;
     let skippedOwned = 0;
     let failed = 0;
+    // Assets whose desired rows were not all written this run (a failed upsert,
+    // or a shutdown before their turn). When CoinGecko moves a token to a new
+    // address the old row is in `toDeactivate`; removing it before the new row
+    // exists would hide the token until the next successful run.
+    const unwrittenAssets = new Set<string>();
     if (!args.dryRun) {
-        for (const upsert of desired.values()) {
-            if (isShuttingDown()) break;
+        const pending = Array.from(desired.values());
+        for (let i = 0; i < pending.length; i++) {
+            const upsert = pending[i]!;
+            if (isShuttingDown()) {
+                for (const rest of pending.slice(i)) unwrittenAssets.add(rest.assetId);
+                break;
+            }
             try {
                 const outcome = await deps.repo.upsertDerivedVariant(upsert);
                 if (outcome === 'inserted') inserted += 1;
@@ -520,6 +555,7 @@ export async function syncEvmVariants(deps: V2AssetsCronDeps, rawArgs: unknown):
                 else skippedOwned += 1;
             } catch (err) {
                 failed += 1;
+                unwrittenAssets.add(upsert.assetId);
                 console.error(
                     `[${V2_EVM_VARIANTS_SYNC_JOB}] upsert failed for ${upsert.assetId} ${upsert.chain}:${upsert.address}`,
                     err instanceof Error ? err.message : String(err),
@@ -527,13 +563,22 @@ export async function syncEvmVariants(deps: V2AssetsCronDeps, rawArgs: unknown):
             }
         }
     }
+    const safeToDeactivate = toDeactivate.filter(row => !unwrittenAssets.has(row.assetId));
+    const keptPendingWrite = toDeactivate.length - safeToDeactivate.length;
     const deactivated =
-        args.dryRun || toDeactivate.length === 0 ? 0 : await deps.repo.deactivateDerivedVariants(toDeactivate, start);
+        args.dryRun || safeToDeactivate.length === 0
+            ? 0
+            : await deps.repo.deactivateDerivedVariants(safeToDeactivate, start);
 
     const byChain: Partial<Record<ChainKind, { desired: number }>> = {};
     for (const upsert of desired.values()) {
         const entry = (byChain[upsert.chain] ??= { desired: 0 });
         entry.desired += 1;
+    }
+    if (keptUnscanned > 0) {
+        console.warn(
+            JSON.stringify({ job: V2_EVM_VARIANTS_SYNC_JOB, event: 'v2_evm_variants_kept_unscanned', keptUnscanned, maxAssets: args.maxAssets }),
+        );
     }
     if (keptStale > 0) {
         console.warn(
@@ -556,6 +601,8 @@ export async function syncEvmVariants(deps: V2AssetsCronDeps, rawArgs: unknown):
         skippedInvalid,
         deactivated: args.dryRun ? toDeactivate.length : deactivated,
         keptStale,
+        keptUnscanned,
+        keptPendingWrite,
         failed,
         byChain,
         duration_ms: deps.now() - start,
@@ -576,6 +623,8 @@ export async function syncEvmVariants(deps: V2AssetsCronDeps, rawArgs: unknown):
         skippedInvalid,
         deactivated: summary.deactivated,
         keptStale,
+        keptUnscanned,
+        keptPendingWrite,
         failed,
         byChain,
         ...(failed > 0 ? { partial: true } : {}),

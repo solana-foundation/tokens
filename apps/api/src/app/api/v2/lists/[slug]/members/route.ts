@@ -1,7 +1,7 @@
 import { Effect, Schema } from 'effect';
 
 import { route, type PlatformAuthContext } from '@/effect/next-route';
-import { BadRequestError, decodeUnknownOrBadRequest } from '@tokens/effect';
+import { BadRequestError, decodeUnknownOrBadRequest, readJsonBody } from '@tokens/effect';
 import { enforceProviderBudget } from '@/effect/provider-budget';
 import { tokenListsAddMembersBatch } from '@/lib/cloudrun';
 
@@ -42,7 +42,7 @@ export const POST = route(
     (request: Request, ctx: RouteCtx) =>
         Effect.gen(function* () {
             const { slug } = yield* Effect.tryPromise(() => ctx.params);
-            const json = yield* Effect.tryPromise(() => request.json());
+            const json = yield* readJsonBody(request);
             const body = yield* decodeUnknownOrBadRequest(bodySchema, json, 'Invalid body');
             if (body.mints === undefined && body.members === undefined) {
                 return yield* Effect.fail(new BadRequestError({ message: 'Body needs `mints` or `members`' }));

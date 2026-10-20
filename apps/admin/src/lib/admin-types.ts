@@ -8,6 +8,11 @@
 
 export type AssetCategory = 'crypto' | 'stablecoin' | 'lst' | 'rwa' | 'commodity' | 'equity' | 'etf' | 'index';
 
+// Region/industry vocabularies are imported, not copied: the leaf module
+// carries no registry data, so it is safe in the client bundle.
+export type { AssetIndustry, AssetRegion } from '@tokens/asset-registry/taxonomy';
+import type { AssetIndustry, AssetRegion } from '@tokens/asset-registry/taxonomy';
+
 // Hand-copied from ADMIN_ASSIGNABLE_CURATED_SLUGS in
 // packages/asset-registry/src/curated-lists.ts (the source of truth —
 // deliberately excludes `lsts`, whose membership is Sanctum-dynamic).
@@ -398,6 +403,9 @@ export type CanonicalEditor = {
         fallbackImageUrl?: string;
         fallbackLogoSource: LogoSource;
         isActive: boolean;
+        /** Admin-curated segmentation tags (null = untagged). */
+        region: AssetRegion | null;
+        industry: AssetIndustry | null;
         /** Static-registry id this asset is defined under (current or former id). */
         registryAssetId?: string;
     };
@@ -475,6 +483,24 @@ export type RemoveFromCategoryResult = { removed: boolean };
 
 /** `PUT` the file bytes to `uploadUrl` (matching Content-Type), then persist `publicUrl` as `imageUrl`. */
 export type GenerateCanonicalLogoUploadUrlResult = { uploadUrl: string; publicUrl: string };
+
+/* ── previewAssetTagsImport / applyAssetTagsImport ─────────────────────── */
+
+export type AssetTagsImportMode = 'fill_empty' | 'overwrite';
+
+export type AssetTagsImportPreviewResult = {
+    mode: AssetTagsImportMode;
+    requested: number;
+    toApply: Array<{ assetId: string; region: AssetRegion; industry: AssetIndustry }>;
+    skippedAlreadyTagged: string[];
+    unchanged: string[];
+    unmatched: string[];
+    renamed: Array<{ requested: string; assetId: string }>;
+    /** Curated stocks still untagged after this plan runs. */
+    untaggedStocks: string[];
+};
+
+export type AssetTagsImportApplyResult = AssetTagsImportPreviewResult & { applied: number };
 
 export type HardDeleteAssetResult = {
     deleted: boolean;

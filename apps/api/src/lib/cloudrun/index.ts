@@ -53,9 +53,12 @@ export { searchPrefetchForApi, type SearchPrefetchArgs, type SearchPrefetchResul
 
 export {
     authenticateApiKey,
+    authenticateAndEnforce,
     limitsEnforce,
     logApiRequest,
     syncUsageAggregates,
+    type AuthenticateAndEnforceArgs,
+    type AuthenticateAndEnforceResult,
     type AuthenticateApiKeyResult,
     type LimitsEnforceArgs,
     type LimitsEnforceResult,
@@ -83,11 +86,24 @@ export {
 } from './sanctumLsts';
 
 export {
+    launchpadApprovedMints,
     launchpadListByQuoteMints,
+    type ApprovedMintsArgs,
+    type ApprovedMintsResult,
     type LaunchpadTokenResult,
     type ListByQuoteMintsArgs as LaunchpadListByQuoteMintsArgs,
     type ListByQuoteMintsResult as LaunchpadListByQuoteMintsResult,
 } from './launchpadReads';
+
+export {
+    solanaDataAssetsGetByMint,
+    solanaDataAssetsList,
+    type SolanaDataAssetDetailResult,
+    type SolanaDataAssetResult,
+    type SolanaDataAssetsGetByMintArgs,
+    type SolanaDataAssetsListArgs,
+    type SolanaDataAssetsListResult,
+} from './solanaDataReads';
 
 export {
     getLatestByAssetId as assetMarketsGetLatestByAssetId,

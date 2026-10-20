@@ -5,6 +5,15 @@ description: Search, curated lists, mint resolution, snapshots, and aggregate ri
 
 All endpoints on this page are Platform API endpoints unless noted otherwise.
 
+## Region and industry tags
+
+Every asset row on `/v1/assets/search`, `/v1/assets/curated`, `/v1/assets/trending` and `/v1/assets/:assetId` carries two admin-curated segmentation tags, `region` and `industry` (`string | null`). They are single-valued, come from a fixed vocabulary, and are `null` for assets that have not been tagged (crypto natives, LSTs, and registered per-mint `solana-<mint>` assets never carry them). Search and curated accept them as exact-match filters that AND-combine, e.g. `?region=asia&industry=manufacturing`; an unknown value returns `400` with the allowed list under `details.regions` / `details.industries`.
+
+- `region`: `north_america`, `latin_america`, `europe`, `middle_east`, `africa`, `asia`, `oceania`, `global` (broad funds with no home market)
+- `industry`: `software`, `semiconductors`, `internet`, `hardware`, `defense`, `aerospace`, `manufacturing`, `automotive`, `energy`, `materials`, `utilities`, `banking`, `fintech`, `asset_management`, `insurance`, `pharma`, `biotech`, `healthcare`, `retail`, `consumer_goods`, `food_beverage`, `media`, `telecom`, `travel_leisure`, `real_estate`, `crypto_mining`, `crypto_exchange`, `crypto_treasury`, `conglomerate`, `index_fund`
+
+Region is where the issuer is headquartered; thematic ETFs take their theme and broad or multi-issuer funds are `index_fund`. Tags are informational metadata, not investment advice, and the vocabulary may grow over time (new slugs are additive).
+
 ```ts
 type VariantExecutionQuality = {
     source: 'clickhouse_fill_quality';
@@ -56,7 +65,7 @@ Operators can flag a variant mint with an advisory (`caution`, `compromised`, or
 
 - Every `primaryVariant` and `variants[]` element carries `advisory` (`null` when not flagged), and every search/curated row carries `advisories: AssetAdvisoryEntry[]` (`[]` when none, including variants the row itself omitted).
 - `compromised` and `blocked` variants are never chosen as `primaryVariant` under any `primaryVariantStrategy` while another eligible variant exists, and are excluded from `/v1/assets/trending`.
-- `blocked` variants are omitted from `/v1/assets/search` and `/v1/assets/curated` entirely (a canonical asset whose only variant is blocked disappears from those lists; singleton tokens are dropped). They remain reachable through `GET /v1/assets/:assetId`, which never 404s a flagged mint.
+- `blocked` variants are omitted from `/v1/assets/search` and `/v1/assets/curated` entirely (a canonical asset whose only variant is blocked disappears from those lists, and so does a registered per-mint `solana-<mint>` asset). They remain reachable through `GET /v1/assets/:assetId`, which never 404s a registered flagged mint.
 
 Treat `compromised` and `blocked` as do-not-trade. Full semantics, the TypeScript shapes, and propagation timing are on [Asset by ID → Advisories](/docs/v1/endpoints/asset-by-id#advisories).
 
@@ -99,7 +108,7 @@ curl -sS "$API_BASE_URL/v1/assets/tesla/variants" \
 
 ## `GET /v1/assets/search`
 
-Search assets by text query (canonical assets plus singleton Solana tokens when available).
+Search registered assets by text query. Results are registered assets only: the API does not pad the page with synthesized tokens for unregistered mints. To track such tokens, use [Token Lists](/docs/v2/endpoints/lists).
 
 - **Auth**: `x-api-key`
 - **Scope**: `assets:read`
@@ -109,6 +118,8 @@ Search assets by text query (canonical assets plus singleton Solana tokens when 
 - `q` (required): search string
 - `limit` (optional): integer \(1–50\), default `20`
 - `category` (optional): must be one of the supported asset categories
+- `region` (optional): one of the [region slugs](#region-and-industry-tags); unknown values return `400` with `details.regions`
+- `industry` (optional): one of the [industry slugs](#region-and-industry-tags); unknown values return `400` with `details.industries`. Combines with `region` as AND. When either filter is set, untagged results (including registered per-mint `solana-<mint>` assets) are excluded.
 - `variants=all` (optional): include every known variant for each returned canonical asset. By default only `primaryVariant` is returned.
 - `primaryVariantStrategy` (optional): `liquidity` (default), `execution_quality`, or `stock_redeemability`
 
@@ -118,12 +129,16 @@ Search assets by text query (canonical assets plus singleton Solana tokens when 
 interface AssetsSearchResponse {
     query: string;
     category: string | null;
+    region: string | null;
+    industry: string | null;
     primaryVariantStrategy: 'liquidity' | 'execution_quality' | 'stock_redeemability';
     results: Array<{
         assetId: string;
         name?: string;
         symbol?: string;
         category: string;
+        region: string | null;
+        industry: string | null;
         imageUrl: string | null;
         stats: null | {
             price: number | null;
@@ -213,7 +228,7 @@ interface AssetsSearchResponse {
 
 ### Notes
 
-- Rows carry `advisories` and `primaryVariant.advisory` (see [Advisory-flagged assets](#advisory-flagged-assets)). Variants flagged `blocked` are omitted from search results, both from canonical assets’ variant sets and from singleton tokens; `compromised` and `blocked` variants are never selected as `primaryVariant`.
+- Rows carry `advisories` and `primaryVariant.advisory` (see [Advisory-flagged assets](#advisory-flagged-assets)). Variants flagged `blocked` are omitted from search results, both from canonical assets’ variant sets and from registered per-mint `solana-<mint>` assets; `compromised` and `blocked` variants are never selected as `primaryVariant`.
 - `stats.liquidity` is the canonical on-chain aggregate across the asset’s **spot-like** variants (`native`, `wrapped`, `bridged`, `stablecoin`, `lst`, `tokenized_equity`, `basket`). If an asset has no spot-like variants, the API falls back to aggregating across all variants.
 - `primaryVariantStrategy=liquidity` chooses `primaryVariant` from spot-like variants by highest liquidity after 24h activity filtering.
 - `primaryVariantStrategy=execution_quality` keeps liquidity in the ranking but allows strong cached fill-quality evidence to select the better practical trading variant.
@@ -225,7 +240,7 @@ interface AssetsSearchResponse {
 - `executionQuality` is cached from ClickHouse fill-quality windows in Convex. Current coverage uses curated base mints, USDC quote, `24h` range, and `5s` horizon. `markout*` fields are exposed as raw cached data and are not used for primary ranking yet.
 - `stats.volume30dUSD` is a nullable rolling 30-day USD volume sum from cached daily candles for the canonical group. When populated, clients do not need to sum candles themselves.
 - `canonicalMarket.source` can be `coingecko`, `clickhouse_stock`, or `prestocks`. The `prestocks` source (tokenized pre-IPO equities) reports `marketCap` as the implied company valuation derived from the PreStocks reference mark, plus `markPriceUsd`, `markValuationUsd`, `impliedValuationUsd`, and `premiumToMarkPercent`. Consumers with exhaustive `switch(source)` handling should add a default branch.
-- Tokens that are not part of any canonical asset may appear as **singleton assets** with deterministic IDs of the form `solana-<mint>` (with a single Solana variant).
+- Some registered assets are exposed under a per-mint id of the form `solana-<mint>` (an admin-approved launch coin, for example) and carry a single Solana variant. Unregistered mints never appear in results; v1 no longer synthesizes a `solana-<mint>` row for them.
 
 ### Example
 
@@ -256,7 +271,8 @@ Get a single canonical asset, its aggregate stats, and its selected `primaryVari
 ### Notes
 
 - `asset.primaryVariant.executionQuality` is included when cached fill-quality data exists for the selected primary variant.
-- `asset.primaryVariant.advisory` and every `asset.variantGroups.*[]` element carry `advisory` (`null` when not flagged); `asset.advisories` lists every flagged variant. This endpoint never 404s a flagged mint. See [Asset by ID → Advisories](/docs/v1/endpoints/asset-by-id#advisories).
+- The ref (slug, alias, mint, or `solana-<mint>`) must resolve to a registered asset; otherwise the response is `404` with `details.code: "asset_not_registered"`. See [Unregistered assets](/docs/v1/rate-limits-and-errors#unregistered-assets).
+- `asset.primaryVariant.advisory` and every `asset.variantGroups.*[]` element carry `advisory` (`null` when not flagged); `asset.advisories` lists every flagged variant. This endpoint never 404s a registered flagged mint. See [Asset by ID → Advisories](/docs/v1/endpoints/asset-by-id#advisories).
 - `asset.primaryVariant.stockVariantTier` is included for stock-token variants when present.
 - `asset.primaryVariantStrategy` echoes the strategy used to select `primaryVariant`.
 - `asset.variantGroups.*[].executionQuality` is included on covered variants. This is the easiest way to compare execution quality across duplicate tokenized-equity or RWA variants.
@@ -398,10 +414,11 @@ curl -sS "$API_BASE_URL/v1/assets/spacex/variants?stockVariantTier=share_redeema
 
 ## `GET /v1/assets/resolve`
 
-Resolve a Solana mint (or an asset reference) to its canonical `assetId` + variant details.
+Resolve a Solana mint (or an asset reference) to its registered `assetId` + variant details.
 
-- If the mint is part of a canonical asset, the returned `assetId` is the canonical grouping slug (for example: `usd`, `solana`, `tesla`). Otherwise the API returns a deterministic singleton ID of the form `solana-<mint>`.
-- `ref` can be an `assetId`, alias, raw mint, or `solana-<mint>`. Known mint refs reverse-resolve to their canonical group, so `ref=solana-EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v` returns `assetId: "usd"`.
+- If the mint is a variant of a registered asset, the returned `assetId` is that asset's id: the canonical grouping slug (for example: `usd`, `solana`, `tesla`), or `solana-<mint>` for a registered asset exposed under its own mint id (an admin-approved launch coin, for example).
+- A mint that is not a variant of a registered asset returns `404` with `details.code: "asset_not_registered"` (see [Unregistered assets](/docs/v1/rate-limits-and-errors#unregistered-assets)). v1 never synthesizes an asset for it. To track tokens outside the registered set, use [Token Lists](/docs/v2/endpoints/lists): `POST /v2/lists`, `PUT /v2/lists/{slug}/members/{mint}`, then `GET /v2/lists/tokens?lists={slug}`.
+- `ref` can be an `assetId`, alias, raw mint, or `solana-<mint>`. Registered mint refs reverse-resolve to their canonical group, so `ref=solana-EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v` returns `assetId: "usd"`.
 
 - **Auth**: `x-api-key`
 - **Scope**: `assets:read`
@@ -418,6 +435,9 @@ One of `mint` or `ref` is required. If both are provided, `mint` takes precedenc
 ```ts
 interface AssetsResolveResponse {
     assetId: string;
+    // 'singletonMint': the ref was a `solana-<mint>` form that reverse-resolved to its asset group.
+    // 'singleton': a registered asset exposed under its per-mint `solana-<mint>` id (e.g. an approved launch coin).
+    // 'sanctum': a Sanctum LST mint; resolves to `solana`.
     resolvedBy?: 'assetId' | 'alias' | 'mint' | 'singletonMint' | 'registry' | 'sanctum' | 'singleton';
     mint?: string | null;
     asset: {
@@ -461,6 +481,22 @@ interface AssetsResolveResponse {
         "trustTier": "tier3",
         "tags": []
     }
+}
+```
+
+An unregistered mint (`404`):
+
+```json
+{
+  "error": {
+    "_tag": "NotFoundError",
+    "message": "Asset not registered",
+    "details": {
+      "code": "asset_not_registered",
+      "mint": "<mint>",
+      "hint": "v1 serves registered assets only. To track other tokens, add them to a token list (POST /v2/lists, then PUT /v2/lists/{slug}/members/{mint}) and read them with GET /v2/lists/tokens?lists={slug}."
+    }
+  }
 }
 ```
 
@@ -512,6 +548,8 @@ interface AssetsTrendingResponse {
         name: string;
         decimals: number;
         category: string;
+        region: string | null;
+        industry: string | null;
         imageUrl: string | null;
         market: {
             source: 'clickhouse_trades';
@@ -630,6 +668,7 @@ Get curated assets from a list.
 - `variantsMode=all` (optional): disable the default Solana LST liquidity filter (applies to `groupBy=mint` rows and to nested `variants[]`)
 - `variants=all` (optional): include every known variant for each canonical asset as `variants[]` (each with per-variant `market` and `executionQuality`, sorted by `market.liquidity` descending). Only applies to `groupBy=asset`; ignored for `groupBy=mint`. By default only `primaryVariant` is returned. Composes with `limit`/`offset`; because every variant carries its own `market` snapshot and `executionQuality`, responses are substantially larger (`list=stocks` is roughly 1 MB uncompressed, versus roughly 560 KB without), so pagination is recommended for large lists.
 - `primaryVariantStrategy` (optional): `liquidity` (default), `execution_quality`, or `stock_redeemability`
+- `region` / `industry` (optional): exact-match [tag filters](#region-and-industry-tags), AND-combined. Applied after list membership is expanded and before pagination, so `pagination.total` is the filtered count. Members without tags are excluded whenever a filter is set. Unknown values return `400` with `details.regions` / `details.industries`.
 
 ### Notes
 
@@ -665,6 +704,8 @@ interface AssetsCuratedResponse {
         name?: string;
         symbol?: string;
         category: string;
+        region: string | null;
+        industry: string | null;
         imageUrl: string | null;
         stats: null | {
             price: number | null;
@@ -779,9 +820,10 @@ Either `mints` or `addresses` (both treated the same).
 
 - Input is de-duped and capped at **250** addresses. The response preserves input order, one entry per address.
 - **Scope: Solana mints only.** Each entry describes one on-chain token (a variant). Canonical, cross-chain figures — CoinGecko price and market cap for BTC itself, canonical supply, grouped variants — live on `GET /v1/assets/:assetId` (`asset.canonicalMarket`, `asset.stats`, `asset.variantGroups`).
-- **Source order.** The per-mint variant market snapshot (refreshed for every curated mint) is used first; the legacy token table is the fallback. `token.source` tells you which provider produced the row when it came from the snapshot.
+- **Registered mints only.** A mint that is not a variant of a registered asset is not an error: its row is kept in position as `{ "address": "<mint>", "token": null, "hasMarket": false }`. See [Unregistered assets](/docs/v1/rate-limits-and-errors#unregistered-assets).
+- **Source order.** For registered mints, the per-mint variant market snapshot (refreshed for every curated mint) is used first; the legacy token table is the fallback. `token.source` tells you which provider produced the row when it came from the snapshot.
 - **`hasMarket`** is `true` only when the row carries a positive `price`, a `volume24hUSD` and a `priceChange24hPercent`. `hasMarket: false` with a non-null `token` means identity only (symbol, name, decimals, logo) — treat the numeric fields as unknown, not zero.
-- A mint that is neither curated nor in the legacy table returns `token: null`. For arbitrary Solana mints use `GET /v2/search` / `GET /v2/resolve` (identity + live market) or compose a list with `GET /v2/lists/tokens`.
+- `token: null` means either the mint is not registered, or it is registered but has no cached row yet (neither snapshot nor legacy table). To read market data for tokens outside the registered set, add them to a [Token List](/docs/v2/endpoints/lists) (`POST /v2/lists`, then `PUT /v2/lists/{slug}/members/{mint}`) and call `GET /v2/lists/tokens?lists={slug}`.
 - When a row has `metricsSource="clickhouse_trades"`, cached direct-stable Solana trade fields may include `volume1hUSD`, `trade1h`, `trade24h`, `uniqueWallet1h`, `uniqueWallet24h`, `lastTradeAt`, and `asOf` in addition to existing price/volume/change fields.
 
 ### Response
@@ -847,10 +889,12 @@ Batch lookup per-mint _variant market_ snapshots (best-effort; may be null if no
 
 - `variants[]` where each entry contains:
     - `mint`
-    - `assetId` (when variant is known)
-    - `chain` (when variant is known)
+    - `assetId` (`null` when the mint is not a variant of a registered asset)
+    - `chain` (`null` when the mint is not a variant of a registered asset)
     - `market` (market snapshot, or `null` if missing)
     - `executionQuality` (fill-quality snapshot, or `null` if missing)
+
+Every input mint keeps its row. For an unregistered mint the row is `{ mint, assetId: null, chain: null, market: null, executionQuality: null }`; the request does not fail. See [Unregistered assets](/docs/v1/rate-limits-and-errors#unregistered-assets).
 
 ### Response
 
@@ -940,8 +984,12 @@ Compute a quick market-based “risk summary” for a mint.
 
 ### Notes
 
-- The score is computed from the mint’s cached market snapshot. Mints without one (most tokens outside the
-  registry) are scored from a live market read instead.
+- The mint must be a variant of a registered asset. Otherwise the response is `404` with
+  `details.code: "asset_not_registered"` and nothing is scored (see
+  [Unregistered assets](/docs/v1/rate-limits-and-errors#unregistered-assets)); to track such tokens use
+  [Token Lists](/docs/v2/endpoints/lists).
+- The score is computed from the mint’s cached market snapshot. Registered mints without one are scored from a
+  live market read instead.
 - **Check `hasInsufficientData` before reading the grade.** When it is `true` the token is _unscored_ — there
   was no market data to score, or too little — and `score`, `grade` and `tone` are placeholders (`0`, `"C"`,
   `"risk"`), not an assessment. An unscored token is never reported with a passing grade.

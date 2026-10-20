@@ -664,9 +664,20 @@ export async function v2AssetsGetMarketsByKeys(
         deps.v2.findVariantsByKeys(keys),
         deps.v2.findMarketsByKeys(keys),
     ]);
+    const active = variantResults(variantRows).filter(v => v.isActive);
+    // As v2AssetsGetVariant: a variant whose asset is inactive or missing is not
+    // public, even while the Solana mirror still carries the variant as active.
+    const assetIds = uniqueStrings(active.map(v => v.assetId));
+    const liveAssetIds = new Set(
+        assetIds.length === 0
+            ? []
+            : (await getByAssetIds(deps.assetsRepo, { assetIds, includeInactive: false })).flatMap(entry =>
+                  entry.asset ? [entry.assetId] : [],
+              ),
+    );
     const variantsByKey = new Map<string, V2VariantResult[]>();
-    for (const v of variantResults(variantRows)) {
-        if (!v.isActive) continue;
+    for (const v of active) {
+        if (!liveAssetIds.has(v.assetId)) continue;
         const list = variantsByKey.get(v.key) ?? [];
         list.push(v);
         variantsByKey.set(v.key, list);

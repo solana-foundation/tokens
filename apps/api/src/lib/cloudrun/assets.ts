@@ -8,6 +8,8 @@ import type {
 
 import type { Effect } from 'effect';
 
+import type { AssetIndustry, AssetRegion } from '@tokens/asset-registry';
+
 import { cloudRunQuery } from './client';
 import type { CloudRunError } from './errors';
 
@@ -46,6 +48,9 @@ export function getByAssetIds(args: GetByAssetIdsArgs): Effect.Effect<GetByAsset
 export type SearchArgs = {
     query: string;
     category?: AssetCategory;
+    /** Admin-curated tag filters (exact match, AND-combined). */
+    region?: AssetRegion;
+    industry?: AssetIndustry;
     limit?: number;
     includeInactive?: boolean;
 };

@@ -1,14 +1,11 @@
 import { Effect } from 'effect';
 
 import { NotFoundError, tapErrorAndDefault } from '@tokens/effect';
-import {
-    assetVariantsGetByMint,
-    listDeletedRefs,
-    resolveAssetRefForApi as cloudRunResolveAssetRefForApi,
-    sanctumResolveRef,
-} from '@/lib/cloudrun';
+import { resolveAssetRefForApi as cloudRunResolveAssetRefForApi, sanctumResolveRef } from '@/lib/cloudrun';
+import { listDeletedRefs } from '@/lib/deleted-refs';
 import { currentAssetId, loadAssetIdRenames } from '@/lib/asset-id-renames';
-import { getVariantByMint, resolveAlias as resolveRegistryAlias } from '@tokens/asset-registry';
+import { resolveAlias as resolveRegistryAlias } from '@tokens/asset-registry';
+import { classifyMint, unregisteredMintError, v1RegisteredOnlyEnabled } from './_registered-only';
 import { looksLikeSolanaMintAddress, mintToSingletonAssetId, singletonAssetIdToMint } from './_singleton-asset-id';
 
 export type AssetRefResolvedBy = 'assetId' | 'alias' | 'mint' | 'singletonMint' | 'registry' | 'sanctum' | 'singleton';
@@ -65,41 +62,44 @@ function resolveKnownMintRef(
     isDeletedRef: ReturnType<typeof createDeletedRefChecker>,
 ) {
     return Effect.gen(function* () {
-        const variant = yield* assetVariantsGetByMint({ mint }).pipe(
-            Effect.catch(() => Effect.succeed(null)),
-        );
-        if (variant) {
-            if (looksLikeSolanaMintAddress(variant.assetId)) {
-                return resolution({
-                    assetId: mintToSingletonAssetId(variant.assetId),
-                    ref,
-                    resolvedBy: 'singleton',
-                    mint,
-                });
+        // One tier walk for every v1 route: DB variant → compiled registry →
+        // Sanctum LST → approved launch coin (see _registered-only.ts).
+        const classified = yield* classifyMint(mint, isDeletedRef);
+        switch (classified.kind) {
+            case 'db': {
+                const variant = classified.variant;
+                if (looksLikeSolanaMintAddress(variant.assetId)) {
+                    return resolution({
+                        assetId: mintToSingletonAssetId(variant.assetId),
+                        ref,
+                        resolvedBy: 'singleton',
+                        mint,
+                    });
+                }
+                return resolution({ assetId: variant.assetId, ref, resolvedBy, mint });
             }
-            return resolution({ assetId: variant.assetId, ref, resolvedBy, mint });
-        }
-
-        const registryMatch = getVariantByMint(mint);
-        if (registryMatch) {
-            const registryDeleted = yield* isDeletedRef(registryMatch.asset.coingeckoId ?? registryMatch.asset.assetId);
-            if (!registryDeleted) {
+            case 'registry': {
                 const renames = yield* loadAssetIdRenames();
                 return resolution({
-                    assetId: currentAssetId(renames, registryMatch.asset.assetId),
+                    assetId: currentAssetId(renames, classified.match.asset.assetId),
                     ref,
                     resolvedBy,
                     mint,
                 });
             }
+            case 'sanctum':
+                return resolution({ assetId: 'solana', ref, resolvedBy: 'sanctum', mint });
+            case 'launch':
+                // Approved launch coins have no `assets` row; their page is the per-mint id.
+                return resolution({ assetId: mintToSingletonAssetId(mint), ref, resolvedBy: 'singleton', mint });
+            case 'unavailable':
+                // A lookup failed: fail open to the pre-rule behaviour rather than
+                // turning a registered asset into a 404 during a Cloud Run blip.
+                return resolution({ assetId: mintToSingletonAssetId(mint), ref, resolvedBy: 'singleton', mint });
+            case 'unregistered':
+                if (v1RegisteredOnlyEnabled()) return yield* Effect.fail(unregisteredMintError(mint));
+                return resolution({ assetId: mintToSingletonAssetId(mint), ref, resolvedBy: 'singleton', mint });
         }
-
-        const sanctum = yield* sanctumResolveRef({ ref: mint }).pipe(
-            tapErrorAndDefault('assets.resolve.sanctumMintRef', null, { ref, mint }),
-        );
-        if (sanctum) return resolution({ assetId: 'solana', ref, resolvedBy: 'sanctum', mint });
-
-        return resolution({ assetId: mintToSingletonAssetId(mint), ref, resolvedBy: 'singleton', mint });
     });
 }
 
