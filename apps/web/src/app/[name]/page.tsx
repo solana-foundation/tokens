@@ -7,6 +7,7 @@ import type { CanonicalAsset } from '@tokens/asset-registry';
 import { CHAINS, CHAIN_KINDS, inferAddressFamily, type ChainKind } from '@tokens/asset-registry/chains';
 
 import { advisoryMetadataPrefix } from '@/lib/asset-advisory';
+import { formatChainList } from '@/lib/format-chain-list';
 import { cleanTokenName } from '@/lib/logo-overrides';
 import {
     firstString,
@@ -38,15 +39,6 @@ function getMetadataBase(): URL {
     } catch {
         return new URL('https://tokens.xyz');
     }
-}
-
-/** "Solana", "Solana and Base", "Solana, Ethereum and Base" (canonical chain order). */
-export function formatChainList(chains: readonly ChainKind[]): string {
-    const present = new Set(chains);
-    const labels = CHAIN_KINDS.flatMap(chain => (present.has(chain) ? [CHAINS[chain].label] : []));
-    if (labels.length === 0) return 'Solana';
-    if (labels.length === 1) return labels[0]!;
-    return `${labels.slice(0, -1).join(', ')} and ${labels[labels.length - 1]}`;
 }
 
 interface ResolvedAssetRef {

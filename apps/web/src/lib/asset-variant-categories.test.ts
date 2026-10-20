@@ -5,6 +5,7 @@ import {
     getAssetVariantChainCategory,
     groupAssetVariantsByDisplayCategory,
     hasMultipleChains,
+    paginateAssetVariantGroups,
 } from './asset-variant-categories';
 
 const rows = [
@@ -40,5 +41,21 @@ describe('chain sections', () => {
             label: 'Solana',
             order: 0,
         });
+    });
+});
+
+describe('paginateAssetVariantGroups', () => {
+    test('pages keep the headings assigned on the full list', () => {
+        const groups = groupAssetVariantsByDisplayCategory('usd', rows);
+        const ids = (page: ReturnType<typeof paginateAssetVariantGroups<(typeof rows)[number]>>) =>
+            page.map(g => [g.category.id, g.variants.map(v => v.mint)]);
+
+        // The first page holds Solana rows only; it still carries the chain heading, not kind headings.
+        expect(ids(paginateAssetVariantGroups(groups, 0, 2))).toEqual([['chain:solana', ['A', 'D']]]);
+        expect(ids(paginateAssetVariantGroups(groups, 2, 2))).toEqual([
+            ['chain:ethereum', ['C']],
+            ['chain:base', ['B']],
+        ]);
+        expect(paginateAssetVariantGroups(groups, 4, 2)).toEqual([]);
     });
 });

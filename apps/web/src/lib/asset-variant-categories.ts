@@ -146,3 +146,23 @@ export function groupAssetVariantsByDisplayCategory<T extends AssetVariantCatego
         return a.category.label.localeCompare(b.category.label);
     });
 }
+
+/**
+ * One page of already-grouped rows. Rows are flattened in group order, sliced, and re-grouped
+ * by the category they were assigned on the full list, so a page never flips between chain and
+ * kind headings based on which rows it happens to contain.
+ */
+export function paginateAssetVariantGroups<T>(
+    groups: ReadonlyArray<AssetVariantCategoryGroup<T>>,
+    offset: number,
+    limit: number,
+): Array<AssetVariantCategoryGroup<T>> {
+    const flat = groups.flatMap(group => group.variants.map(variant => ({ category: group.category, variant })));
+    const out: Array<AssetVariantCategoryGroup<T>> = [];
+    for (const row of flat.slice(offset, offset + limit)) {
+        const last = out[out.length - 1];
+        if (last && last.category.id === row.category.id) last.variants.push(row.variant);
+        else out.push({ category: row.category, variants: [row.variant] });
+    }
+    return out;
+}

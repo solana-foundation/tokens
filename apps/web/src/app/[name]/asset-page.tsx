@@ -14,6 +14,7 @@ import { AssetAdvisoryBanner, AssetAdvisorySiblingNotice } from '@/components/as
 import { Logo } from '@/components/logo';
 import { TokenViewedEvent } from '@/components/token-viewed-event';
 import type { V2AssetStats, V2ChainStats, V2ReferenceMarket, V2Variant } from '@/lib/api-v2-types';
+import { formatChainList } from '@/lib/format-chain-list';
 import {
     collectVariantAdvisories,
     getSiblingAdvisories,
@@ -40,8 +41,7 @@ import { AssetStatsSection } from './components/asset-stats-section';
 import { AssetVariantsList } from './components/asset-variants-list';
 import { TokenPageBackgroundBlur, TokenPageScaffold, TokenPageSidebar } from './components/token-page-shell';
 import { normalizeOptionalText, pickFirstDisplayName, pickFirstSymbol } from './lib/asset-display';
-import { loadV2Asset } from './lib/load-v2-asset';
-import { formatChainList } from './page';
+import { loadV2Asset, loadV2VariantOwner } from './lib/load-v2-asset';
 import { normalizeLogoSrc } from '@/lib/normalize-logo-src';
 
 /** Identity the streamed shell renders before the v2 response lands (registry or already-cached v2). */
@@ -746,6 +746,17 @@ async function loadAssetPageModel({ assetId, requestedName, requested, shell }: 
           ? registryAsset.variants.map(v => registryVariantToPageVariant(registryAsset, v))
           : [];
     const byKey = new Map(variants.map(v => [v.key, v] as const));
+    // The detail payload is capped (the `solana` asset drops thin yield variants), so a
+    // `?{chain}={address}` link to a variant outside the cap is fetched on its own and added
+    // to the page model instead of silently falling back to the canonical view.
+    if (requested && api && !byKey.has(requested.key)) {
+        const owner = await loadV2VariantOwner(requested.chain, requested.address);
+        if (owner && owner.asset.assetId === canonicalAssetId) {
+            const extra = toAssetPageVariant(owner.variant, { symbol: assetSymbol, name: assetName });
+            variants.push(extra);
+            byKey.set(extra.key, extra);
+        }
+    }
 
     const primary =
         (api?.primaryVariant ? (byKey.get(api.primaryVariant.key) ?? null) : null) ??

@@ -118,7 +118,11 @@ describe('headlineOnChainStats', () => {
     });
 
     test('a null aggregate figure replaces a double-counted v1 one rather than keeping it', () => {
-        const out = headlineOnChainStats(v1, { ...aggregate(1), marketCap: null, fdv: null, circulatingSupply: null }, null);
+        const out = headlineOnChainStats(
+            v1,
+            { ...aggregate(1), marketCap: null, fdv: null, circulatingSupply: null },
+            null,
+        );
         expect(out?.marketCap).toBeNull();
         expect(out?.circulatingSupply).toBeNull();
     });
@@ -177,7 +181,9 @@ describe('decoders', () => {
     test('primaryScope param: executable by default, unknown → invalid_primary_scope', () => {
         expect(Effect.runSync(decodePrimaryScopeParam(new URLSearchParams('')))).toBe('executable');
         expect(Effect.runSync(decodePrimaryScopeParam(new URLSearchParams('primaryScope=global')))).toBe('global');
-        expect(failureCode(decodePrimaryScopeParam(new URLSearchParams('primaryScope=nope')))).toBe('invalid_primary_scope');
+        expect(failureCode(decodePrimaryScopeParam(new URLSearchParams('primaryScope=nope')))).toBe(
+            'invalid_primary_scope',
+        );
     });
 });
 
@@ -388,10 +394,24 @@ describe('detail include= enrichments', () => {
     test('toV2PegHealth defaults provider and reference kind', () => {
         expect(toV2PegHealth(null)).toBeNull();
         const out = toV2PegHealth({
-            pegHealth: { provider: 'webacy', referenceKind: null, tier: 'stable', deviationPct: 0.01, updatedAt: 5, stale: false } as never,
+            pegHealth: {
+                provider: 'webacy',
+                referenceKind: null,
+                tier: 'stable',
+                deviationPct: 0.01,
+                updatedAt: 5,
+                stale: false,
+            } as never,
             structuralHealth: null,
         });
-        expect(out).toEqual({ provider: 'webacy', referenceKind: 'fixed', tier: 'stable', deviationPct: 0.01, updatedAt: 5, stale: false });
+        expect(out).toEqual({
+            provider: 'webacy',
+            referenceKind: 'fixed',
+            tier: 'stable',
+            deviationPct: 0.01,
+            updatedAt: 5,
+            stale: false,
+        });
     });
 });
 
@@ -413,6 +433,7 @@ describe('primary variant selection', () => {
         variants: V2VariantResult[];
         markets: Array<[string, ReturnType<typeof market>]>;
         primaryScope?: 'executable' | 'global';
+        advisories?: Parameters<typeof buildV2Asset>[0]['advisoriesByMint'];
     }) =>
         buildV2Asset({
             request,
@@ -431,7 +452,7 @@ describe('primary variant selection', () => {
             variants: params.variants,
             marketByKey: new Map(params.markets),
             rollupByChain: null,
-            advisoriesByMint: new Map(),
+            advisoriesByMint: params.advisories ?? new Map(),
             coingeckoPrice: null,
             stockInstrument: null,
             stockPrice: null,
@@ -484,6 +505,24 @@ describe('primary variant selection', () => {
         });
         expect(out.primaryVariant?.key).toBe(`solana:${SOL}`);
         expect(out.primaryVariantSelection?.pool).toBe('executable');
+    });
+
+    test('a compromised Solana variant yields primary to a safe EVM sibling instead of winning its pool', () => {
+        const markets: Array<[string, ReturnType<typeof market>]> = [
+            [`solana:${SOL}`, market(37_000_000, 84_000_000, 200_000)],
+            [`ethereum:${ETH}`, market(1_300_000, 570_000, 14_000)],
+        ];
+        const compromised = new Map([
+            [SOL, { status: 'compromised' as const, reason: 'exploit', url: null, since: 1, source: 'admin' as const }],
+        ]);
+        const out = build({ variants: [sol, eth], markets, advisories: compromised });
+        expect(out.primaryVariant?.key).toBe(`ethereum:${ETH}`);
+        expect(out.primaryVariantSelection?.pool).toBe('active');
+
+        // With no safe sibling anywhere, the flagged variant still becomes primary so the page can warn.
+        const alone = build({ variants: [sol], markets, advisories: compromised });
+        expect(alone.primaryVariant?.key).toBe(`solana:${SOL}`);
+        expect(alone.primaryVariantSelection?.pool).toBe('executable_active');
     });
 
     test('an unpriced EVM xStock never beats a quietly traded Solana xStock', () => {

@@ -18,6 +18,7 @@ import {
     chainDisplayLabel,
     groupAssetVariantsByDisplayCategory,
     hasMultipleChains,
+    paginateAssetVariantGroups,
 } from '@/lib/asset-variant-categories';
 import { trackEvent } from '@/lib/posthog-client';
 import { formatCompactAddress } from '@/app/token/[address]/lib/format';
@@ -105,22 +106,28 @@ export function AssetVariantsList({
     );
     const multiChain = React.useMemo(() => hasMultipleChains(variants), [variants]);
     const shouldShowCategorySections = categorizedRows.length > 1;
-    const rows = React.useMemo(
-        () => (shouldShowCategorySections ? categorizedRows.flatMap(group => group.variants) : sortedRows),
+    // Grouped once over the full list; pages slice through the groups so headings stay stable.
+    const groups = React.useMemo(
+        () =>
+            shouldShowCategorySections
+                ? categorizedRows
+                : [
+                      {
+                          category: { id: 'variants', label: 'Variants', order: 0 },
+                          variants: sortedRows.map(toCategorySource),
+                      },
+                  ],
         [categorizedRows, shouldShowCategorySections, sortedRows],
     );
 
     const [page, setPage] = React.useState(1);
-    const pageCount = Math.max(1, Math.ceil(rows.length / PAGE_SIZE));
+    const pageCount = Math.max(1, Math.ceil(sortedRows.length / PAGE_SIZE));
 
     React.useEffect(() => {
         setPage(prev => Math.min(Math.max(1, prev), pageCount));
     }, [pageCount]);
 
-    const pageRows = rows.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
-    const pageGroups = shouldShowCategorySections
-        ? groupAssetVariantsByDisplayCategory(canonicalAssetId, pageRows.map(toCategorySource))
-        : [{ category: { id: 'variants', label: 'Variants', order: 0 }, variants: pageRows.map(toCategorySource) }];
+    const pageGroups = paginateAssetVariantGroups(groups, (page - 1) * PAGE_SIZE, PAGE_SIZE);
 
     return (
         <div className="mt-6">
@@ -300,7 +307,7 @@ export function AssetVariantsList({
                 ))}
             </div>
 
-            {rows.length > PAGE_SIZE ? (
+            {sortedRows.length > PAGE_SIZE ? (
                 <div className="mt-4 flex items-center justify-between gap-3">
                     <button
                         type="button"

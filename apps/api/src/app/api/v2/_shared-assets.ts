@@ -38,6 +38,7 @@ import {
     type TrustTier,
     type VariantAdvisory,
     type VariantKind,
+    isPrimaryEligibleVariant,
 } from '@tokens/asset-registry';
 import {
     CHAINS,
@@ -855,7 +856,9 @@ export interface V2EnrichmentInputs {
     preStocks: boolean;
 }
 
-export function toV2ExecutionQuality(snapshot: VariantExecutionQualitySnapshot | null | undefined): V2ExecutionQuality | null {
+export function toV2ExecutionQuality(
+    snapshot: VariantExecutionQualitySnapshot | null | undefined,
+): V2ExecutionQuality | null {
     if (!snapshot) return null;
     const { quoteMint, ...rest } = snapshot;
     const out: V2ExecutionQuality = { ...rest, quoteKey: chainAddressKey('solana', quoteMint) };
@@ -912,7 +915,9 @@ export function variantEnrichments(
     }
     if (inputs.stablecoinHealthByMint) {
         out.pegHealth =
-            chainSupports(variant.chain, 'risk') && solanaMint ? toV2PegHealth(inputs.stablecoinHealthByMint.get(solanaMint)) : null;
+            chainSupports(variant.chain, 'risk') && solanaMint
+                ? toV2PegHealth(inputs.stablecoinHealthByMint.get(solanaMint))
+                : null;
     }
     if (inputs.preStocks) {
         out.preStocks = solanaMint ? toV2VariantPreStocks(preStocksByMint.get(solanaMint), onChainPriceUsd) : null;
@@ -1064,7 +1069,9 @@ export function buildV2Asset(ctx: V2AssetBuildContext): V2Asset | null {
           })()
         : canonical;
     const scope = ctx.primaryScope ?? 'executable';
-    const selection = selectPrimaryVariant(priceSelectionAsset, scope, tokenByKey, rank);
+    const selection = selectPrimaryVariant(priceSelectionAsset, scope, tokenByKey, rank, v =>
+        isPrimaryEligibleVariant(v, excludeKeys),
+    );
     const primary = selection?.variant ?? null;
     const primaryByChain: Partial<Record<ChainId, AssetVariant>> = {};
     for (const chain of CHAIN_KINDS) {
@@ -1257,6 +1264,7 @@ function selectPrimaryVariant(
     scope: V2PrimaryScope,
     marketByKey: ReadonlyMap<VariantKey, TokenMarketSnapshot>,
     rank: (pool: CanonicalAsset) => ReturnType<typeof pickPrimaryVariantWithRanking>,
+    isEligible: (variant: AssetVariant) => boolean,
 ): (ReturnType<typeof pickPrimaryVariantWithRanking> & { pool: V2PrimaryVariantPool }) | null {
     const executable = (v: AssetVariant) => {
         const chain = v.mint.slice(0, v.mint.indexOf(':'));
@@ -1269,13 +1277,20 @@ function selectPrimaryVariant(
         executable,
         all: () => true,
     };
+    // `rank` only demotes advisory-flagged variants within the pool it is handed, so a pool whose
+    // sole member is flagged would win outright. A flagged winner is remembered but the later
+    // pools still get a chance to produce a safe sibling; it is returned only if none does.
+    let flaggedFallback: (ReturnType<typeof pickPrimaryVariantWithRanking> & { pool: V2PrimaryVariantPool }) | null =
+        null;
     for (const pool of PRIMARY_POOLS[scope]) {
         const variants = asset.variants.filter(filters[pool]);
         if (variants.length === 0) continue;
         const result = rank({ ...asset, variants });
-        if (result.variant) return { ...result, pool };
+        if (!result.variant) continue;
+        if (isEligible(result.variant)) return { ...result, pool };
+        flaggedFallback ??= { ...result, pool };
     }
-    return null;
+    return flaggedFallback;
 }
 
 /**
