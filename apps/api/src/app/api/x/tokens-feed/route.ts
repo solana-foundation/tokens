@@ -2,6 +2,7 @@ import { Effect } from 'effect';
 
 import { fetchJsonWithRetry, tapErrorAndDefault } from '@tokens/effect';
 import { route } from '@/effect/next-route';
+import { decodeHtmlEntities } from '@/lib/html-entities';
 import { resolveXBearerToken, runXRequest } from '@/lib/x-auth';
 import { restoreXCashtagsInTexts } from '@/lib/x-cashtags';
 import { buildMediaByKey, getPostImage, type XMedia, type XPostMediaAttachment } from '@/lib/x-media';
@@ -63,14 +64,7 @@ function parseLimit(value: string | null): number {
 }
 
 function cleanPostText(value: string): string {
-    return value
-        .replace(/&amp;/g, '&')
-        .replace(/&lt;/g, '<')
-        .replace(/&gt;/g, '>')
-        .replace(/&quot;/g, '"')
-        .replace(/&#39;/g, "'")
-        .replace(/\s+/g, ' ')
-        .trim();
+    return decodeHtmlEntities(value).replace(/\s+/g, ' ').trim();
 }
 
 function buildXPostUrl(username: string, postId: string): string {

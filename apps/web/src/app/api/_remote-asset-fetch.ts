@@ -124,6 +124,14 @@ export async function fetchWithValidatedRedirects(
     let current = url;
 
     for (let i = 0; i <= maxRedirects; i++) {
+        // Re-validated on every hop: a redirect from an allowlisted host must not escape to another
+        // scheme, carry credentials, or land on a host outside the allowlist.
+        if (current.protocol !== 'http:' && current.protocol !== 'https:') {
+            throw new Error('Unsupported protocol');
+        }
+        if (current.username || current.password) {
+            throw new Error('Credentials not allowed');
+        }
         if (!isAllowedRemoteHost(current.hostname, allowedHosts)) {
             throw new Error('Host not allowed');
         }

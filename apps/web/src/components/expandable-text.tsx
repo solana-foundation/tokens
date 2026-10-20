@@ -2,6 +2,8 @@
 
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 
+import { createFallbackHtml } from './expandable-text-fallback';
+
 interface ExpandableTextProps {
     text: string;
     maxLines?: number;
@@ -24,29 +26,6 @@ interface DomPurifyLike {
 }
 
 type CreateDomPurify = (window: Window) => DomPurifyLike;
-
-function escapeHtml(text: string): string {
-    return text
-        .replaceAll('&', '&amp;')
-        .replaceAll('<', '&lt;')
-        .replaceAll('>', '&gt;')
-        .replaceAll('"', '&quot;')
-        .replaceAll("'", '&#039;');
-}
-
-function createFallbackHtml(text: string): string {
-    // Conservative fallback for SSR / before hydration:
-    // - drop all tags (keep readability)
-    // - preserve basic line breaks from common tags
-    const withoutTags = text
-        .replace(/<br\s*\/?>/gi, '\n')
-        .replace(/<\/p>/gi, '\n\n')
-        .replace(/<\/li>/gi, '\n')
-        .replace(/<li[^>]*>/gi, '• ')
-        .replace(/<[^>]*>/g, '');
-
-    return escapeHtml(withoutTags).replace(/\n/g, '<br />').trim();
-}
 
 export function ExpandableText({ text, maxLines = 7, className = '', allowLinks = true }: ExpandableTextProps) {
     const [isExpanded, setIsExpanded] = useState(false);

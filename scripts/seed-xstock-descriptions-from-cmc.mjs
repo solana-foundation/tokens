@@ -33,13 +33,14 @@ function slugify(value) {
 
 function normalizeText(value) {
     return String(value ?? '')
-        .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, ' ')
-        .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, ' ')
+        .replace(/<script\b[^>]*>[\s\S]*?<\/script\s*>/gi, ' ')
+        .replace(/<style\b[^>]*>[\s\S]*?<\/style\s*>/gi, ' ')
         .replace(/<[^>]+>/g, ' ')
         .replace(/&quot;/g, '"')
         .replace(/&#x27;/g, "'")
-        .replace(/&amp;/g, '&')
         .replace(/&nbsp;/g, ' ')
+        // `&amp;` last so `&amp;nbsp;` decodes to the literal `&nbsp;` instead of a space.
+        .replace(/&amp;/g, '&')
         .replace(/\s+/g, ' ')
         .trim();
 }
