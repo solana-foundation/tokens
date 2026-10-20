@@ -1,4 +1,4 @@
-import { describe, expect, it, mock } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 import { Effect } from 'effect';
 
 mock.module('server-only', () => ({}));
@@ -26,6 +26,29 @@ function deps(overrides: Partial<SingletonIdentityDeps> = {}): SingletonIdentity
 }
 
 describe('loadSingletonIdentity', () => {
+    // The provider tier only runs when v1 is not registered-only (kill switch);
+    // the default (enforced) path is pinned by its own test below.
+    let savedFlag: string | undefined;
+    beforeEach(() => {
+        savedFlag = process.env.TOKENS_V1_REGISTERED_ONLY;
+        process.env.TOKENS_V1_REGISTERED_ONLY = 'off';
+    });
+    afterEach(() => {
+        if (savedFlag === undefined) delete process.env.TOKENS_V1_REGISTERED_ONLY;
+        else process.env.TOKENS_V1_REGISTERED_ONLY = savedFlag;
+    });
+
+    it('registered-only (default): never calls the provider when both caches miss', async () => {
+        delete process.env.TOKENS_V1_REGISTERED_ONLY;
+        const d = deps({
+            loadProviderMetadata: () =>
+                Effect.succeed({ address: MINT, symbol: 'JUP', name: 'Jupiter', decimals: 6, logoURI: null }),
+        });
+        const identity = await Effect.runPromise(loadSingletonIdentity(MINT, {}, d));
+        expect(identity).toBeNull();
+        expect(d.calls).toEqual(['token', 'market']);
+    });
+
     it('prefers the legacy tokens row and stops there', async () => {
         const d = deps({
             loadToken: () => Effect.succeed({ symbol: 'JUP', name: 'Jupiter', decimals: 6, logoUri: 'https://x/jup.png' }),

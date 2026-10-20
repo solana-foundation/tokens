@@ -201,6 +201,8 @@ export const GET = route(
                     variants: mergeRegistryVariants(variants, registryAsset),
                 };
             } else {
+                // Reached only for registered per-mint assets (approved launch coins, admin `solana-<mint>` ids);
+                // unregistered mints are rejected upstream in _resolve-asset-ref.ts.
                 const singletonMint = singletonAssetIdToMint(assetId);
                 if (singletonMint) {
                     const token = yield* tokensGetByAddress({ address: singletonMint }).pipe(

@@ -7,6 +7,7 @@ import { variantMarketsGetLatestByMints } from '@/lib/cloudrun';
 import { computeMarketScore, createInsufficientDataResult, type MarketScoreResult } from '@/lib/token-risk-helpers';
 import { getCuratedListSlugsForMint } from '@/lib/curated-membership';
 
+import { isRegisteredMintStandalone, unregisteredMintError, v1RegisteredOnlyEnabled } from '../_registered-only';
 import { loadLiveMarketFallback, needsLiveFallback } from '../_risk-live-fallback';
 import { marketScoreInputFromVariantMarket, SOL_MINT } from '../_risk-loader';
 
@@ -54,12 +55,19 @@ export const GET = route(
 
             const address = yield* decodeUnknownOrBadRequest(SolanaAddress, mintInput, 'Invalid mint');
 
+            // v1 scores registered assets only: an unregistered mint is refused
+            // before any snapshot read or live provider call (see _registered-only.ts).
+            if (address !== SOL_MINT && v1RegisteredOnlyEnabled()) {
+                const registered = yield* isRegisteredMintStandalone(address);
+                if (!registered) return yield* Effect.fail(unregisteredMintError(address));
+            }
+
             // Native SOL is pinned by the scorer and needs no snapshot.
             const rows = address === SOL_MINT ? [] : yield* variantMarketsGetLatestByMints({ mints: [address] });
             const snapshot = rows[0]?.market ?? null;
 
-            // Mints outside the registry never get a snapshot: score them from
-            // a live provider read instead.
+            // A registered mint whose snapshot is missing or empty is scored
+            // from a live provider read instead.
             const live =
                 address !== SOL_MINT && needsLiveFallback(snapshot)
                     ? yield* loadLiveMarketFallback(ctx.platformAuth, address)

@@ -86,7 +86,10 @@ export {
 } from './sanctumLsts';
 
 export {
+    launchpadApprovedMints,
     launchpadListByQuoteMints,
+    type ApprovedMintsArgs,
+    type ApprovedMintsResult,
     type LaunchpadTokenResult,
     type ListByQuoteMintsArgs as LaunchpadListByQuoteMintsArgs,
     type ListByQuoteMintsResult as LaunchpadListByQuoteMintsResult,

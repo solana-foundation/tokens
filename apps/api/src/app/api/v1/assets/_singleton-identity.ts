@@ -5,6 +5,7 @@ import { getProviderTokenMetadataByMints, type ProviderTokenMetadata } from '@/l
 import { tokensGetByAddress, variantMarketsGetLatestByMints } from '@/lib/cloudrun';
 
 import { optionalSymbol, optionalText } from './_asset-helpers';
+import { v1RegisteredOnlyEnabled } from './_registered-only';
 
 /**
  * Display identity for a `solana-<mint>` singleton: a mint that is not a
@@ -18,6 +19,9 @@ import { optionalSymbol, optionalText } from './_asset-helpers';
  *  3. live provider metadata — one bounded Birdeye call, same exposure the v2
  *     list hydration already has. Only reached when both caches miss, and the
  *     calling routes cache their responses, so a hot mint pays this once.
+ *     Skipped while v1 is registered-only: every mint that reaches this helper
+ *     is then a registered per-mint asset (an approved launch coin), which the
+ *     launch sync only activates once it has a tokens row and a market row.
  *
  * Never fails: every error resolves to the next source, and `null` means no
  * source knew the mint.
@@ -102,6 +106,7 @@ export function loadSingletonIdentity(
         const fromMarket = toIdentity(market, 'variant_market');
         if (fromMarket) return fromMarket;
 
+        if (v1RegisteredOnlyEnabled()) return null;
         const provider = yield* deps
             .loadProviderMetadata(mint)
             .pipe(tapErrorAndDefault('assets.singletonIdentity.provider', null, { mint }));

@@ -242,7 +242,7 @@ function emptyStockReadsRepo(): StockReadsRepo {
 }
 
 function emptyLaunchpadReadsRepo(): LaunchpadReadsRepo {
-    return { async listActiveByQuoteMints() { return []; } };
+    return { async listActiveByQuoteMints() { return []; }, async listApprovedActiveMints() { return []; } };
 }
 
 function emptySolanaDataReadsRepo(): SolanaDataReadsRepo {

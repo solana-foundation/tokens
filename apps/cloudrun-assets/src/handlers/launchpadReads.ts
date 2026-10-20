@@ -33,6 +33,8 @@ export interface LaunchpadTokenRow {
 
 export interface LaunchpadReadsRepo {
     listActiveByQuoteMints(quoteMints: readonly string[], limit: number): Promise<LaunchpadTokenRow[]>;
+    /** Subset of `mints` that carry an admin approval AND are still active in the launch feed. */
+    listApprovedActiveMints(mints: readonly string[]): Promise<string[]>;
 }
 
 export interface LaunchpadTokenResult {
@@ -59,6 +61,7 @@ export interface LaunchpadTokenResult {
 }
 
 const MAX_QUOTE_MINTS = 500;
+const MAX_APPROVAL_MINTS = 500;
 const DEFAULT_LIMIT = 50;
 const MAX_LIMIT = 200;
 
@@ -134,4 +137,37 @@ export async function listByQuoteMints(repo: LaunchpadReadsRepo, args: unknown):
     if (quoteMints.length === 0) return [];
     const rows = await repo.listActiveByQuoteMints(quoteMints, limit);
     return rows.map(rowToLaunchpadResult);
+}
+
+function readMints(args: Record<string, unknown>): string[] {
+    const raw = args.mints;
+    if (!Array.isArray(raw)) throw new InvalidArgsError('mints must be an array of strings');
+    const seen = new Set<string>();
+    const out: string[] = [];
+    for (const value of raw) {
+        if (typeof value !== 'string') throw new InvalidArgsError('mints must be an array of strings');
+        const mint = value.trim();
+        if (!mint || seen.has(mint)) continue;
+        seen.add(mint);
+        out.push(mint);
+        if (out.length >= MAX_APPROVAL_MINTS) break;
+    }
+    return out;
+}
+
+/**
+ * `launchpadApprovedMints`: which of `mints` are admin-approved launch coins
+ * that are still active in the feed. v1 treats those as registered assets
+ * (they have no `assets` row; approval alone grants them a `solana-<mint>`
+ * page), so the API asks here before rejecting a mint as unregistered.
+ */
+export async function approvedMints(repo: LaunchpadReadsRepo, args: unknown): Promise<{ mints: string[] }> {
+    if (typeof args !== 'object' || args === null) {
+        throw new InvalidArgsError('args must be an object');
+    }
+    const mints = readMints(args as Record<string, unknown>);
+    if (mints.length === 0) return { mints: [] };
+    const approved = await repo.listApprovedActiveMints(mints);
+    const wanted = new Set(mints);
+    return { mints: approved.filter(mint => wanted.has(mint)) };
 }
