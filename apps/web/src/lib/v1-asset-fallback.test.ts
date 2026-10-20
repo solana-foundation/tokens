@@ -1,6 +1,11 @@
 import { describe, expect, test } from 'bun:test';
 
-import { canonicalAssetFromV1Resolve, singletonMintOf } from './v1-asset-fallback';
+import {
+    canonicalAssetFromV1Resolve,
+    singletonMintOf,
+    v1DetailToFallback,
+    v1MarketToV2Market,
+} from './v1-asset-fallback';
 
 const MINT = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
 
@@ -35,6 +40,21 @@ describe('canonicalAssetFromV1Resolve', () => {
         expect(asset.variants[0]!.advisory).toBe(undefined);
     });
 
+    test('keeps the advisory v1 attached to the variant', () => {
+        const asset = canonicalAssetFromV1Resolve({
+            assetId: `solana-${MINT}`,
+            asset: { assetId: `solana-${MINT}`, category: 'crypto', aliases: [] },
+            variant: {
+                mint: MINT,
+                kind: 'spot',
+                trustTier: 'tier3',
+                tags: [],
+                advisory: { status: 'compromised', reason: 'exploit', url: null, since: 1 },
+            },
+        });
+        expect(asset.variants[0]!.advisory?.status).toBe('compromised');
+    });
+
     test('an asset without a variant yields no variants', () => {
         const asset = canonicalAssetFromV1Resolve({
             assetId: 'x',
@@ -43,5 +63,42 @@ describe('canonicalAssetFromV1Resolve', () => {
         });
         expect(asset.variants).toEqual([]);
         expect(asset.name).toBe(undefined);
+    });
+});
+
+describe('v1 detail → fallback market data', () => {
+    test('maps a v1 market block onto the v2 shape and drops non-finite values', () => {
+        const market = v1MarketToV2Market({
+            source: 'birdeye',
+            price: 1.5,
+            liquidity: 250_000,
+            volume24hUSD: 'n/a',
+            marketCap: Number.NaN,
+            fdv: 1_000_000,
+            logoURI: 'https://img/x.png',
+        });
+        expect(market.source).toBe('birdeye');
+        expect(market.metricsSource).toBeNull();
+        expect(market.price).toBe(1.5);
+        expect(market.liquidity).toBe(250_000);
+        expect(market.volume24hUSD).toBeNull();
+        expect(market.marketCap).toBeNull();
+        expect(market.fdv).toBe(1_000_000);
+        expect(market.trade24h).toBeNull();
+    });
+
+    test('collects per-mint markets, logos and asset stats', () => {
+        const out = v1DetailToFallback({
+            stats: { price: 2, liquidity: 10, volume24hUSD: 3, marketCap: 4, fdv: 5, totalSupply: 6 },
+            variants: [
+                { mint: MINT, market: { price: 2, logoURI: ' https://img/a.png ' } },
+                { mint: 'nomarket', market: null },
+            ],
+        });
+        expect(out.stats?.price).toBe(2);
+        expect(out.stats?.volume30dUSD).toBeNull();
+        expect(out.marketByMint.get(MINT)?.price).toBe(2);
+        expect(out.marketByMint.has('nomarket')).toBe(false);
+        expect(out.logoByMint.get(MINT)).toBe('https://img/a.png');
     });
 });

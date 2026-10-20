@@ -41,7 +41,7 @@ import { AssetStatsSection } from './components/asset-stats-section';
 import { AssetVariantsList } from './components/asset-variants-list';
 import { TokenPageBackgroundBlur, TokenPageScaffold, TokenPageSidebar } from './components/token-page-shell';
 import { normalizeOptionalText, pickFirstDisplayName, pickFirstSymbol } from './lib/asset-display';
-import { loadV2Asset, loadV2VariantOwner } from './lib/load-v2-asset';
+import { loadV1MintDetail, loadV2Asset, loadV2VariantOwner } from './lib/load-v2-asset';
 import { normalizeLogoSrc } from '@/lib/normalize-logo-src';
 
 /** Identity the streamed shell renders before the v2 response lands (registry or already-cached v2). */
@@ -154,7 +154,8 @@ function registryVariantToPageVariant(
         liquidityTier: variant.trustTier,
         stockVariantTier: variant.stockVariantTier ?? null,
         tags: [...variant.tags],
-        advisory: null,
+        // Compiled registry data never carries an advisory; the v1 fallback does, and it must survive.
+        advisory: variant.advisory ? { ...variant.advisory, source: variant.advisory.source ?? 'admin' } : null,
         rank: null,
         explorerUrl: explorerTokenUrl('solana', variant.mint),
         market: null,
@@ -747,6 +748,18 @@ async function loadAssetPageModel({ assetId, requestedName, requested, shell }: 
         : registryAsset
           ? registryAsset.variants.map(v => registryVariantToPageVariant(registryAsset, v))
           : [];
+    // v1-backed pages (mints v2 has no row for) take price/liquidity/supply from the v1 detail
+    // so they are not identity-only shells.
+    const v1Detail =
+        !api && shell.v1Fallback && registryAsset
+            ? await loadV1MintDetail(registryAsset.assetId, requested?.address ?? registryAsset.variants[0]?.mint ?? '')
+            : null;
+    if (v1Detail) {
+        for (const variant of variants) {
+            variant.market = v1Detail.marketByMint.get(variant.address) ?? variant.market;
+            variant.logoURI ??= v1Detail.logoByMint.get(variant.address) ?? null;
+        }
+    }
     const byKey = new Map(variants.map(v => [v.key, v] as const));
     // The detail payload is capped (the `solana` asset drops thin yield variants), so a
     // `?{chain}={address}` link to a variant outside the cap is fetched on its own and added
@@ -789,7 +802,7 @@ async function loadAssetPageModel({ assetId, requestedName, requested, shell }: 
     const referenceMarket = api?.referenceMarket ?? null;
     const shouldUseCanonicalMarket = !isVariantView && referenceMarket !== null;
     const shouldEnableRealtimePrice = isVariantView || referenceMarket?.source !== 'stock';
-    const canonicalStatsMarket = buildCanonicalStatsMarket(api?.stats, referenceMarket, category);
+    const canonicalStatsMarket = buildCanonicalStatsMarket(api?.stats ?? v1Detail?.stats, referenceMarket, category);
     // Variant view: merge the variant's PreStocks reference block into its
     // market snapshot so the stats section renders the same premium/implied
     // valuation treatment as the canonical view.

@@ -6,7 +6,14 @@ import type { CanonicalAsset } from '@tokens/asset-registry';
 
 import type { V2AssetResponse, V2VariantResponse } from '@/lib/api-v2-types';
 import { fetchApiAppJsonOrNull, fetchApiAppLookup, type ApiAppLookup } from '@/lib/api-app';
-import { canonicalAssetFromV1Resolve, singletonMintOf, type V1AssetsResolveResponse } from '@/lib/v1-asset-fallback';
+import {
+    canonicalAssetFromV1Resolve,
+    singletonMintOf,
+    v1DetailToFallback,
+    type V1AssetDetailResponse,
+    type V1AssetsResolveResponse,
+    type V1FallbackDetail,
+} from '@/lib/v1-asset-fallback';
 
 /** Enrichments the asset page renders per variant (Solana-only pipelines; `null` elsewhere). */
 export const V2_ASSET_PAGE_INCLUDES = 'executionQuality,pegHealth,preStocks';
@@ -57,4 +64,13 @@ export const loadV1MintFallback = cache(async (mint: string): Promise<CanonicalA
     );
     if (!resolved?.asset?.assetId) return null;
     return canonicalAssetFromV1Resolve(resolved);
+});
+
+/** Market data for a v1-fallback page: `GET /v1/assets/{assetId}?mint=` mapped to the v2 shapes the page renders. */
+export const loadV1MintDetail = cache(async (assetId: string, mint: string): Promise<V1FallbackDetail | null> => {
+    const detail = await fetchApiAppJsonOrNull<V1AssetDetailResponse>(
+        `/api/v1/assets/${encodeURIComponent(assetId.trim())}?mint=${encodeURIComponent(mint.trim())}`,
+        { next: { revalidate: 60 } },
+    );
+    return detail ? v1DetailToFallback(detail) : null;
 });
