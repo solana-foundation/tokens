@@ -305,11 +305,21 @@ const EVM_VARIANTS_ARG_SPECS = {
     maxAssets: { kind: 'int', fallback: 5_000, min: 1, max: 50_000 },
 } satisfies JobArgSpecs;
 
-/** Variant kind for a CoinGecko-derived deployment of a registered asset. */
+/**
+ * Variant kind for a CoinGecko-derived deployment of a registered asset.
+ *
+ * `assetPlatformId` (the coin's home chain) only exists once the per-coin
+ * metadata was fetched, which the curated refresh does for curated assets
+ * only. When it is missing the `platforms` map decides: a Solana deployment
+ * means the EVM copies are bridged (this registry is Solana-first), a single
+ * deployment anywhere is native by definition, and anything else stays
+ * `spot` so the token is not excluded from supply on a guess.
+ */
 export function deriveVariantKindForChain(args: {
     category: string;
     assetPlatformId: string | null;
     chain: ChainKind;
+    platforms?: Record<string, string>;
 }): string {
     switch (args.category) {
         case 'stablecoin':
@@ -318,8 +328,14 @@ export function deriveVariantKindForChain(args: {
             return 'lst';
         case 'equity':
             return 'tokenized_equity';
-        default:
-            return args.assetPlatformId === CHAINS[args.chain].providers.coingeckoPlatform ? 'native' : 'bridged';
+        default: {
+            const homePlatform = CHAINS[args.chain].providers.coingeckoPlatform;
+            if (args.assetPlatformId !== null) return args.assetPlatformId === homePlatform ? 'native' : 'bridged';
+            const deployed = Object.entries(args.platforms ?? {}).filter(([, address]) => address.trim() !== '');
+            if (deployed.some(([platform]) => platform === CHAINS.solana.providers.coingeckoPlatform)) return 'bridged';
+            if (deployed.length === 1 && deployed[0]![0] === homePlatform) return 'native';
+            return 'spot';
+        }
     }
 }
 
@@ -430,6 +446,7 @@ export async function syncEvmVariants(deps: V2AssetsCronDeps, rawArgs: unknown):
                     category: asset.category,
                     assetPlatformId: asset.assetPlatformId,
                     chain,
+                    platforms: asset.platforms,
                 }),
                 trustTier: 'tier3',
                 tags: [DERIVED_VARIANT_TAG, `coin:${asset.coingeckoId}`],
@@ -563,6 +580,9 @@ export async function syncEvmVariants(deps: V2AssetsCronDeps, rawArgs: unknown):
             }
         }
     }
+    // CronResult contract: writes attempted and none succeeded is a failed run, so the
+    // dispatcher answers 500 and Cloud Scheduler retries instead of waiting a day.
+    const allWritesFailed = !args.dryRun && failed > 0 && inserted + updated + skippedOwned === 0;
     const safeToDeactivate = toDeactivate.filter(row => !unwrittenAssets.has(row.assetId));
     const keptPendingWrite = toDeactivate.length - safeToDeactivate.length;
     const deactivated =
@@ -577,7 +597,12 @@ export async function syncEvmVariants(deps: V2AssetsCronDeps, rawArgs: unknown):
     }
     if (keptUnscanned > 0) {
         console.warn(
-            JSON.stringify({ job: V2_EVM_VARIANTS_SYNC_JOB, event: 'v2_evm_variants_kept_unscanned', keptUnscanned, maxAssets: args.maxAssets }),
+            JSON.stringify({
+                job: V2_EVM_VARIANTS_SYNC_JOB,
+                event: 'v2_evm_variants_kept_unscanned',
+                keptUnscanned,
+                maxAssets: args.maxAssets,
+            }),
         );
     }
     if (keptStale > 0) {
@@ -589,7 +614,7 @@ export async function syncEvmVariants(deps: V2AssetsCronDeps, rawArgs: unknown):
     const summary: EvmVariantsSyncSummary = {
         job: V2_EVM_VARIANTS_SYNC_JOB,
         event: V2_EVM_VARIANTS_SYNC_EVENT,
-        ok: true,
+        ok: !allWritesFailed,
         dryRun: args.dryRun,
         chains,
         assetsScanned: assets.length,
@@ -610,9 +635,10 @@ export async function syncEvmVariants(deps: V2AssetsCronDeps, rawArgs: unknown):
     console.log(JSON.stringify(summary));
 
     return {
-        ok: true,
+        ok: !allWritesFailed,
         processed: assets.length,
         durationMs: summary.duration_ms,
+        ...(allWritesFailed ? { reason: 'upserts_failed' } : {}),
         dryRun: args.dryRun,
         chains,
         assetsWithVariants: summary.assetsWithVariants,

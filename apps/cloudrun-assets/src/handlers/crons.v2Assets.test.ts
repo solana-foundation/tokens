@@ -25,9 +25,7 @@ const NOW = 1_800_000_000_000;
 const USDC_ETH = '0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48';
 const USDC_BASE = '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913';
 
-function fakeRepo(
-    overrides: Partial<V2AssetsJobsRepo> = {},
-): V2AssetsJobsRepo & {
+function fakeRepo(overrides: Partial<V2AssetsJobsRepo> = {}): V2AssetsJobsRepo & {
     upserts: V2DerivedVariantUpsert[];
     deactivated: unknown[];
     touched: V2VariantKeyRef[];
@@ -136,6 +134,17 @@ describe('deriveVariantKindForChain', () => {
         expect(
             deriveVariantKindForChain({ category: 'crypto', assetPlatformId: 'binance-smart-chain', chain: 'bnb' }),
         ).toBe('native');
+    });
+
+    test('without the home platform, the platforms map decides instead of defaulting to bridged', () => {
+        const base = { category: 'crypto', assetPlatformId: null, chain: 'ethereum' as const };
+        // A Solana deployment marks the EVM copies as bridged.
+        expect(deriveVariantKindForChain({ ...base, platforms: { solana: 'So1', ethereum: '0xaa' } })).toBe('bridged');
+        // The token's only deployment is this chain: native by definition.
+        expect(deriveVariantKindForChain({ ...base, platforms: { ethereum: '0xaa', base: '' } })).toBe('native');
+        // Several EVM deployments and no home: not excluded from supply on a guess.
+        expect(deriveVariantKindForChain({ ...base, platforms: { ethereum: '0xaa', arbitrum: '0xbb' } })).toBe('spot');
+        expect(deriveVariantKindForChain(base)).toBe('spot');
     });
 });
 
@@ -378,12 +387,33 @@ describe('sync-v2-evm-variants', () => {
             },
         });
         const result = await syncEvmVariants(deps(repo), { chains: ['ethereum', 'base'] });
+        expect(result.ok).toBe(true);
+        expect(result.partial).toBe(true);
         expect(result.failed).toBe(1);
         // usd-coin's old Base row stays until its new Base row is actually written…
         expect(result.keptPendingWrite).toBe(1);
         // …while the inactive asset's row, unaffected by the failure, is still removed.
         expect(result.deactivated).toBe(1);
         expect(repo.deactivated).toEqual([{ chain: 'base', address: goneRow.address, assetId: 'gone' }]);
+    });
+
+    test('a run where every write fails is ok:false so the scheduler retries', async () => {
+        const repo = fakeRepo({
+            async listAssetsWithCoinPlatforms() {
+                return [usdcCoin(NOW)];
+            },
+            async listActiveAssets() {
+                return [{ assetId: 'usd-coin-asset', category: 'stablecoin' }];
+            },
+            async upsertDerivedVariant() {
+                throw new Error('db down');
+            },
+        });
+        const result = await syncEvmVariants(deps(repo), { chains: ['ethereum', 'base'] });
+        expect(result.ok).toBe(false);
+        expect(result.reason).toBe('upserts_failed');
+        expect(result.failed).toBe(2);
+        expect(result.inserted).toBe(0);
     });
 
     test('an asset that is no longer active loses its derived rows regardless of coin freshness', async () => {
