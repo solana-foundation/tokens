@@ -34,7 +34,7 @@
     },
     "dependencies": {
         "@clickhouse/client": "^1.23.1",
-        "hono": "^4.13.0"
+        "hono": "^4.13.13"
     },
     "devDependencies": {
         "@grafana/lezer-logql": "0.3.0",
