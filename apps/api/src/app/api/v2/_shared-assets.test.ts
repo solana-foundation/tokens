@@ -89,6 +89,7 @@ describe('headlineOnChainStats', () => {
     const aggregate = (excludedFromSupplyCount: number) => ({
         liquidity: 156,
         volume24hUSD: 40,
+        trade24h: 9,
         marketCap: 1500,
         fdv: 1500,
         circulatingSupply: 1500,
@@ -308,6 +309,8 @@ describe('detail include= enrichments', () => {
         isActive: true,
         createdAt: 0,
         updatedAt: 0,
+        region: null,
+        industry: null,
         name: 'US Dollar',
         symbol: 'USD',
     };
@@ -420,6 +423,8 @@ describe('primary variant selection', () => {
                 isActive: true,
                 createdAt: 0,
                 updatedAt: 0,
+                region: null,
+                industry: null,
                 name: 'Study',
                 symbol: 'STDY',
             },
