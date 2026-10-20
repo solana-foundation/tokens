@@ -20,7 +20,7 @@ import {
     buildShareUrls,
     resolveSocialAdvisory,
     resolveVariantSocialData,
-    selectVariantForKey,
+    selectOrLoadVariantForKey,
 } from '@/lib/token-social-image-data';
 import { AssetPage, type AssetShellIdentity } from './asset-page';
 import { pickFirstDisplayName, pickFirstSymbol } from './lib/asset-display';
@@ -129,7 +129,16 @@ async function buildAssetMetadata(
     requested: RequestedVariantRef | null,
 ): Promise<Metadata> {
     const apiAsset = await loadV2Asset(resolved.assetId);
-    const selectedVariant = requested && apiAsset ? selectVariantForKey(apiAsset.variants, requested.key) : null;
+    // Same lookup the page body uses, so a variant the capped detail payload left out still
+    // drives the title, canonical URL, share images and advisory prefix.
+    const selectedVariant = apiAsset
+        ? await selectOrLoadVariantForKey({
+              variants: apiAsset.variants,
+              assetId: apiAsset.assetId,
+              requested,
+              loadOwner: loadV2VariantOwner,
+          })
+        : null;
 
     const displayNameRaw =
         pickFirstDisplayName(apiAsset?.name, apiAsset?.primaryVariant?.name, resolved.shell.name, requestedName) ||

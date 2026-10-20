@@ -9,6 +9,7 @@ import {
     resolveVariantSocialData,
     selectVariantForKey,
     type TokenSocialVariant,
+    selectOrLoadVariantForKey,
 } from './token-social-image-data';
 
 const SPACEX_BACKPACK_MINT = 'SPCXxcqXj6e5dJDVNovHN8744zkbhM2bYudU45BimGb';
@@ -218,5 +219,55 @@ describe('token social image data helpers', () => {
         expect(data.price).toBe(1);
         expect(data.priceChange).toBe(null);
         expect(data.priceChangeLabel).toBe(null);
+    });
+});
+
+describe('selectOrLoadVariantForKey', () => {
+    const listed = { key: 'solana:AAA', chain: 'solana' as const, address: 'AAA' };
+    const requested = (address: string) => ({ chain: 'solana' as const, address, key: `solana:${address}` });
+
+    test('returns the listed variant without loading', async () => {
+        let loads = 0;
+        const out = await selectOrLoadVariantForKey({
+            variants: [listed],
+            assetId: 'x',
+            requested: requested('AAA'),
+            loadOwner: async () => {
+                loads += 1;
+                return null;
+            },
+        });
+        expect(out).toBe(listed);
+        expect(loads).toBe(0);
+    });
+
+    test('loads a variant the capped list left out when it belongs to the asset', async () => {
+        const extra = { key: 'solana:BBB', chain: 'solana' as const, address: 'BBB' };
+        const out = await selectOrLoadVariantForKey({
+            variants: [listed],
+            assetId: 'x',
+            requested: requested('BBB'),
+            loadOwner: async () => ({ asset: { assetId: 'x' }, variant: extra }),
+        });
+        expect(out).toBe(extra);
+    });
+
+    test('ignores a variant owned by another asset and a missing request', async () => {
+        const other = { key: 'solana:CCC', chain: 'solana' as const, address: 'CCC' };
+        const out = await selectOrLoadVariantForKey({
+            variants: [listed],
+            assetId: 'x',
+            requested: requested('CCC'),
+            loadOwner: async () => ({ asset: { assetId: 'y' }, variant: other }),
+        });
+        expect(out).toBeNull();
+        expect(
+            await selectOrLoadVariantForKey({
+                variants: [listed],
+                assetId: 'x',
+                requested: null,
+                loadOwner: async () => null,
+            }),
+        ).toBeNull();
     });
 });

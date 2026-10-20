@@ -41,6 +41,7 @@ import { AssetStatsSection } from './components/asset-stats-section';
 import { AssetVariantsList } from './components/asset-variants-list';
 import { TokenPageBackgroundBlur, TokenPageScaffold, TokenPageSidebar } from './components/token-page-shell';
 import { normalizeOptionalText, pickFirstDisplayName, pickFirstSymbol } from './lib/asset-display';
+import { selectOrLoadVariantForKey } from '@/lib/token-social-image-data';
 import { loadV1MintDetail, loadV2Asset, loadV2VariantOwner } from './lib/load-v2-asset';
 import { normalizeLogoSrc } from '@/lib/normalize-logo-src';
 
@@ -765,9 +766,14 @@ async function loadAssetPageModel({ assetId, requestedName, requested, shell }: 
     // `?{chain}={address}` link to a variant outside the cap is fetched on its own and added
     // to the page model instead of silently falling back to the canonical view.
     if (requested && api && !byKey.has(requested.key)) {
-        const owner = await loadV2VariantOwner(requested.chain, requested.address);
-        if (owner && owner.asset.assetId === canonicalAssetId) {
-            const extra = toAssetPageVariant(owner.variant, { symbol: assetSymbol, name: assetName });
+        const missing = await selectOrLoadVariantForKey({
+            variants: api.variants,
+            assetId: api.assetId,
+            requested,
+            loadOwner: loadV2VariantOwner,
+        });
+        if (missing) {
+            const extra = toAssetPageVariant(missing, { symbol: assetSymbol, name: assetName });
             variants.push(extra);
             byKey.set(extra.key, extra);
         }

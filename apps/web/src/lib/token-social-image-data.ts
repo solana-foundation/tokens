@@ -1,3 +1,4 @@
+import type { ChainKind } from '@tokens/asset-registry/chains';
 import { CHAINS, inferAddressFamily } from '@tokens/asset-registry/chains';
 import { normalizeAdvisory, type AssetAdvisory } from '@/lib/asset-advisory';
 import { getMintLogoOverride } from '@/lib/logo-overrides';
@@ -69,6 +70,26 @@ export function selectVariantForKey<T extends Pick<TokenSocialVariant, 'key'>>(
     const normalizedKey = (key ?? '').trim();
     if (!normalizedKey || !variants) return null;
     return variants.find(variant => variant.key === normalizedKey) ?? null;
+}
+
+/**
+ * The requested variant from the asset's variant list, or, when the (capped)
+ * list left it out, loaded on its own via `loadOwner` and accepted only if it
+ * belongs to this asset. Keeps the page body, metadata and share image in
+ * agreement about which token is selected.
+ */
+export async function selectOrLoadVariantForKey<T extends Pick<TokenSocialVariant, 'key'>>(args: {
+    variants: readonly T[] | undefined | null;
+    assetId: string;
+    requested: { chain: ChainKind; address: string; key: string } | null;
+    loadOwner: (chain: ChainKind, address: string) => Promise<{ asset: { assetId: string }; variant: T } | null>;
+}): Promise<T | null> {
+    if (!args.requested) return null;
+    const listed = selectVariantForKey(args.variants, args.requested.key);
+    if (listed) return listed;
+    const owner = await args.loadOwner(args.requested.chain, args.requested.address);
+    if (!owner || owner.asset.assetId !== args.assetId) return null;
+    return owner.variant;
 }
 
 function finiteNumberOrNull(value: number | undefined | null): number | null {

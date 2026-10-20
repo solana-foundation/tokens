@@ -18,7 +18,7 @@ import {
     readRequestedVariant,
     resolveSocialAdvisory,
     resolveVariantSocialData,
-    selectVariantForKey,
+    selectOrLoadVariantForKey,
     type TokenSocialAsset,
     type TokenSocialVariant,
 } from '@/lib/token-social-image-data';
@@ -608,7 +608,14 @@ export async function getTokenSocialImageResponse(request: Request, name: string
 
         if (asset) {
             const apiAsset = await fetchV2Asset(origin, asset.assetId);
-            selectedVariant = requestedVariant ? selectVariantForKey(apiAsset?.variants, requestedVariant.key) : null;
+            selectedVariant = apiAsset
+                ? await selectOrLoadVariantForKey({
+                      variants: apiAsset.variants,
+                      assetId: apiAsset.assetId,
+                      requested: requestedVariant,
+                      loadOwner: (chain, address) => fetchV2VariantOwner(origin, chain, address),
+                  })
+                : null;
             socialAdvisory = resolveSocialAdvisory({
                 selectedVariant,
                 primaryVariant: apiAsset?.primaryVariant ?? null,
