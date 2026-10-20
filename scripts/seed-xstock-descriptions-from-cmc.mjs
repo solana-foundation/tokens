@@ -33,8 +33,8 @@ function slugify(value) {
 
 function normalizeText(value) {
     return String(value ?? '')
-        .replace(/<script\b[^>]*>[\s\S]*?<\/script\s*>/gi, ' ')
-        .replace(/<style\b[^>]*>[\s\S]*?<\/style\s*>/gi, ' ')
+        .replace(/<script\b[^>]*>[\s\S]*?<\/script\b[^>]*>/gi, ' ')
+        .replace(/<style\b[^>]*>[\s\S]*?<\/style\b[^>]*>/gi, ' ')
         .replace(/<[^>]+>/g, ' ')
         .replace(/&quot;/g, '"')
         .replace(/&#x27;/g, "'")
