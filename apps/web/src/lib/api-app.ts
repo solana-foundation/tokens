@@ -131,6 +131,21 @@ export async function fetchApiAppJsonOrNull<T>(path: string, init?: NextFetchIni
     return null;
 }
 
+export type ApiAppLookup<T> = { status: 'ok'; value: T } | { status: 'not_found' } | { status: 'error' };
+
+/**
+ * Like `fetchApiAppJsonOrNull`, but a 404 stays distinguishable from an outage:
+ * callers that fall back to local data on failure must not do so for a 404.
+ */
+export async function fetchApiAppLookup<T>(path: string, init?: NextFetchInit): Promise<ApiAppLookup<T>> {
+    const result = await Effect.runPromise(Effect.result(apiAppJson<T>({ path, ...(init ? { init } : {}) })));
+    if (Result.isSuccess(result)) return { status: 'ok', value: result.success };
+    const error = result.failure;
+    if (error._tag === 'ApiResponseError' && error.status === 404) return { status: 'not_found' };
+    logApiAppFailure(path, error);
+    return { status: 'error' };
+}
+
 /**
  * Fetch JSON from the API, preserving the typed failure for callers that need
  * to distinguish failure from no-data. Adopt opportunistically.

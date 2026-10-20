@@ -23,7 +23,7 @@ import {
 } from '@/lib/token-social-image-data';
 import { AssetPage, type AssetShellIdentity } from './asset-page';
 import { pickFirstDisplayName, pickFirstSymbol } from './lib/asset-display';
-import { loadV2Asset, loadV2VariantOwner } from './lib/load-v2-asset';
+import { isRemovedRegistryAsset, loadV2Asset, loadV2VariantOwner } from './lib/load-v2-asset';
 
 type ChainSearchParams = Partial<Record<ChainKind | 'view', string | string[] | undefined>>;
 
@@ -194,7 +194,10 @@ export async function generateMetadata({ params, searchParams }: CoinPageProps):
     const requested = readRequestedVariant(resolvedSearchParams) ?? requestedVariantFromPathName(name);
 
     const resolved = await resolveAssetRef(name, requested);
-    if (resolved) return await buildAssetMetadata(name, resolved, requested);
+    // The compiled registry can still carry an asset an admin deleted; v2 (tombstone-aware)
+    // is the authority on whether it may be indexed, as the v1 resolver was before.
+    const removed = resolved?.shell.registryAsset ? await isRemovedRegistryAsset(resolved.assetId) : false;
+    if (resolved && !removed) return await buildAssetMetadata(name, resolved, requested);
 
     return {
         title: 'Token Not Found',
