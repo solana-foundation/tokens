@@ -53,6 +53,8 @@ export interface AssetShellIdentity {
     coingeckoId?: string;
     /** Compiled registry asset when the id is in the registry (supplies Solana variants for the fallback). */
     registryAsset?: CanonicalAsset | null;
+    /** `registryAsset` came from the v1 resolver (a mint v2 has no variant row for); v2 is never consulted. */
+    v1Fallback?: boolean;
 }
 
 interface AssetPageProps {

@@ -9,6 +9,7 @@ import { CHAINS, CHAIN_KINDS, inferAddressFamily, type ChainKind } from '@tokens
 import { advisoryMetadataPrefix } from '@/lib/asset-advisory';
 import { formatChainList } from '@/lib/format-chain-list';
 import { cleanTokenName } from '@/lib/logo-overrides';
+import { singletonMintOf } from '@/lib/v1-asset-fallback';
 import {
     firstString,
     readRequestedVariant,
@@ -23,7 +24,7 @@ import {
 } from '@/lib/token-social-image-data';
 import { AssetPage, type AssetShellIdentity } from './asset-page';
 import { pickFirstDisplayName, pickFirstSymbol } from './lib/asset-display';
-import { isRemovedRegistryAsset, loadV2Asset, loadV2VariantOwner } from './lib/load-v2-asset';
+import { isRemovedRegistryAsset, loadV1MintFallback, loadV2Asset, loadV2VariantOwner } from './lib/load-v2-asset';
 
 type ChainSearchParams = Partial<Record<ChainKind | 'view', string | string[] | undefined>>;
 
@@ -75,15 +76,40 @@ async function resolveAssetRef(name: string, requested: RequestedVariantRef | nu
     if (family === 'evm') return null;
     if (family === 'svm') {
         const owner = await loadV2VariantOwner('solana', name);
-        if (!owner) return null;
+        if (!owner) return await resolveV1MintFallback(name);
         const asset = await loadV2Asset(owner.asset.assetId);
         if (!asset) return null;
         return { assetId: asset.assetId, shell: shellFromV2(asset) };
     }
 
+    // `/solana-<mint>` (the v1 singleton id main redirected launch coins to) is served by the same fallback.
+    const singletonMint = singletonMintOf(name);
+    if (singletonMint) return await resolveV1MintFallback(singletonMint);
+
     const asset = await loadV2Asset(name);
     if (!asset) return null;
     return { assetId: asset.assetId, shell: shellFromV2(asset) };
+}
+
+/**
+ * Mints v1 serves but v2 has no variant row for (approved launch coins, Sanctum-only LSTs)
+ * keep their page through the v1 resolver until v2 grows a tier for them.
+ */
+async function resolveV1MintFallback(mint: string): Promise<ResolvedAssetRef | null> {
+    const asset = await loadV1MintFallback(mint);
+    if (!asset) return null;
+    return {
+        assetId: asset.assetId,
+        shell: {
+            assetId: asset.assetId,
+            ...(asset.name ? { name: asset.name } : {}),
+            ...(asset.symbol ? { symbol: asset.symbol } : {}),
+            category: asset.category,
+            ...(asset.coingeckoId ? { coingeckoId: asset.coingeckoId } : {}),
+            registryAsset: asset,
+            v1Fallback: true,
+        },
+    };
 }
 
 function shellFromV2(asset: NonNullable<Awaited<ReturnType<typeof loadV2Asset>>>): AssetShellIdentity {
@@ -196,7 +222,10 @@ export async function generateMetadata({ params, searchParams }: CoinPageProps):
     const resolved = await resolveAssetRef(name, requested);
     // The compiled registry can still carry an asset an admin deleted; v2 (tombstone-aware)
     // is the authority on whether it may be indexed, as the v1 resolver was before.
-    const removed = resolved?.shell.registryAsset ? await isRemovedRegistryAsset(resolved.assetId) : false;
+    const removed =
+        resolved?.shell.registryAsset && !resolved.shell.v1Fallback
+            ? await isRemovedRegistryAsset(resolved.assetId)
+            : false;
     if (resolved && !removed) return await buildAssetMetadata(name, resolved, requested);
 
     return {

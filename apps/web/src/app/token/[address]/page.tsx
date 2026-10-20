@@ -15,7 +15,7 @@ import { fetchApiAppJsonOrNull } from '@/lib/api-app';
 import type { V2Variant, V2VariantsBatchResponse } from '@/lib/api-v2-types';
 import { buildVariantHref } from '@/lib/coin-href';
 import { firstString } from '@/lib/requested-variant';
-import { loadV2VariantOwner } from '@/app/[name]/lib/load-v2-asset';
+import { loadV1MintFallback, loadV2VariantOwner } from '@/app/[name]/lib/load-v2-asset';
 
 interface TokenPageProps {
     params: Promise<{ address: string }>;
@@ -73,11 +73,27 @@ const resolveTokenRoute = cache(async (rawAddress: string, rawChain: string | un
         }
 
         const owner = await loadV2VariantOwner('solana', address);
-        if (!owner?.asset?.assetId) return { kind: 'not-found' } satisfies TokenRouteResolution;
+        if (owner?.asset?.assetId) {
+            return {
+                kind: 'redirect',
+                href: buildVariantHref(owner.asset.assetId, { chain: 'solana', address }),
+                title: variantTitle(owner.variant, owner.asset),
+            } satisfies TokenRouteResolution;
+        }
+
+        // Mints only v1 knows (approved launch coins, Sanctum-only LSTs): the bare mint page
+        // renders them through the v1 fallback.
+        const fallback = await loadV1MintFallback(address);
+        if (!fallback) return { kind: 'not-found' } satisfies TokenRouteResolution;
+        const fallbackVariant = fallback.variants[0];
         return {
             kind: 'redirect',
-            href: buildVariantHref(owner.asset.assetId, { chain: 'solana', address }),
-            title: variantTitle(owner.variant, owner.asset),
+            href: `/${encodeURIComponent(address)}`,
+            title: titleFor(
+                fallbackVariant?.name ?? fallback.name,
+                fallbackVariant?.symbol ?? fallback.symbol,
+                fallback.assetId,
+            ),
         } satisfies TokenRouteResolution;
     }
 

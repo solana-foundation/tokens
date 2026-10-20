@@ -2,8 +2,11 @@ import { cache } from 'react';
 
 import type { ChainKind } from '@tokens/asset-registry/chains';
 
+import type { CanonicalAsset } from '@tokens/asset-registry';
+
 import type { V2AssetResponse, V2VariantResponse } from '@/lib/api-v2-types';
 import { fetchApiAppJsonOrNull, fetchApiAppLookup, type ApiAppLookup } from '@/lib/api-app';
+import { canonicalAssetFromV1Resolve, singletonMintOf, type V1AssetsResolveResponse } from '@/lib/v1-asset-fallback';
 
 /** Enrichments the asset page renders per variant (Solana-only pipelines; `null` elsewhere). */
 export const V2_ASSET_PAGE_INCLUDES = 'executionQuality,pegHealth,preStocks';
@@ -15,7 +18,8 @@ export const V2_ASSET_PAGE_INCLUDES = 'executionQuality,pegHealth,preStocks';
  */
 export const lookupV2Asset = cache(async (ref: string): Promise<ApiAppLookup<V2AssetResponse>> => {
     const id = ref.trim();
-    if (!id) return { status: 'not_found' };
+    // v1 singleton ids (`solana-<mint>`) are not v2 asset ids (v2 answers 400); they are served by the v1 fallback.
+    if (!id || singletonMintOf(id)) return { status: 'not_found' };
     return fetchApiAppLookup<V2AssetResponse>(
         `/api/v2/assets/${encodeURIComponent(id)}?include=${V2_ASSET_PAGE_INCLUDES}`,
         { next: { revalidate: 60 } },
@@ -41,3 +45,16 @@ export const loadV2VariantOwner = cache(async (chain: ChainKind, address: string
         next: { revalidate: 60 },
     }),
 );
+
+/**
+ * v1 resolver fallback for a Solana mint v2 has no variant row for (approved launch coins,
+ * Sanctum-only LSTs). Returns the owning asset shaped like a compiled-registry asset, or null.
+ */
+export const loadV1MintFallback = cache(async (mint: string): Promise<CanonicalAsset | null> => {
+    const resolved = await fetchApiAppJsonOrNull<V1AssetsResolveResponse>(
+        `/api/v1/assets/resolve?mint=${encodeURIComponent(mint.trim())}`,
+        { next: { revalidate: 60 } },
+    );
+    if (!resolved?.asset?.assetId) return null;
+    return canonicalAssetFromV1Resolve(resolved);
+});
