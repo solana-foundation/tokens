@@ -786,6 +786,7 @@ export function route<T, Ctx = unknown>(
                 durationMs: latencyMs,
                 errorType: info._tag,
                 errorMessage: info.message,
+                ...(info.details !== undefined ? { errorDetails: info.details } : {}),
                 source: 'route',
                 authType: auth ? 'api_key' : 'public',
                 authFailure: status === 401 || status === 403,

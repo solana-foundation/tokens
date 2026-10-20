@@ -266,7 +266,7 @@ function emptyV2AssetsReadsRepo(): V2AssetsReadsRepo {
 }
 
 function emptyLaunchpadReadsRepo(): LaunchpadReadsRepo {
-    return { async listActiveByQuoteMints() { return []; } };
+    return { async listActiveByQuoteMints() { return []; }, async listApprovedActiveMints() { return []; } };
 }
 
 function emptySolanaDataReadsRepo(): SolanaDataReadsRepo {

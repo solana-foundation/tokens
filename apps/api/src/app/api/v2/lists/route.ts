@@ -2,7 +2,7 @@ import { Effect, Schema } from 'effect';
 
 import { route, type PlatformAuthContext } from '@/effect/next-route';
 import { withStaleFallback } from '@/effect/stale-response-cache';
-import { decodeLimit, decodeOffset, decodeUnknownOrBadRequest, tapErrorAndDefault } from '@tokens/effect';
+import { decodeLimit, decodeOffset, decodeUnknownOrBadRequest, readJsonBody, tapErrorAndDefault } from '@tokens/effect';
 import {
     tokenListsCountPublished,
     tokenListsCreate,
@@ -103,7 +103,7 @@ const createBodySchema = Schema.Struct({
 export const POST = route(
     (request: Request, ctx: { platformAuth: PlatformAuthContext }) =>
         Effect.gen(function* () {
-            const json = yield* Effect.tryPromise(() => request.json());
+            const json = yield* readJsonBody(request);
             const body = yield* decodeUnknownOrBadRequest(createBodySchema, json, 'Invalid body');
 
             const outcome = yield* tokenListsCreate({

@@ -75,12 +75,9 @@ import {
     type TokenMarketSnapshot,
     type VariantExecutionQualitySnapshot,
 } from '../_asset-helpers';
-import {
-    buildPreStocksCanonicalMarket,
-    freshPreStocksByMint,
-    selectPreStocksMints,
-} from '../_prestocks-canonical';
+import { buildPreStocksCanonicalMarket, freshPreStocksByMint, selectPreStocksMints } from '../_prestocks-canonical';
 import { looksLikeSolanaMintAddress, mintToSingletonAssetId } from '../_singleton-asset-id';
+import { partitionRegisteredMints, v1RegisteredOnlyEnabled } from '../_registered-only';
 import { normalizeCoinGeckoCoinIdForAsset } from '../_coingecko-id';
 
 function parseCategory(raw: string | null): AssetCategory | null {
@@ -236,19 +233,21 @@ export const GET = route(
             // preserved by construction because the composite returns the same
             // rows the individual calls would.
             const prefetch: SearchPrefetchResult | null = yield* searchPrefetchForApi({
-                    query: qOriginal,
-                    ...(category ? { category } : {}),
-                    ...(region ? { region } : {}),
-                    ...(industry ? { industry } : {}),
-                    searchLimit: Math.min(limit * 2, 50),
-                    tokensLimit: Math.min(limit * 2, 50),
-                    includeSanctum: shouldConsiderSanctumLsts,
-                    includeTokensSearch: shouldSearchTokens,
-                    ...(additionalAssetIds.length > 0 ? { additionalAssetIds } : {}),
-                    ...(additionalMints.length > 0 ? { additionalMints } : {}),
-                    ...(additionalCoingeckoIds.length > 0 ? { additionalCoingeckoIds } : {}),
-                    combinedAssetIdsCap: Math.max(limit * 4, 250),
-                }).pipe(tapErrorAndDefault<SearchPrefetchResult | null>('assets.search.composite', null, { query: qOriginal }));
+                query: qOriginal,
+                ...(category ? { category } : {}),
+                ...(region ? { region } : {}),
+                ...(industry ? { industry } : {}),
+                searchLimit: Math.min(limit * 2, 50),
+                tokensLimit: Math.min(limit * 2, 50),
+                includeSanctum: shouldConsiderSanctumLsts,
+                includeTokensSearch: shouldSearchTokens,
+                ...(additionalAssetIds.length > 0 ? { additionalAssetIds } : {}),
+                ...(additionalMints.length > 0 ? { additionalMints } : {}),
+                ...(additionalCoingeckoIds.length > 0 ? { additionalCoingeckoIds } : {}),
+                combinedAssetIdsCap: Math.max(limit * 4, 250),
+            }).pipe(
+                tapErrorAndDefault<SearchPrefetchResult | null>('assets.search.composite', null, { query: qOriginal }),
+            );
 
             const sanctumMatch = prefetch
                 ? prefetch.sanctumMatch
@@ -259,15 +258,17 @@ export const GET = route(
                   : null;
             const effectiveAssetQuery = sanctumMatch ? 'solana' : q;
 
-            const assetsFromDb = (prefetch
-                ? prefetch.assets
-                : yield* cloudRunSearch({
+            const assetsFromDb = (
+                prefetch
+                    ? prefetch.assets
+                    : yield* cloudRunSearch({
                           query: effectiveAssetQuery,
                           ...(category ? { category } : {}),
                           ...(region ? { region } : {}),
                           ...(industry ? { industry } : {}),
                           limit: Math.min(limit * 2, 50),
-                      })) as AssetDocLike[];
+                      })
+            ) as AssetDocLike[];
             const legacyMintAssetsFromDb = assetsFromDb.filter(a => looksLikeSolanaMintAddress(a.assetId));
             const canonicalAssetsFromDb = assetsFromDb.filter(a => !looksLikeSolanaMintAddress(a.assetId));
             const assetImageById = new Map<string, string>();
@@ -279,9 +280,9 @@ export const GET = route(
                 ? prefetch.tokens
                 : shouldSearchTokens
                   ? ((yield* tokensSearchTokens({
-                            query: qOriginal,
-                            limit: Math.min(limit * 2, 50),
-                        }).pipe(tapErrorAndDefault('assets.search.tokenSearch', [], { query: qOriginal }))) as Array<{
+                        query: qOriginal,
+                        limit: Math.min(limit * 2, 50),
+                    }).pipe(tapErrorAndDefault('assets.search.tokenSearch', [], { query: qOriginal }))) as Array<{
                         address: string;
                         symbol: string;
                         name: string;
@@ -357,8 +358,8 @@ export const GET = route(
                 const deletedRegistryRefs = new Set(
                     registryRefs.length > 0
                         ? yield* listDeletedRefs({
-                                  refs: registryRefs.slice(0, 2000),
-                              }).pipe(tapErrorAndDefault('assets.search.registryDeletedRefs', [], { query: qOriginal }))
+                              refs: registryRefs.slice(0, 2000),
+                          }).pipe(tapErrorAndDefault('assets.search.registryDeletedRefs', [], { query: qOriginal }))
                         : [],
                 );
 
@@ -628,6 +629,27 @@ export const GET = route(
                     });
                 }
 
+                // v1 serves registered assets only. Token-index matches that are
+                // neither DB variants nor in the compiled registry may still be
+                // registered through the later tiers (approved launch coins, Sanctum
+                // LSTs); ask once for the whole candidate set before the loop.
+                const laterTierCandidates = v1RegisteredOnlyEnabled()
+                    ? tokenMatches
+                          .map(token => (token.address ?? '').trim())
+                          .filter(
+                              mint =>
+                                  looksLikeSolanaMintAddress(mint) &&
+                                  !canonicalMintSet.has(mint) &&
+                                  !isHiddenMint(mint) &&
+                                  !getVariantByMint(mint),
+                          )
+                    : [];
+                const registeredByLaterTiers = new Set(
+                    laterTierCandidates.length > 0
+                        ? (yield* partitionRegisteredMints(laterTierCandidates)).registered
+                        : [],
+                );
+
                 for (const token of tokenMatches) {
                     if (singletonAssets.length >= singletonSlots) break;
 
@@ -645,6 +667,10 @@ export const GET = route(
                         }
                         continue;
                     }
+
+                    // Unregistered (no DB variant, not in the registry, not an approved
+                    // launch coin or LST): never synthesized into a `solana-<mint>` asset.
+                    if (v1RegisteredOnlyEnabled() && !registeredByLaterTiers.has(mint)) continue;
 
                     const singletonAssetId = mintToSingletonAssetId(mint);
                     if (seenSingletonAssetIds.has(singletonAssetId)) continue;
@@ -731,7 +757,8 @@ export const GET = route(
                     const missingMints = uniqueMints.filter(m => !prefetchMints.has(m));
                     if (missingMints.length > 0) {
                         const gapChunks: string[][] = [];
-                        for (let i = 0; i < missingMints.length; i += 250) gapChunks.push(missingMints.slice(i, i + 250));
+                        for (let i = 0; i < missingMints.length; i += 250)
+                            gapChunks.push(missingMints.slice(i, i + 250));
                         const marketChunks = yield* Effect.all(
                             gapChunks.map(chunk => variantMarketsGetLatestByMints({ mints: chunk })),
                             { concurrency: 4 },
@@ -746,7 +773,9 @@ export const GET = route(
                         const fillChunks = yield* Effect.all(
                             gapChunks.map(chunk =>
                                 variantFillQualityGetLatestByMints({ mints: chunk }).pipe(
-                                    tapErrorAndDefault('assets.search.fillQuality.gapfill', [], { count: chunk.length }),
+                                    tapErrorAndDefault('assets.search.fillQuality.gapfill', [], {
+                                        count: chunk.length,
+                                    }),
                                 ),
                             ),
                             { concurrency: 4 },
@@ -773,7 +802,9 @@ export const GET = route(
 
                     for (let i = 0; i < uniqueMints.length; i += 250) {
                         const chunk = uniqueMints.slice(i, i + 250);
-                        const rows = yield* variantFillQualityGetLatestByMints({ mints: chunk }).pipe(tapErrorAndDefault('assets.search.variantFillQuality', [], { count: chunk.length }));
+                        const rows = yield* variantFillQualityGetLatestByMints({ mints: chunk }).pipe(
+                            tapErrorAndDefault('assets.search.variantFillQuality', [], { count: chunk.length }),
+                        );
                         for (const row of rows) {
                             const snapshot = executionQualitySnapshotFromConvexFillQuality(row.fillQuality);
                             if (snapshot) fillQualityByMint.set(row.mint, snapshot);
@@ -823,9 +854,16 @@ export const GET = route(
                 if (prefetch) {
                     const covered = new Set(prefetch.tokenMarketsDocs.map(d => d.mint));
                     const gap = uniqueMissing.filter(m => !covered.has(m));
-                    const gapDocs = gap.length > 0
-                        ? yield* tokenMarketsGetLatestByMints({ mints: gap }).pipe(tapErrorAndDefault('assets.search.tokenMarkets.gapfill', [] as TokenMarketsGetLatestByMintsResult, { count: gap.length }))
-                        : [];
+                    const gapDocs =
+                        gap.length > 0
+                            ? yield* tokenMarketsGetLatestByMints({ mints: gap }).pipe(
+                                  tapErrorAndDefault(
+                                      'assets.search.tokenMarkets.gapfill',
+                                      [] as TokenMarketsGetLatestByMintsResult,
+                                      { count: gap.length },
+                                  ),
+                              )
+                            : [];
                     tokenMarketsDocs = [...prefetch.tokenMarketsDocs, ...gapDocs];
                 } else {
                     tokenMarketsDocs = yield* tokenMarketsGetLatestByMints({ mints: uniqueMissing });
@@ -927,16 +965,24 @@ export const GET = route(
             const stockAssetIds = combinedAssets
                 .filter(asset => isStockPricedCategory(asset.category))
                 .map(asset => asset.assetId);
-            const stockInstrumentRows = (prefetch
-                ? prefetch.stockInstruments
-                : stockAssetIds.length > 0
-                  ? yield* stockInstrumentsGetByAssetIds({ assetIds: stockAssetIds.slice(0, 500) }).pipe(tapErrorAndDefault('assets.search.stockInstruments', [], { count: stockAssetIds.length }))
-                  : []) as StockInstrumentsGetByAssetIdsResult;
-            const stockPriceRows = (prefetch
-                ? prefetch.stockPrices
-                : stockAssetIds.length > 0
-                  ? yield* stockPricesGetLatestByAssetIds({ assetIds: stockAssetIds.slice(0, 500) }).pipe(tapErrorAndDefault('assets.search.stockPrices', [], { count: stockAssetIds.length }))
-                  : []) as StockPricesGetLatestByAssetIdsResult;
+            const stockInstrumentRows = (
+                prefetch
+                    ? prefetch.stockInstruments
+                    : stockAssetIds.length > 0
+                      ? yield* stockInstrumentsGetByAssetIds({ assetIds: stockAssetIds.slice(0, 500) }).pipe(
+                            tapErrorAndDefault('assets.search.stockInstruments', [], { count: stockAssetIds.length }),
+                        )
+                      : []
+            ) as StockInstrumentsGetByAssetIdsResult;
+            const stockPriceRows = (
+                prefetch
+                    ? prefetch.stockPrices
+                    : stockAssetIds.length > 0
+                      ? yield* stockPricesGetLatestByAssetIds({ assetIds: stockAssetIds.slice(0, 500) }).pipe(
+                            tapErrorAndDefault('assets.search.stockPrices', [], { count: stockAssetIds.length }),
+                        )
+                      : []
+            ) as StockPricesGetLatestByAssetIdsResult;
             type StockInstrument = NonNullable<(typeof stockInstrumentRows)[number]['instrument']>;
             type StockSnapshot = NonNullable<(typeof stockPriceRows)[number]['snapshot']>;
             const stockInstrumentByAssetId = new Map<string, StockInstrument>();
@@ -1051,9 +1097,7 @@ export const GET = route(
                 ? prefetch.coingeckoPrices
                 : priceChunks.length > 0
                   ? (yield* Effect.all(
-                        priceChunks.map(chunk =>
-                            coingeckoGetPriceLatestByCoinIds({ coinIds: chunk }),
-                        ),
+                        priceChunks.map(chunk => coingeckoGetPriceLatestByCoinIds({ coinIds: chunk })),
                         { concurrency: 2 },
                     )).flat()
                   : [];

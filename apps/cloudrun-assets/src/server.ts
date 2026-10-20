@@ -149,7 +149,11 @@ import {
     adminSyncLaunchpadMint,
     type LaunchpadAdminDeps,
 } from './handlers/launchpadAdminActions';
-import { listByQuoteMints as launchpadListByQuoteMints, type LaunchpadReadsRepo } from './handlers/launchpadReads';
+import {
+    approvedMints as launchpadApprovedMints,
+    listByQuoteMints as launchpadListByQuoteMints,
+    type LaunchpadReadsRepo,
+} from './handlers/launchpadReads';
 import { solanaDataJobs, type SolanaDataCronDeps, type SolanaDataJobHandler } from './handlers/crons.solanaData';
 import {
     getByMint as solanaDataAssetsGetByMint,
@@ -341,6 +345,7 @@ const ATOMIC_RETRY_QUERY_NAMES = new Set([
     'stockPricesGetLatestByAssetIds',
     'prestocksGetLatestByMints',
     'launchpadListByQuoteMints',
+    'launchpadApprovedMints',
     'solanaDataAssetsList',
     'solanaDataAssetsGetByMint',
     'stockOhlcvList',
@@ -591,6 +596,7 @@ export function createApp(deps: ServerDeps) {
     queries.stockPricesGetLatestByAssetIds = args => stockGetPriceLatestByAssetIds(deps.stockReadsRepo, args);
     queries.prestocksGetLatestByMints = args => prestocksGetLatestByMints(deps.prestocksReadsRepo, args);
     queries.launchpadListByQuoteMints = args => launchpadListByQuoteMints(deps.launchpadReadsRepo, args);
+    queries.launchpadApprovedMints = args => launchpadApprovedMints(deps.launchpadReadsRepo, args);
     const v2AssetsReadsDeps: V2AssetsReadsDeps = {
         v2: deps.v2AssetsReadsRepo,
         assetsRepo: deps.repo,

@@ -5,7 +5,7 @@ import { withStaleFallback } from '@/effect/stale-response-cache';
 import { BadRequestError, NotFoundError } from '@tokens/effect';
 import { solanaDataAssetsGetByMint } from '@/lib/cloudrun';
 
-import { toRegistryItem, type V2RegistryAssetResponse } from '../_shared';
+import { toRegistryItems, type V2RegistryAssetResponse } from '../_shared';
 
 /**
  * GET /api/v2/registry/{mint} — one registry asset: the same item shape as the
@@ -39,8 +39,9 @@ export const GET = route(
                         new NotFoundError({ message: 'Asset not in registry', resource: 'registry_asset' }),
                     );
                 }
+                const [item] = yield* toRegistryItems([detail]);
                 const response: V2RegistryAssetResponse = {
-                    ...toRegistryItem(detail),
+                    ...item!,
                     upstream: detail.upstream,
                     generatedAt: detail.generatedAt,
                     syncedAt: detail.syncedAt,

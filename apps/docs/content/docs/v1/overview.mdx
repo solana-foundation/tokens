@@ -3,6 +3,8 @@ title: API v1 Overview
 description: What the Tokens API v1 can do and how to explore it.
 ---
 
+> **Registered assets only (2026-10-18).** v1 serves assets the Tokens team has registered. A mint that is not a variant of a registered asset returns `404` with `details.code: "asset_not_registered"` on `resolve`, `risk-summary`, and every `/v1/assets/:assetId` route; the batch endpoints keep a `null` row for it. The API no longer synthesizes `solana-<mint>` assets for unknown mints. To track other tokens, use [Token Lists](/docs/v2/endpoints/lists). Details: [Unregistered assets](/docs/v1/rate-limits-and-errors#unregistered-assets).
+
 ## Base URL
 
 Use the hosted Tokens API:
@@ -64,9 +66,9 @@ Status codes you should expect: `400`, `401`, `403`, `404`, `429`, `500`.
 v1 is currently focused on **assets** (canonical asset groups) and **variants** (chain-specific mints), plus market/risk primitives.
 
 - **Discover assets**: search by query, then fetch a canonical asset group by `assetId`.
-- **Resolve an asset reference to canonical**: map a Solana mint / `solana-<mint>` ref / alias / `assetId` to its canonical `assetId` + variant info.
+- **Resolve an asset reference to canonical**: map a Solana mint / `solana-<mint>` ref / alias / `assetId` to its registered `assetId` + variant info; unregistered mints are `404` `asset_not_registered`.
 - **Group token balances**: use the resolved `assetId` as the grouping key for mints that represent the same asset, such as USD stablecoins or tokenized equities.
-- **Fallback singleton assets**: unknown or ungrouped Solana mints use deterministic IDs of the form `solana-<mint>`.
+- **Registered assets only**: the API serves admin-registered assets (and their mints), the compiled asset registry, Sanctum LST mints, and approved launch coins. Some registered assets are exposed under a per-mint id of the form `solana-<mint>`; unknown mints are never synthesized into assets. Track them with [Token Lists](/docs/v2/endpoints/lists) instead.
 - **Curated lists**: pull paginated curated assets (and optionally group by asset vs mint). The `lsts` list is backed by the same dynamic Solana yield-variant set used by the variants API, with low-liquidity LST rows filtered by default.
 - **Market primitives**: variant market snapshots, markets list, tickers, and cached trending market rows.
 - **Canonical volume stats**: asset stats can include `volume24hUSD` and nullable `volume30dUSD`; use `volume30dUSD` instead of summing candles yourself when it is populated.

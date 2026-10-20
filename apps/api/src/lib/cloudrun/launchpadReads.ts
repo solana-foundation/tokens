@@ -15,3 +15,11 @@ export function launchpadListByQuoteMints(
 ): Effect.Effect<ListByQuoteMintsResult, CloudRunError> {
     return cloudRunQuery<ListByQuoteMintsResult>('assets', 'launchpadListByQuoteMints', { ...args });
 }
+
+export type ApprovedMintsArgs = { mints: string[] };
+export type ApprovedMintsResult = { mints: string[] };
+
+/** Which of `mints` are admin-approved launch coins still active in the feed (see cloudrun-assets `approvedMints`). */
+export function launchpadApprovedMints(args: ApprovedMintsArgs): Effect.Effect<ApprovedMintsResult, CloudRunError> {
+    return cloudRunQuery<ApprovedMintsResult>('assets', 'launchpadApprovedMints', { ...args });
+}

@@ -201,6 +201,16 @@ export function logUsageDrain(params: {
     });
 }
 
+/** Validation details are schema paths and messages; bound them so one bad request cannot bloat a log line. */
+function stringifyDetails(details: unknown): string {
+    if (typeof details === 'string') return details.slice(0, 500);
+    try {
+        return JSON.stringify(details).slice(0, 500);
+    } catch {
+        return String(details).slice(0, 500);
+    }
+}
+
 export function logApiError(params: {
     requestId: string;
     method: string;
@@ -209,6 +219,7 @@ export function logApiError(params: {
     durationMs: number;
     errorType: string;
     errorMessage?: string;
+    errorDetails?: unknown;
     errorStack?: string;
     timestamp?: string;
     source?: string;
@@ -235,6 +246,7 @@ export function logApiError(params: {
         duration_ms: params.durationMs,
         error_type: params.errorType,
         ...(params.errorMessage ? { error_message: params.errorMessage.slice(0, 500) } : {}),
+        ...(params.errorDetails !== undefined ? { error_details: stringifyDetails(params.errorDetails) } : {}),
         ...(params.errorStack ? { error_stack: params.errorStack.slice(0, 2000) } : {}),
         slow_request: params.durationMs >= SLOW_REQUEST_THRESHOLD_MS,
         source: params.source ?? 'api',

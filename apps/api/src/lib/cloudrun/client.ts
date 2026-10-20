@@ -97,6 +97,7 @@ export const MEMOISABLE_QUERY_NAMES: ReadonlySet<string> = new Set([
     'coingeckoReadsGetPriceLatestByCoinId',
     'sanctumListActive',
     'assetVariantsGetSolanaDefaultVariantsViewForApi',
+    'launchpadApprovedMints',
 ]);
 
 function stableStringify(value: unknown): string {

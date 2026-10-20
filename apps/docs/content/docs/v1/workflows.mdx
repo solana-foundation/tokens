@@ -39,9 +39,10 @@ curl -sS "$API_BASE_URL/v1/assets/resolve?ref=$MINT" \
   -H "x-api-key: $API_KEY"
 ```
 
-Then:
+Then branch on the status:
 
-- Use the returned `assetId` to fetch canonical asset data (and optionally includes).
+- `200`: use the returned `assetId` to fetch asset data (and optionally includes). It is the canonical grouping slug, or `solana-<mint>` for a registered asset exposed under its own mint id (an approved launch coin, for example).
+- `404` with `details.code: "asset_not_registered"`: the mint is not a variant of a registered asset. Do not retry; v1 does not synthesize an asset for it. Wallet holdings and swap inputs are the usual source of such mints, so expect this branch. If you still need identity or market data for the token, add it to a [Token List](/docs/v2/endpoints/lists) (`POST /v2/lists`, then `PUT /v2/lists/{slug}/members/{mint}`) and read it with `GET /v2/lists/tokens?lists={slug}`.
 
 ## Workflow: Group wallet balances by canonical asset
 
@@ -58,6 +59,8 @@ curl -sS "$API_BASE_URL/v1/assets/solana-$MINT" \
 ```
 
 Both calls identify `usd` as the canonical grouping asset. Use that `assetId` as your grouping key, then fetch `/v1/assets/usd/variants` when you need the other mints in the group.
+
+Balances whose mint fails with `404` `asset_not_registered` have no grouping asset in v1. Keep them as their own rows, or track them through a [Token List](/docs/v2/endpoints/lists).
 
 The detail and collection responses can include `asset.stats.volume30dUSD`, a nullable rolling 30-day USD volume sum for the canonical group. Use it directly when populated instead of summing daily candles client-side.
 
@@ -87,6 +90,7 @@ Practical guidance:
 
 - Use **Option A** for lightweight “is there data cached for these mints?” checks.
 - Use **Option B** when you have larger lists and want a single request/response body.
+- Neither option fails on an unregistered mint; the row is kept in input order. `variant-markets` returns it with `assetId: null`, `chain: null`, `market: null`, `executionQuality: null`; `market-snapshots` returns `token: null`, `hasMarket: false`. For market data on those tokens, add them to a [Token List](/docs/v2/endpoints/lists) and read `GET /v2/lists/tokens?lists={slug}`.
 
 ## Workflow: Market + tickers for a canonical asset
 
@@ -117,7 +121,10 @@ curl -sS "$API_BASE_URL/v1/assets/risk-summary?mint=$MINT" \
 
 Notes:
 
-- Branch on `hasInsufficientData` first. When it is `true` the token is unscored and `grade` is a placeholder
-  — show “Insufficient Data”, not the grade.
-- Mints without a cached market snapshot are scored from a live market read. If that read is unavailable
-  you’ll get the same “Insufficient Data” response (a `200`, not an error).
+- Branch on the status first. `404` with `details.code: "asset_not_registered"` means the mint is not a variant
+  of a registered asset: there is no score, and retrying will not change that. Show no badge (or an “unlisted”
+  state), and track the token through a [Token List](/docs/v2/endpoints/lists) if you need its data.
+- On a `200`, branch on `hasInsufficientData` next. When it is `true` the token is unscored and `grade` is a
+  placeholder — show “Insufficient Data”, not the grade.
+- Registered mints without a cached market snapshot are scored from a live market read. If that read is
+  unavailable you’ll get the same “Insufficient Data” response (a `200`, not an error).

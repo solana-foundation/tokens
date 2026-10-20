@@ -5539,6 +5539,22 @@ export function makePostgresLaunchpadReadsRepo(sql: Sql): LaunchpadReadsRepo {
             out.sort((a, b) => (b.volume_24h_usd ?? -1) - (a.volume_24h_usd ?? -1) || a.source_rank - b.source_rank);
             return out.slice(0, limit);
         },
+
+        async listApprovedActiveMints(mints) {
+            if (mints.length === 0) return [];
+            const out: string[] = [];
+            for (const part of chunkStrings(mints, 500)) {
+                const rows = await sql<{ mint: string }[]>`
+                    SELECT DISTINCT a.mint
+                    FROM launchpad_mint_approvals a
+                    JOIN launchpad_tokens_latest l ON l.launchpad = a.launchpad AND l.mint = a.mint
+                    WHERE l.is_active = true
+                      AND a.mint IN ${sql([...part])}
+                `;
+                for (const row of rows) out.push(row.mint);
+            }
+            return out;
+        },
     };
 }
 
