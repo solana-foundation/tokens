@@ -17,12 +17,14 @@ type Session = Awaited<ReturnType<typeof auth>>;
  *    Clerk marks it verified.
  *
  * Sessions with neither (wallet sign-in) get no email and resolve to their own
- * Clerk id. Backend lookups are cached per user for a few minutes so the
- * dashboard's RPC fan-out does not hit Clerk on every call.
+ * Clerk id. Found addresses are cached per user for a few minutes so the
+ * dashboard's RPC fan-out does not hit Clerk on every call. A missing address
+ * is never cached: a wallet user who links a verified email must start
+ * aliasing on their very next call, not when a negative entry expires.
  */
 
 const BACKEND_EMAIL_TTL_MS = 5 * 60_000;
-const backendEmailCache = new Map<string, { email: string | null; expiresAt: number }>();
+const backendEmailCache = new Map<string, { email: string; expiresAt: number }>();
 
 export function getSessionClaimEmail(session: Session): string | undefined {
     const claims = session.sessionClaims as Record<string, unknown> | null | undefined;
@@ -30,14 +32,20 @@ export function getSessionClaimEmail(session: Session): string | undefined {
     return typeof raw === 'string' && raw.trim() ? raw.trim() : undefined;
 }
 
-/** Clerk's verified primary address for the current user, or undefined. Uncached. */
-export async function fetchVerifiedPrimaryEmail(): Promise<{ email?: string; fullName?: string; ok: boolean }> {
+/**
+ * Clerk's verified primary address (and display name) for the current user,
+ * fetched fresh. A found address is written through to the cache so the
+ * read paths see it immediately.
+ */
+export async function fetchVerifiedPrimaryEmail(): Promise<{ email?: string; fullName?: string }> {
     const user = await currentUser().catch(() => null);
-    if (!user) return { ok: false };
+    if (!user) return {};
     const primary = user.primaryEmailAddress;
     const email = primary?.verification?.status === 'verified' ? primary.emailAddress?.trim() || undefined : undefined;
     const fullName = user.fullName?.trim() || undefined;
-    return { ok: true, ...(email ? { email } : {}), ...(fullName ? { fullName } : {}) };
+    if (email) backendEmailCache.set(user.id, { email, expiresAt: Date.now() + BACKEND_EMAIL_TTL_MS });
+    else backendEmailCache.delete(user.id);
+    return { ...(email ? { email } : {}), ...(fullName ? { fullName } : {}) };
 }
 
 export async function resolveVerifiedSessionEmail(session: Session): Promise<string | undefined> {
@@ -48,13 +56,7 @@ export async function resolveVerifiedSessionEmail(session: Session): Promise<str
     if (!userId) return undefined;
 
     const cached = backendEmailCache.get(userId);
-    if (cached && cached.expiresAt > Date.now()) return cached.email ?? undefined;
+    if (cached && cached.expiresAt > Date.now()) return cached.email;
 
-    const profile = await fetchVerifiedPrimaryEmail();
-    // Only cache a Clerk answer. A transient failure must not pin "no email"
-    // for the TTL, which would silently drop aliasing for a migrated user.
-    if (profile.ok) {
-        backendEmailCache.set(userId, { email: profile.email ?? null, expiresAt: Date.now() + BACKEND_EMAIL_TTL_MS });
-    }
-    return profile.email;
+    return (await fetchVerifiedPrimaryEmail()).email;
 }
