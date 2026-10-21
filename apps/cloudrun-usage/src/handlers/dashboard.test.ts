@@ -32,7 +32,6 @@ const NOW = 1_750_000_000_000;
 const IDENT = { clerkUserId: 'user_1' };
 
 const identityRepo: IdentityRepo = {
-    getUserPrimaryEmail: async () => null,
     listClerkUserIdsByEmail: async () => [],
     getIdentityScoreInputs: async () => ({ memberships: 0, keys: 0, activeKeys: 0 }),
 };
@@ -149,7 +148,6 @@ describe('usersGetMe', () => {
     it('uses the raw caller id (no alias resolution)', async () => {
         // identity repo would alias user_1 -> user_2, but getMe must not resolve.
         const aliasing: IdentityRepo = {
-            getUserPrimaryEmail: async () => 'a@b.co',
             listClerkUserIdsByEmail: async () => ['user_2'],
             getIdentityScoreInputs: async () => ({ memberships: 0, keys: 0, activeKeys: 0 }),
         };
@@ -160,10 +158,28 @@ describe('usersGetMe', () => {
 });
 
 describe('usersUpsertMe', () => {
-    it('passes trimmed email/fullName and omits empties', async () => {
+    it('stores the trimmed identity-header email and omits an empty fullName', async () => {
         const { deps, calls } = makeDeps();
-        await usersUpsertMe(deps, { email: ' a@b.co ', fullName: '  ' }, IDENT);
+        await usersUpsertMe(deps, { fullName: '  ' }, { ...IDENT, email: ' a@b.co ' });
         expect(calls.upsertUser?.[0]).toEqual({ clerkUserId: 'user_1', primaryEmail: 'a@b.co', nowMs: NOW });
+    });
+
+    it('ignores a body email (GHSA-6xq9-9vh4-jr57)', async () => {
+        // A wallet session (no email) must not be able to store someone else's address.
+        const { deps, calls } = makeDeps();
+        await usersUpsertMe(deps, { email: 'victim@example.com' }, IDENT);
+        expect(calls.upsertUser?.[0]).toEqual({ clerkUserId: 'user_1', nowMs: NOW });
+
+        // And with a session email present, the header still wins over the body.
+        const second = makeDeps();
+        await usersUpsertMe(second.deps, { email: 'victim@example.com' }, { ...IDENT, email: 'me@example.com' });
+        expect(second.calls.upsertUser?.[0]).toEqual({ clerkUserId: 'user_1', primaryEmail: 'me@example.com', nowMs: NOW });
+    });
+
+    it('still accepts the proxy-supplied fullName', async () => {
+        const { deps, calls } = makeDeps();
+        await usersUpsertMe(deps, { fullName: ' Ada ' }, IDENT);
+        expect(calls.upsertUser?.[0]).toEqual({ clerkUserId: 'user_1', fullName: 'Ada', nowMs: NOW });
     });
 });
 

@@ -19,7 +19,6 @@ const NOW = Date.UTC(2026, 6, 1, 12, 0, 0, 0);
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
 const identityRepo: IdentityRepo = {
-    getUserPrimaryEmail: async () => null,
     listClerkUserIdsByEmail: async () => [],
     getIdentityScoreInputs: async () => ({ memberships: 0, keys: 0, activeKeys: 0 }),
 };
