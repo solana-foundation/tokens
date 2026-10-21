@@ -1,20 +1,15 @@
 import 'server-only';
 
-import { auth, currentUser } from '@clerk/nextjs/server';
+import { auth } from '@clerk/nextjs/server';
 import type { NextRequest } from 'next/server';
 import { NextResponse } from 'next/server';
 
+import { fetchVerifiedPrimaryEmail, getSessionClaimEmail, resolveVerifiedSessionEmail } from '@/lib/clerk-session-email';
 import { callCloudRunUsage, CloudRunCallError } from '@/lib/cloudrun';
 import { DASHBOARD_FNS } from '@/lib/dashboard-fns';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
-
-function getSessionEmail(session: Awaited<ReturnType<typeof auth>>): string | undefined {
-    const claims = session.sessionClaims as Record<string, unknown> | null | undefined;
-    const raw = claims?.email ?? claims?.primary_email ?? claims?.primaryEmail;
-    return typeof raw === 'string' && raw.trim() ? raw.trim() : undefined;
-}
 
 /**
  * Identity fields the client must never supply. `email` keys account aliasing
@@ -51,22 +46,17 @@ export async function POST(request: NextRequest, ctx: { params: Promise<{ fn: st
     args = stripIdentityArgs(args);
 
     try {
-        let email = getSessionEmail(session);
+        let email: string | undefined;
 
-        // upsertMe needs the caller's profile, which session claims may lack.
-        // Only a Clerk-verified primary address may become the account email;
-        // a session with none (wallet sign-in) upserts with no email at all.
         if (fn === 'usersUpsertMe') {
-            const user = await currentUser().catch(() => null);
-            const primary = user?.primaryEmailAddress;
-            const verifiedEmail =
-                primary?.verification?.status === 'verified' ? primary.emailAddress?.trim() || undefined : undefined;
-            email = verifiedEmail ?? email;
-            const fullName = user?.fullName?.trim() || undefined;
-            args = {
-                ...args,
-                ...(fullName ? { fullName } : {}),
-            };
+            // The write path always asks Clerk fresh: the verified primary address
+            // becomes the account email, and fullName comes along for the profile.
+            // A session with no verified email (wallet sign-in) upserts without one.
+            const profile = await fetchVerifiedPrimaryEmail();
+            email = profile.email ?? getSessionClaimEmail(session);
+            if (profile.fullName) args = { ...args, fullName: profile.fullName };
+        } else {
+            email = await resolveVerifiedSessionEmail(session);
         }
 
         const result = await callCloudRunUsage(spec.kind, fn, args, {

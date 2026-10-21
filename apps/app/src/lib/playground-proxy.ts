@@ -4,6 +4,7 @@ import { auth } from '@clerk/nextjs/server';
 import type { NextRequest } from 'next/server';
 import { NextResponse } from 'next/server';
 
+import { resolveVerifiedSessionEmail } from '@/lib/clerk-session-email';
 import { callCloudRunUsage } from '@/lib/cloudrun';
 
 const LOCAL_API_BASE_URL = 'http://localhost:3002';
@@ -75,12 +76,6 @@ function getPlaygroundProxySecret(): string | null {
     return secret || null;
 }
 
-function getSessionEmail(session: Awaited<ReturnType<typeof auth>>): string | undefined {
-    const claims = session.sessionClaims as Record<string, unknown> | null | undefined;
-    const raw = claims?.email ?? claims?.primary_email ?? claims?.primaryEmail;
-    return typeof raw === 'string' && raw.trim() ? raw.trim() : undefined;
-}
-
 async function hmacSha256Base64Url(value: string, secret: string): Promise<string> {
     const key = await crypto.subtle.importKey(
         'raw',
@@ -133,7 +128,7 @@ async function buildPlaygroundAuthHeaders(request: Request): Promise<Headers | n
 
     let reveal: RevealResult;
     let authContext: PlaygroundAuthContext;
-    const email = getSessionEmail(session);
+    const email = await resolveVerifiedSessionEmail(session);
     try {
         const identity = {
             clerkUserId: session.userId,
