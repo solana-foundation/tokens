@@ -14,8 +14,6 @@ function makeRepo(users: FakeUser[]): IdentityRepo & { scoreCalls: string[] } {
     const scoreCalls: string[] = [];
     return {
         scoreCalls,
-        getUserPrimaryEmail: async clerkUserId =>
-            users.find(u => u.clerkUserId === clerkUserId)?.primaryEmail ?? null,
         listClerkUserIdsByEmail: async email => {
             const ids = users
                 .filter(u => (u.primaryEmail ?? '').trim().toLowerCase() === email)
@@ -52,12 +50,18 @@ describe('resolveEffectiveClerkUserId', () => {
         expect(repo.scoreCalls).toHaveLength(0);
     });
 
-    it('falls back to the DB email when identity email is absent', async () => {
+    it('never aliases on the stored email when the session carries none (GHSA-6xq9-9vh4-jr57)', async () => {
+        // user_a's row claims x@y.co (e.g. written by a poisoned upsert), and user_b
+        // is the busier account with that address. Without a session email the
+        // caller must stay themselves, with no candidate lookup at all.
         const repo = makeRepo([
             { clerkUserId: 'user_a', primaryEmail: 'x@y.co' },
             { clerkUserId: 'user_b', primaryEmail: 'x@y.co', activeKeys: 2 },
         ]);
-        expect(await resolveEffectiveClerkUserId(repo, 'user_a')).toBe('user_b');
+        expect(await resolveEffectiveClerkUserId(repo, 'user_a')).toBe('user_a');
+        expect(await resolveEffectiveClerkUserId(repo, 'user_a', null)).toBe('user_a');
+        expect(await resolveEffectiveClerkUserId(repo, 'user_a', '  ')).toBe('user_a');
+        expect(repo.scoreCalls).toHaveLength(0);
     });
 
     it('returns caller when no candidates share the email', async () => {

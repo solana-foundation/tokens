@@ -16,6 +16,19 @@ function getSessionEmail(session: Awaited<ReturnType<typeof auth>>): string | un
     return typeof raw === 'string' && raw.trim() ? raw.trim() : undefined;
 }
 
+/**
+ * Identity fields the client must never supply. `email` keys account aliasing
+ * on the Cloud Run side; `fullName` is display-only but is Clerk's to set.
+ * Both are stripped from every body and, for upsertMe, re-added from Clerk.
+ */
+const IDENTITY_ARG_KEYS = ['email', 'fullName'] as const;
+
+function stripIdentityArgs(args: Record<string, unknown>): Record<string, unknown> {
+    const out = { ...args };
+    for (const key of IDENTITY_ARG_KEYS) delete out[key];
+    return out;
+}
+
 export async function POST(request: NextRequest, ctx: { params: Promise<{ fn: string }> }) {
     const { fn } = await ctx.params;
     const spec = DASHBOARD_FNS[fn];
@@ -35,19 +48,23 @@ export async function POST(request: NextRequest, ctx: { params: Promise<{ fn: st
     } catch {
         args = {};
     }
+    args = stripIdentityArgs(args);
 
     try {
-        const email = getSessionEmail(session);
+        let email = getSessionEmail(session);
 
         // upsertMe needs the caller's profile, which session claims may lack.
+        // Only a Clerk-verified primary address may become the account email;
+        // a session with none (wallet sign-in) upserts with no email at all.
         if (fn === 'usersUpsertMe') {
             const user = await currentUser().catch(() => null);
+            const primary = user?.primaryEmailAddress;
+            const verifiedEmail =
+                primary?.verification?.status === 'verified' ? primary.emailAddress?.trim() || undefined : undefined;
+            email = verifiedEmail ?? email;
             const fullName = user?.fullName?.trim() || undefined;
-            const primaryEmail =
-                user?.primaryEmailAddress?.emailAddress?.trim() || email || undefined;
             args = {
                 ...args,
-                ...(primaryEmail ? { email: primaryEmail } : {}),
                 ...(fullName ? { fullName } : {}),
             };
         }

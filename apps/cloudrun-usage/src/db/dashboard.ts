@@ -65,13 +65,6 @@ function toProjectDoc(row: ProjectSqlRow): ProjectDoc {
 
 export function makePostgresIdentityRepo(sql: Sql): IdentityRepo {
     return {
-        async getUserPrimaryEmail(clerkUserId) {
-            const rows = await sql<{ primary_email: string | null }[]>`
-                SELECT primary_email FROM users WHERE clerk_user_id = ${clerkUserId} LIMIT 1
-            `;
-            return rows[0]?.primary_email ?? null;
-        },
-
         async listClerkUserIdsByEmail(email) {
             const rows = await sql<{ clerk_user_id: string }[]>`
                 SELECT DISTINCT clerk_user_id FROM users WHERE lower(primary_email) = ${email}
