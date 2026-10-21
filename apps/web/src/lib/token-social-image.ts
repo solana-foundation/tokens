@@ -985,8 +985,9 @@ export async function getTokenSocialImageResponse(request: Request, name: string
             },
         });
     } catch (error) {
-        const message = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
-        return new Response(message, {
+        // The real error stays in the server logs; the response body must not echo exception details.
+        console.error('[token-social-image] render failed', error);
+        return new Response('Failed to render social image', {
             status: 500,
             headers: { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-store' },
         });
