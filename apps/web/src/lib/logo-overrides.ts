@@ -337,26 +337,29 @@ export function getTokenLogoURLWithSecondarySymbol(
  */
 export function cleanTokenName(name: string | undefined): string {
     if (!name) return 'Unknown';
+    // One linear whitespace collapse up front so every pattern below can use bounded quantifiers
+    // (` ?` / a single space). Unanchored `\s*…\s*$` patterns are O(n²) on long whitespace runs.
+    const collapsed = name.replace(/\s+/g, ' ').trim();
     return (
-        name
+        collapsed
             // xStocks
-            .replace(/\s*xStock\s*$/i, '')
+            .replace(/ ?xStock ?$/i, '')
             // Prestocks
-            .replace(/\s*\(\s*pre\s*stocks?\s*\)\s*/gi, ' ')
-            .replace(/\s*[-–—]?\s*pre\s*stocks?\s*$/i, '')
+            .replace(/ ?\( ?pre ?stocks? ?\) ?/gi, ' ')
+            .replace(/ ?[-–—]? ?pre ?stocks? ?$/i, '')
             // Bridge/origin markers in parens
-            .replace(/\s*\(\s*(wormhole|bridged|wrapped|omnibridge|coinbase|ondo\s+tokenized)\s*\)\s*/gi, ' ')
+            .replace(/ ?\( ?(wormhole|bridged|wrapped|omnibridge|coinbase|ondo tokenized) ?\) ?/gi, ' ')
             // Remove (mSOL) and similar LST markers
-            .replace(/\s*\(\s*mSOL\s*\)\s*/gi, ' ')
+            .replace(/ ?\( ?mSOL ?\) ?/gi, ' ')
             // Wrapped variants
-            .replace(/^\s*coinbase\s+wrapped\s+/i, '')
-            .replace(/^\s*wrapped\s+/i, '')
-            .replace(/\s+wrapped\s+/gi, ' ')
-            .replace(/\s+wrapped\s*$/i, '')
+            .replace(/^ ?coinbase wrapped /i, '')
+            .replace(/^ ?wrapped /i, '')
+            .replace(/ wrapped /gi, ' ')
+            .replace(/ wrapped ?$/i, '')
             // LST suffixes
-            .replace(/\s+staked\s+sol(?=\s*(\(|$))/i, '')
+            .replace(/ staked sol(?= ?(\(|$))/i, '')
             // Normalize whitespace
-            .replace(/\s{2,}/g, ' ')
+            .replace(/ {2,}/g, ' ')
             .trim() || 'Unknown'
     );
 }

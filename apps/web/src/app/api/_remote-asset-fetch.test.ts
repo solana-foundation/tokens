@@ -1,6 +1,6 @@
-import { describe, expect, test } from 'bun:test';
+import { afterEach, describe, expect, test } from 'bun:test';
 
-import { buildAllowedRemoteHosts, isAllowedRemoteHost } from './_remote-asset-fetch';
+import { buildAllowedRemoteHosts, fetchWithValidatedRedirects, isAllowedRemoteHost } from './_remote-asset-fetch';
 
 describe('remote asset host validation', () => {
     test('allows explicit Arweave gateway subdomains for validated redirects', () => {
@@ -34,5 +34,61 @@ describe('remote asset host validation', () => {
         expect(isAllowedRemoteHost('ipfs.io', allowedHosts)).toBe(false);
         expect(isAllowedRemoteHost('cf-ipfs.com', allowedHosts)).toBe(false);
         expect(isAllowedRemoteHost('dweb.link', allowedHosts)).toBe(false);
+    });
+});
+
+describe('fetchWithValidatedRedirects', () => {
+    const originalFetch = globalThis.fetch;
+
+    function stubRedirectTo(location: string): { calls: string[] } {
+        const calls: string[] = [];
+        globalThis.fetch = (async (input: string | URL | Request) => {
+            calls.push(String(input instanceof Request ? input.url : input));
+            return new Response(null, { status: 302, headers: { location } });
+        }) as typeof fetch;
+        return { calls };
+    }
+
+    afterEach(() => {
+        globalThis.fetch = originalFetch;
+    });
+
+    test('rejects a redirect to a non-http(s) scheme before following it', async () => {
+        const { calls } = stubRedirectTo('ftp://assets.coingecko.com/logo.png');
+
+        await expect(
+            fetchWithValidatedRedirects(
+                new URL('https://assets.coingecko.com/start.png'),
+                {},
+                buildAllowedRemoteHosts(),
+            ),
+        ).rejects.toThrow('Unsupported protocol');
+        expect(calls).toHaveLength(1);
+    });
+
+    test('rejects a redirect that carries credentials before following it', async () => {
+        const { calls } = stubRedirectTo('https://user:pw@assets.coingecko.com/logo.png');
+
+        await expect(
+            fetchWithValidatedRedirects(
+                new URL('https://assets.coingecko.com/start.png'),
+                {},
+                buildAllowedRemoteHosts(),
+            ),
+        ).rejects.toThrow('Credentials not allowed');
+        expect(calls).toHaveLength(1);
+    });
+
+    test('rejects a redirect to a host outside the allowlist before following it', async () => {
+        const { calls } = stubRedirectTo('https://evil.example/logo.png');
+
+        await expect(
+            fetchWithValidatedRedirects(
+                new URL('https://assets.coingecko.com/start.png'),
+                {},
+                buildAllowedRemoteHosts(),
+            ),
+        ).rejects.toThrow('Host not allowed');
+        expect(calls).toHaveLength(1);
     });
 });
