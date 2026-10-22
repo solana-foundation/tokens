@@ -69,8 +69,12 @@ export interface StructuralHealthBatchEntry {
     message?: string;
 }
 
+export type WebhookTestResult = { ok: true; status: number } | { ok: false; status: number; message: string };
+
 export interface WebacyDepegClient {
     isConfigured(): boolean;
+    /** `POST /webhooks/subscriptions/{id}/test`: asks Webacy to deliver a signed synthetic event. */
+    testWebhookSubscription(subscriptionId: string): Promise<WebhookTestResult>;
     fetchDepegToken(args: { chain: string; address: string }): Promise<DepegTokenResult>;
     fetchDepegList(args: { chain: string; pageSize: number; maxPages: number }): Promise<DepegListResult>;
     fetchStructuralHealthBatch(
@@ -1043,11 +1047,72 @@ export async function refreshStablecoinStructuralHealth(deps: DepegCronDeps, raw
     return finish();
 }
 
+const HEARTBEAT_ARG_SPECS = {
+    requireRefreshEnabled: { kind: 'bool', fallback: true },
+} as const satisfies JobArgSpecs;
+
+export interface WebhookHeartbeatResult extends CronResult {
+    disabled?: boolean;
+    reason?: string;
+    subscriptionId: string | null;
+    status: number;
+}
+
+/**
+ * Daily liveness probe for the Webacy webhook pipe. Asks Webacy to deliver a
+ * synthetic `test: true` event to the subscription (`subscriptionId` in the
+ * body, set per environment by terraform), which the usage service receives,
+ * verifies and logs as `depeg_webhook_received` + `depeg_webhook_ignored
+ * why=test_event`. Real DEPEG_TIER_CHANGE events are rare (Webacy tiers only
+ * a handful of Solana stablecoins), so without this the webhook-silent alert
+ * cannot tell a healthy quiet market from a dead subscription.
+ */
+export async function webacyWebhookHeartbeat(deps: DepegCronDeps, rawArgs: unknown): Promise<CronResult> {
+    const args = await Effect.runPromise(decodeJobArgs(HEARTBEAT_ARG_SPECS, rawArgs));
+    const subscriptionId = readOptionalString(rawArgs, 'subscriptionId');
+    const log = deps.log ?? defaultLog;
+    const job = 'webacy-webhook-heartbeat';
+    const base = { job, trigger: 'sweep' as const, observer: 'webacy' as const };
+    const start = deps.now();
+    const finish = (partial: Partial<WebhookHeartbeatResult>): WebhookHeartbeatResult => ({
+        ok: true,
+        processed: 0,
+        durationMs: deps.now() - start,
+        subscriptionId,
+        status: 0,
+        ...partial,
+    });
+
+    if (args.requireRefreshEnabled && !(deps.isRefreshEnabled ?? defaultIsRefreshEnabled)()) {
+        return finish({ disabled: true, reason: 'depeg_refresh_disabled' });
+    }
+    if (!deps.webacyDepeg.isConfigured()) {
+        return finish({ disabled: true, reason: 'webacy_not_configured' });
+    }
+    if (!subscriptionId) throw new BadRequestError({ message: 'subscriptionId is required' });
+
+    const res = await deps.webacyDepeg.testWebhookSubscription(subscriptionId);
+    if (!res.ok) {
+        log({
+            ...base,
+            event: 'webacy_webhook_heartbeat_failed',
+            subscription_id: subscriptionId,
+            status: res.status,
+            message: res.message,
+        });
+        // `ok: false` maps to HTTP 500 so Cloud Scheduler retries once.
+        return finish({ ok: false, status: res.status });
+    }
+    log({ ...base, event: 'webacy_webhook_heartbeat_sent', subscription_id: subscriptionId, status: res.status });
+    return finish({ processed: 1, status: res.status });
+}
+
 export type DepegJobHandler = (deps: DepegCronDeps, args: unknown) => Promise<CronResult>;
 
 export const depegJobs: Record<string, DepegJobHandler> = {
     'reconcile-stablecoin-depeg': reconcileStablecoinDepeg,
     'refresh-stablecoin-structural-health': refreshStablecoinStructuralHealth,
+    'webacy-webhook-heartbeat': webacyWebhookHeartbeat,
     // Wrapped rather than referenced: crons.pegGuard.ts imports applyAction
     // from this module, so the binding is resolved at call time, never during
     // the module cycle's evaluation.

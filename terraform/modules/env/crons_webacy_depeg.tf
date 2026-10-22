@@ -44,6 +44,26 @@ locals {
       attempt_deadline = "360s"
     },
     {
+      # Webhook liveness probe. Webacy emits DEPEG_TIER_CHANGE only on a tier
+      # flip and tiers only a handful of Solana stablecoins, so the pipe is
+      # silent for weeks at a time. This asks Webacy to deliver a signed
+      # synthetic event to the env's subscription every morning; the usage
+      # service logs it as depeg_webhook_received, which is what the
+      # stablecoin-depeg-webhook-silent alert (2-day window) watches.
+      # Minute offset 25 keeps it off the */5 market crons.
+      name      = "webacy-webhook-heartbeat"
+      schedule  = "25 6 * * *"
+      http_path = "/jobs/webacy-webhook-heartbeat"
+      body_json = jsonencode({
+        requireRefreshEnabled = true
+        subscriptionId        = var.webacy_webhook_subscription_id[var.env]
+      })
+      attempt_deadline = "60s"
+      # One retry: a failed heartbeat returns 500 so a transient Webacy error
+      # gets a second attempt before the alert window starts counting.
+      retry_count = 1
+    },
+    {
       # In-house peg guard: prices every curated `currencies` mint from Birdeye
       # and feeds the same reconciler as Webacy as a second observation source
       # (Webacy covers only USDC/USDT/PYUSD on Solana). Minute offset 2 keeps it

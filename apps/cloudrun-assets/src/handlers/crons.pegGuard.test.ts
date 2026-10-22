@@ -267,6 +267,9 @@ function makeHarness(fx: Fixture = {}): Harness {
 
     const webacyDepeg: WebacyDepegClient = {
         isConfigured: () => true,
+        async testWebhookSubscription() {
+            throw new Error('peg guard must not poll Webacy');
+        },
         async fetchDepegToken() {
             throw new Error('peg guard must not poll Webacy');
         },

@@ -1,6 +1,6 @@
 {
     "uid": "tokens-depeg-webhook-silent",
-    "title": "tokens-usage: no Webacy depeg webhook received in 7 days",
+    "title": "tokens-usage: no Webacy depeg webhook received in 2 days",
     "ruleGroup": "tokens-stablecoin-depeg",
     "folderUID": "tokens",
     "noDataState": "Alerting",
@@ -12,11 +12,11 @@
             "datasourceUid": "grafanacloud-logs",
             "queryType": "range",
             "relativeTimeRange": {
-                "from": 604800,
+                "from": 172800,
                 "to": 0
             },
             "model": {
-                "expr": "sum(count_over_time({service=\"tokens-usage-prd-us\"} |= \"depeg_webhook_received\" [7d]))",
+                "expr": "sum(count_over_time({service=\"tokens-usage-prd-us\"} |= \"depeg_webhook_received\" [2d]))",
                 "queryType": "range",
                 "refId": "A"
             }
@@ -88,8 +88,8 @@
         "repeat_interval": "4h"
     },
     "annotations": {
-        "summary": "tokens-usage: the Webacy depeg webhook has been silent for 7 days",
-        "description": "POST /hooks/webacy on the usage service has logged no depeg_webhook_received event in the last 7 days. Webacy emits DEPEG_TIER_CHANGE across 600+ monitored tokens, so a week of silence means the subscription is gone, points at the wrong URL, or deliveries are failing before they reach us (check `bun scripts/webacy-webhook-subscribe.ts --list` and `--deliveries`). The 4-hourly sweep still reconciles advisories meanwhile, at sweep latency instead of seconds.",
+        "summary": "tokens-usage: the Webacy depeg webhook has been silent for 2 days",
+        "description": "POST /hooks/webacy on the usage service has logged no depeg_webhook_received event in the last 2 days. Real DEPEG_TIER_CHANGE events are rare: Webacy tiers only a handful of Solana stablecoins (USDC/USDT/PYUSD/CASH as of 2026-10) and those sit at `ok` for weeks, so the daily `webacy-webhook-heartbeat` job on the assets worker (Cloud Scheduler `tokens-webacy-webhook-heartbeat-prd`, 06:25 UTC) asks Webacy to deliver a signed synthetic event through the real pipe; that delivery is what normally keeps this quiet. Two missed days therefore mean one of: the heartbeat job failed (`webacy_webhook_heartbeat_failed` in tokens-assets-jobs-prd-us logs, or the worker is missing WEBACY_API_KEY / WEBACY_DEPEG_REFRESH_ENABLED), the subscription is gone or points at the wrong URL (`bun scripts/webacy-webhook-subscribe.ts --list`, then `--deliveries --since <iso>`), or deliveries are rejected on our side (`rejected_signature` rows in webacy_webhook_deliveries = stale WEBACY_WEBHOOK_SECRET). The heartbeat proves the delivery path, not that Webacy still emits real tier changes; `depeg_poll_summary.tier_changes` from the 4-hourly sweep is the cross-check for that, and the sweep keeps reconciling advisories meanwhile at sweep latency instead of seconds.",
         "runbook_url": "https://github.com/solana-foundation/tokens/blob/main/docs/operations/asset-advisory-runbook.md#automated-depeg-advisories"
     }
 }

@@ -12,6 +12,7 @@ import {
     reconcileStablecoinDepeg,
     refreshStablecoinStructuralHealth,
     utcDayString,
+    webacyWebhookHeartbeat,
     type ClearSystemAdvisoryOutcome,
     type DepegCronDeps,
     type DepegLatestRow,
@@ -26,6 +27,8 @@ import {
     type StructuralHealthLatestRow,
     type StructuralHealthRefreshResult,
     type WebacyDepegClient,
+    type WebhookHeartbeatResult,
+    type WebhookTestResult,
 } from './crons.depeg';
 import type { WebacyDepegItem } from './depegNormalize';
 import { buildDepegReason, type ReconcilerAdvisory } from './depegReconciler';
@@ -113,6 +116,7 @@ interface Recording {
     tokenCalls: string[];
     listCalls: Array<{ pageSize: number; maxPages: number }>;
     batchCalls: string[][];
+    testCalls: string[];
 }
 
 interface Fixture {
@@ -128,6 +132,7 @@ interface Fixture {
     structuralPrev?: StructuralHealthLatestRow[];
     structuralTargets?: string[];
     batchResponder?: (addresses: string[]) => StructuralHealthBatchEntry[];
+    testResult?: WebhookTestResult;
     configured?: boolean;
     refreshEnabled?: boolean;
     dryRunDefault?: boolean;
@@ -146,6 +151,7 @@ function makeDeps(fx: Fixture = {}): { deps: DepegCronDeps; rec: Recording } {
         tokenCalls: [],
         listCalls: [],
         batchCalls: [],
+        testCalls: [],
     };
     const registry = new Set(fx.registry ?? [USDC, USDT, USDE, PYUSD]);
     const currencies = fx.currencies ?? [USDC, USDT, USDE, PYUSD];
@@ -171,6 +177,10 @@ function makeDeps(fx: Fixture = {}): { deps: DepegCronDeps; rec: Recording } {
 
     const webacyDepeg: WebacyDepegClient = {
         isConfigured: () => fx.configured ?? true,
+        async testWebhookSubscription(subscriptionId) {
+            rec.testCalls.push(subscriptionId);
+            return fx.testResult ?? { ok: true, status: 200 };
+        },
         async fetchDepegToken({ address }) {
             rec.tokenCalls.push(address);
             return fx.tokenResults?.[address] ?? { ok: true, status: 200, item: item(address, 'ok') };
@@ -357,11 +367,12 @@ describe('buildDepegRow', () => {
 });
 
 describe('reconcile-stablecoin-depeg gates and args', () => {
-    test('is registered under all three job names', () => {
+    test('is registered under all four job names', () => {
         expect(Object.keys(depegJobs).sort()).toEqual([
             'reconcile-stablecoin-depeg',
             'refresh-peg-guard',
             'refresh-stablecoin-structural-health',
+            'webacy-webhook-heartbeat',
         ]);
     });
 
@@ -973,5 +984,68 @@ describe('refresh-stablecoin-structural-health', () => {
             ok: false,
             errorMessage: 'missing from batch response',
         });
+    });
+});
+
+describe('webacy-webhook-heartbeat', () => {
+    async function heartbeat(deps: DepegCronDeps, args: unknown): Promise<WebhookHeartbeatResult> {
+        return (await webacyWebhookHeartbeat(deps, args)) as WebhookHeartbeatResult;
+    }
+
+    test('asks Webacy to test the subscription from the body and logs the send', async () => {
+        const { deps, rec } = makeDeps();
+        const out = await heartbeat(deps, { subscriptionId: '497' });
+        expect(out).toMatchObject({ ok: true, processed: 1, subscriptionId: '497', status: 200 });
+        expect(rec.testCalls).toEqual(['497']);
+        expect(events(rec, 'webacy_webhook_heartbeat_sent')).toEqual([
+            expect.objectContaining({
+                job: 'webacy-webhook-heartbeat',
+                observer: 'webacy',
+                subscription_id: '497',
+                status: 200,
+            }),
+        ]);
+        expect(events(rec, 'webacy_webhook_heartbeat_failed')).toHaveLength(0);
+    });
+
+    test('a Webacy error is a total failure (ok:false -> 500 so the scheduler retries) and is logged', async () => {
+        const { deps, rec } = makeDeps({ testResult: { ok: false, status: 404, message: 'Subscription not found' } });
+        const out = await heartbeat(deps, { subscriptionId: '9999' });
+        expect(out).toMatchObject({ ok: false, processed: 0, subscriptionId: '9999', status: 404 });
+        expect(events(rec, 'webacy_webhook_heartbeat_failed')).toEqual([
+            expect.objectContaining({ subscription_id: '9999', status: 404, message: 'Subscription not found' }),
+        ]);
+        expect(events(rec, 'webacy_webhook_heartbeat_sent')).toHaveLength(0);
+    });
+
+    test('honours the refresh flag and the key gate before touching Webacy', async () => {
+        const off = makeDeps({ refreshEnabled: false });
+        expect(await heartbeat(off.deps, { subscriptionId: '497' })).toMatchObject({
+            ok: true,
+            disabled: true,
+            reason: 'depeg_refresh_disabled',
+        });
+        expect(off.rec.testCalls).toHaveLength(0);
+        const noKey = makeDeps({ configured: false });
+        expect(await heartbeat(noKey.deps, { subscriptionId: '497' })).toMatchObject({
+            ok: true,
+            disabled: true,
+            reason: 'webacy_not_configured',
+        });
+        expect(noKey.rec.testCalls).toHaveLength(0);
+        const bypass = makeDeps({ refreshEnabled: false });
+        expect(await heartbeat(bypass.deps, { subscriptionId: '497', requireRefreshEnabled: false })).toMatchObject({
+            ok: true,
+            processed: 1,
+        });
+        expect(bypass.rec.testCalls).toEqual(['497']);
+    });
+
+    test('rejects a missing or non-string subscriptionId with BadRequestError', async () => {
+        const { deps, rec } = makeDeps();
+        await expect(heartbeat(deps, {})).rejects.toBeInstanceOf(BadRequestError);
+        await expect(heartbeat(deps, { subscriptionId: '  ' })).rejects.toBeInstanceOf(BadRequestError);
+        await expect(heartbeat(deps, { subscriptionId: 497 })).rejects.toBeInstanceOf(BadRequestError);
+        expect(rec.testCalls).toHaveLength(0);
     });
 });
