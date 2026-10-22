@@ -3103,6 +3103,20 @@ export function makePostgresCoingeckoReadsRepo(sql: Sql): CoingeckoReadsRepo {
             `;
             return rows[0] ?? null;
         },
+        async findCoinBySolanaMint(mint) {
+            // Point read on the expression index from migration 0034. CoinGecko
+            // occasionally lists two coins on one contract; prefer the freshest.
+            const rows = await sql<CoingeckoCoinRow[]>`
+                SELECT id, coin_id, symbol, name, platforms,
+                       last_synced_at, coin, last_metadata_fetched_at, created_at
+                FROM coingecko_coins
+                WHERE platforms->>'solana' = ${mint}
+                  AND platforms->>'solana' <> ''
+                ORDER BY last_synced_at DESC, coin_id ASC
+                LIMIT 1
+            `;
+            return rows[0] ?? null;
+        },
         async searchCoinsById(query, limit) {
             const tsq = buildPrefixTsQuery(query) ?? 'noresultsentinel:*';
             const pattern = `%${query}%`;

@@ -1,8 +1,14 @@
 import { Effect } from 'effect';
 
-import { fetchJsonWithRetry, tapErrorAndDefault } from '@tokens/effect';
+import { looksLikeSolanaAddress } from '@tokens/asset-registry';
+import { BadRequestError, fetchJsonWithRetry, tapErrorAndDefault } from '@tokens/effect';
 import { route } from '@/effect/next-route';
-import { createCoinGeckoNewsNotFoundRecovery, validateCoinGeckoNewsCoinId } from '@/lib/coingecko-news';
+import {
+    createCoinGeckoNewsNotFoundRecovery,
+    resolveCoinGeckoNewsCoinByMint,
+    validateCoinGeckoNewsCoinId,
+    type CoinGeckoNewsValidation,
+} from '@/lib/coingecko-news';
 import { decodeHtmlEntities } from '@/lib/html-entities';
 import { resolveXBearerToken, runXRequest } from '@/lib/x-auth';
 import { restoreXCashtagsInTexts } from '@/lib/x-cashtags';
@@ -73,7 +79,7 @@ const MAX_X_RESULTS = 100;
 const MAX_COINGECKO_NEWS_PER_PAGE = 20;
 const MAX_COINGECKO_NEWS_PAGES = 20;
 
-function parseTerms(url: URL): string[] {
+function parseTerms(url: URL, extraTerms: readonly string[] = []): string[] {
     const values = [
         ...url.searchParams.getAll('term'),
         ...(url.searchParams.get('terms') ?? '').split(','),
@@ -81,6 +87,7 @@ function parseTerms(url: URL): string[] {
         url.searchParams.get('symbol') ?? '',
         url.searchParams.get('asset_id') ?? '',
         url.searchParams.get('coin_id') ?? '',
+        ...extraTerms,
     ];
 
     const seen = new Set<string>();
@@ -123,10 +130,16 @@ function mapCoinGeckoNewsArticle(article: CoinGeckoNewsArticle): FeedArticle {
     };
 }
 
-async function fetchCoinGeckoNews(coinId: string, requestedCount: number): Promise<FeedArticle[]> {
+async function fetchCoinGeckoNews(
+    coinId: string,
+    requestedCount: number,
+    options: { validation?: CoinGeckoNewsValidation } = {},
+): Promise<FeedArticle[]> {
     if (requestedCount <= 0) return [];
 
-    const validation = await Effect.runPromise(validateCoinGeckoNewsCoinId(coinId));
+    // A coin resolved from `mint` was already classified against the catalog
+    // row we read; re-validating would only repeat the same RPC by coin id.
+    const validation = options.validation ?? (await Effect.runPromise(validateCoinGeckoNewsCoinId(coinId)));
     if (!validation.shouldFetch) return [];
 
     const apiKey = process.env.COINGECKO_API_KEY?.trim();
@@ -187,10 +200,27 @@ function emptyFeedArticlesEffect() {
     return Effect.succeed([] as FeedArticle[]);
 }
 
-function fetchCoinGeckoNewsEffect(coinId: string, requestedCount: number) {
-    return Effect.tryPromise(() => fetchCoinGeckoNews(coinId, requestedCount)).pipe(
+function fetchCoinGeckoNewsEffect(
+    coinId: string,
+    requestedCount: number,
+    options: { validation?: CoinGeckoNewsValidation } = {},
+) {
+    return Effect.tryPromise(() => fetchCoinGeckoNews(coinId, requestedCount, options)).pipe(
         tapErrorAndDefault('v1.newsFeed.coingecko', [] as FeedArticle[], { coinId }),
     );
+}
+
+/**
+ * `mint` is validated by shape only; whether the mint is a CoinGecko-listed
+ * coin is a catalog question answered by `resolveCoinGeckoNewsCoinByMint`.
+ */
+function parseMint(url: URL): Effect.Effect<string, BadRequestError> {
+    const raw = (url.searchParams.get('mint') ?? '').trim();
+    if (!raw) return Effect.succeed('');
+    if (!looksLikeSolanaAddress(raw)) {
+        return Effect.fail(new BadRequestError({ message: 'mint must be a base58 Solana mint address' }));
+    }
+    return Effect.succeed(raw);
 }
 
 function fetchTokensFeedEffect(limit: number) {
@@ -287,15 +317,28 @@ export const GET = route(
             });
             const source = parseFeedSource(url.searchParams.get('source'));
             const tweetReserve = getEffectiveTweetReserve({ source, limit, requestedTweetReserve });
-            const coinId = (url.searchParams.get('coin_id') ?? '').trim();
-            const terms = parseTerms(url);
+            const explicitCoinId = (url.searchParams.get('coin_id') ?? '').trim();
+            const mint = yield* parseMint(url);
+            // An explicit `coin_id` wins; `mint` only resolves one when the caller
+            // has no coin id (the unregistered-token case this param exists for).
+            const resolvedCoin = mint && !explicitCoinId ? yield* resolveCoinGeckoNewsCoinByMint(mint) : null;
+            const coinId = explicitCoinId || resolvedCoin?.coinId || '';
+            const coinIdSource = explicitCoinId ? 'param' : resolvedCoin ? 'mint' : null;
+            // Resolved symbol/name make `@tokens` posts match without the caller
+            // repeating them; the mint itself matches `solana:<mint>` token tags.
+            const terms = parseTerms(
+                url,
+                resolvedCoin ? [resolvedCoin.coinId, resolvedCoin.symbol, resolvedCoin.name, mint] : mint ? [mint] : [],
+            );
             const mode = coinId || terms.length > 0 ? 'token' : 'global';
             const candidateFetchCounts = getCandidateFetchCounts({ limit, tweetReserve, source });
 
             const [newsArticles, rawXArticles] = yield* Effect.all(
                 [
                     candidateFetchCounts.coingecko > 0
-                        ? fetchCoinGeckoNewsEffect(coinId, candidateFetchCounts.coingecko)
+                        ? fetchCoinGeckoNewsEffect(coinId, candidateFetchCounts.coingecko, {
+                              ...(resolvedCoin ? { validation: resolvedCoin.validation } : {}),
+                          })
                         : emptyFeedArticlesEffect(),
                     candidateFetchCounts.x > 0 ? fetchTokensFeedEffect(candidateFetchCounts.x) : emptyFeedArticlesEffect(),
                 ],
@@ -311,6 +354,8 @@ export const GET = route(
                     mode,
                     source,
                     coin_id: coinId || null,
+                    coin_id_source: coinIdSource,
+                    mint: mint || null,
                     terms,
                     limit,
                     tweet_reserve: tweetReserve,

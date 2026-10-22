@@ -3296,6 +3296,7 @@ describe('stockOhlcvList', () => {
 
 interface CoingeckoReadsMockData {
     coinsByCoinId?: Record<string, CoingeckoCoinRow>;
+    coinsBySolanaMint?: Record<string, CoingeckoCoinRow>;
     searchById?: Record<string, CoingeckoCoinSearchRow[]>;
     searchBySymbol?: Record<string, CoingeckoCoinSearchRow[]>;
     searchByName?: Record<string, CoingeckoCoinSearchRow[]>;
@@ -3312,6 +3313,9 @@ function makeCoingeckoReadsRepo(data: CoingeckoReadsMockData = {}): CoingeckoRea
     return {
         async findCoinByCoinId(coinId) {
             return data.coinsByCoinId?.[coinId] ?? null;
+        },
+        async findCoinBySolanaMint(mint) {
+            return data.coinsBySolanaMint?.[mint] ?? null;
         },
         async searchCoinsById(query, limit) {
             return (data.searchById?.[query] ?? []).slice(0, limit);
@@ -3407,6 +3411,42 @@ describe('coingeckoReadsGetCoinById', () => {
     it('rejects non-string id with 400', async () => {
         const app = createApp(deps());
         const res = await call(app, '/query/coingeckoReadsGetCoinById', authed({ id: 123 }));
+        expect(res.status).toBe(400);
+    });
+});
+
+describe('coingeckoReadsGetCoinBySolanaMint', () => {
+    const BONK_MINT = 'DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263';
+
+    it('returns the mapped coin row for a known mint', async () => {
+        const repo = makeCoingeckoReadsRepo({
+            coinsBySolanaMint: { [BONK_MINT]: sampleCoinRow() },
+        });
+        const app = createApp(deps({ coingeckoReadsRepo: repo }));
+        const res = await call(app, '/query/coingeckoReadsGetCoinBySolanaMint', authed({ mint: BONK_MINT }));
+        expect(res.status).toBe(200);
+        const body = (await res.json()) as { id: string; symbol: string; lastSyncedAt: number };
+        expect(body.id).toBe('solana');
+        expect(body.symbol).toBe('sol');
+        expect(body.lastSyncedAt).toBe(1_700_000_000_000);
+    });
+
+    it('returns null for an unknown mint and a whitespace-only mint', async () => {
+        const repo = makeCoingeckoReadsRepo({
+            coinsBySolanaMint: { [BONK_MINT]: sampleCoinRow() },
+        });
+        const app = createApp(deps({ coingeckoReadsRepo: repo }));
+        const missing = await call(app, '/query/coingeckoReadsGetCoinBySolanaMint', authed({ mint: 'nope' }));
+        expect(missing.status).toBe(200);
+        expect(await missing.json()).toBeNull();
+        const blank = await call(app, '/query/coingeckoReadsGetCoinBySolanaMint', authed({ mint: '   ' }));
+        expect(blank.status).toBe(200);
+        expect(await blank.json()).toBeNull();
+    });
+
+    it('rejects a non-string mint with 400', async () => {
+        const app = createApp(deps());
+        const res = await call(app, '/query/coingeckoReadsGetCoinBySolanaMint', authed({ mint: 123 }));
         expect(res.status).toBe(400);
     });
 });

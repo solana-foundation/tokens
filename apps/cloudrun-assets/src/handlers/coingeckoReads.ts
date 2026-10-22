@@ -68,6 +68,8 @@ export interface CoingeckoTickersLatestRow {
 
 export interface CoingeckoReadsRepo {
     findCoinByCoinId(coinId: string): Promise<CoingeckoCoinRow | null>;
+    /** Catalog row whose CoinGecko `platforms.solana` contract is exactly `mint` (base58, case-sensitive). */
+    findCoinBySolanaMint(mint: string): Promise<CoingeckoCoinRow | null>;
     searchCoinsById(query: string, limit: number): Promise<CoingeckoCoinSearchRow[]>;
     searchCoinsBySymbol(query: string, limit: number): Promise<CoingeckoCoinSearchRow[]>;
     searchCoinsByName(query: string, limit: number): Promise<CoingeckoCoinSearchRow[]>;
@@ -285,6 +287,22 @@ export async function getCoinById(
     const id = readString(a, 'id').trim();
     if (!id) return null;
     const row = await repo.findCoinByCoinId(id);
+    if (!row) return null;
+    return coinRowToResult(row);
+}
+
+/**
+ * Resolve a Solana mint to its CoinGecko catalog row. Used by the news feed to
+ * serve coin-specific news for mints that are not registered assets.
+ */
+export async function getCoinBySolanaMint(
+    repo: CoingeckoReadsRepo,
+    args: unknown,
+): Promise<CoingeckoCoinResult | null> {
+    const a = asObject(args);
+    const mint = readString(a, 'mint').trim();
+    if (!mint) return null;
+    const row = await repo.findCoinBySolanaMint(mint);
     if (!row) return null;
     return coinRowToResult(row);
 }

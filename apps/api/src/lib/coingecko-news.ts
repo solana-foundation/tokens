@@ -1,7 +1,7 @@
 import { Effect } from 'effect';
 
 import { emitEvent, type FetchHttpRecovery, type UpstreamHttpError } from '@tokens/effect';
-import { coingeckoGetCoinById } from '@/lib/cloudrun';
+import { coingeckoGetCoinById, coingeckoGetCoinBySolanaMint } from '@/lib/cloudrun';
 
 export const COINGECKO_NEWS_CATALOG_FRESHNESS_MS = 15 * 24 * 60 * 60 * 1000;
 
@@ -90,4 +90,73 @@ export function createCoinGeckoNewsNotFoundRecovery<T>(
         }
         return { value: emptyValue, outcome: 'coin_not_found' };
     };
+}
+
+export interface CoinGeckoNewsMintResolution {
+    coinId: string;
+    symbol: string;
+    name: string;
+    validation: CoinGeckoNewsValidation;
+}
+
+interface CoinGeckoNewsMintResolveOptions {
+    lookup?: (mint: string) => Effect.Effect<CoinGeckoNewsMintCatalogEntry | null, unknown>;
+    now?: () => number;
+    emit?: (entry: Record<string, unknown>) => void;
+}
+
+interface CoinGeckoNewsMintCatalogEntry extends CoinGeckoCatalogEntry {
+    id: string;
+    symbol: string;
+    name: string;
+}
+
+/**
+ * Resolve a Solana mint to its CoinGecko coin id through the synchronized
+ * catalog (`coingecko_coins.platforms.solana`). Lets `/v1/news/feed` serve
+ * coin-specific news for mints that are not registered tokens.xyz assets.
+ *
+ * Returns `null` when the catalog has no coin for the mint or the lookup
+ * fails; the caller then falls back to the global feed. A resolved coin still
+ * carries the same freshness gate as an explicit `coin_id`, so a stale row is
+ * reported but never fetched.
+ */
+export function resolveCoinGeckoNewsCoinByMint(
+    rawMint: string,
+    options: CoinGeckoNewsMintResolveOptions = {},
+): Effect.Effect<CoinGeckoNewsMintResolution | null, never> {
+    const mint = rawMint.trim();
+    if (!mint) return Effect.succeed(null);
+
+    const lookup = options.lookup ?? (value => coingeckoGetCoinBySolanaMint({ mint: value }));
+    const now = options.now ?? Date.now;
+    const emit = options.emit ?? emitEvent;
+
+    return lookup(mint).pipe(
+        Effect.map((entry): { outcome: 'resolved'; value: CoinGeckoNewsMintResolution } | { outcome: 'missing' } => {
+            if (!entry || !entry.id) return { outcome: 'missing' };
+            return {
+                outcome: 'resolved',
+                value: {
+                    coinId: entry.id,
+                    symbol: entry.symbol,
+                    name: entry.name,
+                    validation: classifyCoinGeckoNewsCoinId(entry, now()),
+                },
+            };
+        }),
+        Effect.catch(() => Effect.succeed({ outcome: 'lookup_unavailable' as const })),
+        Effect.tap(result =>
+            result.outcome === 'resolved'
+                ? Effect.void
+                : Effect.sync(() =>
+                      emit({
+                          event: 'coingecko_news_mint_unresolved',
+                          mint,
+                          reason: result.outcome,
+                      }),
+                  ),
+        ),
+        Effect.map(result => (result.outcome === 'resolved' ? result.value : null)),
+    );
 }

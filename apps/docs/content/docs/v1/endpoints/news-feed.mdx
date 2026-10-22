@@ -15,7 +15,7 @@ Return the filterable activity feed used by the floating market feed.
 ### Modes
 
 - **Global mode**: omit token params. The response can include global CoinGecko news, recent `@tokens` posts, or both depending on `source`.
-- **Token mode**: pass `coin_id` and/or matching terms. The response can include token-specific CoinGecko news, matching `@tokens` posts, or both depending on `source`.
+- **Token mode**: pass `coin_id`, `mint`, and/or matching terms. The response can include token-specific CoinGecko news, matching `@tokens` posts, or both depending on `source`.
 
 ### Query params
 
@@ -23,6 +23,7 @@ Return the filterable activity feed used by the floating market feed.
 - `source` (optional): `all`, `news`, or `tweets`, default `all`
 - `tweet_reserve` (optional): integer `0–limit`, default `3`. Reserves visible slots for matching `@tokens` posts when `source=all`.
 - `coin_id` (optional): active CoinGecko coin id, such as `bitcoin` or `solana`
+- `mint` (optional): Solana mint address. tokens.xyz resolves the CoinGecko coin id for it server-side, so coin-specific news works for mints that are not registered tokens.xyz assets. The resolved coin id, symbol and name are also added to the `@tokens` matching terms. Ignored for coin resolution when `coin_id` is also set.
 - `symbol` (optional): token symbol used to match related `@tokens` posts, such as `BTC`
 - `name` (optional): token/display name used to match related `@tokens` posts, such as `Bitcoin`
 - `asset_id` (optional): canonical asset id used as an additional matching term
@@ -48,6 +49,8 @@ interface NewsFeedResponse {
         mode: 'global' | 'token';
         source: 'all' | 'news' | 'tweets';
         coin_id: string | null;
+        coin_id_source: 'param' | 'mint' | null;
+        mint: string | null;
         terms: string[];
         limit: number;
         tweet_reserve: number;
@@ -76,6 +79,13 @@ curl -sS "$API_BASE_URL/v1/news/feed?coin_id=bitcoin&symbol=BTC&name=Bitcoin&sou
   -H "x-api-key: $API_KEY"
 ```
 
+Feed for an unregistered mint (BONK), resolved to CoinGecko on the tokens.xyz side:
+
+```bash
+curl -sS "$API_BASE_URL/v1/news/feed?mint=DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263&limit=50" \
+  -H "x-api-key: $API_KEY"
+```
+
 Tweet-only token feed:
 
 ```bash
@@ -89,6 +99,8 @@ curl -sS "$API_BASE_URL/v1/news/feed?terms=solana,SOL&source=tweets&limit=50" \
 - `feed_source="x"` items come from `@tokens` on X.
 - In token mode, `@tokens` posts are included only when their text/source metadata matches the supplied token terms.
 - Unknown or stale `coin_id` values produce no CoinGecko items. With `source=all`, matching X items may still be returned.
+- `mint` must be a base58 Solana mint address; any other shape returns HTTP `400`. A well-formed mint that CoinGecko does not list falls back to the global news feed (`meta.coin_id` is `null`) rather than failing. The mint-to-coin mapping comes from the synchronized CoinGecko catalog, so a brand-new listing can take a few hours to resolve.
+- `meta.coin_id_source` reports where the effective coin id came from: `param` for an explicit `coin_id`, `mint` when it was resolved from `mint`, `null` when there is none.
 - `limit` supports up to `50`; larger values are clamped to `50`.
 - `tweet_reserve` is ignored for single-source feeds (`source=news` or `source=tweets`).
 - Provider content is best-effort: unknown or stale CoinGecko ids and upstream provider failures return an empty or partial feed with HTTP `200`, rather than failing the request.
