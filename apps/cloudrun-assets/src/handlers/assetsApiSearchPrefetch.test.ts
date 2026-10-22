@@ -225,6 +225,9 @@ function makeEmptyDeps(overrides: Partial<SearchPrefetchDeps> = {}): SearchPrefe
         async findCoinByCoinId() {
             return null;
         },
+        async findCoinBySolanaMint() {
+            return null;
+        },
         async searchCoinsById() {
             return [];
         },

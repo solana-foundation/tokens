@@ -234,6 +234,7 @@ export {
 
 export {
     getCoinById as coingeckoGetCoinById,
+    getCoinBySolanaMint as coingeckoGetCoinBySolanaMint,
     getPriceLatestByCoinId as coingeckoGetPriceLatestByCoinId,
     getPriceLatestByCoinIds as coingeckoGetPriceLatestByCoinIds,
     getTickersLatestByCoinId as coingeckoGetTickersLatestByCoinId,
@@ -241,6 +242,8 @@ export {
     searchCoins as coingeckoSearchCoins,
     type GetCoinByIdArgs as CoingeckoGetCoinByIdArgs,
     type GetCoinByIdResult as CoingeckoGetCoinByIdResult,
+    type GetCoinBySolanaMintArgs as CoingeckoGetCoinBySolanaMintArgs,
+    type GetCoinBySolanaMintResult as CoingeckoGetCoinBySolanaMintResult,
     type GetPriceLatestByCoinIdArgs as CoingeckoGetPriceLatestByCoinIdArgs,
     type GetPriceLatestByCoinIdResult as CoingeckoGetPriceLatestByCoinIdResult,
     type GetPriceLatestByCoinIdsArgs as CoingeckoGetPriceLatestByCoinIdsArgs,

@@ -126,6 +126,9 @@ const noopCoingeckoReadsRepo: CoingeckoReadsRepo = {
     async findCoinByCoinId() {
         return null;
     },
+    async findCoinBySolanaMint() {
+        return null;
+    },
     async searchCoinsById() {
         return [];
     },

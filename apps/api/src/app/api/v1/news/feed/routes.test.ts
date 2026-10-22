@@ -271,3 +271,282 @@ describe('news feed X posts', () => {
         expect(body.items.map(item => item.title)).toEqual(['$SOL broke above $120.']);
     });
 });
+
+describe('news feed mint resolution', () => {
+    const BONK_MINT = 'DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263';
+
+    function bonkCatalogRow(lastSyncedAt = Date.now()) {
+        return {
+            _id: 'row-bonk',
+            _creationTime: 1_700_000_000_000,
+            id: 'bonk',
+            symbol: 'bonk',
+            name: 'Bonk',
+            platforms: { solana: BONK_MINT },
+            lastSyncedAt,
+        };
+    }
+
+    interface FeedMeta {
+        mode: string;
+        coin_id: string | null;
+        coin_id_source: string | null;
+        mint: string | null;
+        terms: string[];
+    }
+
+    it('resolves an unregistered mint to its CoinGecko coin id and fetches coin-specific news', async () => {
+        const upstreamCoinIds: (string | null)[] = [];
+        let byIdCalls = 0;
+        let byMintArgs: unknown = null;
+        globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+            const url = String(input);
+            if (url.includes('/query/coingeckoReadsGetCoinBySolanaMint')) {
+                byMintArgs = JSON.parse(String(init?.body ?? 'null'));
+                return new Response(JSON.stringify(bonkCatalogRow()), { status: 200 });
+            }
+            if (url.includes('/query/coingeckoReadsGetCoinById')) {
+                byIdCalls += 1;
+                return new Response(JSON.stringify(bonkCatalogRow()), { status: 200 });
+            }
+            if (url.startsWith('https://pro-api.coingecko.com/api/v3/news')) {
+                upstreamCoinIds.push(new URL(url).searchParams.get('coin_id'));
+                return new Response(JSON.stringify([{ ...newsArticle(), related_coin_ids: ['bonk'] }]), {
+                    status: 200,
+                });
+            }
+            throw new Error(`Unexpected fetch: ${url}`);
+        }) as typeof fetch;
+
+        const response = await request(feedGet, `/api/v1/news/feed?source=news&mint=${BONK_MINT}`);
+        expect(response.status).toBe(200);
+        const body = (await response.json()) as { items: unknown[]; meta: FeedMeta };
+
+        expect(byMintArgs).toEqual({ mint: BONK_MINT });
+        expect(upstreamCoinIds).toEqual(['bonk']);
+        // The catalog row already carried freshness; no second lookup by coin id.
+        expect(byIdCalls).toBe(0);
+        expect(body.items.length).toBe(1);
+        expect(body.meta.mode).toBe('token');
+        expect(body.meta.coin_id).toBe('bonk');
+        expect(body.meta.coin_id_source).toBe('mint');
+        expect(body.meta.mint).toBe(BONK_MINT);
+        // Terms dedupe case-insensitively, so 'bonk' (coin id) absorbs the 'Bonk' name.
+        expect(body.meta.terms).toEqual(['bonk', BONK_MINT]);
+    });
+
+    it('falls back to the global feed when the mint is not in the CoinGecko catalog', async () => {
+        const upstreamCoinIds: (string | null)[] = [];
+        globalThis.fetch = (async (input: string | URL | Request) => {
+            const url = String(input);
+            if (url.includes('/query/coingeckoReadsGetCoinBySolanaMint')) {
+                return new Response('null', { status: 200 });
+            }
+            if (url.startsWith('https://pro-api.coingecko.com/api/v3/news')) {
+                upstreamCoinIds.push(new URL(url).searchParams.get('coin_id'));
+                return new Response(JSON.stringify([newsArticle()]), { status: 200 });
+            }
+            throw new Error(`Unexpected fetch: ${url}`);
+        }) as typeof fetch;
+
+        const response = await request(feedGet, `/api/v1/news/feed?source=news&mint=${BONK_MINT}`);
+        expect(response.status).toBe(200);
+        const body = (await response.json()) as { items: unknown[]; meta: FeedMeta };
+
+        expect(upstreamCoinIds).toEqual([null]);
+        expect(body.items.length).toBe(1);
+        expect(body.meta.mode).toBe('token');
+        expect(body.meta.coin_id).toBeNull();
+        expect(body.meta.coin_id_source).toBeNull();
+        expect(body.meta.mint).toBe(BONK_MINT);
+    });
+
+    it('falls back to the global feed when the catalog lookup fails', async () => {
+        const upstreamCoinIds: (string | null)[] = [];
+        globalThis.fetch = (async (input: string | URL | Request) => {
+            const url = String(input);
+            if (url.includes('/query/coingeckoReadsGetCoinBySolanaMint')) {
+                return new Response('catalog unavailable', { status: 500 });
+            }
+            if (url.startsWith('https://pro-api.coingecko.com/api/v3/news')) {
+                upstreamCoinIds.push(new URL(url).searchParams.get('coin_id'));
+                return new Response(JSON.stringify([newsArticle()]), { status: 200 });
+            }
+            throw new Error(`Unexpected fetch: ${url}`);
+        }) as typeof fetch;
+
+        const response = await request(feedGet, `/api/v1/news/feed?source=news&mint=${BONK_MINT}`);
+        expect(response.status).toBe(200);
+        const body = (await response.json()) as { meta: FeedMeta };
+        expect(upstreamCoinIds).toEqual([null]);
+        expect(body.meta.coin_id).toBeNull();
+    });
+
+    it('skips a stale catalog row resolved from a mint without an upstream call', async () => {
+        let upstreamCalls = 0;
+        const staleSyncedAt = Date.now() - 30 * 24 * 60 * 60 * 1000;
+        globalThis.fetch = (async (input: string | URL | Request) => {
+            const url = String(input);
+            if (url.includes('/query/coingeckoReadsGetCoinBySolanaMint')) {
+                return new Response(JSON.stringify(bonkCatalogRow(staleSyncedAt)), { status: 200 });
+            }
+            if (url.startsWith('https://pro-api.coingecko.com/api/v3/news')) {
+                upstreamCalls += 1;
+                return new Response(JSON.stringify([newsArticle()]), { status: 200 });
+            }
+            throw new Error(`Unexpected fetch: ${url}`);
+        }) as typeof fetch;
+
+        const response = await request(feedGet, `/api/v1/news/feed?source=news&mint=${BONK_MINT}`);
+        expect(response.status).toBe(200);
+        const body = (await response.json()) as { items: unknown[]; meta: FeedMeta };
+        expect(upstreamCalls).toBe(0);
+        expect(body.items).toEqual([]);
+        expect(body.meta.coin_id).toBe('bonk');
+        expect(body.meta.coin_id_source).toBe('mint');
+    });
+
+    it('prefers an explicit coin_id over mint and skips the mint lookup', async () => {
+        let byMintCalls = 0;
+        const upstreamCoinIds: (string | null)[] = [];
+        globalThis.fetch = (async (input: string | URL | Request) => {
+            const url = String(input);
+            if (url.includes('/query/coingeckoReadsGetCoinBySolanaMint')) {
+                byMintCalls += 1;
+                return new Response(JSON.stringify(bonkCatalogRow()), { status: 200 });
+            }
+            if (url.includes('/query/coingeckoReadsGetCoinById')) {
+                return new Response(JSON.stringify({ lastSyncedAt: Date.now() }), { status: 200 });
+            }
+            if (url.startsWith('https://pro-api.coingecko.com/api/v3/news')) {
+                upstreamCoinIds.push(new URL(url).searchParams.get('coin_id'));
+                return new Response(JSON.stringify([newsArticle()]), { status: 200 });
+            }
+            throw new Error(`Unexpected fetch: ${url}`);
+        }) as typeof fetch;
+
+        const response = await request(feedGet, `/api/v1/news/feed?source=news&coin_id=bitcoin&mint=${BONK_MINT}`);
+        expect(response.status).toBe(200);
+        const body = (await response.json()) as { meta: FeedMeta };
+        expect(byMintCalls).toBe(0);
+        expect(upstreamCoinIds).toEqual(['bitcoin']);
+        expect(body.meta.coin_id).toBe('bitcoin');
+        expect(body.meta.coin_id_source).toBe('param');
+        expect(body.meta.mint).toBe(BONK_MINT);
+    });
+
+    it('rejects a malformed mint with 400 before any lookup', async () => {
+        let fetchCalls = 0;
+        globalThis.fetch = (async () => {
+            fetchCalls += 1;
+            throw new Error('Unexpected fetch');
+        }) as typeof fetch;
+
+        const response = await request(feedGet, '/api/v1/news/feed?source=news&mint=not-a-mint');
+        expect(response.status).toBe(400);
+        expect(fetchCalls).toBe(0);
+    });
+
+    it('matches @tokens posts on the symbol resolved from the mint', async () => {
+        process.env.X_BEARER_TOKEN = 'x-bearer';
+        globalThis.fetch = (async (input: string | URL | Request) => {
+            const url = String(input);
+            if (url.includes('/query/coingeckoReadsGetCoinBySolanaMint')) {
+                return new Response(JSON.stringify(bonkCatalogRow()), { status: 200 });
+            }
+            if (url.startsWith('https://api.x.com/2/users/by/username/tokens')) {
+                return new Response(
+                    JSON.stringify({ data: { id: '1', name: 'tokens', username: 'tokens' } }),
+                    { status: 200 },
+                );
+            }
+            if (url.startsWith('https://api.x.com/2/users/1/tweets')) {
+                return new Response(
+                    JSON.stringify({
+                        data: [
+                            { id: '1', text: '$BONK burn update: 1T tokens gone.', created_at: '2026-09-25T12:51:24.000Z' },
+                            { id: '2', text: 'Nothing to see here.', created_at: '2026-09-25T12:50:00.000Z' },
+                        ],
+                    }),
+                    { status: 200 },
+                );
+            }
+            throw new Error(`Unexpected fetch: ${url}`);
+        }) as typeof fetch;
+
+        const response = await request(feedGet, `/api/v1/news/feed?source=tweets&mint=${BONK_MINT}`);
+        expect(response.status).toBe(200);
+        const body = (await response.json()) as { items: { title: string }[] };
+        expect(body.items.map(item => item.title)).toEqual(['$BONK burn update: 1T tokens gone.']);
+    });
+
+    it('matches a post tagged solana:<mint> on the mint itself when the catalog has no row', async () => {
+        process.env.X_BEARER_TOKEN = 'x-bearer';
+        globalThis.fetch = (async (input: string | URL | Request) => {
+            const url = String(input);
+            if (url.includes('/query/coingeckoReadsGetCoinBySolanaMint')) {
+                return new Response('null', { status: 200 });
+            }
+            if (url.startsWith('https://api.x.com/2/users/by/username/tokens')) {
+                return new Response(
+                    JSON.stringify({ data: { id: '1', name: 'tokens', username: 'tokens' } }),
+                    { status: 200 },
+                );
+            }
+            if (url.startsWith('https://api.x.com/2/users/1/tweets')) {
+                return new Response(
+                    JSON.stringify({
+                        data: [
+                            { id: '1', text: `solana:${BONK_MINT} just listed on a new venue.`, created_at: '2026-09-25T12:51:24.000Z' },
+                            { id: '2', text: 'Nothing to see here.', created_at: '2026-09-25T12:50:00.000Z' },
+                        ],
+                    }),
+                    { status: 200 },
+                );
+            }
+            // Cashtag restore: the registry does not know this mint and Birdeye is unavailable,
+            // so the title is rewritten to a shortened address that no longer contains the mint.
+            if (url.includes('birdeye')) return new Response('down', { status: 500 });
+            throw new Error(`Unexpected fetch: ${url}`);
+        }) as typeof fetch;
+
+        const response = await request(feedGet, `/api/v1/news/feed?source=tweets&mint=${BONK_MINT}`);
+        expect(response.status).toBe(200);
+        const body = (await response.json()) as { items: { title: string }[] };
+        expect(body.items.length).toBe(1);
+        expect(body.items[0]?.title).not.toContain(BONK_MINT);
+        expect(body.items[0]?.title).toContain('just listed on a new venue.');
+    });
+
+    it('does not let coin_id=solana match posts that merely tag another solana:<mint>', async () => {
+        process.env.X_BEARER_TOKEN = 'x-bearer';
+        globalThis.fetch = (async (input: string | URL | Request) => {
+            const url = String(input);
+            if (url.startsWith('https://api.x.com/2/users/by/username/tokens')) {
+                return new Response(
+                    JSON.stringify({ data: { id: '1', name: 'tokens', username: 'tokens' } }),
+                    { status: 200 },
+                );
+            }
+            if (url.startsWith('https://api.x.com/2/users/1/tweets')) {
+                return new Response(
+                    JSON.stringify({
+                        data: [
+                            { id: '1', text: `solana:${BONK_MINT} just listed on a new venue.`, created_at: '2026-09-25T12:51:24.000Z' },
+                            { id: '2', text: 'Solana block times hit a new low.', created_at: '2026-09-25T12:50:00.000Z' },
+                        ],
+                    }),
+                    { status: 200 },
+                );
+            }
+            if (url.includes('birdeye')) return new Response('down', { status: 500 });
+            throw new Error(`Unexpected fetch: ${url}`);
+        }) as typeof fetch;
+
+        const response = await request(feedGet, '/api/v1/news/feed?source=tweets&coin_id=solana');
+        expect(response.status).toBe(200);
+        const body = (await response.json()) as { items: { title: string }[] };
+        expect(body.items.map(item => item.title)).toEqual(['Solana block times hit a new low.']);
+    });
+});
+

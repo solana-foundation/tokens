@@ -101,6 +101,7 @@ import {
 } from './handlers/tokenListsAdmin';
 import {
     getCoinById as coingeckoReadsGetCoinById,
+    getCoinBySolanaMint as coingeckoReadsGetCoinBySolanaMint,
     getPriceLatestByCoinId as coingeckoReadsGetPriceLatestByCoinId,
     getPriceLatestByCoinIds as coingeckoReadsGetPriceLatestByCoinIds,
     getTickersLatestByCoinId as coingeckoReadsGetTickersLatestByCoinId,
@@ -335,6 +336,7 @@ const ATOMIC_RETRY_QUERY_NAMES = new Set([
     'tokenListsGetMembers',
     'tokenListsGetSlugsByMints',
     'coingeckoReadsGetCoinById',
+    'coingeckoReadsGetCoinBySolanaMint',
     'coingeckoReadsListOhlcv',
     'coingeckoReadsGetPriceLatestByCoinId',
     'coingeckoReadsGetPriceLatestByCoinIds',
@@ -582,6 +584,8 @@ export function createApp(deps: ServerDeps) {
     queries.tokenListsGetMembers = args => tokenListsGetMembers(deps.tokenListsReadsRepo, args);
     queries.tokenListsGetSlugsByMints = args => tokenListsGetSlugsByMints(deps.tokenListsReadsRepo, args);
     queries.coingeckoReadsGetCoinById = args => coingeckoReadsGetCoinById(deps.coingeckoReadsRepo, args);
+    queries.coingeckoReadsGetCoinBySolanaMint = args =>
+        coingeckoReadsGetCoinBySolanaMint(deps.coingeckoReadsRepo, args);
     queries.coingeckoReadsSearchCoins = args => coingeckoReadsSearchCoins(deps.coingeckoReadsRepo, args);
     queries.coingeckoReadsListOhlcv = args => coingeckoReadsListOhlcv(deps.coingeckoReadsRepo, args);
     queries.coingeckoReadsGetPriceLatestByCoinId = args =>

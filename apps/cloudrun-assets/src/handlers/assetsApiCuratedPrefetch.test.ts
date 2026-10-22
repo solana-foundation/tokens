@@ -193,6 +193,9 @@ function makeEmptyDeps(overrides: Partial<CuratedPrefetchDeps> = {}): CuratedPre
         async findCoinByCoinId() {
             return null;
         },
+        async findCoinBySolanaMint() {
+            return null;
+        },
         async searchCoinsById() {
             return [];
         },
