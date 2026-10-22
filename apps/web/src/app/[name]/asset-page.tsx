@@ -31,7 +31,6 @@ import { formatLargeNumber } from '@/lib/format';
 import { isStablecoinCategory } from '@/lib/stablecoin-health';
 import { getGlobalTokenStats, type GlobalTokenStats } from '@/lib/coingecko';
 import type { RequestedVariantRef } from '@/lib/requested-variant';
-import { AssetChainStatsSection } from './components/asset-chain-stats-section';
 import { AssetPriceChartSection } from './components/asset-price-chart-section';
 import { AssetMarketsSection } from './components/asset-markets-section';
 import { AssetMarketsOverviewSection } from './components/asset-markets-overview-section';
@@ -904,8 +903,6 @@ async function loadAssetPageModel({ assetId, requestedName, requested, shell }: 
         coingeckoId,
         assetDescription: normalizeOptionalText(api?.description) || null,
         assetChains,
-        chainStats,
-        primaryVariantByChain,
         variants,
         requestedVariant,
         isVariantView,
@@ -946,8 +943,6 @@ async function AssetPageContent(props: AssetPageProps) {
         coingeckoId,
         assetDescription,
         assetChains,
-        chainStats,
-        primaryVariantByChain,
         requestedVariant,
         isVariantView,
         active,
@@ -1149,21 +1144,6 @@ async function AssetPageContent(props: AssetPageProps) {
                 chainList={isVariantView ? activeChainLabel : formatChainList(assetChains)}
             />
 
-            {!isVariantView && assetChains.length > 1 && (
-                <AssetChainStatsSection
-                    assetId={canonicalAssetId}
-                    displayName={displayName}
-                    chains={assetChains}
-                    chainStats={chainStats}
-                    primaryVariantByChain={Object.fromEntries(
-                        Array.from(primaryVariantByChain, ([chain, variant]) => [
-                            chain,
-                            { address: variant.address, symbol: variant.displaySymbol },
-                        ]),
-                    )}
-                />
-            )}
-
             {caps.marketsOverview && <AssetMarketsOverviewSection assetId={canonicalAssetId} />}
 
             {!isVariantView && <AssetLaunchesSection assetId={canonicalAssetId} displaySymbol={displaySymbol} />}
@@ -1181,8 +1161,6 @@ async function AssetPageContent(props: AssetPageProps) {
 
             <AssetVariantsSection
                 canonicalAssetId={canonicalAssetId}
-                displayName={displayName}
-                chains={assetChains}
                 variants={variants}
                 hiddenCount={solanaHiddenCount}
             />
@@ -1194,14 +1172,10 @@ async function AssetPageContent(props: AssetPageProps) {
 
 function AssetVariantsSection({
     canonicalAssetId,
-    displayName,
-    chains,
     variants,
     hiddenCount,
 }: {
     canonicalAssetId: string;
-    displayName: string;
-    chains: readonly ChainKind[];
     variants: AssetPageVariant[];
     hiddenCount: number;
 }) {
@@ -1211,9 +1185,6 @@ function AssetVariantsSection({
     return (
         <section className="mt-10">
             <h2 className="text-title-md text-text-extra-high text-balance">Variants</h2>
-            <p className="mt-2 text-body-md text-text-medium text-pretty">
-                Token representations of {displayName} on {formatChainList(chains)}.
-            </p>
             {hiddenCount > 0 ? (
                 <p className="mt-3 text-[13px] text-text-low">
                     Showing variants with at least {formatLargeNumber(MIN_LIQUIDITY_USD)} liquidity ({hiddenCount}{' '}
