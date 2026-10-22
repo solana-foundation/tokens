@@ -479,4 +479,42 @@ describe('news feed mint resolution', () => {
         const body = (await response.json()) as { items: { title: string }[] };
         expect(body.items.map(item => item.title)).toEqual(['$BONK burn update: 1T tokens gone.']);
     });
+
+    it('matches a post tagged solana:<mint> on the mint itself when the catalog has no row', async () => {
+        process.env.X_BEARER_TOKEN = 'x-bearer';
+        globalThis.fetch = (async (input: string | URL | Request) => {
+            const url = String(input);
+            if (url.includes('/query/coingeckoReadsGetCoinBySolanaMint')) {
+                return new Response('null', { status: 200 });
+            }
+            if (url.startsWith('https://api.x.com/2/users/by/username/tokens')) {
+                return new Response(
+                    JSON.stringify({ data: { id: '1', name: 'tokens', username: 'tokens' } }),
+                    { status: 200 },
+                );
+            }
+            if (url.startsWith('https://api.x.com/2/users/1/tweets')) {
+                return new Response(
+                    JSON.stringify({
+                        data: [
+                            { id: '1', text: `solana:${BONK_MINT} just listed on a new venue.`, created_at: '2026-09-25T12:51:24.000Z' },
+                            { id: '2', text: 'Nothing to see here.', created_at: '2026-09-25T12:50:00.000Z' },
+                        ],
+                    }),
+                    { status: 200 },
+                );
+            }
+            // Cashtag restore: the registry does not know this mint and Birdeye is unavailable,
+            // so the title is rewritten to a shortened address that no longer contains the mint.
+            if (url.includes('birdeye')) return new Response('down', { status: 500 });
+            throw new Error(`Unexpected fetch: ${url}`);
+        }) as typeof fetch;
+
+        const response = await request(feedGet, `/api/v1/news/feed?source=tweets&mint=${BONK_MINT}`);
+        expect(response.status).toBe(200);
+        const body = (await response.json()) as { items: { title: string }[] };
+        expect(body.items.length).toBe(1);
+        expect(body.items[0]?.title).not.toContain(BONK_MINT);
+        expect(body.items[0]?.title).toContain('just listed on a new venue.');
+    });
 });

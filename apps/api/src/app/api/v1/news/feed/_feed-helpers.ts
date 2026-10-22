@@ -90,12 +90,17 @@ export function normalizeFeedTerm(value: string): string {
     return value.trim().toLowerCase();
 }
 
-export function articleMatchesTerms(article: FeedArticle, terms: string[]): boolean {
+/**
+ * `extraText` is matched alongside the article's visible fields but never
+ * displayed: X posts pass their pre-rewrite text so a `solana:<mint>` token tag
+ * still matches a mint term after the title has been rewritten to `$SYMBOL`.
+ */
+export function articleMatchesTerms(article: FeedArticle, terms: string[], extraText = ''): boolean {
     const normalizedTerms = terms.map(normalizeFeedTerm).filter(Boolean);
     if (normalizedTerms.length === 0) return false;
 
     const relatedCoinIds = new Set(article.related_coin_ids.map(normalizeFeedTerm).filter(Boolean));
-    const text = `${article.title} ${article.source_name} ${article.author}`.toLowerCase();
+    const text = `${article.title} ${article.source_name} ${article.author} ${extraText}`.toLowerCase();
     return normalizedTerms.some(term => {
         if (relatedCoinIds.has(term)) return true;
 

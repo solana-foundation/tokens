@@ -147,15 +147,23 @@ export function resolveCoinGeckoNewsCoinByMint(
         }),
         Effect.catch(() => Effect.succeed({ outcome: 'lookup_unavailable' as const })),
         Effect.tap(result =>
-            result.outcome === 'resolved'
-                ? Effect.void
-                : Effect.sync(() =>
-                      emit({
-                          event: 'coingecko_news_mint_unresolved',
-                          mint,
-                          reason: result.outcome,
-                      }),
-                  ),
+            Effect.sync(() => {
+                if (result.outcome !== 'resolved') {
+                    emit({ event: 'coingecko_news_mint_unresolved', mint, reason: result.outcome });
+                    return;
+                }
+                // The caller reuses this validation instead of calling
+                // validateCoinGeckoNewsCoinId again, so the skip event that
+                // explains an empty news feed has to come from here.
+                if (!result.value.validation.shouldFetch) {
+                    emit({
+                        event: 'coingecko_news_skipped',
+                        coin_id: result.value.coinId,
+                        mint,
+                        reason: result.value.validation.reason,
+                    });
+                }
+            }),
         ),
         Effect.map(result => (result.outcome === 'resolved' ? result.value : null)),
     );

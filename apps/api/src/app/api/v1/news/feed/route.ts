@@ -200,6 +200,10 @@ function emptyFeedArticlesEffect() {
     return Effect.succeed([] as FeedArticle[]);
 }
 
+function emptyXCandidatesEffect() {
+    return Effect.succeed([] as XFeedCandidate[]);
+}
+
 function fetchCoinGeckoNewsEffect(
     coinId: string,
     requestedCount: number,
@@ -225,7 +229,7 @@ function parseMint(url: URL): Effect.Effect<string, BadRequestError> {
 
 function fetchTokensFeedEffect(limit: number) {
     return Effect.tryPromise(() => fetchTokensFeed(limit)).pipe(
-        tapErrorAndDefault('v1.newsFeed.x', [] as FeedArticle[]),
+        tapErrorAndDefault('v1.newsFeed.x', [] as XFeedCandidate[]),
     );
 }
 
@@ -236,7 +240,13 @@ function getCandidateFetchCounts(params: { limit: number; tweetReserve: number; 
     };
 }
 
-async function fetchTokensFeed(limit: number): Promise<FeedArticle[]> {
+/** An `@tokens` post plus its pre-rewrite text, kept only for term matching. */
+interface XFeedCandidate {
+    article: FeedArticle;
+    matchText: string;
+}
+
+async function fetchTokensFeed(limit: number): Promise<XFeedCandidate[]> {
     const bearerToken = await Effect.runPromise(resolveXBearerToken());
     if (!bearerToken) return [];
 
@@ -284,21 +294,28 @@ async function fetchTokensFeed(limit: number): Promise<FeedArticle[]> {
     );
     // X's token tags arrive as `solana:<mint>` in the API text; restore them to `$SYMBOL` so
     // posts read like they do on x.com (and so `$SYMBOL` term matching sees them).
-    const titles = await Effect.runPromise(restoreXCashtagsInTexts(posts.map(post => cleanPostText(post.text))));
+    // The original text is kept for matching: a mint term must still find a
+    // `solana:<mint>` tag after the title shows `$SYMBOL` (or a shortened
+    // address when no symbol could be resolved).
+    const rawTexts = posts.map(post => cleanPostText(post.text));
+    const titles = await Effect.runPromise(restoreXCashtagsInTexts(rawTexts));
 
     return posts
         .map((post, index) => ({
-            title: titles[index] ?? cleanPostText(post.text),
-            url: buildXPostUrl(user.username, post.id),
-            image: getPostImage(post, mediaByKey, user.profile_image_url),
-            author: user.username,
-            posted_at: post.created_at ?? '',
-            type: 'news' as const,
-            source_name: `@${user.username}`,
-            related_coin_ids: [],
-            feed_source: 'x' as const,
+            article: {
+                title: titles[index] ?? rawTexts[index] ?? '',
+                url: buildXPostUrl(user.username, post.id),
+                image: getPostImage(post, mediaByKey, user.profile_image_url),
+                author: user.username,
+                posted_at: post.created_at ?? '',
+                type: 'news' as const,
+                source_name: `@${user.username}`,
+                related_coin_ids: [],
+                feed_source: 'x' as const,
+            },
+            matchText: rawTexts[index] ?? '',
         }))
-        .sort((a, b) => parsePostedAtMs(b.posted_at) - parsePostedAtMs(a.posted_at));
+        .sort((a, b) => parsePostedAtMs(b.article.posted_at) - parsePostedAtMs(a.article.posted_at));
 }
 
 export const GET = route(
@@ -333,19 +350,23 @@ export const GET = route(
             const mode = coinId || terms.length > 0 ? 'token' : 'global';
             const candidateFetchCounts = getCandidateFetchCounts({ limit, tweetReserve, source });
 
-            const [newsArticles, rawXArticles] = yield* Effect.all(
+            const [newsArticles, xCandidates] = yield* Effect.all(
                 [
                     candidateFetchCounts.coingecko > 0
                         ? fetchCoinGeckoNewsEffect(coinId, candidateFetchCounts.coingecko, {
                               ...(resolvedCoin ? { validation: resolvedCoin.validation } : {}),
                           })
                         : emptyFeedArticlesEffect(),
-                    candidateFetchCounts.x > 0 ? fetchTokensFeedEffect(candidateFetchCounts.x) : emptyFeedArticlesEffect(),
+                    candidateFetchCounts.x > 0 ? fetchTokensFeedEffect(candidateFetchCounts.x) : emptyXCandidatesEffect(),
                 ],
                 { concurrency: 'unbounded' },
             );
 
-            const xArticles = mode === 'token' ? rawXArticles.filter(article => articleMatchesTerms(article, terms)) : rawXArticles;
+            const xArticles = (
+                mode === 'token'
+                    ? xCandidates.filter(candidate => articleMatchesTerms(candidate.article, terms, candidate.matchText))
+                    : xCandidates
+            ).map(candidate => candidate.article);
             const items = selectFeedArticles({ newsArticles, xArticles, limit, source, tweetReserve });
 
             return {
