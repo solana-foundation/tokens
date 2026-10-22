@@ -951,7 +951,7 @@ describe('refresh-peg-guard ownership', () => {
 });
 
 describe('refresh-peg-guard confirmation windows', () => {
-    test('warning sets only after 20 min of consecutive runs (0 / 10 / 20 min)', async () => {
+    test('warning sets only after 60 min of consecutive runs (0 / 30 / 60 min)', async () => {
         const h = makeHarness({
             currencies: [USDE],
             prices: { [USDE]: entry(USDE, 0.98) },
@@ -961,27 +961,114 @@ describe('refresh-peg-guard confirmation windows', () => {
         expect(first.skipped).toEqual({ hysteresis_pending: 1 });
         expect(h.rec.sets).toHaveLength(0);
 
-        h.clock.now = FIXED_NOW + 10 * MINUTE;
+        h.clock.now = FIXED_NOW + 30 * MINUTE;
         const second = await run(h, { dryRun: false });
         expect(second.tierChanges).toBe(0);
         expect(second.skipped).toEqual({ hysteresis_pending: 1 });
         expect(h.latest.get(USDE)).toMatchObject({ observations: 2, badSinceAt: FIXED_NOW, tierSinceAt: FIXED_NOW });
 
-        h.clock.now = FIXED_NOW + 20 * MINUTE;
+        h.clock.now = FIXED_NOW + 60 * MINUTE;
         const third = await run(h, { dryRun: false });
         expect(third.actionsSet).toBe(1);
         expect(h.rec.sets).toHaveLength(1);
-        expect(h.rec.sets[0]).toMatchObject({ mint: USDE, source: 'peg_guard', nowMs: FIXED_NOW + 20 * MINUTE });
+        expect(h.rec.sets[0]).toMatchObject({ mint: USDE, source: 'peg_guard', nowMs: FIXED_NOW + 60 * MINUTE });
         expect(h.rec.sets[0]!.reason).toContain(
             'tokens.xyz peg monitor rates USDe Warning: trading 2.00% below its $1 peg on Solana DEXs',
         );
         expect(h.rec.sets[0]!.reason).toContain('liquidity $5M');
 
         // Fourth run: the row exists with the same tier, nothing to do.
-        h.clock.now = FIXED_NOW + 25 * MINUTE;
+        h.clock.now = FIXED_NOW + 65 * MINUTE;
         const fourth = await run(h, { dryRun: false });
         expect(fourth.skipped).toEqual({ unchanged: 1 });
         expect(h.rec.sets).toHaveLength(1);
+    });
+
+    test('a thin pool hovering around -1% (ZARP, 2026-10) never leaves watch and sets nothing', async () => {
+        // 23 crossings of the -1% line in two weeks on a $102k pool; on the
+        // wide bands that is ok/watch, and hysteresis stops the 5-minute flaps.
+        const h = makeHarness({
+            currencies: [USDE],
+            prices: { [USDE]: entry(USDE, 0.9898, { liquidityUsd: 102_000 }) },
+        });
+        const first = await run(h, { dryRun: false });
+        expect(first.tierCounts).toMatchObject({ watch: 1, warning: 0 });
+        expect(first.tierChanges).toBe(1);
+        expect(h.rec.tierEvents[0]![0]).toMatchObject({ oldTier: null, newTier: 'watch' });
+
+        // -0.97, -1.07, -0.51, -0.6, -1.03, -0.55: inside the wide watch band or
+        // its 0.5pp exit margin (watch leaves above -0.5%).
+        const samples = [0.9903, 0.9893, 0.9949, 0.994, 0.9897, 0.9945];
+        for (const [i, price] of samples.entries()) {
+            h.clock.now = FIXED_NOW + (i + 1) * 5 * MINUTE;
+            const sample = entry(USDE, price, { liquidityUsd: 102_000 });
+            h.deps.pegGuard!.birdeye = {
+                async fetchMultiPrice() {
+                    return {
+                        ok: true,
+                        byMint: new Map([[USDE, { ...sample, updatedAt: h.clock.now - 10_000 }]]),
+                        missing: [],
+                    };
+                },
+            };
+            const out = await run(h, { dryRun: false });
+            expect(out.tierChanges).toBe(0);
+            expect(out.tierCounts.watch).toBe(1);
+        }
+        expect(h.rec.sets).toHaveLength(0);
+        expect(events(h.rec, 'depeg_tier_changed')).toHaveLength(1);
+
+        // Only a recovery past -0.5% (wide watch edge -1 + 0.5pp) returns it to ok.
+        h.clock.now = FIXED_NOW + 40 * MINUTE;
+        const recovered = entry(USDE, 0.9951, { liquidityUsd: 102_000 });
+        h.deps.pegGuard!.birdeye = {
+            async fetchMultiPrice() {
+                return {
+                    ok: true,
+                    byMint: new Map([[USDE, { ...recovered, updatedAt: h.clock.now - 10_000 }]]),
+                    missing: [],
+                };
+            },
+        };
+        const last = await run(h, { dryRun: false });
+        expect(last.tierChanges).toBe(1);
+        expect(h.rec.tierEvents.at(-1)![0]).toMatchObject({ oldTier: 'watch', newTier: 'ok' });
+    });
+
+    test('a deep pool stays in warning until it recovers past -0.75%, so a 5-minute wobble is one event', async () => {
+        const h = makeHarness({ currencies: [USDE], prices: { [USDE]: entry(USDE, 0.9895) } });
+        await run(h, { dryRun: false });
+        expect(h.rec.tierEvents[0]![0]).toMatchObject({ oldTier: null, newTier: 'warning' });
+
+        const step = async (price: number, minutes: number) => {
+            h.clock.now = FIXED_NOW + minutes * MINUTE;
+            const sample = entry(USDE, price);
+            h.deps.pegGuard!.birdeye = {
+                async fetchMultiPrice() {
+                    return {
+                        ok: true,
+                        byMint: new Map([[USDE, { ...sample, updatedAt: h.clock.now - 10_000 }]]),
+                        missing: [],
+                    };
+                },
+            };
+            return run(h, { dryRun: false });
+        };
+        // -0.97 and -0.76: raw watch, held at warning by the 0.25pp margin.
+        expect((await step(0.9903, 5)).tierChanges).toBe(0);
+        expect((await step(0.9924, 10)).tierChanges).toBe(0);
+        expect(h.latest.get(USDE)!.tier).toBe('warning');
+        // -0.74 clears the -0.75 exit edge: one event to watch.
+        expect((await step(0.9926, 15)).tierChanges).toBe(1);
+        expect(h.latest.get(USDE)!.tier).toBe('watch');
+        // Worsening past -1 is immediate.
+        expect((await step(0.9897, 20)).tierChanges).toBe(1);
+        expect(h.latest.get(USDE)!.tier).toBe('warning');
+        expect(h.rec.tierEvents.flat().map(e => `${e.oldTier}>${e.newTier}`)).toEqual([
+            'null>warning',
+            'warning>watch',
+            'watch>warning',
+        ]);
     });
 
     test('critical sets after 10 min (0 / 5 / 10 min), not on first sight', async () => {
