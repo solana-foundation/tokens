@@ -89,16 +89,30 @@ describe('v1 detail → fallback market data', () => {
 
     test('collects per-mint markets, logos and asset stats', () => {
         const out = v1DetailToFallback({
-            stats: { price: 2, liquidity: 10, volume24hUSD: 3, marketCap: 4, fdv: 5, totalSupply: 6 },
-            variants: [
-                { mint: MINT, market: { price: 2, logoURI: ' https://img/a.png ' } },
-                { mint: 'nomarket', market: null },
-            ],
+            asset: {
+                stats: { price: 2, liquidity: 10, volume24hUSD: 3, marketCap: 4, fdv: 5, totalSupply: 6 },
+                primaryVariant: { mint: MINT, market: { price: 2, logoURI: ' https://img/a.png ' } },
+                variantGroups: {
+                    spot: [
+                        { mint: MINT, market: { price: 2 } },
+                        { mint: 'nomarket', market: null },
+                    ],
+                    lst: [{ mint: 'grouped', market: { price: 7 } }],
+                    yield: null,
+                },
+            },
         });
         expect(out.stats?.price).toBe(2);
         expect(out.stats?.volume30dUSD).toBeNull();
         expect(out.marketByMint.get(MINT)?.price).toBe(2);
         expect(out.marketByMint.has('nomarket')).toBe(false);
         expect(out.logoByMint.get(MINT)).toBe('https://img/a.png');
+        expect(out.marketByMint.get('grouped')?.price).toBe(7);
+    });
+
+    test('a response without the asset envelope yields no data', () => {
+        const out = v1DetailToFallback({});
+        expect(out.stats).toBeNull();
+        expect(out.marketByMint.size).toBe(0);
     });
 });

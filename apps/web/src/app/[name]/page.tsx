@@ -128,7 +128,10 @@ async function buildAssetMetadata(
     resolved: ResolvedAssetRef,
     requested: RequestedVariantRef | null,
 ): Promise<Metadata> {
-    const apiAsset = await loadV2Asset(resolved.assetId);
+    // v1-backed shells (mints v2 has no row for) describe the requested mint, not the v2 asset it
+    // resolves to, matching the page body.
+    const v1Variant = resolved.shell.v1Fallback ? (resolved.shell.registryAsset?.variants[0] ?? null) : null;
+    const apiAsset = resolved.shell.v1Fallback ? null : await loadV2Asset(resolved.assetId);
     // Same lookup the page body uses, so a variant the capped detail payload left out still
     // drives the title, canonical URL, share images and advisory prefix.
     const selectedVariant = apiAsset
@@ -141,12 +144,19 @@ async function buildAssetMetadata(
         : null;
 
     const displayNameRaw =
-        pickFirstDisplayName(apiAsset?.name, apiAsset?.primaryVariant?.name, resolved.shell.name, requestedName) ||
+        pickFirstDisplayName(
+            v1Variant?.name,
+            apiAsset?.name,
+            apiAsset?.primaryVariant?.name,
+            resolved.shell.name,
+            requestedName,
+        ) ||
         resolved.shell.name ||
         requestedName;
     const canonicalDisplayName = cleanTokenName(displayNameRaw);
     const canonicalSymbol =
-        pickFirstSymbol(apiAsset?.symbol, apiAsset?.primaryVariant?.symbol, resolved.shell.symbol) || undefined;
+        pickFirstSymbol(v1Variant?.symbol, apiAsset?.symbol, apiAsset?.primaryVariant?.symbol, resolved.shell.symbol) ||
+        undefined;
     const variantSocialData = selectedVariant
         ? resolveVariantSocialData({
               variant: selectedVariant,

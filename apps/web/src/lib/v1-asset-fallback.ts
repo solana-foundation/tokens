@@ -76,10 +76,20 @@ export function singletonMintOf(ref: string): string | null {
     return normalizeAddressForChain('solana', trimmed.slice(SINGLETON_PREFIX.length));
 }
 
-/** The parts of `GET /v1/assets/{assetId}?mint=` the fallback page reads. */
+type V1DetailStats = Partial<Record<keyof V2AssetStats, unknown>> | null;
+
+interface V1DetailVariant {
+    mint: string;
+    market?: Record<string, unknown> | null;
+}
+
+/** The parts of `GET /v1/assets/{assetId}?mint=` the fallback page reads (v1 nests them under `asset`). */
 export interface V1AssetDetailResponse {
-    stats?: Partial<Record<keyof V2AssetStats, unknown>> | null;
-    variants?: Array<{ mint: string; market?: Record<string, unknown> | null }> | null;
+    asset?: {
+        stats?: V1DetailStats;
+        primaryVariant?: V1DetailVariant | null;
+        variantGroups?: Record<string, V1DetailVariant[] | null> | null;
+    } | null;
 }
 
 function finiteOrNull(value: unknown): number | null {
@@ -118,7 +128,7 @@ export function v1MarketToV2Market(market: Record<string, unknown>): V2Market {
     };
 }
 
-export function v1StatsToV2Stats(stats: V1AssetDetailResponse['stats']): V2AssetStats | null {
+export function v1StatsToV2Stats(stats: V1DetailStats | undefined): V2AssetStats | null {
     if (!stats) return null;
     return {
         price: finiteOrNull(stats.price),
@@ -144,11 +154,16 @@ export interface V1FallbackDetail {
 export function v1DetailToFallback(detail: V1AssetDetailResponse): V1FallbackDetail {
     const marketByMint = new Map<string, V2Market>();
     const logoByMint = new Map<string, string>();
-    for (const variant of detail.variants ?? []) {
-        if (!variant?.mint || !variant.market) continue;
+    const asset = detail.asset ?? null;
+    const variants = [
+        asset?.primaryVariant,
+        ...Object.values(asset?.variantGroups ?? {}).flatMap(group => group ?? []),
+    ];
+    for (const variant of variants) {
+        if (!variant?.mint || !variant.market || marketByMint.has(variant.mint)) continue;
         marketByMint.set(variant.mint, v1MarketToV2Market(variant.market));
         const logo = variant.market.logoURI;
         if (typeof logo === 'string' && logo.trim()) logoByMint.set(variant.mint, logo.trim());
     }
-    return { stats: v1StatsToV2Stats(detail.stats), marketByMint, logoByMint };
+    return { stats: v1StatsToV2Stats(asset?.stats), marketByMint, logoByMint };
 }

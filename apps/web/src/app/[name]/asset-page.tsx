@@ -736,7 +736,9 @@ function AssetPageSectionsSkeleton({ showChart }: { showChart: boolean }) {
  * Degrades gracefully to shell / registry identity when the fetch returns null.
  */
 async function loadAssetPageModel({ assetId, requestedName, requested, shell }: AssetPageProps) {
-    const api = await loadV2Asset(assetId);
+    // v1-backed shells are mints v2 has no row for; the v2 asset they resolve to (`solana` for a
+    // Sanctum-only LST) would replace the requested mint with the parent's variants.
+    const api = shell.v1Fallback ? null : await loadV2Asset(assetId);
     const canonicalAssetId = (api?.assetId ?? assetId).trim() || assetId;
     const category: AssetCategory = api?.category ?? shell.category;
     const coingeckoId = api?.coingeckoId ?? shell.coingeckoId ?? null;
