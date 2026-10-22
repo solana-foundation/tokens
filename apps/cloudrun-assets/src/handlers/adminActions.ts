@@ -25,6 +25,14 @@
  */
 
 import { getVariantByMint } from '@tokens/asset-registry';
+import {
+    CHAINS,
+    EVM_NATIVE_ASSET_ADDRESS,
+    chainAddressKey,
+    isChainKind,
+    normalizeAddressForChain,
+    type ChainKind,
+} from '@tokens/asset-registry/chains';
 import { CURATED_LIST_FALLBACK_NAMES } from '@tokens/asset-registry/curated-lists';
 
 import { requireAdmin, type AdminAllowlist } from '../adminAuth';
@@ -34,10 +42,19 @@ import {
     type AssetAggregateUpsert,
     type BirdeyeOverview,
     type CronDeps,
+    type CronResult,
     type VariantMarketUpsertFromBirdeye,
 } from './crons';
 import { refreshCuratedTokenMarkets, type MiscCronDeps } from './crons.misc';
 import type { SeedRepo } from './crons.seed';
+import {
+    birdeyeOverviewToV2Upsert,
+    deriveVariantKindForChain,
+    syncSolanaVariants,
+    type V2AssetsCronDeps,
+    type V2VariantMarketUpsert,
+} from './crons.v2Assets';
+import type { V2AssetsReadsRepo, V2VariantDbRow } from './v2AssetsReads';
 
 /* ============================================================================
    Types
@@ -79,9 +96,20 @@ export interface BirdeyeExtensions {
     github?: string;
 }
 
+/**
+ * Who owns a v2 variant row, as reported to the admin UI. `v1` = a Solana row
+ * mirrored from `asset_variants` (v2 origin `solana_v1`); the rest are the v2
+ * `origin` values. Admin writes to a derived (`coingecko` / `config`) row
+ * adopt it (`origin='admin'`) so the derivation job stops touching it.
+ */
+export type VariantOrigin = 'v1' | 'coingecko' | 'config' | 'admin';
+
 export interface CheckedVariantWrite {
     assetId: string;
-    chain: 'solana';
+    chain: ChainKind;
+    /** Normalized address (EVM lowercase). */
+    address: string;
+    /** Same value as `address`; kept on the wire for the Solana-era clients. */
     mint: string;
     variantId: string;
     kind: VariantKind;
@@ -90,14 +118,20 @@ export interface CheckedVariantWrite {
     tags: string[];
     label: string | null;
     isActive: boolean;
+    /** Known decimals (Birdeye, else CoinGecko detail_platforms); null = the operator must supply them. */
+    decimals: number | null;
 }
 
 export interface CheckedMarketWrite {
+    chain: ChainKind;
+    address: string;
+    /** Same value as `address`. */
     mint: string;
     source: 'birdeye';
     symbol: string;
     name: string;
-    decimals: number;
+    /** Always a number for Solana (Birdeye default 9); null when Birdeye omits it on an EVM chain. */
+    decimals: number | null;
     logoURI: string | null;
     price: number | null;
     priceChange24hPercent: number | null;
@@ -114,16 +148,27 @@ export interface CheckedMarketWrite {
     lastFetchedAt: number;
 }
 
+export type CheckedVariantConflict =
+    /** The address is already attached to this canonical (Solana: blocks; EVM: the add adopts/updates the row). */
+    | { type: 'same_canonical'; assetId: string; variantId: string; origin: VariantOrigin }
+    /** Solana only: v1 allows one owner per mint, so this blocks (use Move variant). */
+    | { type: 'other_canonical'; assetId: string; variantId: string }
+    /** EVM only, non-blocking: other assets also claim this (chain, address) — legal in v2 (PK includes asset_id). */
+    | { type: 'shared_with'; owners: Array<{ assetId: string; variantId: string; origin: VariantOrigin }> };
+
 export interface CheckedVariantPreview {
     assetId: string;
+    chain: ChainKind;
+    address: string;
+    /** Same value as `address`. */
     mint: string;
     checkedAt: number;
-    conflict:
-        | { type: 'same_canonical'; assetId: string; variantId: string }
-        | { type: 'other_canonical'; assetId: string; variantId: string }
-        | null;
+    conflict: CheckedVariantConflict | null;
+    /** Where `variantWrite.decimals` came from; null when unknown (EVM without Birdeye/CoinGecko coverage). */
+    decimalsSource: 'birdeye' | 'coingecko' | null;
     variantWrite: CheckedVariantWrite;
-    marketWrite: CheckedMarketWrite;
+    /** Null only for EVM chains Birdeye does not cover (or had nothing for); the market refresh fills it later. */
+    marketWrite: CheckedMarketWrite | null;
 }
 
 /* ============================================================================
@@ -133,6 +178,8 @@ export interface CheckedVariantPreview {
 export interface AdminAssetRow {
     assetId: string;
     category: string;
+    /** CoinGecko id when the canonical has one (EVM decimals / kind fallback). */
+    coingeckoId: string | null;
 }
 
 export interface AdminVariantIdentityRow {
@@ -201,6 +248,14 @@ export interface AdminActionsDeps {
     seedRepo: SeedRepo;
     cron: CronDeps;
     misc: MiscCronDeps;
+    /**
+     * v2 multichain jobs deps: the Solana mirror is run inline after every v1
+     * write so the asset page (v2 reads) sees admin changes at once, and EVM
+     * variants are written to the v2 tables directly (`origin='admin'`).
+     */
+    v2: V2AssetsCronDeps;
+    /** v2 reads (owner lookups for EVM addresses). */
+    v2Reads: V2AssetsReadsRepo;
     now: () => number;
 }
 
@@ -465,16 +520,14 @@ function normalizedOverviewToUpsert(
     };
 }
 
-function marketWriteToUpsert(market: CheckedMarketWrite): VariantMarketUpsertFromBirdeye {
-    const mint = market.mint.trim();
+/** The provider-agnostic part of a checked market write (everything but the key + decimals). */
+function marketWriteFields(market: CheckedMarketWrite): Omit<VariantMarketUpsertFromBirdeye, 'mint' | 'decimals'> {
     const logoURI = market.logoURI ? market.logoURI.trim() : '';
     const lastTradeHumanTime = market.lastTradeHumanTime ? market.lastTradeHumanTime.trim() : '';
     const extensions = sanitizeBirdeyeExtensions(market.extensions);
     return {
-        mint,
         symbol: market.symbol.trim(),
         name: market.name.trim(),
-        decimals: market.decimals,
         ...(logoURI ? { logoURI } : {}),
         ...(market.price !== null ? { price: market.price } : {}),
         ...(market.priceChange24hPercent !== null ? { priceChange24hPercent: market.priceChange24hPercent } : {}),
@@ -490,6 +543,17 @@ function marketWriteToUpsert(market: CheckedMarketWrite): VariantMarketUpsertFro
         ...(extensions ? { extensions: extensions as Record<string, string> } : {}),
         lastFetchedAt: market.lastFetchedAt,
     };
+}
+
+/** v1 `variant_markets_latest` upsert (Solana): decimals are always known there. */
+function marketWriteToUpsert(market: CheckedMarketWrite): VariantMarketUpsertFromBirdeye {
+    if (market.decimals === null) throw new InvalidArgsError('marketWrite.decimals must be a finite number');
+    return { mint: market.mint.trim(), decimals: market.decimals, ...marketWriteFields(market) };
+}
+
+/** v2 `v2_variant_markets_latest` upsert (EVM): decimals may be unknown. */
+function marketWriteToV2Upsert(market: CheckedMarketWrite): V2VariantMarketUpsert {
+    return { chain: market.chain, address: market.address, decimals: market.decimals, ...marketWriteFields(market) };
 }
 
 /* ============================================================================
@@ -560,6 +624,35 @@ function readEnum<T extends string>(
     return value as T;
 }
 
+function readChain(args: Record<string, unknown>, key: string): ChainKind {
+    const value = args[key] ?? 'solana';
+    if (!isChainKind(value)) throw new InvalidArgsError(`${key} must be one of: ${Object.keys(CHAINS).join(',')}`);
+    return value;
+}
+
+/** `address` (preferred) or the Solana-era `mint`, normalized for `chain`. */
+function readAddress(args: Record<string, unknown>, chain: ChainKind, prefix = ''): string {
+    const raw = args.address ?? args.mint;
+    if (typeof raw !== 'string') throw new InvalidArgsError(`${prefix}address must be a string`);
+    const normalized = normalizeAddressForChain(chain, raw);
+    if (!normalized) throw new InvalidArgsError(invalidAddressMessage(chain));
+    return normalized;
+}
+
+function invalidAddressMessage(chain: ChainKind): string {
+    return chain === 'solana'
+        ? 'Not a valid Solana mint address'
+        : `Not a valid ${CHAINS[chain].label} contract address`;
+}
+
+function readVariantOrigin(args: Record<string, unknown>, key: string): VariantOrigin {
+    const value = args[key] ?? 'v1';
+    if (value !== 'v1' && value !== 'coingecko' && value !== 'config' && value !== 'admin') {
+        throw new InvalidArgsError(`${key} must be one of: v1,coingecko,config,admin`);
+    }
+    return value;
+}
+
 function parseVariantWrite(raw: unknown): CheckedVariantWrite {
     const args = asObject(raw);
     const stockVariantTier = args.stockVariantTier;
@@ -570,12 +663,14 @@ function parseVariantWrite(raw: unknown): CheckedVariantWrite {
     ) {
         throw new InvalidArgsError(`variantWrite.stockVariantTier must be one of: ${STOCK_VARIANT_TIERS.join(',')}`);
     }
-    if (args.chain !== 'solana') throw new InvalidArgsError('variantWrite.chain must be "solana"');
+    const chain = readChain(args, 'chain');
+    const address = readAddress(args, chain, 'variantWrite.');
     if (typeof args.isActive !== 'boolean') throw new InvalidArgsError('variantWrite.isActive must be a boolean');
     return {
         assetId: readRequiredString(args, 'assetId'),
-        chain: 'solana',
-        mint: readRequiredString(args, 'mint'),
+        chain,
+        address,
+        mint: address,
         variantId: readRequiredString(args, 'variantId'),
         kind: readEnum(args, 'kind', VARIANT_KINDS),
         trustTier: readEnum(args, 'trustTier', TRUST_TIERS),
@@ -583,18 +678,23 @@ function parseVariantWrite(raw: unknown): CheckedVariantWrite {
         tags: readStringArray(args, 'tags'),
         label: readNullableString(args, 'label'),
         isActive: args.isActive,
+        decimals: readNullableNumber(args, 'decimals'),
     };
 }
 
-function parseMarketWrite(raw: unknown): CheckedMarketWrite {
+function parseMarketWrite(raw: unknown, chain: ChainKind): CheckedMarketWrite {
     const args = asObject(raw);
     if (args.source !== 'birdeye') throw new InvalidArgsError('Only Birdeye market writes are supported');
+    const address = readAddress(args, chain, 'marketWrite.');
+    const decimals = chain === 'solana' ? readRequiredNumber(args, 'decimals') : readNullableNumber(args, 'decimals');
     return {
-        mint: readRequiredString(args, 'mint'),
+        chain,
+        address,
+        mint: address,
         source: 'birdeye',
         symbol: readRequiredString(args, 'symbol'),
         name: readRequiredString(args, 'name'),
-        decimals: readRequiredNumber(args, 'decimals'),
+        decimals,
         logoURI: readNullableString(args, 'logoURI'),
         price: readNullableNumber(args, 'price'),
         priceChange24hPercent: readNullableNumber(args, 'priceChange24hPercent'),
@@ -612,29 +712,67 @@ function parseMarketWrite(raw: unknown): CheckedMarketWrite {
     };
 }
 
+function parseConflict(raw: unknown): CheckedVariantConflict | null {
+    if (raw === null || raw === undefined) return null;
+    const c = asObject(raw);
+    switch (c.type) {
+        case 'same_canonical':
+            return {
+                type: 'same_canonical',
+                assetId: readRequiredString(c, 'assetId'),
+                variantId: readRequiredString(c, 'variantId'),
+                origin: readVariantOrigin(c, 'origin'),
+            };
+        case 'other_canonical':
+            return {
+                type: 'other_canonical',
+                assetId: readRequiredString(c, 'assetId'),
+                variantId: readRequiredString(c, 'variantId'),
+            };
+        case 'shared_with': {
+            const rawOwners = c.owners;
+            if (!Array.isArray(rawOwners)) throw new InvalidArgsError('checkedPreview.conflict.owners must be an array');
+            return {
+                type: 'shared_with',
+                owners: rawOwners.map(owner => {
+                    const o = asObject(owner);
+                    return {
+                        assetId: readRequiredString(o, 'assetId'),
+                        variantId: readRequiredString(o, 'variantId'),
+                        origin: readVariantOrigin(o, 'origin'),
+                    };
+                }),
+            };
+        }
+        default:
+            throw new InvalidArgsError('checkedPreview.conflict.type is invalid');
+    }
+}
+
 function parseCheckedPreview(raw: unknown): CheckedVariantPreview {
     if (raw === undefined || raw === null) throw new InvalidArgsError('checkedPreview is required');
     const args = asObject(raw);
-    let conflict: CheckedVariantPreview['conflict'] = null;
-    if (args.conflict !== null && args.conflict !== undefined) {
-        const c = asObject(args.conflict);
-        const type = c.type;
-        if (type !== 'same_canonical' && type !== 'other_canonical') {
-            throw new InvalidArgsError('checkedPreview.conflict.type is invalid');
-        }
-        conflict = {
-            type,
-            assetId: readRequiredString(c, 'assetId'),
-            variantId: readRequiredString(c, 'variantId'),
-        };
+    const chain = readChain(args, 'chain');
+    const address = readAddress(args, chain);
+    const variantWrite = parseVariantWrite(args.variantWrite);
+    if (variantWrite.chain !== chain) throw new InvalidArgsError('checkedPreview.variantWrite.chain does not match');
+    const marketWrite =
+        args.marketWrite === null || args.marketWrite === undefined ? null : parseMarketWrite(args.marketWrite, chain);
+    if (!marketWrite && chain === 'solana') throw new InvalidArgsError('checkedPreview.marketWrite is required');
+    const decimalsSource = args.decimalsSource ?? null;
+    if (decimalsSource !== null && decimalsSource !== 'birdeye' && decimalsSource !== 'coingecko') {
+        throw new InvalidArgsError('checkedPreview.decimalsSource must be birdeye, coingecko or null');
     }
     return {
         assetId: readRequiredString(args, 'assetId'),
-        mint: readRequiredString(args, 'mint'),
+        chain,
+        address,
+        mint: address,
         checkedAt: readRequiredNumber(args, 'checkedAt'),
-        conflict,
-        variantWrite: parseVariantWrite(args.variantWrite),
-        marketWrite: parseMarketWrite(args.marketWrite),
+        conflict: parseConflict(args.conflict),
+        decimalsSource,
+        variantWrite,
+        marketWrite,
     };
 }
 
@@ -643,6 +781,8 @@ interface CheckedVariantOverrides {
     trustTier?: TrustTier;
     stockVariantTier?: StockVariantTier | null;
     tags?: string[];
+    /** EVM only: operator-supplied decimals when neither Birdeye nor CoinGecko knew them. */
+    decimals?: number;
 }
 
 function parseOverrides(raw: unknown): CheckedVariantOverrides {
@@ -658,6 +798,13 @@ function parseOverrides(raw: unknown): CheckedVariantOverrides {
         }
     }
     if (args.tags !== undefined) out.tags = readStringArray(args, 'tags');
+    if (args.decimals !== undefined && args.decimals !== null) {
+        const decimals = readRequiredNumber(args, 'decimals');
+        if (!Number.isInteger(decimals) || decimals < 0 || decimals > 255) {
+            throw new InvalidArgsError('decimals must be an integer between 0 and 255');
+        }
+        out.decimals = decimals;
+    }
     return out;
 }
 
@@ -841,6 +988,37 @@ async function runBestEffort(label: string, fn: () => Promise<void>): Promise<vo
    Handlers
    ============================================================================ */
 
+/**
+ * Run the v2 Solana mirror inline so the asset page (v2 reads) sees the v1
+ * write at once instead of on the next cron tick. Best effort: the v1 write
+ * already committed, the job logs its own `v2_solana_sync` line, and the
+ * scheduled tick repairs any miss within minutes.
+ */
+async function syncV2SolanaBestEffort(deps: AdminActionsDeps): Promise<boolean> {
+    try {
+        const result = await syncSolanaVariants(deps.v2, {});
+        return result.ok;
+    } catch (err) {
+        console.error('[adminActions] v2 solana mirror failed', err instanceof Error ? err.message : String(err));
+        return false;
+    }
+}
+
+function originOfV2Row(row: V2VariantDbRow): VariantOrigin {
+    switch (row.origin) {
+        case 'coingecko':
+        case 'config':
+        case 'admin':
+            return row.origin;
+        default:
+            return 'v1';
+    }
+}
+
+function isVariantKind(value: string): value is VariantKind {
+    return (VARIANT_KINDS as readonly string[]).includes(value);
+}
+
 /** Port of `checkVariantMintForCanonical`: preview only, no DB writes. */
 export async function adminCheckVariantMintForCanonical(
     deps: AdminActionsDeps,
@@ -851,38 +1029,38 @@ export async function adminCheckVariantMintForCanonical(
 
     const args = asObject(rawArgs);
     const assetId = readRequiredString(args, 'assetId').trim();
-    const mint = readRequiredString(args, 'mint').trim();
+    const chain = readChain(args, 'chain');
     if (!assetId) throw new InvalidArgsError('assetId is required');
+    if (chain !== 'solana') return checkEvmVariantForCanonical(deps, assetId, chain, args);
+
+    const mint = readRequiredString(args, 'mint').trim();
     if (!looksLikeSolanaMintAddress(mint)) throw new InvalidArgsError('Not a valid Solana mint address');
 
     const asset = await deps.repo.findAssetByAssetId(assetId);
     if (!asset) throw new InvalidArgsError('Canonical asset not found');
 
     const existingVariant = await deps.repo.findVariantByMint(mint);
-    const conflict =
+    const conflict: CheckedVariantConflict | null =
         existingVariant && existingVariant.assetId === assetId
-            ? ({
-                  type: 'same_canonical' as const,
+            ? {
+                  type: 'same_canonical',
                   assetId: existingVariant.assetId,
                   variantId: existingVariant.variantId,
-              } as const)
+                  origin: 'v1',
+              }
             : existingVariant
-              ? ({
-                    type: 'other_canonical' as const,
+              ? {
+                    type: 'other_canonical',
                     assetId: existingVariant.assetId,
                     variantId: existingVariant.variantId,
-                } as const)
+                }
               : null;
 
     const overview = await fetchBirdeyeTokenOverview(deps, mint);
     const normalized = normalizeBirdeyeOverviewForDb(overview);
     const checkedAt = deps.now();
     const category = asset.category as AssetCategory;
-    const collections = (await deps.repo.listCollectionSlugsForAssetId(assetId)).filter(isCuratedCategorySlug);
-    const tags = uniqueStrings([
-        `category:${category}`,
-        ...collections.map(collection => `curated:${collection}`),
-    ]);
+    const tags = await curatedTagsForAsset(deps, assetId, category);
     const registryMatch = getVariantByMint(mint);
     const existingIds = new Set(await deps.repo.listVariantIdsByAssetId(assetId));
     const variantId = availableVariantId(existingIds, assetId, [
@@ -894,12 +1072,16 @@ export async function adminCheckVariantMintForCanonical(
 
     return {
         assetId,
+        chain: 'solana',
+        address: mint,
         mint,
         checkedAt,
         conflict,
+        decimalsSource: 'birdeye',
         variantWrite: {
             assetId,
             chain: 'solana',
+            address: mint,
             mint,
             variantId,
             kind: kindForCategory(category),
@@ -910,46 +1092,187 @@ export async function adminCheckVariantMintForCanonical(
             tags,
             label: normalized.symbol,
             isActive: true,
-        },
-        marketWrite: {
-            mint,
-            source: 'birdeye',
-            symbol: normalized.symbol,
-            name: normalized.name,
             decimals: normalized.decimals,
-            logoURI: normalized.logoURI ?? null,
-            price: normalized.price ?? null,
-            priceChange24hPercent: normalized.priceChange24hPercent ?? null,
-            priceChange1hPercent: normalized.priceChange1hPercent ?? null,
-            volume24hUSD: normalized.volume24hUSD ?? null,
-            liquidity: normalized.liquidity ?? null,
-            marketCap: normalized.marketCap ?? null,
-            fdv: normalized.fdv ?? null,
-            holder: normalized.holder ?? null,
-            totalSupply: normalized.totalSupply ?? null,
-            circulatingSupply: normalized.circulatingSupply ?? null,
-            lastTradeHumanTime: normalized.lastTradeHumanTime ?? null,
-            extensions: normalized.extensions ?? null,
-            lastFetchedAt: checkedAt,
         },
+        marketWrite: normalizedToMarketWrite('solana', mint, normalized, normalized.decimals, checkedAt),
+    };
+}
+
+async function curatedTagsForAsset(deps: AdminActionsDeps, assetId: string, category: AssetCategory): Promise<string[]> {
+    const collections = (await deps.repo.listCollectionSlugsForAssetId(assetId)).filter(isCuratedCategorySlug);
+    return uniqueStrings([`category:${category}`, ...collections.map(collection => `curated:${collection}`)]);
+}
+
+function normalizedToMarketWrite(
+    chain: ChainKind,
+    address: string,
+    normalized: NormalizedOverview,
+    decimals: number | null,
+    lastFetchedAt: number,
+): CheckedMarketWrite {
+    return {
+        chain,
+        address,
+        mint: address,
+        source: 'birdeye',
+        symbol: normalized.symbol,
+        name: normalized.name,
+        decimals,
+        logoURI: normalized.logoURI ?? null,
+        price: normalized.price ?? null,
+        priceChange24hPercent: normalized.priceChange24hPercent ?? null,
+        priceChange1hPercent: normalized.priceChange1hPercent ?? null,
+        volume24hUSD: normalized.volume24hUSD ?? null,
+        liquidity: normalized.liquidity ?? null,
+        marketCap: normalized.marketCap ?? null,
+        fdv: normalized.fdv ?? null,
+        holder: normalized.holder ?? null,
+        totalSupply: normalized.totalSupply ?? null,
+        circulatingSupply: normalized.circulatingSupply ?? null,
+        lastTradeHumanTime: normalized.lastTradeHumanTime ?? null,
+        extensions: normalized.extensions ?? null,
+        lastFetchedAt,
+    };
+}
+
+/**
+ * EVM half of the check step. Differences from Solana: the address is
+ * lowercased, several assets may legitimately own the same (chain, address)
+ * (reported as `shared_with`, never blocking), a row already on this asset is
+ * adopted rather than refused, Birdeye may have nothing (market null), and
+ * decimals are never defaulted — Birdeye, then CoinGecko `detail_platforms`,
+ * else the operator supplies them on the add step.
+ */
+async function checkEvmVariantForCanonical(
+    deps: AdminActionsDeps,
+    assetId: string,
+    chain: Exclude<ChainKind, 'solana'>,
+    args: Record<string, unknown>,
+): Promise<CheckedVariantPreview> {
+    const address = readAddress(args, chain);
+    if (address === EVM_NATIVE_ASSET_ADDRESS) {
+        throw new InvalidArgsError('The native coin address has no token market; add the wrapped token instead');
+    }
+
+    const asset = await deps.repo.findAssetByAssetId(assetId);
+    if (!asset) throw new InvalidArgsError('Canonical asset not found');
+
+    const owners = await deps.v2Reads.findVariantsByKey(chain, address);
+    const own = owners.find(row => row.asset_id === assetId);
+    const others = owners.filter(row => row.asset_id !== assetId);
+    const conflict: CheckedVariantConflict | null = own
+        ? { type: 'same_canonical', assetId: own.asset_id, variantId: own.variant_id, origin: originOfV2Row(own) }
+        : others.length > 0
+          ? {
+                type: 'shared_with',
+                owners: others.map(row => ({
+                    assetId: row.asset_id,
+                    variantId: row.variant_id,
+                    origin: originOfV2Row(row),
+                })),
+            }
+          : null;
+
+    // Birdeye: per-chain client; absent client or empty/unusable overview → no market write.
+    const client = deps.v2.birdeyeByChain[chain];
+    let overview: BirdeyeOverview | null = null;
+    if (client) {
+        try {
+            overview = await client.fetchTokenOverview(address);
+        } catch (err) {
+            console.warn(`[adminActions] Birdeye ${chain} overview failed`, err instanceof Error ? err.message : err);
+        }
+    }
+    let normalized: NormalizedOverview | null = null;
+    if (overview) {
+        try {
+            normalized = normalizeBirdeyeOverviewForDb(overview);
+        } catch {
+            normalized = null;
+        }
+    }
+    const birdeyeDecimals =
+        overview && typeof overview.decimals === 'number' && Number.isFinite(overview.decimals)
+            ? overview.decimals
+            : null;
+
+    // CoinGecko: platforms map (kind) + detail_platforms decimals + symbol fallback.
+    const coinRow = asset.coingeckoId
+        ? (await deps.v2.repo.findCoinPlatformsByCoinIds([asset.coingeckoId]))[0] ?? null
+        : null;
+    const platform = CHAINS[chain].providers.coingeckoPlatform;
+    const coingeckoDecimals = coinRow?.decimalsByPlatform[platform] ?? null;
+
+    const decimals = birdeyeDecimals ?? coingeckoDecimals;
+    const decimalsSource: CheckedVariantPreview['decimalsSource'] =
+        birdeyeDecimals !== null ? 'birdeye' : coingeckoDecimals !== null ? 'coingecko' : null;
+
+    const category = asset.category as AssetCategory;
+    const derivedKind = coinRow
+        ? deriveVariantKindForChain({ category, assetPlatformId: null, chain, platforms: coinRow.platforms })
+        : null;
+    const kind: VariantKind = derivedKind && isVariantKind(derivedKind) ? derivedKind : kindForCategory(category);
+    const tags = await curatedTagsForAsset(deps, assetId, category);
+    const checkedAt = deps.now();
+    const label = normalized?.symbol ?? (coinRow?.symbol ? coinRow.symbol.trim().toUpperCase() || null : null);
+
+    return {
+        assetId,
+        chain,
+        address,
+        mint: address,
+        checkedAt,
+        conflict,
+        decimalsSource,
+        variantWrite: {
+            assetId,
+            chain,
+            address,
+            mint: address,
+            // Adopting keeps the row's existing id; a fresh row uses the derived-row convention.
+            variantId: own?.variant_id ?? chainAddressKey(chain, address),
+            kind,
+            trustTier: 'tier3',
+            tags,
+            label,
+            isActive: true,
+            decimals,
+        },
+        marketWrite: normalized ? normalizedToMarketWrite(chain, address, normalized, birdeyeDecimals, checkedAt) : null,
     };
 }
 
 const MAX_VARIANT_ID_RETRIES = 5;
+
+export interface AddCheckedVariantResult {
+    assetId: string;
+    chain: ChainKind;
+    address: string;
+    /** Same value as `address`. */
+    mint: string;
+    variantId: string;
+    scheduled: string[];
+    /** False when the inline v2 mirror failed (the cron tick repairs it); always true for EVM (written to v2 directly). */
+    v2Synced: boolean;
+    /** EVM only: the add took over a CoinGecko/config-derived row. */
+    adopted: boolean;
+}
 
 /** Port of `addCheckedVariant` + `createVariantFromCheckedPreview`. */
 export async function adminAddCheckedVariant(
     deps: AdminActionsDeps,
     rawArgs: unknown,
     identity: CallerIdentity | null,
-): Promise<{ assetId: string; mint: string; variantId: string; scheduled: string[] }> {
+): Promise<AddCheckedVariantResult> {
     requireAdmin(deps.adminAllowlist, identity);
 
     const args = asObject(rawArgs);
     const preview = parseCheckedPreview(args.checkedPreview);
     const overrides = parseOverrides(args.overrides);
 
-    if (preview.conflict) {
+    if (preview.chain !== 'solana') return addEvmVariant(deps, preview, overrides);
+
+    if (preview.conflict && preview.conflict.type !== 'shared_with') {
         throw new InvalidArgsError(
             preview.conflict.type === 'same_canonical'
                 ? 'This mint is already attached to this canonical.'
@@ -963,6 +1286,7 @@ export async function adminAddCheckedVariant(
     if (!assetId) throw new InvalidArgsError('assetId is required');
     if (!looksLikeSolanaMintAddress(mint)) throw new InvalidArgsError('Not a valid Solana mint address');
     if (!variantId) throw new InvalidArgsError('variantId is required');
+    if (!preview.marketWrite) throw new InvalidArgsError('checkedPreview.marketWrite is required');
     if (preview.marketWrite.mint.trim() !== mint) {
         throw new InvalidArgsError('Checked market mint does not match variant mint');
     }
@@ -1022,9 +1346,90 @@ export async function adminAddCheckedVariant(
     }
 
     await runBestEffort('assetAggregate', () => refreshAssetAggregate(deps.cron, assetId));
+    // Mirror into v2 before the (slow) chart warms so the page catches up right away.
+    const v2Synced = await syncV2SolanaBestEffort(deps);
     const scheduled = await awaitChartWarm(deps, mint);
 
-    return { assetId, mint, variantId, scheduled };
+    return { assetId, chain: 'solana', address: mint, mint, variantId, scheduled, v2Synced, adopted: false };
+}
+
+/**
+ * EVM add: straight into the v2 tables with `origin='admin'`. A row this asset
+ * already has (derived or admin) is adopted/updated; other owners of the same
+ * address are left alone. No v1 write, no aggregate, no chart warm (Solana-only
+ * capabilities); the per-chain market refresh keeps the snapshot fresh.
+ */
+async function addEvmVariant(
+    deps: AdminActionsDeps,
+    preview: CheckedVariantPreview,
+    overrides: CheckedVariantOverrides,
+): Promise<AddCheckedVariantResult> {
+    const { chain, address } = preview;
+    if (chain === 'solana') throw new InvalidArgsError('addEvmVariant called with a Solana preview');
+    if (preview.conflict?.type === 'other_canonical') {
+        throw new InvalidArgsError(`This address already belongs to ${preview.conflict.assetId}.`);
+    }
+    const assetId = preview.variantWrite.assetId.trim();
+    const variantId = preview.variantWrite.variantId.trim();
+    if (!assetId) throw new InvalidArgsError('assetId is required');
+    if (!variantId) throw new InvalidArgsError('variantId is required');
+    if (preview.variantWrite.address !== address) throw new InvalidArgsError('Checked variant address does not match');
+    if (preview.marketWrite && preview.marketWrite.address !== address) {
+        throw new InvalidArgsError('Checked market address does not match variant address');
+    }
+    if (address === EVM_NATIVE_ASSET_ADDRESS) {
+        throw new InvalidArgsError('The native coin address has no token market; add the wrapped token instead');
+    }
+
+    const asset = await deps.repo.findAssetByAssetId(assetId);
+    if (!asset) throw new InvalidArgsError('Canonical asset not found');
+
+    const decimals = overrides.decimals ?? preview.variantWrite.decimals;
+    if (decimals === null || decimals === undefined) {
+        throw new InvalidArgsError(`decimals is required for ${CHAINS[chain].label} variants`);
+    }
+
+    const label =
+        overrides.label !== undefined
+            ? normalizeOptionalText(overrides.label)
+            : normalizeOptionalText(preview.variantWrite.label);
+    const tags = uniqueStrings(overrides.tags ?? preview.variantWrite.tags);
+    const stockVariantTier =
+        overrides.stockVariantTier !== undefined
+            ? overrides.stockVariantTier
+            : (preview.variantWrite.stockVariantTier ?? null);
+    const trustTier = overrides.trustTier ?? preview.variantWrite.trustTier;
+    const nowMs = deps.now();
+
+    const outcome = await deps.v2.repo.upsertAdminVariant({
+        chain,
+        address,
+        assetId,
+        variantId,
+        kind: preview.variantWrite.kind,
+        trustTier,
+        stockVariantTier,
+        tags,
+        label,
+        decimals,
+        nowMs,
+    });
+
+    if (preview.marketWrite) {
+        await deps.v2.repo.upsertVariantMarketFromBirdeye(marketWriteToV2Upsert(preview.marketWrite));
+    }
+    await deps.v2.repo.setVariantDecimalsIfNull(chain, address, decimals);
+
+    return {
+        assetId,
+        chain,
+        address,
+        mint: address,
+        variantId,
+        scheduled: [],
+        v2Synced: true,
+        adopted: outcome === 'adopted',
+    };
 }
 
 /** Port of `adminSeedAsset`: flexible single-asset seed used by the admin dialog. */
@@ -1038,6 +1443,8 @@ export async function adminSeedAsset(
     slug?: CuratedCategorySlug;
     rank?: number;
     seededAt: number;
+    /** False when the inline v2 mirror failed (the cron tick repairs it). */
+    v2Synced: boolean;
 }> {
     requireAdmin(deps.adminAllowlist, identity);
 
@@ -1131,6 +1538,7 @@ export async function adminSeedAsset(
     await deps.cron.repo.upsertVariantMarketFromBirdeye(normalizedOverviewToUpsert(mint, normalized, now));
 
     await runBestEffort('assetAggregate', () => refreshAssetAggregate(deps.cron, assetId));
+    const v2Synced = await syncV2SolanaBestEffort(deps);
 
     const aliasEntries: Array<{
         alias: string;
@@ -1179,6 +1587,7 @@ export async function adminSeedAsset(
         ...(slug ? { slug } : {}),
         ...(rank !== undefined ? { rank } : {}),
         seededAt: now,
+        v2Synced,
     };
 }
 
@@ -1200,4 +1609,49 @@ export async function adminRefreshChartData(
     const scheduled = await awaitChartWarm(deps, mint);
 
     return { mint, scheduled };
+}
+
+/** Operator escape hatch: run the v2 Solana mirror now (same job as the `sync-v2-solana-variants` cron). */
+export async function adminSyncV2SolanaVariants(
+    deps: AdminActionsDeps,
+    rawArgs: unknown,
+    identity: CallerIdentity | null,
+): Promise<CronResult> {
+    requireAdmin(deps.adminAllowlist, identity);
+    asObject(rawArgs);
+    return syncSolanaVariants(deps.v2, {});
+}
+
+/**
+ * Refresh one EVM variant's Birdeye snapshot now (the EVM counterpart of
+ * "Refresh charts"). A miss stamps the row like the cron does so it leaves
+ * the stale set; `refreshed: false` tells the UI Birdeye had nothing.
+ */
+export async function adminRefreshV2VariantMarket(
+    deps: AdminActionsDeps,
+    rawArgs: unknown,
+    identity: CallerIdentity | null,
+): Promise<{ chain: ChainKind; address: string; refreshed: boolean }> {
+    requireAdmin(deps.adminAllowlist, identity);
+
+    const args = asObject(rawArgs);
+    const chain = readChain(args, 'chain');
+    if (chain === 'solana') throw new InvalidArgsError('Use Refresh charts for Solana variants');
+    const address = readAddress(args, chain);
+    if (address === EVM_NATIVE_ASSET_ADDRESS) {
+        throw new InvalidArgsError('The native coin address has no token market');
+    }
+    const client = deps.v2.birdeyeByChain[chain];
+    if (!client) throw new InvalidArgsError(`Birdeye does not cover ${CHAINS[chain].label}`);
+
+    const now = deps.now();
+    const overview = await client.fetchTokenOverview(address);
+    const upsert = overview ? birdeyeOverviewToV2Upsert(chain, address, overview, now) : null;
+    if (!upsert) {
+        await deps.v2.repo.touchVariantMarket(chain, address, now);
+        return { chain, address, refreshed: false };
+    }
+    await deps.v2.repo.upsertVariantMarketFromBirdeye(upsert);
+    if (upsert.decimals !== null) await deps.v2.repo.setVariantDecimalsIfNull(chain, address, upsert.decimals);
+    return { chain, address, refreshed: true };
 }

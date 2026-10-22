@@ -18,6 +18,7 @@ import { EVM_NATIVE_ASSET_ADDRESS, isChainKind, type ChainKind } from '@tokens/a
 
 import { CURATED_COLLECTION_SLUGS, CURATED_COLLECTION_SLUGS_SQL_LITERAL } from '../db';
 import type {
+    V2AdminVariantUpsert,
     V2AssetsJobsRepo,
     V2CoinPlatformsRow,
     V2DerivationAssetRow,
@@ -407,6 +408,50 @@ export function makePostgresV2AssetsJobsRepo(sql: Sql): V2AssetsJobsRepo {
             const row = rows[0];
             if (!row) return 'skipped';
             return row.inserted ? 'inserted' : 'updated';
+        },
+
+        async upsertAdminVariant(args: V2AdminVariantUpsert) {
+            const now = new Date(args.nowMs);
+            // `prev` reads the pre-statement snapshot, so it still sees the
+            // row the INSERT is about to update: that is how "adopted" is told
+            // apart from a plain update of an admin row.
+            const rows = await sql<{ inserted: boolean; prev_origin: string | null }[]>`
+                WITH prev AS (
+                    SELECT origin FROM v2_asset_variants
+                    WHERE chain = ${args.chain} AND address = ${args.address} AND asset_id = ${args.assetId}
+                ), upserted AS (
+                    INSERT INTO v2_asset_variants (
+                        chain, address, asset_id, variant_id, kind, trust_tier, stock_variant_tier, tags,
+                        label, issuer, issuer_url, decimals, origin, source, is_active,
+                        first_seen_at, last_seen_at, created_at, updated_at
+                    )
+                    VALUES (
+                        ${args.chain}, ${args.address}, ${args.assetId}, ${args.variantId}, ${args.kind}, ${args.trustTier},
+                        ${args.stockVariantTier}, ${sql.json([...args.tags] as never)},
+                        ${args.label}, NULL, NULL, ${args.decimals}, 'admin', 'admin', true,
+                        ${args.nowMs}, ${args.nowMs}, ${now}, ${now}
+                    )
+                    ON CONFLICT (chain, address, asset_id) DO UPDATE SET
+                        kind = EXCLUDED.kind,
+                        trust_tier = EXCLUDED.trust_tier,
+                        stock_variant_tier = EXCLUDED.stock_variant_tier,
+                        tags = EXCLUDED.tags,
+                        label = coalesce(EXCLUDED.label, v2_asset_variants.label),
+                        decimals = coalesce(EXCLUDED.decimals, v2_asset_variants.decimals),
+                        origin = 'admin',
+                        source = 'admin',
+                        is_active = true,
+                        last_seen_at = EXCLUDED.last_seen_at,
+                        updated_at = EXCLUDED.updated_at
+                    WHERE v2_asset_variants.origin IN ('coingecko', 'config', 'admin')
+                    RETURNING (xmax = 0) AS inserted
+                )
+                SELECT u.inserted, (SELECT origin FROM prev) AS prev_origin FROM upserted u
+            `;
+            const row = rows[0];
+            if (!row) throw new Error(`v2 variant ${args.chain}:${args.address} on ${args.assetId} is owned by another origin`);
+            if (row.inserted) return 'inserted';
+            return row.prev_origin === 'admin' ? 'updated' : 'adopted';
         },
 
         async deactivateDerivedVariants(keys, nowMs) {

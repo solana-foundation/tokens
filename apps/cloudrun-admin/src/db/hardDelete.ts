@@ -11,6 +11,7 @@ import type { Sql } from 'postgres';
 import { buildDeletionTombstoneRows, type HardDeleteCounters, type HardDeleteRepo } from '../handlers/hardDelete';
 import { HARD_DELETE_COLLECTION_SLUGS, uniqueStrings } from '../handlers/shared';
 import { randomId } from '../db';
+import { hardDeleteV2 } from './v2Mirror';
 
 export function makePostgresHardDeleteRepo(sql: Sql): HardDeleteRepo {
     return {
@@ -180,7 +181,12 @@ export function makePostgresHardDeleteRepo(sql: Sql): HardDeleteRepo {
                 await tx`DELETE FROM variant_fill_quality_latest WHERE mint = ANY(${mintsArray}::text[])`;
                 await tx`DELETE FROM asset_variant_views WHERE asset_id = ${assetId}`;
 
-                // 9. Variants + the canonical asset row itself.
+                // 9. v2 (multichain) rows: every variant the asset owns on any
+                //    chain (mirrored, derived and admin) plus the mirrored
+                //    Solana market rows nothing else references.
+                const v2 = await hardDeleteV2(tx, { assetId, mints });
+
+                // 10. Variants + the canonical asset row itself.
                 const variants = await tx`DELETE FROM asset_variants WHERE asset_id = ${assetId}`;
                 await tx`DELETE FROM assets WHERE asset_id = ${assetId}`;
 
@@ -188,6 +194,7 @@ export function makePostgresHardDeleteRepo(sql: Sql): HardDeleteRepo {
                     membershipsDeleted: memberships.count,
                     aliasesDeleted: aliases.count,
                     variantsDeleted: variants.count,
+                    v2VariantsDeleted: v2.variantsDeleted,
                     variantMarketsDeleted: variantMarkets.count,
                     tokenMarketsDeleted: tokenMarkets.count,
                     tokenDocsDeleted: tokenDocs.count,

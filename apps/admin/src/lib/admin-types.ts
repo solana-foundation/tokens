@@ -51,6 +51,31 @@ export type TrustTier = 'tier1' | 'tier2' | 'tier3' | 'experimental';
 
 export type StockVariantTier = 'share_redeemable' | 'cash_redeemable' | 'not_redeemable';
 
+// Chain ids come from the registry's leaf `chains` module (no registry data,
+// safe in the client bundle). `ChainKind` is re-exported for the dialogs.
+export type { ChainKind } from '@tokens/asset-registry/chains';
+import type { ChainKind } from '@tokens/asset-registry/chains';
+
+/**
+ * Who owns a variant row. `v1` = Solana row in `asset_variants` (mirrored into
+ * v2 by cloudrun-admin/-assets on every write); the rest are `v2_asset_variants`
+ * origins: `coingecko`/`config` = derived by the daily EVM sync, `admin` =
+ * written or adopted from the admin app (the derivation job never touches it).
+ */
+export type VariantOrigin = 'v1' | 'coingecko' | 'config' | 'admin';
+
+/**
+ * Identifies one variant row for the edit/move/deactivate/delete mutations.
+ * Solana rows are addressed by mint alone (v1 keys on mint); EVM rows need the
+ * owning asset too because `v2_asset_variants` keys on (chain, address, asset_id).
+ */
+export type VariantRef = { chain: ChainKind; address: string; assetId: string };
+
+/** Wire args for a variant mutation: the ref plus legacy `mint` for older backends. */
+export function variantRefArgs(ref: VariantRef): { chain: ChainKind; address: string; assetId: string; mint: string } {
+    return { chain: ref.chain, address: ref.address, assetId: ref.assetId, mint: ref.address };
+}
+
 export type LogoSource = 'url' | 'override' | 'variant' | 'none';
 
 /* ── listCategories ─────────────────────────────────────────────────────── */
@@ -354,7 +379,14 @@ export type RevokeLaunchpadMintResult = { launchpad: string; mint: string; revok
 
 export type AdminVariantRow = {
     assetId: string;
+    /** Same as `address`; kept for older callers. */
     mint: string;
+    /** Optional only for cloudrun-admin builds that predate multichain rows; treat missing as `solana`. */
+    chain?: ChainKind;
+    address?: string;
+    origin?: VariantOrigin;
+    explorerUrl?: string;
+    decimals?: number;
     variantId: string;
     kind: VariantKind;
     liquidityTier: LiquidityTier;
@@ -419,6 +451,10 @@ export type VariantEditor = {
     variant: {
         assetId: string;
         mint: string;
+        chain?: ChainKind;
+        address?: string;
+        origin?: VariantOrigin;
+        decimals?: number | null;
         variantId: string;
         kind: VariantKind;
         trustTier: TrustTier;
@@ -471,13 +507,26 @@ export type UpdateCanonicalAssetResult = { assetId: string; updated: boolean };
 
 export type DeleteCanonicalAssetResult = { assetId: string; deleted: boolean };
 
-export type UpdateVariantResult = { mint: string; updated: boolean };
+export type UpdateVariantResult = { mint: string; chain?: ChainKind; address?: string; updated: boolean };
 
-export type DeleteVariantResult = { mint: string; deleted: boolean };
+export type DeleteVariantResult = { mint: string; chain?: ChainKind; address?: string; deleted: boolean };
 
-export type DeactivateVariantResult = { mint: string; isActive: boolean; updated: boolean };
+export type DeactivateVariantResult = {
+    mint: string;
+    chain?: ChainKind;
+    address?: string;
+    isActive: boolean;
+    updated: boolean;
+};
 
-export type MoveVariantToCanonicalResult = { mint: string; fromAssetId: string; toAssetId: string; moved: boolean };
+export type MoveVariantToCanonicalResult = {
+    mint: string;
+    chain?: ChainKind;
+    address?: string;
+    fromAssetId: string;
+    toAssetId: string;
+    moved: boolean;
+};
 
 export type RemoveFromCategoryResult = { removed: boolean };
 
@@ -523,6 +572,8 @@ export type HardDeleteAssetResult = {
     coingeckoOhlcvDeleted: number;
     tombstonesCreated: number;
     pendingOhlcvDelete: boolean;
+    /** v2_asset_variants rows removed (all chains); omitted by builds that predate multichain. */
+    v2VariantsDeleted?: number;
 };
 
 /* ── cloudrun-assets admin actions ──────────────────────────────────────── */
@@ -532,17 +583,51 @@ export type RefreshChartDataResult = {
     scheduled: string[];
 };
 
+export type CheckedVariantConflict =
+    | { type: 'same_canonical'; assetId: string; variantId: string; origin?: VariantOrigin }
+    | { type: 'other_canonical'; assetId: string; variantId: string }
+    /** EVM only: the address already backs other assets on this chain (legal in v2; informational). */
+    | { type: 'shared_with'; owners: Array<{ assetId: string; variantId: string; origin: VariantOrigin }> };
+
+export type CheckedMarketWrite = {
+    chain?: ChainKind;
+    address?: string;
+    mint: string;
+    source: 'birdeye';
+    symbol: string;
+    name: string;
+    decimals: number | null;
+    logoURI: string | null;
+    price: number | null;
+    priceChange24hPercent: number | null;
+    priceChange1hPercent: number | null;
+    volume24hUSD: number | null;
+    liquidity: number | null;
+    marketCap: number | null;
+    fdv: number | null;
+    holder: number | null;
+    totalSupply: number | null;
+    circulatingSupply: number | null;
+    lastTradeHumanTime: string | null;
+    extensions: Record<string, string> | null;
+    lastFetchedAt: number;
+};
+
 export type CheckedVariantPreview = {
     assetId: string;
+    /** Same as `address`; kept on the wire for older backends. */
     mint: string;
+    /** Absent on backends that predate multichain (Solana only). */
+    chain?: ChainKind;
+    address?: string;
     checkedAt: number;
-    conflict:
-        | { type: 'same_canonical'; assetId: string; variantId: string }
-        | { type: 'other_canonical'; assetId: string; variantId: string }
-        | null;
+    conflict: CheckedVariantConflict | null;
+    /** Where `variantWrite.decimals` came from; null means the operator must supply it (EVM only). */
+    decimalsSource?: 'birdeye' | 'coingecko' | null;
     variantWrite: {
         assetId: string;
-        chain: 'solana';
+        chain: ChainKind;
+        address?: string;
         mint: string;
         variantId: string;
         kind: VariantKind;
@@ -551,35 +636,23 @@ export type CheckedVariantPreview = {
         tags: string[];
         label: string | null;
         isActive: boolean;
+        decimals?: number | null;
     };
-    marketWrite: {
-        mint: string;
-        source: 'birdeye';
-        symbol: string;
-        name: string;
-        decimals: number;
-        logoURI: string | null;
-        price: number | null;
-        priceChange24hPercent: number | null;
-        priceChange1hPercent: number | null;
-        volume24hUSD: number | null;
-        liquidity: number | null;
-        marketCap: number | null;
-        fdv: number | null;
-        holder: number | null;
-        totalSupply: number | null;
-        circulatingSupply: number | null;
-        lastTradeHumanTime: string | null;
-        extensions: Record<string, string> | null;
-        lastFetchedAt: number;
-    };
+    /** Null when the chain has no Birdeye coverage or Birdeye had no overview (EVM only). */
+    marketWrite: CheckedMarketWrite | null;
 };
 
 export type AddCheckedVariantResult = {
     assetId: string;
     mint: string;
+    chain?: ChainKind;
+    address?: string;
     variantId: string;
     scheduled: string[];
+    /** False when the v1 write landed but the inline v2 mirror failed (the cron repairs it within 5 min). */
+    v2Synced?: boolean;
+    /** EVM: true when an existing derived (coingecko/config) row was taken over by admin. */
+    adopted?: boolean;
 };
 
 export type AdminSeedAssetResult = {
@@ -588,7 +661,23 @@ export type AdminSeedAssetResult = {
     slug?: CuratedCategorySlug;
     rank?: number;
     seededAt: number;
+    v2Synced?: boolean;
 };
+
+/** `adminSyncV2SolanaVariants` result (cloudrun-assets; the sync-v2-solana-variants job's summary). */
+export type AdminSyncV2SolanaVariantsResult = {
+    ok: boolean;
+    reason?: string;
+    variantsInserted?: number;
+    variantsUpdated?: number;
+    variantsReplaced?: number;
+    variantsDeactivated?: number;
+    marketsWritten?: number;
+    rollupsWritten?: number;
+};
+
+/** `adminRefreshV2VariantMarket` result (cloudrun-assets): one Birdeye snapshot for an EVM variant. */
+export type AdminRefreshV2VariantMarketResult = { chain: ChainKind; address: string; refreshed: boolean };
 
 /** Mirrors `TokenListAdminRow` in cloudrun-admin handlers/tokenListsAdmin.ts. */
 export type TokenListAdminRow = {

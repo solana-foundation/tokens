@@ -4566,14 +4566,16 @@ function isUniqueViolation(err: unknown): boolean {
 export function makePostgresAdminActionsRepo(sql: Sql): AdminActionsRepo {
     return {
         async findAssetByAssetId(assetId) {
-            const rows = await sql<{ asset_id: string; category: string }[]>`
-                SELECT asset_id, category
+            const rows = await sql<{ asset_id: string; category: string; coingecko_id: string | null }[]>`
+                SELECT asset_id, category, coingecko_id
                 FROM assets
                 WHERE asset_id = ${assetId}
                 LIMIT 1
             `;
             const row = rows[0];
-            return row ? { assetId: row.asset_id, category: row.category } : null;
+            return row
+                ? { assetId: row.asset_id, category: row.category, coingeckoId: row.coingecko_id?.trim() || null }
+                : null;
         },
 
         async listCollectionSlugsForAssetId(assetId) {

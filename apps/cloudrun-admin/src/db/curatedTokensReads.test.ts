@@ -15,9 +15,10 @@ import {
     makePostgresAdminReadsRepo,
     mapPegHealth,
     mapStructuralHealth,
+    mapV2VariantRow,
     mapVariantRow,
 } from './curatedTokensReads';
-import type { PgVariantWithMarketRow } from './curatedTokensReads';
+import type { PgV2VariantRow, PgVariantWithMarketRow } from './curatedTokensReads';
 
 const MINT = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
 /** Fixed clock for the 9h Webacy coverage rule; the fixtures' fetch epochs all fall inside the window. */
@@ -372,8 +373,12 @@ describe('makePostgresAdminReadsRepo variant queries', () => {
         await repo.listAllVariantsWithMarkets();
         await repo.listVariantsWithMarketsByAssetIds(['usd']);
         await repo.getVariantByMint(MINT);
-        expect(texts).toHaveLength(3);
-        for (const text of texts) expectWebacyJoins(text);
+        // The two list queries each add a v2 (non-Solana) query without the
+        // mint-keyed observer joins; every v1 query still carries them.
+        const v1Texts = texts.filter(text => text.includes('FROM asset_variants v'));
+        expect(texts).toHaveLength(5);
+        expect(v1Texts).toHaveLength(3);
+        for (const text of v1Texts) expectWebacyJoins(text);
     });
 
     it('maps joined rows through mapVariantRow', async () => {
@@ -410,5 +415,140 @@ describe('makePostgresAdminReadsRepo variant queries', () => {
         const row = await repo.getVariantByMint(MINT);
         expect(row?.pegHealth?.provider).toBe('tokens');
         expect(row?.pegHealth?.tier).toBe('watch');
+    });
+});
+
+/* ------------------------------------------------------------------------- *
+ * v2 (non-Solana) rows: unioned into every variant list so the admin shows
+ * what the asset page shows.
+ * ------------------------------------------------------------------------- */
+
+const EVM_ADDRESS = '0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48';
+
+function pgV2Row(overrides: Partial<PgV2VariantRow> = {}): PgV2VariantRow {
+    return {
+        chain: 'ethereum',
+        address: EVM_ADDRESS,
+        asset_id: 'usdc',
+        variant_id: 'ethereum:' + EVM_ADDRESS,
+        kind: 'native',
+        trust_tier: 'tier3',
+        stock_variant_tier: null,
+        tags: ['category:stablecoin'],
+        label: 'USDC',
+        issuer: null,
+        issuer_url: null,
+        decimals: '6',
+        origin: 'coingecko',
+        is_active: true,
+        has_market: true,
+        market_source: 'birdeye',
+        market_symbol: 'USDC',
+        market_name: 'USD Coin',
+        market_logo_uri: 'https://img/usdc.png',
+        market_liquidity: '12345.5',
+        market_last_fetched_at: '1761160000000',
+        ...overrides,
+    };
+}
+
+describe('mapV2VariantRow', () => {
+    it('maps a derived EVM row with its Birdeye market, keeping mint = address', () => {
+        expect(mapV2VariantRow(pgV2Row())).toEqual({
+            assetId: 'usdc',
+            chain: 'ethereum',
+            address: EVM_ADDRESS,
+            mint: EVM_ADDRESS,
+            origin: 'coingecko',
+            decimals: 6,
+            variantId: 'ethereum:' + EVM_ADDRESS,
+            kind: 'native',
+            trustTier: 'tier3',
+            tags: ['category:stablecoin'],
+            label: 'USDC',
+            issuer: null,
+            issuerUrl: null,
+            stockVariantTier: null,
+            isActive: true,
+            market: {
+                symbol: 'USDC',
+                name: 'USD Coin',
+                logoURI: 'https://img/usdc.png',
+                liquidity: 12345.5,
+                lastFetchedAt: 1_761_160_000_000,
+            },
+            advisory: null,
+            pegHealth: null,
+            structuralHealth: null,
+        });
+    });
+
+    it('reads a `touch` placeholder or a missing market row as market: null', () => {
+        expect(mapV2VariantRow(pgV2Row({ market_source: 'touch' }))?.market).toBeNull();
+        expect(mapV2VariantRow(pgV2Row({ has_market: false, market_source: null }))?.market).toBeNull();
+    });
+
+    it('drops rows on chains the registry does not know and defaults odd origins to admin', () => {
+        expect(mapV2VariantRow(pgV2Row({ chain: 'tron' }))).toBeNull();
+        expect(mapV2VariantRow(pgV2Row({ origin: 'solana_v1' }))?.origin).toBe('admin');
+        expect(mapV2VariantRow(pgV2Row({ decimals: null }))?.decimals).toBeNull();
+    });
+
+    it('mapVariantRow stamps v1 rows as solana / origin v1 and reads decimals from the market join', () => {
+        const row = mapVariantRow(pgRow({ market_decimals: '9' }), NOW);
+        expect(row.chain).toBe('solana');
+        expect(row.address).toBe(MINT);
+        expect(row.origin).toBe('v1');
+        expect(row.decimals).toBe(9);
+        expect(mapVariantRow(pgRow(), NOW).decimals).toBeNull();
+    });
+});
+
+describe('makePostgresAdminReadsRepo v2 union', () => {
+    it('list queries read v2_asset_variants for chain <> solana without the observer joins', async () => {
+        const { sql, texts } = makeFakeSql([]);
+        const repo = makePostgresAdminReadsRepo(sql);
+        await repo.listVariantsWithMarketsByAssetIds(['usdc']);
+        await repo.listAllVariantsWithMarkets();
+        const v2Texts = texts.filter(text => text.includes('FROM v2_asset_variants v'));
+        expect(v2Texts).toHaveLength(2);
+        for (const text of v2Texts) {
+            expect(text).toContain("v.chain <> 'solana'");
+            expect(text).toContain('LEFT JOIN v2_variant_markets_latest m ON m.chain = v.chain AND m.address = v.address');
+            expect(text).toContain('m.source AS market_source');
+            expect(text).not.toContain('webacy');
+        }
+        expect(v2Texts[0]).toContain('v.asset_id = ANY($::text[])');
+    });
+
+    it('getVariantByRef routes Solana to the mint query and EVM to v2 by (chain, address, asset)', async () => {
+        const { sql, texts } = makeFakeSql([]);
+        const repo = makePostgresAdminReadsRepo(sql);
+        // The recording fake also captures nested `sql\`...\`` fragments; only
+        // statements with a FROM clause are real queries.
+        const queries = () => texts.filter(text => text.includes('FROM '));
+        await repo.getVariantByRef({ chain: 'solana', address: MINT });
+        expect(queries()[0]).toContain('FROM asset_variants v');
+        expect(queries()[0]).toContain('WHERE v.mint = $');
+
+        await repo.getVariantByRef({ chain: 'ethereum', address: EVM_ADDRESS, assetId: 'usdc' });
+        expect(queries()[1]).toContain('FROM v2_asset_variants v');
+        expect(queries()[1]).toContain('WHERE v.chain = $ AND v.address = $');
+        expect(queries()[1]).toContain('ORDER BY v.is_active DESC, v.created_at ASC, v.asset_id ASC');
+        // The owning-asset filter is a nested fragment (rendered as `$` above).
+        expect(texts).toContain('AND v.asset_id = $');
+
+        const before = texts.length;
+        await repo.getVariantByRef({ chain: 'base', address: EVM_ADDRESS });
+        expect(texts.slice(before)).not.toContain('AND v.asset_id = $');
+    });
+
+    it('getVariantByRef maps the v2 row', async () => {
+        const { sql } = makeFakeSql([pgV2Row({ origin: 'admin' })]);
+        const repo = makePostgresAdminReadsRepo(sql);
+        const row = await repo.getVariantByRef({ chain: 'ethereum', address: EVM_ADDRESS, assetId: 'usdc' });
+        expect(row?.chain).toBe('ethereum');
+        expect(row?.origin).toBe('admin');
+        expect(row?.market?.symbol).toBe('USDC');
     });
 });

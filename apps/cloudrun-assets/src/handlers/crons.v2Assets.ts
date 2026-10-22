@@ -38,6 +38,10 @@ import {
 //
 // Ownership is the `origin` column: a job only updates / deactivates rows it
 // wrote (solana_v1 | coingecko | config | birdeye), so the three never fight.
+// The admin app is the fourth writer (handlers/adminActions.ts): Solana edits
+// still go through v1 and run the mirror inline; EVM variants are written
+// here directly as `origin='admin'`, which adopts a derived row so the daily
+// derivation stops touching it.
 
 export const V2_SOLANA_SYNC_JOB = 'sync-v2-solana-variants';
 export const V2_EVM_VARIANTS_SYNC_JOB = 'sync-v2-evm-variants';
@@ -109,6 +113,21 @@ export interface V2VariantKeyRef {
     address: string;
 }
 
+/** Admin-authored (EVM) variant: `origin='admin'`, adopting a derived row on conflict. */
+export interface V2AdminVariantUpsert {
+    chain: ChainKind;
+    address: string;
+    assetId: string;
+    variantId: string;
+    kind: string;
+    trustTier: string;
+    stockVariantTier: string | null;
+    tags: readonly string[];
+    label: string | null;
+    decimals: number | null;
+    nowMs: number;
+}
+
 /** Birdeye overview mapped for a v2 market row: no decimals default (EVM tokens are not 9). */
 export type V2VariantMarketUpsert = Omit<VariantMarketUpsertFromBirdeye, 'mint' | 'decimals'> & {
     chain: ChainKind;
@@ -144,6 +163,13 @@ export interface V2AssetsJobsRepo {
     listDerivedVariants(chains: readonly ChainKind[]): Promise<V2DerivedVariantRow[]>;
     /** Insert-or-update on (chain, address, asset_id), touching ONLY derived rows (`skipped` otherwise). */
     upsertDerivedVariant(args: V2DerivedVariantUpsert): Promise<'inserted' | 'updated' | 'skipped'>;
+    /**
+     * Admin write on (chain, address, asset_id): insert as `origin='admin'`, or
+     * update an existing derived/admin row and flip it to `admin` (`adopted`
+     * when it was coingecko/config). Keeps the existing `variant_id` on
+     * update (the unique (asset_id, variant_id) index is per asset).
+     */
+    upsertAdminVariant(args: V2AdminVariantUpsert): Promise<'inserted' | 'adopted' | 'updated'>;
     /** Soft-deactivate derived rows (never hard-deletes); returns the count. */
     deactivateDerivedVariants(
         keys: ReadonlyArray<V2VariantKeyRef & { assetId: string }>,
