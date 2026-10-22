@@ -74,7 +74,13 @@ cron tick:
   next cron tick repairs it. `adminSyncV2SolanaVariants` runs the mirror on
   demand. cloudrun-admin's variant mutations (edit / deactivate / delete /
   move / rename / hard delete) write the matching per-row v2 statements inside
-  their own transactions.
+  their own transactions. Both mirrors take the advisory lock
+  `pg_advisory_xact_lock(830033)` (`V2_SOLANA_MIRROR_LOCK_KEY` in
+  `apps/cloudrun-assets/src/db/v2Assets.ts` and
+  `apps/cloudrun-admin/src/db/v2Mirror.ts`; keep the literals equal) so a cron
+  tick can never snapshot v1 between an admin write and its commit, and the
+  admin row is stamped from the DB clock once the lock is held so the
+  `last_seen_at` guard cannot reject it.
 - **EVM** (`adminCheckVariantMintForCanonical` + `adminAddCheckedVariant` with
   `chain` ≠ `solana`): no v1 row (its `chain` CHECK is Solana-only); the
   variant goes straight into `v2_asset_variants` with `origin='admin'` and
@@ -84,7 +90,13 @@ cron tick:
   assets may own one (chain, address) (PK includes `asset_id`); the check
   reports other owners as `shared_with` without blocking. The refresh cron
   keeps admin rows fresh (its stale selection has no origin filter);
-  `adminRefreshV2VariantMarket` refreshes one row now.
+  `adminRefreshV2VariantMarket` refreshes one row now. The Check-time market
+  snapshot is written with an only-if-newer guard so it never rolls back a
+  fresher cron row for a shared address. **Moving** an EVM row copies it under
+  the destination and leaves an inactive `origin='admin'` row at the old key:
+  the source asset still lists the contract on CoinGecko, and the derivation
+  skips non-derived rows, so the tombstone is what stops it from re-inserting
+  there. Soft-deleting an asset is refused while it has active v2 rows.
 
 Invariant: admin never writes Solana rows to v2 directly, so
 `SELECT count(*) FROM v2_asset_variants WHERE origin = 'admin' AND chain = 'solana'`

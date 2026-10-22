@@ -378,9 +378,26 @@ export async function moveV2Variant(
         LIMIT 1
     `;
     if (collision.length > 0) return { status: 'variant_id_collision' };
+    const now = new Date(args.nowMs);
+    // Copy the row under the destination (adopted), then keep an INACTIVE
+    // admin-owned row at the old key rather than deleting it: the source asset
+    // still lists this contract on CoinGecko, so the daily derivation would
+    // otherwise re-insert it there and the token would show under both.
+    await tx`
+        INSERT INTO v2_asset_variants (
+            chain, address, asset_id, variant_id, kind, trust_tier, stock_variant_tier, tags,
+            label, issuer, issuer_url, decimals, origin, source, is_active,
+            first_seen_at, last_seen_at, created_at, updated_at
+        )
+        SELECT chain, address, ${args.toAssetId}, variant_id, kind, trust_tier, stock_variant_tier, tags,
+               label, issuer, issuer_url, decimals, 'admin', 'admin', true,
+               first_seen_at, ${args.nowMs}, ${now}, ${now}
+        FROM v2_asset_variants
+        WHERE chain = ${args.chain} AND address = ${args.address} AND asset_id = ${current.asset_id}
+    `;
     await tx`
         UPDATE v2_asset_variants
-        SET asset_id = ${args.toAssetId}, origin = 'admin', source = 'admin', updated_at = ${new Date(args.nowMs)}
+        SET is_active = false, origin = 'admin', source = 'admin', updated_at = ${now}
         WHERE chain = ${args.chain} AND address = ${args.address} AND asset_id = ${current.asset_id}
     `;
     return { status: 'moved', fromAssetId: current.asset_id };
@@ -539,8 +556,14 @@ export function makePostgresAdminMutationsRepo(sql: Sql): AdminMutationsRepo {
             return await sql.begin(async tx => {
                 const existing = await tx`SELECT 1 FROM assets WHERE asset_id = ${args.assetId} LIMIT 1 FOR UPDATE`;
                 if (existing.length === 0) return 'not_found' as const;
+                // Live variants block a soft delete on either side: v1 rows and
+                // active v2 rows (derived or admin EVM). Inactive v2 leftovers
+                // are swept by the cascade below.
                 const variants = await tx`
-                    SELECT 1 FROM asset_variants WHERE asset_id = ${args.assetId} LIMIT 1
+                    SELECT 1 FROM asset_variants WHERE asset_id = ${args.assetId}
+                    UNION ALL
+                    SELECT 1 FROM v2_asset_variants WHERE asset_id = ${args.assetId} AND is_active = true
+                    LIMIT 1
                 `;
                 if (variants.length > 0) return 'has_variants' as const;
 

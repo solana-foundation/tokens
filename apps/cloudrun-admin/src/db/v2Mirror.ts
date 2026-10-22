@@ -21,6 +21,20 @@ import type { TransactionSql } from 'postgres';
 
 type Tx = TransactionSql;
 
+/**
+ * Advisory lock shared with the worker's set-based mirror
+ * (apps/cloudrun-assets/src/db/v2Assets.ts `V2_SOLANA_MIRROR_LOCK_KEY`; keep
+ * the two literals equal). Held for the rest of the admin transaction, so a
+ * cron tick cannot snapshot v1 between our v1 write and our commit, and we
+ * cannot stamp a row while the cron is mid-copy.
+ */
+export const V2_SOLANA_MIRROR_LOCK_KEY = 830_033;
+
+/** Take the mirror lock for the rest of `tx` (re-entrant within the transaction). */
+export async function lockSolanaMirror(tx: Tx): Promise<void> {
+    await tx`SELECT pg_advisory_xact_lock(${V2_SOLANA_MIRROR_LOCK_KEY})`;
+}
+
 /** Metric columns shared by variant_markets_latest and v2_variant_markets_latest (same names, same types). */
 export const V2_MARKET_METRIC_COLUMNS = [
     'source',
@@ -68,14 +82,19 @@ const MARKET_COLUMNS_EXCLUDED_SQL = V2_MARKET_METRIC_COLUMNS.map(c => `${c} = EX
 
 /**
  * Copy one v1 Solana variant (and, when present, its market row) into v2.
- * Idempotent: a second call with the same or a later `nowMs` is a no-op
- * update. Returns `'mirrored'` when a v2 row was inserted or updated,
- * `'skipped'` when v1 has no such row (or a non-mirror row owns the key).
+ * Idempotent: a second call is a no-op update. Returns `'mirrored'` when a v2
+ * row was inserted or updated, `'skipped'` when v1 has no such row (or a
+ * non-mirror row owns the key).
+ *
+ * `last_seen_at` is stamped from the database clock once the mirror lock is
+ * held (never below `nowMs`), so it is always later than any cron tick that
+ * ran before us and the timestamp guard cannot reject this write.
  */
 export async function mirrorSolanaVariantRow(
     tx: Tx,
     args: { assetId: string; mint: string; nowMs: number },
 ): Promise<'mirrored' | 'skipped'> {
+    await lockSolanaMirror(tx);
     const rows = await tx<Array<{ address: string }>>`
         INSERT INTO v2_asset_variants (
             chain, address, asset_id, variant_id, kind, trust_tier, stock_variant_tier, tags,
@@ -85,7 +104,7 @@ export async function mirrorSolanaVariantRow(
         SELECT 'solana', av.mint, av.asset_id, av.variant_id, av.kind, av.trust_tier, av.stock_variant_tier,
                coalesce(av.tags, '[]'::jsonb), av.label, av.issuer, av.issuer_url, vml.decimals,
                'solana_v1', av.source, av.is_active,
-               ${args.nowMs}, ${args.nowMs}, now(), now()
+               stamp.ms, stamp.ms, now(), now()
         FROM (
             SELECT * FROM asset_variants
             WHERE chain = 'solana' AND asset_id = ${args.assetId} AND mint = ${args.mint}
@@ -93,6 +112,9 @@ export async function mirrorSolanaVariantRow(
             LIMIT 1
         ) av
         LEFT JOIN variant_markets_latest vml ON vml.mint = av.mint
+        CROSS JOIN (
+            SELECT GREATEST(${args.nowMs}::bigint, (extract(epoch FROM clock_timestamp()) * 1000)::bigint) AS ms
+        ) stamp
         ON CONFLICT (chain, address, asset_id) DO UPDATE SET
             variant_id = EXCLUDED.variant_id,
             kind = EXCLUDED.kind,
@@ -138,6 +160,9 @@ export async function mirrorSolanaMarketRow(tx: Tx, mint: string): Promise<numbe
  * the worker's mirror follows the same convention).
  */
 export async function deleteSolanaVariantRow(tx: Tx, args: { assetId: string; mint: string }): Promise<number> {
+    // Under the mirror lock: a cron copy whose snapshot still had the v1 row
+    // would otherwise re-insert it right after our delete commits.
+    await lockSolanaMirror(tx);
     const rows = await tx<Array<{ address: string }>>`
         DELETE FROM v2_asset_variants
         WHERE chain = 'solana' AND address = ${args.mint} AND asset_id = ${args.assetId}

@@ -100,6 +100,15 @@ const V2_VARIANT_COLUMNS = [
 const V2_VARIANT_COLUMNS_SQL = V2_VARIANT_COLUMNS.join(', ');
 const V2_VARIANT_COLUMNS_PREFIXED_SQL = V2_VARIANT_COLUMNS.map(c => `v.${c}`).join(', ');
 
+/**
+ * Advisory lock serializing the Solana → v2 mirror with cloudrun-admin's
+ * per-row mirror (apps/cloudrun-admin/src/db/v2Mirror.ts uses the same key).
+ * Without it a cron tick whose INSERT … SELECT snapshot predates an admin
+ * commit could stamp stale v1 values with a newer `last_seen_at` and the
+ * admin's own mirror row would then be rejected by the timestamp guard.
+ */
+export const V2_SOLANA_MIRROR_LOCK_KEY = 830_033;
+
 function parseJsonb(value: unknown): unknown {
     if (typeof value !== 'string') return value;
     try {
@@ -143,6 +152,9 @@ export function makePostgresV2AssetsJobsRepo(sql: Sql): V2AssetsJobsRepo {
     return {
         async mirrorSolanaVariants(nowMs) {
             return await sql.begin(async tx => {
+                // Serialize with cloudrun-admin's in-transaction mirror so the
+                // SELECT below never snapshots v1 mid-admin-write.
+                await tx`SELECT pg_advisory_xact_lock(${V2_SOLANA_MIRROR_LOCK_KEY})`;
                 // A v1 variant whose mint was replaced keeps its variant_id, so the
                 // fresh (asset, new mint) row would collide with the stale mirror
                 // row on the (asset_id, variant_id) unique index and fail the whole
@@ -517,7 +529,10 @@ export function makePostgresV2AssetsJobsRepo(sql: Sql): V2AssetsJobsRepo {
             );
         },
 
-        async upsertVariantMarketFromBirdeye(args) {
+        async upsertVariantMarketFromBirdeye(args, options) {
+            // `onlyIfNewer`: an admin preview snapshot must not replace a fresher
+            // row the refresh cron wrote while the dialog was open.
+            const onlyIfNewer = options?.onlyIfNewer === true;
             const birdeyeJson = {
                 source: 'birdeye',
                 symbol: args.symbol,
@@ -609,6 +624,7 @@ export function makePostgresV2AssetsJobsRepo(sql: Sql): V2AssetsJobsRepo {
                     origin = EXCLUDED.origin,
                     updated_at = now()
                 WHERE v2_variant_markets_latest.origin = 'birdeye'
+                  AND (${!onlyIfNewer} OR v2_variant_markets_latest.last_fetched_at <= EXCLUDED.last_fetched_at)
             `;
         },
 

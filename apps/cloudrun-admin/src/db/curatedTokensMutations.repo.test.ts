@@ -239,7 +239,7 @@ describe('makePostgresAdminMutationsRepo v2 mirror (Solana refs)', () => {
         });
         const mirror = queries.find(q => q.text.startsWith('INSERT INTO v2_asset_variants'));
         expect(mirror).toBeDefined();
-        expect(mirror!.params).toEqual([NOW, NOW, 'amazon', SOL_MINT]);
+        expect(mirror!.params).toEqual(['amazon', SOL_MINT, NOW]);
         expect(queries.some(q => q.text.startsWith('INSERT INTO v2_variant_markets_latest'))).toBe(true);
     });
 
@@ -252,7 +252,7 @@ describe('makePostgresAdminMutationsRepo v2 mirror (Solana refs)', () => {
         const order = statements(queries);
         expect(order.indexOf('UPDATE asset_variants SET')).toBeLessThan(order.indexOf('INSERT INTO v2_asset_variants'));
         const mirror = queries.find(q => q.text.startsWith('INSERT INTO v2_asset_variants'));
-        expect(mirror!.params).toEqual([NOW, NOW, 'amazon', SOL_MINT]);
+        expect(mirror!.params).toEqual(['amazon', SOL_MINT, NOW]);
         // Solana refs never touch the v2-native write path.
         expect(queries.some(q => q.text.startsWith('UPDATE v2_asset_variants'))).toBe(false);
     });
@@ -266,6 +266,7 @@ describe('makePostgresAdminMutationsRepo v2 mirror (Solana refs)', () => {
         expect(statements(queries)).toEqual([
             'SELECT id, asset_id',
             'UPDATE asset_variants SET',
+            'SELECT pg_advisory_xact_lock($)',
             'INSERT INTO v2_asset_variants',
             'INSERT INTO v2_variant_markets_latest',
         ]);
@@ -299,7 +300,7 @@ describe('makePostgresAdminMutationsRepo v2 mirror (Solana refs)', () => {
         const v2Delete = queries.find(q => q.text.startsWith('DELETE FROM v2_asset_variants'));
         const v2Insert = queries.find(q => q.text.startsWith('INSERT INTO v2_asset_variants'));
         expect(v2Delete!.params).toEqual([SOL_MINT, 'amazon']);
-        expect(v2Insert!.params).toEqual([NOW, NOW, 'amazon-xstock', SOL_MINT]);
+        expect(v2Insert!.params).toEqual(['amazon-xstock', SOL_MINT, NOW]);
     });
 
     it('deleteCanonicalAsset removes the v2 rows (derived EVM included) before the asset row', async () => {
@@ -310,6 +311,22 @@ describe('makePostgresAdminMutationsRepo v2 mirror (Solana refs)', () => {
         expect(order).toContain('DELETE FROM v2_asset_variants');
         expect(order).toContain('DELETE FROM v2_asset_chain_markets_latest');
         expect(order.indexOf('DELETE FROM v2_asset_variants')).toBeLessThan(order.indexOf('DELETE FROM assets'));
+    });
+
+    it('deleteCanonicalAsset refuses while the asset still has ACTIVE v2 variants (EVM-only assets)', async () => {
+        const { sql, queries } = makeFakeSql(text =>
+            text.startsWith('SELECT 1 FROM assets')
+                ? [{ '?column?': 1 }]
+                : text.startsWith('SELECT 1 FROM asset_variants')
+                  ? [{ '?column?': 1 }]
+                  : [],
+        );
+        const repo = makePostgresAdminMutationsRepo(sql);
+        expect(await repo.deleteCanonicalAsset({ assetId: 'polygon' })).toBe('has_variants');
+        const guard = queries.find(q => q.text.startsWith('SELECT 1 FROM asset_variants'));
+        expect(guard!.text).toContain('UNION ALL SELECT 1 FROM v2_asset_variants WHERE asset_id = $ AND is_active = true');
+        expect(statements(queries)).not.toContain('DELETE FROM v2_asset_variants');
+        expect(statements(queries)).not.toContain('DELETE FROM assets');
     });
 });
 
@@ -382,7 +399,7 @@ describe('makePostgresAdminMutationsRepo v2-native (EVM refs)', () => {
         expect(queries[0]!.text).not.toContain('origin');
     });
 
-    it('moveVariantToCanonical rewrites asset_id on the v2 row, adopting it', async () => {
+    it('moveVariantToCanonical copies the row under the destination and leaves an inactive admin row behind', async () => {
         const { sql, queries } = makeFakeSql(text =>
             text.includes('FOR UPDATE') ? [CURRENT_V2] : text.startsWith('SELECT 1 FROM assets') ? [{ '?column?': 1 }] : [],
         );
@@ -391,9 +408,16 @@ describe('makePostgresAdminMutationsRepo v2-native (EVM refs)', () => {
             status: 'moved',
             fromAssetId: 'usdc',
         });
-        const update = queries.find(q => q.text.startsWith('UPDATE v2_asset_variants'));
-        expect(update!.text).toContain("SET asset_id = $, origin = 'admin', source = 'admin'");
-        expect(update!.params).toEqual(['usd', new Date(NOW), 'ethereum', EVM_ADDRESS, 'usdc']);
+        // Destination row: same identity, adopted + active.
+        const copy = queries.find(q => q.text.startsWith('INSERT INTO v2_asset_variants'));
+        expect(copy!.text).toContain("SELECT chain, address, $, variant_id, kind, trust_tier, stock_variant_tier, tags, label, issuer, issuer_url, decimals, 'admin', 'admin', true, first_seen_at, $, $, $ FROM v2_asset_variants");
+        expect(copy!.params).toEqual(['usd', NOW, new Date(NOW), new Date(NOW), 'ethereum', EVM_ADDRESS, 'usdc']);
+        // Source row stays as an INACTIVE admin-owned tombstone so the daily
+        // derivation (which skips non-derived rows) cannot re-insert it there.
+        const tombstone = queries.find(q => q.text.startsWith('UPDATE v2_asset_variants'));
+        expect(tombstone!.text).toContain("SET is_active = false, origin = 'admin', source = 'admin'");
+        expect(tombstone!.params).toEqual([new Date(NOW), 'ethereum', EVM_ADDRESS, 'usdc']);
+        expect(queries.some(q => q.text.startsWith('DELETE FROM v2_asset_variants'))).toBe(false);
     });
 
     it('moveVariantToCanonical reports noop / asset_not_found / collision like the v1 path', async () => {

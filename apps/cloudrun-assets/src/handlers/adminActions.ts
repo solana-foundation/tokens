@@ -1197,11 +1197,17 @@ async function checkEvmVariantForCanonical(
             : null;
 
     // CoinGecko: platforms map (kind) + detail_platforms decimals + symbol fallback.
+    // The decimals and symbol describe the coin's own deployment on this chain,
+    // so they only apply when that contract IS the address being added; a
+    // different wrapper/bridge on the same chain must not inherit them.
     const coinRow = asset.coingeckoId
         ? (await deps.v2.repo.findCoinPlatformsByCoinIds([asset.coingeckoId]))[0] ?? null
         : null;
     const platform = CHAINS[chain].providers.coingeckoPlatform;
-    const coingeckoDecimals = coinRow?.decimalsByPlatform[platform] ?? null;
+    const coinContract = coinRow?.platforms[platform];
+    const coinMatchesAddress =
+        typeof coinContract === 'string' && normalizeAddressForChain(chain, coinContract) === address;
+    const coingeckoDecimals = coinMatchesAddress ? (coinRow?.decimalsByPlatform[platform] ?? null) : null;
 
     const decimals = birdeyeDecimals ?? coingeckoDecimals;
     const decimalsSource: CheckedVariantPreview['decimalsSource'] =
@@ -1214,7 +1220,9 @@ async function checkEvmVariantForCanonical(
     const kind: VariantKind = derivedKind && isVariantKind(derivedKind) ? derivedKind : kindForCategory(category);
     const tags = await curatedTagsForAsset(deps, assetId, category);
     const checkedAt = deps.now();
-    const label = normalized?.symbol ?? (coinRow?.symbol ? coinRow.symbol.trim().toUpperCase() || null : null);
+    const label =
+        normalized?.symbol ??
+        (coinMatchesAddress && coinRow?.symbol ? coinRow.symbol.trim().toUpperCase() || null : null);
 
     return {
         assetId,
@@ -1416,7 +1424,11 @@ async function addEvmVariant(
     });
 
     if (preview.marketWrite) {
-        await deps.v2.repo.upsertVariantMarketFromBirdeye(marketWriteToV2Upsert(preview.marketWrite));
+        // The snapshot was taken at Check time; a refresh may have written a
+        // fresher row for this (shared) address since, so never roll it back.
+        await deps.v2.repo.upsertVariantMarketFromBirdeye(marketWriteToV2Upsert(preview.marketWrite), {
+            onlyIfNewer: true,
+        });
     }
     await deps.v2.repo.setVariantDecimalsIfNull(chain, address, decimals);
 

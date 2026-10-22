@@ -107,6 +107,7 @@ interface FakeState {
     mirrorRuns: number[];
     adminVariantUpserts: V2AdminVariantUpsert[];
     v2MarketUpserts: V2VariantMarketUpsert[];
+    v2MarketUpsertOptions: Array<{ onlyIfNewer?: boolean } | undefined>;
     v2Touches: Array<{ chain: string; address: string }>;
     v2DecimalsSets: Array<{ chain: string; address: string; decimals: number }>;
 }
@@ -129,6 +130,7 @@ function makeState(overrides: Partial<FakeState> = {}): FakeState {
         mirrorRuns: [],
         adminVariantUpserts: [],
         v2MarketUpserts: [],
+        v2MarketUpsertOptions: [],
         v2Touches: [],
         v2DecimalsSets: [],
         ...overrides,
@@ -456,8 +458,9 @@ function makeV2JobsRepo(state: FakeState): V2AssetsJobsRepo {
         async listStaleActiveVariantsByChains() {
             return [];
         },
-        async upsertVariantMarketFromBirdeye(args) {
+        async upsertVariantMarketFromBirdeye(args, options) {
             state.v2MarketUpserts.push(args);
+            state.v2MarketUpsertOptions.push(options);
         },
         async touchVariantMarket(chain, address) {
             state.v2Touches.push({ chain, address });
@@ -1163,7 +1166,7 @@ describe('adminCheckVariantMintForCanonical (EVM)', () => {
                 'wrapped-bitcoin': {
                     coinId: 'wrapped-bitcoin',
                     symbol: 'wbtc',
-                    platforms: { ethereum: USDC_ETH },
+                    platforms: { ethereum: USDC_ETH, base: USDC_ETH },
                     decimalsByPlatform: {},
                     coinLastSyncedAt: FIXED_NOW,
                 },
@@ -1177,10 +1180,38 @@ describe('adminCheckVariantMintForCanonical (EVM)', () => {
         expect(preview.marketWrite).toBeNull();
         expect(preview.decimalsSource).toBeNull();
         expect(preview.variantWrite.decimals).toBeNull();
-        // Label falls back to the CoinGecko symbol; kind derives from the platforms map
-        // (sole deployment on another chain → spot).
+        // Label falls back to the CoinGecko symbol (the coin's base deployment IS
+        // this address); kind derives from the platforms map (two non-Solana
+        // deployments → spot).
         expect(preview.variantWrite.label).toBe('WBTC');
         expect(preview.variantWrite.kind).toBe('spot');
+    });
+
+    it('ignores CoinGecko decimals/symbol when the coin deploys a DIFFERENT contract on this chain', async () => {
+        const other = '0x2222222222222222222222222222222222222222';
+        const state = makeState({
+            assetsById: { usdc: { assetId: 'usdc', category: 'stablecoin', coingeckoId: 'usd-coin' } },
+            // Birdeye answers but without decimals, so the fallback would be consulted.
+            evmOverviewByChain: { ethereum: { symbol: 'USDC.e', name: 'Bridged USDC', price: 1 } },
+            coinPlatformsById: {
+                'usd-coin': {
+                    coinId: 'usd-coin',
+                    symbol: 'usdc',
+                    platforms: { ethereum: USDC_ETH },
+                    decimalsByPlatform: { ethereum: 6 },
+                    coinLastSyncedAt: FIXED_NOW,
+                },
+            },
+        });
+        const preview = await adminCheckVariantMintForCanonical(
+            makeDeps(state),
+            { assetId: 'usdc', chain: 'ethereum', address: other },
+            ADMIN,
+        );
+        // A different wrapper must not inherit the canonical deployment's decimals.
+        expect(preview.decimalsSource).toBeNull();
+        expect(preview.variantWrite.decimals).toBeNull();
+        expect(preview.variantWrite.label).toBe('USDC.e');
     });
 
     it('reports same_canonical with the row origin (adopt) and keeps its variant id', async () => {
@@ -1300,6 +1331,8 @@ describe('adminAddCheckedVariant (EVM)', () => {
         ]);
         expect(state.v2MarketUpserts).toHaveLength(1);
         expect(state.v2MarketUpserts[0]).toMatchObject({ chain: 'ethereum', address: USDC_ETH, symbol: 'USDC', decimals: 6 });
+        // The preview snapshot never overwrites a fresher row the refresh cron wrote meanwhile.
+        expect(state.v2MarketUpsertOptions[0]).toEqual({ onlyIfNewer: true });
         expect(state.v2DecimalsSets).toEqual([{ chain: 'ethereum', address: USDC_ETH, decimals: 6 }]);
         // No v1 write, no aggregate, no mirror, no chart warms.
         expect(state.createdVariants).toEqual([]);

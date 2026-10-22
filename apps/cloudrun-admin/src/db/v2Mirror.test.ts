@@ -69,8 +69,11 @@ describe('mirrorSolanaVariantRow', () => {
         const { tx, queries } = makeFakeTx(text => (text.startsWith('INSERT INTO v2_asset_variants') ? [{ address: MINT }] : []));
         expect(await mirrorSolanaVariantRow(tx, { assetId: 'amazon', mint: MINT, nowMs: NOW })).toBe('mirrored');
 
-        expect(queries).toHaveLength(2);
-        const [variants, markets] = queries;
+        expect(queries).toHaveLength(3);
+        const [lock, variants, markets] = queries;
+        // Serialized with the worker's set-based mirror (same advisory key).
+        expect(lock!.text).toBe('SELECT pg_advisory_xact_lock($)');
+        expect(lock!.params).toEqual([830_033]);
         expect(variants!.text).toContain('INSERT INTO v2_asset_variants');
         expect(variants!.text).toContain("SELECT 'solana', av.mint, av.asset_id, av.variant_id");
         expect(variants!.text).toContain("'solana_v1', av.source, av.is_active");
@@ -80,8 +83,11 @@ describe('mirrorSolanaVariantRow', () => {
         // Only mirror rows, and never roll last_seen_at backwards past an overlapping cron tick.
         expect(variants!.text).toContain("WHERE v2_asset_variants.origin = 'solana_v1'");
         expect(variants!.text).toContain('AND EXCLUDED.last_seen_at >= v2_asset_variants.last_seen_at');
-        // first_seen_at = last_seen_at = nowMs, then (asset_id, mint) in the subselect.
-        expect(variants!.params).toEqual([NOW, NOW, 'amazon', MINT]);
+        // Stamp from the DB clock once the lock is held, never below nowMs, so a
+        // cron tick that started earlier can neither out-stamp nor deactivate us.
+        expect(variants!.text).toContain('stamp.ms, stamp.ms, now(), now()');
+        expect(variants!.text).toContain('GREATEST($::bigint, (extract(epoch FROM clock_timestamp()) * 1000)::bigint) AS ms');
+        expect(variants!.params).toEqual(['amazon', MINT, NOW]);
 
         expect(markets!.text).toContain('INSERT INTO v2_variant_markets_latest');
         expect(markets!.text).toContain("WHERE v2_variant_markets_latest.origin = 'solana_v1'");
@@ -91,7 +97,8 @@ describe('mirrorSolanaVariantRow', () => {
     it('skips the market copy when v1 has no such variant', async () => {
         const { tx, queries } = makeFakeTx(() => []);
         expect(await mirrorSolanaVariantRow(tx, { assetId: 'amazon', mint: MINT, nowMs: NOW })).toBe('skipped');
-        expect(queries).toHaveLength(1);
+        expect(queries).toHaveLength(2);
+        expect(queries[0]!.text).toContain('pg_advisory_xact_lock');
     });
 });
 
@@ -120,10 +127,11 @@ describe('deleteSolanaVariantRow / moveSolanaVariantRow', () => {
     it('deletes only the solana_v1 mirror row for (asset, mint), leaving the market row', async () => {
         const { tx, queries } = makeFakeTx(() => [{ address: MINT }]);
         expect(await deleteSolanaVariantRow(tx, { assetId: 'amazon', mint: MINT })).toBe(1);
-        expect(queries).toHaveLength(1);
-        expect(queries[0]!.text).toContain('DELETE FROM v2_asset_variants');
-        expect(queries[0]!.text).toContain("WHERE chain = 'solana' AND address = $ AND asset_id = $ AND origin = 'solana_v1'");
-        expect(queries[0]!.params).toEqual([MINT, 'amazon']);
+        expect(queries).toHaveLength(2);
+        expect(queries[0]!.text).toContain('pg_advisory_xact_lock');
+        expect(queries[1]!.text).toContain('DELETE FROM v2_asset_variants');
+        expect(queries[1]!.text).toContain("WHERE chain = 'solana' AND address = $ AND asset_id = $ AND origin = 'solana_v1'");
+        expect(queries[1]!.params).toEqual([MINT, 'amazon']);
         expect(queries.some(q => q.text.includes('v2_variant_markets_latest'))).toBe(false);
     });
 
@@ -131,12 +139,14 @@ describe('deleteSolanaVariantRow / moveSolanaVariantRow', () => {
         const { tx, queries } = makeFakeTx(text => (text.startsWith('INSERT INTO v2_asset_variants') ? [{ address: MINT }] : []));
         await moveSolanaVariantRow(tx, { mint: MINT, fromAssetId: 'amazon', toAssetId: 'amazon-xstock', nowMs: NOW });
         expect(queries.map(q => q.text.split(' ').slice(0, 3).join(' '))).toEqual([
+            'SELECT pg_advisory_xact_lock($)',
             'DELETE FROM v2_asset_variants',
+            'SELECT pg_advisory_xact_lock($)',
             'INSERT INTO v2_asset_variants',
             'INSERT INTO v2_variant_markets_latest',
         ]);
-        expect(queries[0]!.params).toEqual([MINT, 'amazon']);
-        expect(queries[1]!.params).toEqual([NOW, NOW, 'amazon-xstock', MINT]);
+        expect(queries[1]!.params).toEqual([MINT, 'amazon']);
+        expect(queries[3]!.params).toEqual(['amazon-xstock', MINT, NOW]);
     });
 });
 

@@ -186,7 +186,8 @@ export interface V2AssetsJobsRepo {
         beforeOverviewFetchedAt: number,
         limit: number,
     ): Promise<V2VariantKeyRef[]>;
-    upsertVariantMarketFromBirdeye(args: V2VariantMarketUpsert): Promise<void>;
+    /** `onlyIfNewer` leaves a stored row alone when its `last_fetched_at` is newer than `args.lastFetchedAt`. */
+    upsertVariantMarketFromBirdeye(args: V2VariantMarketUpsert, options?: { onlyIfNewer?: boolean }): Promise<void>;
     /** Stamp a (chain, address) so it leaves the stale set even when Birdeye had nothing. */
     touchVariantMarket(chain: ChainKind, address: string, lastFetchedAt: number): Promise<void>;
     /** Write-through of Birdeye decimals into derived rows that had none from CoinGecko. */
