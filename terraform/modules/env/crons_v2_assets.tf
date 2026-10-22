@@ -44,8 +44,8 @@ locals {
       schedule  = var.env == "stg" ? "20 3 * * *" : "7-59/15 * * * *"
       http_path = "/jobs/refresh-v2-evm-variant-markets"
       body_json = jsonencode({
-        maxVariants = 250
-        minAgeMs    = 3600000
+        maxVariants = 400
+        minAgeMs    = 900000
         concurrency = 2
         delayMs     = 150
         budgetMs    = 500000

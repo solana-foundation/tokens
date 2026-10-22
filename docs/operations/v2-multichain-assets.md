@@ -152,8 +152,19 @@ chain's outage cannot hide behind a healthy one.
 | `delayMs`     | 150             | 0–5000     | pacing between items                                 |
 | `budgetMs`    | 500000          | 0–3600000  | whole-run deadline; 0 = none                         |
 
-Schedule: prd `7-59/15 * * * *` with `minAgeMs 3600000` (each row about once
-an hour), stg `20 3 * * *`; deadline 540 s, no retry.
+Schedule: prd `7-59/15 * * * *` with `minAgeMs 900000` and `maxVariants 400`
+(every row with data about once per tick), stg `20 3 * * *`; deadline 540 s,
+no retry.
+
+Every row written in one run is stamped with the run's start time, not the
+time of its own fetch, so all rows refreshed together share one
+`lastFetchedAt` to the millisecond. A row's expected maximum age is therefore
+`minAgeMs` plus one schedule interval (today 15 + 15 = 30 min; it was 75 min
+while `minAgeMs` was one hour, which looked like a stall in the 2026-10-22
+audit). The served `market.lastFetchedAt` moves only on a successful Birdeye
+write; touches bump `overviewLastFetchedAt` only. The alert
+`assets-v2-evm-markets-refresh-silent` fires when no run has refreshed at
+least one row in 45 minutes.
 
 Result: `processed`, `refreshed`, `failed` (Birdeye empty + thrown),
 `noClient` (chain without a client), `byChain`
