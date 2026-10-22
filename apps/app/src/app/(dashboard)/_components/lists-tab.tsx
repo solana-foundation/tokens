@@ -984,7 +984,7 @@ export function ListsTab(): React.JSX.Element {
         [myLists, settingsSlug],
     );
 
-    if (apiKeysCount === 0) {
+    if (apiKeysCount !== null && !hasActiveApiKey) {
         return (
             <div className="space-y-6 container max-w-7xl mx-auto py-16 px-6">
                 <div className="mb-6">

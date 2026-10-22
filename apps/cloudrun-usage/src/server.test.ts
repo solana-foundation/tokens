@@ -25,7 +25,6 @@ const noopUsageIngest: UsageIngestRepo = {
 };
 
 export const noopIdentity: IdentityRepo = {
-    getUserPrimaryEmail: async () => null,
     listClerkUserIdsByEmail: async () => [],
     getIdentityScoreInputs: async () => ({ memberships: 0, keys: 0, activeKeys: 0 }),
 };

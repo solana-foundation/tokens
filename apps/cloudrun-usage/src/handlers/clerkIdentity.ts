@@ -1,7 +1,7 @@
 /**
  * Effective Clerk user resolution (email aliasing).
  *
- * 1:1 port of `convex/clerkIdentity.ts`. When the same person has multiple
+ * Port of `convex/clerkIdentity.ts`. When the same person has multiple
  * Clerk user records sharing a primary email (e.g. after an auth-provider
  * migration), every user-context handler resolves the "effective" user by
  * scoring candidates on activity and picking the busiest account:
@@ -10,14 +10,20 @@
  *
  * The caller's own ID wins ties (strict `>` comparison, caller scored first).
  *
+ * Aliasing keys ONLY on the email the signed identity header carries, which
+ * the app proxy sources from the Clerk session. A caller whose session has no
+ * email (wallet sign-in) resolves to their own Clerk id. The stored
+ * `users.primary_email` is deliberately not consulted: it is a mirror of the
+ * same Clerk value, and reading it back here would let any write path that
+ * stores an attacker-chosen email alias the caller onto another account
+ * (GHSA-6xq9-9vh4-jr57).
+ *
  * SQL note: Convex looked up `by_primaryEmail` with the lowercased email
  * against exact stored values; the Postgres repo uses
  * `WHERE lower(primary_email) = <normalized>` — a slightly safer widening.
  */
 
 export interface IdentityRepo {
-    /** Primary email of the given user row, or null if no row / no email. */
-    getUserPrimaryEmail(clerkUserId: string): Promise<string | null>;
     /** Distinct clerkUserIds of user rows whose primary email matches (case-insensitive). */
     listClerkUserIdsByEmail(email: string): Promise<string[]>;
     /** Raw activity counts used for candidate scoring. */
@@ -40,7 +46,7 @@ export async function resolveEffectiveClerkUserId(
     clerkUserId: string,
     email?: string | null,
 ): Promise<string> {
-    const normalizedEmail = normalizeEmail(email) ?? normalizeEmail(await repo.getUserPrimaryEmail(clerkUserId));
+    const normalizedEmail = normalizeEmail(email);
     if (!normalizedEmail) return clerkUserId;
 
     const candidates = await repo.listClerkUserIdsByEmail(normalizedEmail);

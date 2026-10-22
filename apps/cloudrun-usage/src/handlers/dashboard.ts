@@ -257,7 +257,16 @@ export async function usersGetMe(
     return deps.repo.getUserByClerkId(caller.clerkUserId);
 }
 
-/** Port of `users.upsertMe`. The proxy passes `email`/`fullName` from the Clerk session. */
+/**
+ * Port of `users.upsertMe`.
+ *
+ * The primary email comes ONLY from the signed identity header, which the app
+ * proxy sources from the Clerk session. A body `email` is ignored: honouring
+ * it let a session with no email of its own store another user's address
+ * and then alias onto that account (GHSA-6xq9-9vh4-jr57). `fullName` is
+ * display-only and still read from args (the proxy strips the client value
+ * and supplies Clerk's).
+ */
 export async function usersUpsertMe(
     deps: DashboardDeps,
     args: unknown,
@@ -266,7 +275,7 @@ export async function usersUpsertMe(
     const caller = requireIdentity(identity);
     const a = requireObject(args ?? {});
     const clerkUserId = await resolveCaller(deps, caller);
-    const primaryEmail = trimmedOrUndefined(optionalString(a, 'email') ?? caller.email);
+    const primaryEmail = trimmedOrUndefined(caller.email);
     const fullName = trimmedOrUndefined(optionalString(a, 'fullName'));
     return deps.repo.upsertUser({
         clerkUserId,
