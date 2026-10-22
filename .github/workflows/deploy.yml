@@ -634,16 +634,27 @@ jobs:
           # assets service exhausted the /24 subnet and every deploy failed with
           # "no sufficient IP addresses in the VPC network"). After a promotion
           # keep only the new candidate and the previous stable (rollback target).
+          # Pruning is best-effort: nothing here may fail the release (the API,
+          # app and admin deploys run after this step), and when the previous
+          # stable cannot be identified (candidate already at 100%) nothing is
+          # pruned so the rollback target keeps its tag and warm instances.
           prune_tags() {
             local service="$1" keep_a="$2" keep_b="$3" stale
-            stale=$(gcloud run services describe "$service" \
-              --region=us-east4 --project="$GCP_PROJECT" --format=json \
-              | jq -r --arg a "$keep_a" --arg b "$keep_b" '
-                  [.status.traffic[]
-                   | select(.tag != null and (.percent // 0) == 0
-                            and .revisionName != $a and .revisionName != $b)
-                   | .tag]
-                  | join(",")')
+            if [ -z "$keep_a" ] || [ -z "$keep_b" ] || [ "$keep_a" = "$keep_b" ]; then
+              echo "::warning::Previous stable revision unknown on $service; skipping tag prune."
+              return 0
+            fi
+            if ! stale=$(gcloud run services describe "$service" \
+                --region=us-east4 --project="$GCP_PROJECT" --format=json \
+                | jq -r --arg a "$keep_a" --arg b "$keep_b" '
+                    [.status.traffic[]
+                     | select(.tag != null and (.percent // 0) == 0
+                              and .revisionName != $a and .revisionName != $b)
+                     | .tag]
+                    | join(",")'); then
+              echo "::warning::Could not read traffic on $service; skipping tag prune."
+              return 0
+            fi
             [ -n "$stale" ] || return 0
             if gcloud run services update-traffic "$service" \
                 --region=us-east4 --project="$GCP_PROJECT" \
@@ -675,7 +686,9 @@ jobs:
               --region=us-east4 --project="$GCP_PROJECT" \
               --to-revisions="$worker=100" --quiet || return 1
             echo "worker=$worker"
-            prune_tags "$WORKER_SERVICE" "$worker" "$worker_stable"
+            # Already-promoted worker: the "stable" lookup returns the candidate
+            # itself and prune_tags refuses to run without a distinct stable.
+            prune_tags "$WORKER_SERVICE" "$worker" "$worker_stable" || true
           }
           fail_and_rollback() {
             local outcome
@@ -714,7 +727,7 @@ jobs:
           if [ "$served" = "100" ]; then
             echo "Candidate $candidate already serving 100% (manual promotion) — ensuring worker matches."
             promote_worker || fail_and_rollback "worker promotion" "the $WORKER_SERVICE candidate could not be promoted"
-            prune_tags tokens-assets-prd-us "$candidate" "$stable"
+            prune_tags tokens-assets-prd-us "$candidate" "$stable" || true
             exit 0
           fi
           for stage in 10 50; do
@@ -728,7 +741,7 @@ jobs:
           observe "100%" 120
           promote_worker || fail_and_rollback "worker promotion" "the $WORKER_SERVICE candidate could not be promoted"
           trap - INT TERM
-          prune_tags tokens-assets-prd-us "$candidate" "$stable"
+          prune_tags tokens-assets-prd-us "$candidate" "$stable" || true
           slack "✅ Assets candidate '$candidate' auto-promoted to 100% (API + worker). Stable-for-rollback was '$stable'. Run: $RUN_URL"
       # teamId is required for team-owned projects; without it the API returns
       # no deployments and rollback silently breaks.
