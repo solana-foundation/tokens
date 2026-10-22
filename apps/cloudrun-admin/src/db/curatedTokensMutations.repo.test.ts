@@ -408,16 +408,46 @@ describe('makePostgresAdminMutationsRepo v2-native (EVM refs)', () => {
             status: 'moved',
             fromAssetId: 'usdc',
         });
-        // Destination row: same identity, adopted + active.
+        // No row at the destination key: the reuse UPDATE matched nothing, so a
+        // fresh copy is inserted (adopted) carrying the SOURCE's is_active.
+        const reuse = queries.find(q => q.text.startsWith('UPDATE v2_asset_variants d SET'));
+        expect(reuse!.text).toContain("origin = 'admin', source = 'admin', is_active = s.is_active");
+        expect(reuse!.params).toEqual([NOW, new Date(NOW), 'ethereum', EVM_ADDRESS, 'usdc', 'ethereum', EVM_ADDRESS, 'usd']);
         const copy = queries.find(q => q.text.startsWith('INSERT INTO v2_asset_variants'));
-        expect(copy!.text).toContain("SELECT chain, address, $, variant_id, kind, trust_tier, stock_variant_tier, tags, label, issuer, issuer_url, decimals, 'admin', 'admin', true, first_seen_at, $, $, $ FROM v2_asset_variants");
+        expect(copy!.text).toContain("SELECT chain, address, $, variant_id, kind, trust_tier, stock_variant_tier, tags, label, issuer, issuer_url, decimals, 'admin', 'admin', is_active, first_seen_at, $, $, $ FROM v2_asset_variants");
+        expect(copy!.text).not.toContain("'admin', 'admin', true");
         expect(copy!.params).toEqual(['usd', NOW, new Date(NOW), new Date(NOW), 'ethereum', EVM_ADDRESS, 'usdc']);
         // Source row stays as an INACTIVE admin-owned tombstone so the daily
         // derivation (which skips non-derived rows) cannot re-insert it there.
-        const tombstone = queries.find(q => q.text.startsWith('UPDATE v2_asset_variants'));
+        const tombstone = queries.find(q => q.text.startsWith('UPDATE v2_asset_variants SET is_active = false'));
         expect(tombstone!.text).toContain("SET is_active = false, origin = 'admin', source = 'admin'");
         expect(tombstone!.params).toEqual([new Date(NOW), 'ethereum', EVM_ADDRESS, 'usdc']);
         expect(queries.some(q => q.text.startsWith('DELETE FROM v2_asset_variants'))).toBe(false);
+    });
+
+    it('moveVariantToCanonical reuses an existing row at the destination key (moving back over a tombstone)', async () => {
+        const { sql, queries } = makeFakeSql(text =>
+            text.includes('FOR UPDATE')
+                ? [CURRENT_V2]
+                : text.startsWith('SELECT 1 FROM assets')
+                  ? [{ '?column?': 1 }]
+                  : text.startsWith('UPDATE v2_asset_variants d SET')
+                    ? [{ address: EVM_ADDRESS }]
+                    : [],
+        );
+        const repo = makePostgresAdminMutationsRepo(sql);
+        expect(await repo.moveVariantToCanonical({ ...EVM_REF, toAssetId: 'usd', nowMs: NOW })).toEqual({
+            status: 'moved',
+            fromAssetId: 'usdc',
+        });
+        const order = statements(queries);
+        // The destination row (an earlier move's tombstone or a derived row) is
+        // adopted in place: no collision check, no INSERT, and the source is
+        // tombstoned as usual.
+        expect(order).not.toContain('INSERT INTO v2_asset_variants');
+        expect(queries.some(q => q.text.startsWith('SELECT 1 FROM v2_asset_variants'))).toBe(false);
+        expect(order.filter(s => s === 'UPDATE v2_asset_variants d')).toHaveLength(1);
+        expect(queries.some(q => q.text.startsWith('UPDATE v2_asset_variants SET is_active = false'))).toBe(true);
     });
 
     it('moveVariantToCanonical reports noop / asset_not_found / collision like the v1 path', async () => {

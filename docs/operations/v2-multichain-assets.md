@@ -93,10 +93,11 @@ cron tick:
   `adminRefreshV2VariantMarket` refreshes one row now. The Check-time market
   snapshot is written with an only-if-newer guard so it never rolls back a
   fresher cron row for a shared address. **Moving** an EVM row copies it under
-  the destination and leaves an inactive `origin='admin'` row at the old key:
-  the source asset still lists the contract on CoinGecko, and the derivation
-  skips non-derived rows, so the tombstone is what stops it from re-inserting
-  there. Soft-deleting an asset is refused while it has active v2 rows.
+  the destination (reusing and adopting any row already at that key, so a move
+  can be undone; the source's `is_active` travels with it) and leaves an
+  inactive `origin='admin'` row at the old key: the source asset still lists
+  the contract on CoinGecko, and the derivation skips non-derived rows, so the
+  tombstone is what stops it from re-inserting there. Soft-deleting an asset is refused while it has active v2 rows.
 
 Invariant: admin never writes Solana rows to v2 directly, so
 `SELECT count(*) FROM v2_asset_variants WHERE origin = 'admin' AND chain = 'solana'`

@@ -371,30 +371,59 @@ export async function moveV2Variant(
     const target = await tx`SELECT 1 FROM assets WHERE asset_id = ${args.toAssetId} LIMIT 1`;
     if (target.length === 0) return { status: 'asset_not_found' };
     if (current.asset_id === args.toAssetId) return { status: 'noop', fromAssetId: current.asset_id };
-    const collision = await tx`
-        SELECT 1 FROM v2_asset_variants
-        WHERE asset_id = ${args.toAssetId}
-          AND (variant_id = ${current.variant_id} OR (chain = ${args.chain} AND address = ${args.address}))
-        LIMIT 1
-    `;
-    if (collision.length > 0) return { status: 'variant_id_collision' };
     const now = new Date(args.nowMs);
-    // Copy the row under the destination (adopted), then keep an INACTIVE
-    // admin-owned row at the old key rather than deleting it: the source asset
-    // still lists this contract on CoinGecko, so the daily derivation would
-    // otherwise re-insert it there and the token would show under both.
-    await tx`
-        INSERT INTO v2_asset_variants (
-            chain, address, asset_id, variant_id, kind, trust_tier, stock_variant_tier, tags,
-            label, issuer, issuer_url, decimals, origin, source, is_active,
-            first_seen_at, last_seen_at, created_at, updated_at
-        )
-        SELECT chain, address, ${args.toAssetId}, variant_id, kind, trust_tier, stock_variant_tier, tags,
-               label, issuer, issuer_url, decimals, 'admin', 'admin', true,
-               first_seen_at, ${args.nowMs}, ${now}, ${now}
-        FROM v2_asset_variants
-        WHERE chain = ${args.chain} AND address = ${args.address} AND asset_id = ${current.asset_id}
+
+    // A row may already sit at the destination key: the inactive admin row a
+    // previous move left behind (moving back), or a derived row for the same
+    // contract. Reuse it — copy the source's fields onto it and adopt it —
+    // instead of treating it as a collision, so moves are reversible. Its
+    // variant_id is kept (it is unique per asset already).
+    const reused = await tx<Array<{ address: string }>>`
+        UPDATE v2_asset_variants d
+        SET kind = s.kind,
+            trust_tier = s.trust_tier,
+            stock_variant_tier = s.stock_variant_tier,
+            tags = s.tags,
+            label = s.label,
+            issuer = s.issuer,
+            issuer_url = s.issuer_url,
+            decimals = coalesce(s.decimals, d.decimals),
+            origin = 'admin',
+            source = 'admin',
+            is_active = s.is_active,
+            last_seen_at = ${args.nowMs},
+            updated_at = ${now}
+        FROM v2_asset_variants s
+        WHERE s.chain = ${args.chain} AND s.address = ${args.address} AND s.asset_id = ${current.asset_id}
+          AND d.chain = ${args.chain} AND d.address = ${args.address} AND d.asset_id = ${args.toAssetId}
+        RETURNING d.address
     `;
+    if (reused.length === 0) {
+        const collision = await tx`
+            SELECT 1 FROM v2_asset_variants
+            WHERE asset_id = ${args.toAssetId} AND variant_id = ${current.variant_id}
+            LIMIT 1
+        `;
+        if (collision.length > 0) return { status: 'variant_id_collision' };
+        // Fresh copy under the destination (adopted); the source's active flag
+        // travels with it so a deactivated variant does not go live by moving.
+        await tx`
+            INSERT INTO v2_asset_variants (
+                chain, address, asset_id, variant_id, kind, trust_tier, stock_variant_tier, tags,
+                label, issuer, issuer_url, decimals, origin, source, is_active,
+                first_seen_at, last_seen_at, created_at, updated_at
+            )
+            SELECT chain, address, ${args.toAssetId}, variant_id, kind, trust_tier, stock_variant_tier, tags,
+                   label, issuer, issuer_url, decimals, 'admin', 'admin', is_active,
+                   first_seen_at, ${args.nowMs}, ${now}, ${now}
+            FROM v2_asset_variants
+            WHERE chain = ${args.chain} AND address = ${args.address} AND asset_id = ${current.asset_id}
+        `;
+    }
+    // Keep an INACTIVE admin-owned row at the old key rather than deleting it:
+    // the source asset still lists this contract on CoinGecko, so the daily
+    // derivation would otherwise re-insert it there and the token would show
+    // under both.
     await tx`
         UPDATE v2_asset_variants
         SET is_active = false, origin = 'admin', source = 'admin', updated_at = ${now}
