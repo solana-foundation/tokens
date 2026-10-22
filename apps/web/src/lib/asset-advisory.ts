@@ -7,6 +7,7 @@ import {
     type AdvisoryStatus,
     type VariantAdvisory,
 } from '@tokens/asset-registry';
+import { chainAddressKey, isChainKind, normalizeAddressForChain, type ChainKind } from '@tokens/asset-registry/chains';
 
 /**
  * Asset advisory helpers shared by the token page, list/table badges, the OG
@@ -24,6 +25,11 @@ export const ASSET_ADVISORY_STATUSES = ADVISORY_STATUSES;
 
 /** `asset.advisories[]` row: an advisory plus the variant it belongs to. */
 export interface AssetAdvisoryEntry extends AssetAdvisory {
+    /** `<chain>:<address>` of the flagged variant. */
+    key: string;
+    chain: ChainKind;
+    address: string;
+    /** Same as `address` (kept for the Solana-era copy helpers). */
     mint: string;
     variantId?: string;
     /** Best-effort display symbol for the flagged variant (page-side only). */
@@ -136,12 +142,24 @@ export function normalizeAdvisoryEntries(value: unknown): AssetAdvisoryEntry[] {
         const advisory = normalizeAdvisory(item);
         if (!advisory) continue;
         const record = item as Record<string, unknown>;
-        const mint = typeof record.mint === 'string' ? record.mint.trim() : '';
-        if (!mint) continue;
+        const ref = readAdvisoryVariantRef(record);
+        if (!ref) continue;
         const variantId = typeof record.variantId === 'string' ? record.variantId.trim() : '';
-        entries.push({ ...advisory, mint, ...(variantId ? { variantId } : {}) });
+        entries.push({ ...advisory, ...ref, ...(variantId ? { variantId } : {}) });
     }
     return sortAdvisoryEntries(entries);
+}
+
+/** `{ chain, address }` (v2) or legacy `{ mint }` (= Solana) → normalized variant ref. */
+function readAdvisoryVariantRef(
+    record: Record<string, unknown>,
+): { key: string; chain: ChainKind; address: string; mint: string } | null {
+    const rawAddress =
+        typeof record.address === 'string' ? record.address : typeof record.mint === 'string' ? record.mint : '';
+    const chain = isChainKind(record.chain) ? record.chain : 'solana';
+    const address = normalizeAddressForChain(chain, rawAddress);
+    if (!address) return null;
+    return { key: chainAddressKey(chain, address), chain, address, mint: address };
 }
 
 /** `compromised` and `blocked` disable every outbound trade link. */
@@ -219,39 +237,49 @@ export function sortAdvisoryEntries<T extends AssetAdvisory>(entries: readonly T
  * hid). Rendered variants win on conflict so the badge and the notice agree.
  */
 export function collectVariantAdvisories(
-    variants: ReadonlyArray<{ mint: string; variantId?: string; displaySymbol?: string; advisory?: unknown }>,
+    variants: ReadonlyArray<{
+        chain?: ChainKind | string | null;
+        address?: string;
+        /** Legacy Solana-only callers. */
+        mint?: string;
+        variantId?: string;
+        displaySymbol?: string;
+        advisory?: unknown;
+    }>,
     assetAdvisories?: unknown,
 ): AssetAdvisoryEntry[] {
-    const byMint = new Map<string, AssetAdvisoryEntry>();
+    const byKey = new Map<string, AssetAdvisoryEntry>();
 
     for (const variant of variants) {
         const advisory = normalizeAdvisory(variant.advisory);
         if (!advisory) continue;
-        const mint = variant.mint.trim();
-        if (!mint || byMint.has(mint)) continue;
+        const ref = readAdvisoryVariantRef({ chain: variant.chain, address: variant.address ?? variant.mint });
+        if (!ref || byKey.has(ref.key)) continue;
         const symbol = (variant.displaySymbol ?? '').trim();
-        byMint.set(mint, {
+        byKey.set(ref.key, {
             ...advisory,
-            mint,
+            ...ref,
             ...(variant.variantId ? { variantId: variant.variantId } : {}),
             ...(symbol && symbol !== '???' ? { symbol } : {}),
         });
     }
 
     for (const entry of normalizeAdvisoryEntries(assetAdvisories)) {
-        if (byMint.has(entry.mint)) continue;
-        byMint.set(entry.mint, entry);
+        if (byKey.has(entry.key)) continue;
+        byKey.set(entry.key, entry);
     }
 
-    return sortAdvisoryEntries(Array.from(byMint.values()));
+    return sortAdvisoryEntries(Array.from(byKey.values()));
 }
 
+/** Entries other than the active variant (`activeKey` is `<chain>:<address>`; a bare mint means Solana). */
 export function getSiblingAdvisories(
     entries: readonly AssetAdvisoryEntry[],
-    activeMint: string | null | undefined,
+    activeKey: string | null | undefined,
 ): AssetAdvisoryEntry[] {
-    const active = (activeMint ?? '').trim();
-    return sortAdvisoryEntries(entries.filter(entry => entry.mint !== active));
+    const active = (activeKey ?? '').trim();
+    const activeNormalized = active && !active.includes(':') ? chainAddressKey('solana', active) : active;
+    return sortAdvisoryEntries(entries.filter(entry => entry.key !== activeNormalized));
 }
 
 export function pickMostSevere<T extends AssetAdvisory>(entries: readonly T[]): T | null {

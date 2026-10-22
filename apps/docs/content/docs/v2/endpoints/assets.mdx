@@ -68,7 +68,63 @@ interface V2Advisory {
     source: 'admin' | 'webacy_depeg' | 'peg_guard';
 }
 
-interface V2Variant {
+// Opt-in per-variant enrichments on `GET /v2/assets/{assetId}?include=…`.
+// A key is present on EVERY variant in the response (`variants[]`, `primaryVariant`,
+// `primaryVariantByChain.*`) when its include value was requested, and absent otherwise.
+// `null` means the chain lacks the capability or there is no data for that variant.
+
+// Fill-quality snapshot (24h window, 5s markout horizon); v1's `quoteMint` is `quoteKey` here.
+// Needs the chain's `executionQuality` capability — Solana only today.
+interface V2ExecutionQuality {
+    source: 'clickhouse_fill_quality';
+    range: '24h';
+    horizon: '5s';
+    quoteKey: VariantKey; // `solana:<mint>` of the quote token the fills were measured against
+    volume24hUSD: number;
+    trade24h: number;
+    botVolume24hUSD: number;
+    botTrade24h: number;
+    botVolumeRatio: number;
+    fee24hUSD: number;
+    feeBps: number;
+    flowSourceCount: number;
+    markoutPnl24hUSD: number | null;
+    markoutCount: number | null;
+    markoutBps: number | null;
+    executionScore: number;
+    isEligibleForPrimary: boolean;
+    asOf: number | null;
+    lastComputedAt: number;
+}
+
+// Compact peg status for stablecoin variants. Needs the chain's `risk` capability and a
+// `stablecoin`-category asset; `null` on every variant of a non-stablecoin asset.
+interface V2PegHealth {
+    provider: 'webacy' | 'tokens';           // always present (v1 omitted it on older builds)
+    referenceKind: 'fixed' | 'fx' | 'high_water'; // always present
+    tier: 'ok' | 'watch' | 'warning' | 'critical' | 'premium';
+    deviationPct: number | null; // signed percent from peg; negative = below peg
+    updatedAt: number;
+    stale: boolean;
+}
+
+// PreStocks reference mark for a tokenized pre-IPO equity. Solana PreStocks tokens only.
+interface V2VariantPreStocks {
+    symbol: string;
+    markPriceUsd: number | null;
+    markValuationUsd: number | null;
+    impliedValuationUsd: number | null;  // from the variant's on-chain price
+    premiumToMarkPercent: number | null;
+    lastFetchedAt: number;
+}
+
+interface V2VariantEnrichments {
+    executionQuality?: V2ExecutionQuality | null; // with include=executionQuality
+    pegHealth?: V2PegHealth | null;               // with include=pegHealth
+    preStocks?: V2VariantPreStocks | null;        // with include=preStocks
+}
+
+interface V2Variant extends V2VariantEnrichments {
     key: VariantKey;        // `${chain}:${address}`
     chain: ChainId;
     address: string;
@@ -96,6 +152,7 @@ interface V2Variant {
 interface V2ChainStats {
     liquidity: number | null;         // summed over every variant on the chain
     volume24hUSD: number | null;      // summed over every variant on the chain
+    trade24h: number | null;          // 24h trade count, summed over every variant on the chain
     marketCap: number | null;         // summed over issued (native) variants only
     fdv: number | null;
     circulatingSupply: number | null; // issued variants only
@@ -185,6 +242,11 @@ interface V2Asset {
     referenceMarket: V2ReferenceMarket | null;
     advisories: V2AssetAdvisory[];                   // most severe first; names hidden (blocked) siblings too
     primaryVariantStrategy: PrimaryVariantStrategy;  // the strategy actually applied to this asset
+    primaryScope: 'executable' | 'global';           // the candidate scope applied (see below)
+    primaryVariantSelection: {                       // why primaryVariant won; null when there is none
+        pool: 'executable_active' | 'active' | 'executable' | 'all';
+        reason: string | null;                       // the deciding ranking rule, e.g. "liquidity"
+    } | null;
     primaryVariant: V2Variant | null;
     primaryVariantByChain: Partial<Record<ChainId, V2Variant>>;
     rank: number | null;                             // 0-based position in the requested list; null outside a list
@@ -206,9 +268,18 @@ Reading the numbers:
 - `referenceMarket` is the off-chain reference v1 called `canonicalMarket`; `source: "stock"`
   replaces v1's `clickhouse_stock`. Consumers with an exhaustive `switch (source)` should keep a
   default branch.
-- `primaryVariant` is picked across chains with the applied strategy (`liquidity` by default,
-  `stock_redeemability` for equities); `primaryVariantByChain` runs the same selection inside each
-  chain. `compromised` and `blocked` variants are never chosen.
+- `primaryVariant` is the variant to trade. With the default `primaryScope=executable` it is chosen
+  among variants on chains that support swaps through Tokens (Solana today, per
+  [`GET /v2/chains`](/docs/v2/endpoints/chains) `capabilities.swap`), taking the first non-empty
+  pool: actively traded executable variants (`executable_active`), then actively traded variants on
+  any chain (`active`), then executable variants (`executable`), then everything (`all`). "Actively
+  traded" means at least $100 of 24h volume and 5 trades. Inside the pool the applied strategy ranks
+  (`liquidity` by default, `stock_redeemability` for equities). `primaryScope=global` skips the
+  executable pools, giving the cross-chain liquidity winner; liquidity is provider-reported per
+  chain, so treat cross-chain comparisons as approximate. `primaryVariantSelection` reports the pool
+  and the deciding rule. A variant with no market data never outranks one that trades.
+  `primaryVariantByChain` runs the same ranking inside each chain. `compromised` and `blocked`
+  variants are never chosen.
 - Advisories are keyed by Solana mint today; EVM variants always carry `advisory: null`. See
   [Asset by ID → Advisories](/docs/v1/endpoints/asset-by-id#advisories) for semantics.
 - `symbol` / `name` / `issuer` are always present (`null` when unknown) rather than optional keys as
@@ -234,6 +305,7 @@ curated endpoint.
   - `primaryVariantStrategy` (optional): `liquidity`, `execution_quality` or `stock_redeemability`.
     Default `liquidity`, except `list=stocks` and equity assets, which default to
     `stock_redeemability`.
+  - `primaryScope` (optional): `executable` (default) or `global`; see the shared shapes above.
   - `include` (optional): `variants` — attach `variants[]` to every row, sorted by liquidity across
     chains.
   - `limit` (1–500, default 100; clamped), `offset` (default 0). `total` is the full count after
@@ -245,6 +317,7 @@ interface AssetsResponse {
     total: number;
     list: string; // the resolved slug, or "all"
     primaryVariantStrategy: PrimaryVariantStrategy; // the requested / list default; equities may apply their own
+    primaryScope: 'executable' | 'global';
 }
 ```
 
@@ -274,11 +347,13 @@ curl -sS "$API_BASE_URL/v2/assets?list=majors&chain=base&include=variants&limit=
       "category": "stablecoin",
       "chains": ["solana", "ethereum", "base", "arbitrum", "polygon", "bnb"],
       "chainStats": {
-        "solana": { "liquidity": 410000000, "volume24hUSD": 2100000000, "marketCap": 9800000000, "fdv": 9800000000, "circulatingSupply": 9800000000, "variantCount": 4, "issuedVariantCount": 2 },
-        "base": { "liquidity": 52000000, "volume24hUSD": 380000000, "marketCap": 3900000000, "fdv": 3900000000, "circulatingSupply": 3900000000, "variantCount": 2, "issuedVariantCount": 1 }
+        "solana": { "liquidity": 410000000, "volume24hUSD": 2100000000, "trade24h": 7100000, "marketCap": 9800000000, "fdv": 9800000000, "circulatingSupply": 9800000000, "variantCount": 4, "issuedVariantCount": 2 },
+        "base": { "liquidity": 52000000, "volume24hUSD": 380000000, "trade24h": 1400000, "marketCap": 3900000000, "fdv": 3900000000, "circulatingSupply": 3900000000, "variantCount": 2, "issuedVariantCount": 1 }
       },
-      "aggregate": { "liquidity": 1800000000, "volume24hUSD": 9400000000, "marketCap": 170000000000, "fdv": 170000000000, "circulatingSupply": 170000000000, "variantCount": 14, "issuedVariantCount": 9, "chainCount": 6, "excludedFromSupplyCount": 5 },
+      "aggregate": { "liquidity": 1800000000, "volume24hUSD": 9400000000, "trade24h": 9200000, "marketCap": 170000000000, "fdv": 170000000000, "circulatingSupply": 170000000000, "variantCount": 14, "issuedVariantCount": 9, "chainCount": 6, "excludedFromSupplyCount": 5 },
       "referenceMarket": { "source": "coingecko", "coinId": "usd-coin", "price": 0.9998, "marketCap": 171000000000, "circulatingSupply": 171000000000, "totalSupply": 171000000000, "maxSupply": null, "volume24hUSD": 12000000000, "priceChange24hPercent": 0.01, "asOf": 1792800000000, "lastFetchedAt": 1792800030000 },
+      "primaryScope": "executable",
+      "primaryVariantSelection": { "pool": "executable_active", "reason": "liquidity" },
       "primaryVariant": { "key": "solana:EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", "chain": "solana", "address": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", "symbol": "USDC", "issuance": "native", "rank": 0, "...": "..." },
       "primaryVariantByChain": { "solana": { "...": "..." }, "base": { "key": "base:0x833589fcd6edb6e08f4c7c32d4f71b54bda02913", "...": "..." } },
       "variants": [
@@ -290,7 +365,8 @@ curl -sS "$API_BASE_URL/v2/assets?list=majors&chain=base&include=variants&limit=
   ],
   "total": 11,
   "list": "majors",
-  "primaryVariantStrategy": "liquidity"
+  "primaryVariantStrategy": "liquidity",
+  "primaryScope": "executable"
 }
 ```
 
@@ -308,7 +384,17 @@ off-chain reference market.
   `details.code: "invalid_asset_id"` — look tokens up under
   [`GET /v2/variants/{chain}/{address}`](/docs/v2/endpoints/variants#get-v2variantschainaddress).
   There are no singleton ids (v1's `solana-<mint>`).
-- **Query params**: `primaryVariantStrategy` (optional), as above.
+- **Query params**:
+  - `primaryVariantStrategy` (optional), as above.
+  - `primaryScope` (optional), as above.
+  - `include` (optional): any of `executionQuality`, `pegHealth`, `preStocks` — comma-separated
+    and/or repeated. Each requested value adds that key to **every** variant in the response
+    (`variants[]`, `primaryVariant` and each `primaryVariantByChain.*`): always present, an object
+    when there is data, and `null` when the chain lacks the capability or there is no data for
+    that variant (`executionQuality` needs the chain's `executionQuality` capability; `pegHealth`
+    needs `risk` and a `stablecoin`-category asset; `preStocks` is Solana PreStocks tokens only).
+    Keys you did not ask for are absent. Anything else is `400` with
+    `details.code: "invalid_include"` (`details.include`, `details.values`).
 
 ```ts
 interface AssetResponse extends V2Asset {
@@ -334,6 +420,12 @@ curl -sS "$API_BASE_URL/v2/assets/usd" -H "x-api-key: $API_KEY"
 # Aliases resolve; the body says how
 curl -sS "$API_BASE_URL/v2/assets/usdc" -H "x-api-key: $API_KEY" | jq '{assetId, resolvedBy}'
 # { "assetId": "usd", "resolvedBy": "alias" }
+
+# Peg status on every variant: an object on Solana stablecoins, null on chains without `risk`
+curl -sS "$API_BASE_URL/v2/assets/usd?include=pegHealth" -H "x-api-key: $API_KEY" \
+  | jq '.variants[] | {key, pegHealth}'
+# { "key": "solana:EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", "pegHealth": { "provider": "webacy", "referenceKind": "fixed", "tier": "ok", "deviationPct": -0.01, "updatedAt": 1792800000000, "stale": false } }
+# { "key": "base:0x833589fcd6edb6e08f4c7c32d4f71b54bda02913", "pegHealth": null }
 ```
 
 ## `GET /v2/assets/{assetId}/variants`
@@ -398,7 +490,7 @@ gone.
 | `GET /v1/assets/:assetId/variants` | `GET /v2/assets/{assetId}/variants` |
 | `GET /v1/assets/resolve?ref=` | `GET /v2/assets/{assetId}` (`resolvedBy`) for ids and aliases; `GET /v2/variants/{chain}/{address}` for addresses |
 | `GET /v1/assets/variant-markets?mints=` | `GET /v2/variants?keys=solana:<mint>,…` |
-| `GET /v1/assets/:assetId?include=profile,risk,ohlcv,markets` | not in v2 yet — keep using the v1 route and its `/risk-*`, `/ohlcv`, `/markets` siblings for Solana variants |
+| `GET /v1/assets/:assetId?include=profile,risk,ohlcv,markets` | `profile`, `risk`, `ohlcv` and `markets` are not in v2 yet — keep using the v1 route and its `/risk-*`, `/ohlcv`, `/markets` siblings for Solana variants. The per-variant enrichments v1 attached implicitly are opt-in on v2: `GET /v2/assets/{assetId}?include=executionQuality,pegHealth,preStocks` |
 
 ### Fields
 
@@ -414,9 +506,9 @@ gone.
 | `symbol?`, `name?`, `issuer?`, `label?` (absent when unknown) | always present, `null` when unknown |
 | `pagination: { hasMore, nextOffset }` | `total` with `limit` / `offset` |
 | `variantsMode=all` | not needed — `/v2/assets/{assetId}/variants` is never capped |
-| `variant.executionQuality`, `variant.pegHealth`, `variant.preStocks` | deferred; not on v2 variants yet (Solana-only data that will arrive capability-gated) |
+| `variant.executionQuality`, `variant.pegHealth`, `variant.preStocks` (always attached) | opt-in via `include=executionQuality,pegHealth,preStocks` on `GET /v2/assets/{assetId}`; present on every variant when requested, `null` off-capability (EVM) or without data; `executionQuality.quoteMint` → `quoteKey`; `pegHealth.provider` / `.referenceKind` always present |
 | `assetId: "solana-<mint>"` (singletons) | none — every v2 asset is curated |
-| `include=…` / `resolution` | dropped |
+| `include=profile,risk,ohlcv,markets` / `resolution` | dropped (`include=` on the v2 detail route takes the three variant enrichments above instead) |
 
 Addresses: Solana addresses are case-sensitive base58, exactly as in v1. EVM addresses are
 accepted in any casing and always **returned lowercase** — compare keys, not checksummed strings.

@@ -91,6 +91,7 @@ export type {
 export {
     FILL_QUALITY_SCORING_VERSION,
     computeVariantExecutionScore,
+    hasPrimaryActivity,
     isFillQualityEligibleForPrimary,
     isPrimaryEligibleVariant,
     isSpotLikeVariantKind,

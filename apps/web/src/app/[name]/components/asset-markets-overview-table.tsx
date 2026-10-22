@@ -1,5 +1,7 @@
 'use client';
 
+import { explorerTokenUrl } from '@tokens/asset-registry/chains';
+import { buildVariantHref } from '@/lib/coin-href';
 import * as React from 'react';
 import Image from 'next/image';
 import Link from 'next/link';
@@ -106,7 +108,7 @@ function flattenRows(variants: VariantTopMarketsResponse['variants']): FlatMarke
 }
 
 function variantHref(assetId: string, mint: string): string {
-    return `/${encodeURIComponent(assetId)}?solana=${encodeURIComponent(mint)}`;
+    return buildVariantHref(assetId, { chain: 'solana', address: mint });
 }
 
 function VariantSymbolPill({ logoURI, symbol }: { logoURI?: string; symbol: string }) {
@@ -272,7 +274,7 @@ function PairCell({ row }: { row: FlatMarketRow }) {
                         </span>
                     </div>
                     <a
-                        href={`https://explorer.solana.com/address/${market.address}`}
+                        href={explorerTokenUrl('solana', market.address)}
                         target="_blank"
                         rel="noopener noreferrer"
                         className="group mt-0.5 inline-flex max-w-full items-center gap-1 font-sans text-[11px] text-text-extra-low transition-colors hover:text-text-extra-high"
@@ -280,7 +282,7 @@ function PairCell({ row }: { row: FlatMarketRow }) {
                             event.stopPropagation();
                             trackEvent('external_link_clicked', {
                                 link_type: 'explorer',
-                                link_url: `https://explorer.solana.com/address/${market.address}`,
+                                link_url: explorerTokenUrl('solana', market.address),
                                 source: 'asset_markets_overview',
                             });
                         }}
@@ -324,7 +326,7 @@ function openMarket(row: FlatMarketRow, assetId: string) {
         source: 'asset_markets_overview',
         ...(assetId ? { asset_id: assetId } : {}),
     });
-    window.open(`https://explorer.solana.com/address/${row.market.address}`, '_blank', 'noopener,noreferrer');
+    window.open(explorerTokenUrl('solana', row.market.address), '_blank', 'noopener,noreferrer');
 }
 
 export function AssetMarketsOverviewTable({
