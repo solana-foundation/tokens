@@ -35,7 +35,7 @@ describe('chain sections', () => {
 
     test('labels and categories fall back to solana', () => {
         expect(chainDisplayLabel(undefined)).toBe('Solana');
-        expect(chainDisplayLabel('bnb')).toBe('BNB Smart Chain');
+        expect(chainDisplayLabel('bnb')).toBe('BNB');
         expect(getAssetVariantChainCategory({ chain: 'nope' })).toEqual({
             id: 'chain:solana',
             label: 'Solana',

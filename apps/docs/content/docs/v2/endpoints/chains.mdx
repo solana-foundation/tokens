@@ -50,7 +50,7 @@ interface V2Chain {
     caip2: string;                 // https://chainagnostic.org/CAIPs/caip-2
     family: 'svm' | 'evm';
     evmChainId: number | null;     // null for solana
-    label: string;                 // "Solana", "Arbitrum One", "BNB Smart Chain", …
+    label: string;                 // "Solana", "Arbitrum", "BNB", …
     explorer: { name: string; tokenUrlTemplate: string }; // "{address}" placeholder
     capabilities: ChainCapabilities;
     variantCount: number | null;   // active variants on the chain; null when the data layer is unreachable
