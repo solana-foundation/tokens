@@ -11,7 +11,7 @@ import {
 } from '@/lib/coingecko-news';
 import { decodeHtmlEntities } from '@/lib/html-entities';
 import { resolveXBearerToken, runXRequest } from '@/lib/x-auth';
-import { restoreXCashtagsInTexts } from '@/lib/x-cashtags';
+import { findXTokenTags, restoreXCashtagsInTexts } from '@/lib/x-cashtags';
 import { buildMediaByKey, getPostImage, type XMedia, type XPostMediaAttachment } from '@/lib/x-media';
 import {
     articleMatchesTerms,
@@ -240,7 +240,7 @@ function getCandidateFetchCounts(params: { limit: number; tweetReserve: number; 
     };
 }
 
-/** An `@tokens` post plus its pre-rewrite text, kept only for term matching. */
+/** An `@tokens` post plus the addresses it tagged, kept only for term matching. */
 interface XFeedCandidate {
     article: FeedArticle;
     matchText: string;
@@ -294,9 +294,10 @@ async function fetchTokensFeed(limit: number): Promise<XFeedCandidate[]> {
     );
     // X's token tags arrive as `solana:<mint>` in the API text; restore them to `$SYMBOL` so
     // posts read like they do on x.com (and so `$SYMBOL` term matching sees them).
-    // The original text is kept for matching: a mint term must still find a
+    // Tagged addresses are kept for matching: a mint term must still find a
     // `solana:<mint>` tag after the title shows `$SYMBOL` (or a shortened
-    // address when no symbol could be resolved).
+    // address when no symbol could be resolved). Only the addresses, not the
+    // raw text: the `solana:` chain prefix would otherwise match `coin_id=solana`.
     const rawTexts = posts.map(post => cleanPostText(post.text));
     const titles = await Effect.runPromise(restoreXCashtagsInTexts(rawTexts));
 
@@ -313,7 +314,9 @@ async function fetchTokensFeed(limit: number): Promise<XFeedCandidate[]> {
                 related_coin_ids: [],
                 feed_source: 'x' as const,
             },
-            matchText: rawTexts[index] ?? '',
+            matchText: findXTokenTags(rawTexts[index] ?? '')
+                .map(tag => tag.address)
+                .join(' '),
         }))
         .sort((a, b) => parsePostedAtMs(b.article.posted_at) - parsePostedAtMs(a.article.posted_at));
 }

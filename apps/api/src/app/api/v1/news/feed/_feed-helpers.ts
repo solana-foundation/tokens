@@ -92,8 +92,10 @@ export function normalizeFeedTerm(value: string): string {
 
 /**
  * `extraText` is matched alongside the article's visible fields but never
- * displayed: X posts pass their pre-rewrite text so a `solana:<mint>` token tag
- * still matches a mint term after the title has been rewritten to `$SYMBOL`.
+ * displayed: X posts pass the addresses from their `<chain>:<address>` token
+ * tags so a mint term still matches after the title has been rewritten to
+ * `$SYMBOL`. Addresses only, so the chain prefix never matches a chain-named
+ * term such as `coin_id=solana`.
  */
 export function articleMatchesTerms(article: FeedArticle, terms: string[], extraText = ''): boolean {
     const normalizedTerms = terms.map(normalizeFeedTerm).filter(Boolean);

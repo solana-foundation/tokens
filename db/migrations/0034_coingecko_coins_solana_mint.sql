@@ -13,3 +13,5 @@
 
 CREATE INDEX IF NOT EXISTS coingecko_coins_by_solana_mint
     ON coingecko_coins ((platforms->>'solana'));
+
+INSERT INTO schema_migrations (version) VALUES ('0034_coingecko_coins_solana_mint') ON CONFLICT DO NOTHING;

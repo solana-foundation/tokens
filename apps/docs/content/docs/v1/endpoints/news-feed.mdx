@@ -99,7 +99,7 @@ curl -sS "$API_BASE_URL/v1/news/feed?terms=solana,SOL&source=tweets&limit=50" \
 - `feed_source="x"` items come from `@tokens` on X.
 - In token mode, `@tokens` posts are included only when their text/source metadata matches the supplied token terms.
 - Unknown or stale `coin_id` values produce no CoinGecko items. With `source=all`, matching X items may still be returned.
-- `mint` must be a base58 Solana mint address; any other shape returns HTTP `400`. A well-formed mint that CoinGecko does not list falls back to the global news feed (`meta.coin_id` is `null`) rather than failing. The mint-to-coin mapping comes from the synchronized CoinGecko catalog, so a brand-new listing can take a few hours to resolve.
+- `mint` must be a base58 Solana mint address; any other shape returns HTTP `400`. A well-formed mint that CoinGecko does not list falls back to the global news feed (`meta.coin_id` is `null`) rather than failing. The mint-to-coin mapping comes from the synchronized CoinGecko catalog, which syncs weekly, so a brand-new listing can take up to a week to resolve.
 - `meta.coin_id_source` reports where the effective coin id came from: `param` for an explicit `coin_id`, `mint` when it was resolved from `mint`, `null` when there is none.
 - `limit` supports up to `50`; larger values are clamped to `50`.
 - `tweet_reserve` is ignored for single-source feeds (`source=news` or `source=tweets`).
