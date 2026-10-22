@@ -4,10 +4,12 @@ import {
     PEG_GUARD_FX_STALE_MS,
     PEG_GUARD_MIN_LIQUIDITY_USD,
     PEG_GUARD_PRICE_STALE_MS,
+    PEG_GUARD_THIN_LIQUIDITY_USD,
     WEBACY_PEG_COVERAGE_MS,
     advanceHighWaterReference,
     evaluatePegObservation,
     impliedUsdPerUnit,
+    pegBandSetFor,
     pegDeviationPct,
     pegForStablecoinVariant,
     pegTierFromDeviation,
@@ -193,6 +195,55 @@ describe('pegTierFromDeviation', () => {
         expect(pegTierFromDeviation(-4.9999, highWater)).toBe('warning');
         expect(pegTierFromDeviation(-5, highWater)).toBe('critical');
     });
+
+    test('band set: omitted liquidity is standard, below $1M (or unknown) is thin, high-water wins', () => {
+        expect(pegBandSetFor(fixed)).toBe('standard');
+        expect(pegBandSetFor({ reference: 'fx', liquidityUsd: PEG_GUARD_THIN_LIQUIDITY_USD })).toBe('standard');
+        expect(pegBandSetFor({ reference: 'fixed', liquidityUsd: PEG_GUARD_THIN_LIQUIDITY_USD - 1 })).toBe('thin');
+        expect(pegBandSetFor({ reference: 'fixed', liquidityUsd: null })).toBe('thin');
+        expect(pegBandSetFor({ reference: 'high_water', liquidityUsd: 10 })).toBe('high_water');
+    });
+
+    test('thin pools use the wide bands: a ZARP-like -1.02% on $102k is watch, -2 warning, -5 critical, +2 premium', () => {
+        const thin = { reference: 'fx' as const, liquidityUsd: 102_000 };
+        expect(pegTierFromDeviation(-0.99, thin)).toBe('ok');
+        expect(pegTierFromDeviation(-1.02, thin)).toBe('watch');
+        expect(pegTierFromDeviation(-1.9999, thin)).toBe('watch');
+        expect(pegTierFromDeviation(-2, thin)).toBe('warning');
+        expect(pegTierFromDeviation(-5, thin)).toBe('critical');
+        expect(pegTierFromDeviation(2, thin)).toBe('premium');
+        // The same price on a deep pool is judged on the standard bands.
+        expect(pegTierFromDeviation(-1.02, { reference: 'fx', liquidityUsd: 5_000_000 })).toBe('warning');
+    });
+
+    test('exit hysteresis: recovery waits 0.25pp past the entry edge (0.5pp on wide bands); worsening is immediate', () => {
+        const deep = { reference: 'fixed' as const, liquidityUsd: 5_000_000 };
+        // warning entered at -1: -0.9 and -0.75 still warning, -0.7499 drops to watch.
+        expect(pegTierFromDeviation(-0.9, { ...deep, prevTier: 'warning' })).toBe('warning');
+        expect(pegTierFromDeviation(-0.75, { ...deep, prevTier: 'warning' })).toBe('warning');
+        expect(pegTierFromDeviation(-0.7499, { ...deep, prevTier: 'warning' })).toBe('watch');
+        // A big recovery skips straight to the raw tier.
+        expect(pegTierFromDeviation(-0.1, { ...deep, prevTier: 'warning' })).toBe('ok');
+        expect(pegTierFromDeviation(3, { ...deep, prevTier: 'critical' })).toBe('premium');
+        // watch entered at -0.5: leaves above -0.25.
+        expect(pegTierFromDeviation(-0.3, { ...deep, prevTier: 'watch' })).toBe('watch');
+        expect(pegTierFromDeviation(-0.2, { ...deep, prevTier: 'watch' })).toBe('ok');
+        // critical entered at -3: leaves above -2.75.
+        expect(pegTierFromDeviation(-2.8, { ...deep, prevTier: 'critical' })).toBe('critical');
+        expect(pegTierFromDeviation(-2.7, { ...deep, prevTier: 'critical' })).toBe('warning');
+        // Worsening never waits.
+        expect(pegTierFromDeviation(-1, { ...deep, prevTier: 'ok' })).toBe('warning');
+        expect(pegTierFromDeviation(-3, { ...deep, prevTier: 'watch' })).toBe('critical');
+        expect(pegTierFromDeviation(-0.6, { ...deep, prevTier: 'premium' })).toBe('watch');
+        // Wide bands: thin warning entered at -2 leaves above -1.5; high-water the same margin.
+        const thin = { reference: 'fx' as const, liquidityUsd: 102_000 };
+        expect(pegTierFromDeviation(-1.6, { ...thin, prevTier: 'warning' })).toBe('warning');
+        expect(pegTierFromDeviation(-1.4, { ...thin, prevTier: 'warning' })).toBe('watch');
+        expect(pegTierFromDeviation(-1.6, { reference: 'high_water', prevTier: 'warning' })).toBe('warning');
+        expect(pegTierFromDeviation(-1.4, { reference: 'high_water', prevTier: 'warning' })).toBe('watch');
+        // A warning stored under the old standard bands on a thin pool is re-judged wide: -1.0 recovers to ok.
+        expect(pegTierFromDeviation(-1.0, { ...thin, prevTier: 'warning' })).toBe('ok');
+    });
 });
 
 describe('evaluatePegObservation', () => {
@@ -266,6 +317,17 @@ describe('evaluatePegObservation', () => {
             ok: false,
             issue: 'stale_price',
         });
+    });
+
+    test('liquidity and prevTier reach the tier rule: thin pools widen, recovery is held back', () => {
+        // -2% on a $900k pool is warning on the wide bands, not critical-adjacent noise on the standard ones.
+        expect(evaluatePegObservation(input({ liquidityUsd: 900_000 }))).toMatchObject({ ok: true, tier: 'warning' });
+        expect(evaluatePegObservation(input({ priceUsd: 0.989, liquidityUsd: 900_000 }))).toMatchObject({ ok: true, tier: 'watch' });
+        expect(evaluatePegObservation(input({ priceUsd: 0.989 }))).toMatchObject({ ok: true, tier: 'warning' });
+        // Standard warning at -1.1 then -0.9: still warning with prevTier, watch without.
+        expect(evaluatePegObservation(input({ priceUsd: 0.991, prevTier: 'warning' }))).toMatchObject({ ok: true, tier: 'warning' });
+        expect(evaluatePegObservation(input({ priceUsd: 0.991 }))).toMatchObject({ ok: true, tier: 'watch' });
+        expect(evaluatePegObservation(input({ priceUsd: 0.991, prevTier: null }))).toMatchObject({ ok: true, tier: 'watch' });
     });
 
     test('the reference kind reaches the tier rule and deviation is against the resolved value', () => {

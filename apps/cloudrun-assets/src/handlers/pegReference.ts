@@ -41,6 +41,22 @@ export const PEG_GUARD_BANDS_PCT = { watch: -0.5, warning: -1, critical: -3 } as
  * 5% as the critical threshold (2026-09-14).
  */
 export const PEG_GUARD_YIELD_BANDS_PCT = { watch: -1, warning: -2, critical: -5 } as const;
+/**
+ * Thin pools cannot hold a tight peg: a $100k ZARP pool sat 0.4-1.1% below
+ * its FX rate for two weeks in 2026-10 and crossed the -1% line 23 times
+ * without anything being wrong. Below `PEG_GUARD_THIN_LIQUIDITY_USD` of DEX
+ * liquidity the same wide bands as yield variants apply, so only a move that
+ * is large for a thin market counts.
+ */
+export const PEG_GUARD_THIN_LIQUIDITY_USD = 1_000_000;
+export const PEG_GUARD_THIN_BANDS_PCT = { watch: -1, warning: -2, critical: -5 } as const;
+/**
+ * Exit hysteresis, in percentage points: a tier is entered at its band edge
+ * but only left once the deviation recovers this far past that edge (e.g.
+ * standard `warning` enters at -1% and is left above -0.75%). Worsening is
+ * always immediate. Wide bands use the wider margin.
+ */
+export const PEG_GUARD_HYSTERESIS_PCT = { standard: 0.25, wide: 0.5 } as const;
 /** A high-water reference may rise at most this much per elapsed day (yield never accrues faster). */
 export const PEG_GUARD_REFERENCE_MAX_DAILY_RISE_PCT = 0.1;
 /** A fiat rate older than this is not used to judge a peg. */
@@ -237,21 +253,59 @@ export function pegDeviationPct(priceUsd: number, pegUsd: number): number {
     return (priceUsd / pegUsd - 1) * 100;
 }
 
+export type PegBandSet = 'standard' | 'thin' | 'high_water';
+
+export interface PegTierOptions {
+    reference: PegReferenceKind;
+    /** DEX liquidity of the observation. Omitted = standard bands; null (unknown) counts as thin. */
+    liquidityUsd?: number | null;
+    /** Stored tier from the previous evaluation; enables exit hysteresis. */
+    prevTier?: PegTier | null;
+}
+
+/** Which band set an observation is judged against. */
+export function pegBandSetFor(opts: Pick<PegTierOptions, 'reference' | 'liquidityUsd'>): PegBandSet {
+    if (opts.reference === 'high_water') return 'high_water';
+    if (opts.liquidityUsd === undefined) return 'standard';
+    const liquidity = opts.liquidityUsd;
+    if (liquidity === null || !Number.isFinite(liquidity) || liquidity < PEG_GUARD_THIN_LIQUIDITY_USD) return 'thin';
+    return 'standard';
+}
+
+function bandsFor(set: PegBandSet): { readonly watch: number; readonly warning: number; readonly critical: number } {
+    if (set === 'high_water') return PEG_GUARD_YIELD_BANDS_PCT;
+    if (set === 'thin') return PEG_GUARD_THIN_BANDS_PCT;
+    return PEG_GUARD_BANDS_PCT;
+}
+
+/** `ok` and `premium` are both healthy; the bad tiers rank upward. */
+const TIER_RANK: Record<PegTier, number> = { ok: 0, premium: 0, watch: 1, warning: 2, critical: 3 };
+
 /**
  * Tier from signed deviation. Yield-bearing variants trade above 1.00 by
  * design, so for them anything at or above peg clamps to `ok` (never
- * `premium`, which the UI renders as "Above peg").
+ * `premium`, which the UI renders as "Above peg"). Thin pools use the wide
+ * bands (`pegBandSetFor`). With `prevTier`, recovery to a better tier is
+ * held back until the deviation clears the previous tier's entry edge by
+ * `PEG_GUARD_HYSTERESIS_PCT`; a worsening tier is taken immediately.
  */
-export function pegTierFromDeviation(deviationPct: number, opts: { reference: PegReferenceKind }): PegTier {
-    const highWater = opts.reference === 'high_water';
-    const bands = highWater ? PEG_GUARD_YIELD_BANDS_PCT : PEG_GUARD_BANDS_PCT;
+export function pegTierFromDeviation(deviationPct: number, opts: PegTierOptions): PegTier {
+    const set = pegBandSetFor(opts);
+    const bands = bandsFor(set);
+    let raw: PegTier;
     if (deviationPct >= bands.watch) {
-        if (!highWater && deviationPct >= PEG_GUARD_PREMIUM_PCT) return 'premium';
-        return 'ok';
-    }
-    if (deviationPct > bands.warning) return 'watch';
-    if (deviationPct > bands.critical) return 'warning';
-    return 'critical';
+        raw = set !== 'high_water' && deviationPct >= PEG_GUARD_PREMIUM_PCT ? 'premium' : 'ok';
+    } else if (deviationPct > bands.warning) raw = 'watch';
+    else if (deviationPct > bands.critical) raw = 'warning';
+    else raw = 'critical';
+
+    const prev = opts.prevTier ?? null;
+    if (prev === null || prev === 'ok' || prev === 'premium' || TIER_RANK[raw] >= TIER_RANK[prev]) return raw;
+    // Recovering: stay in the previous tier until the deviation has cleared
+    // that tier's entry edge by the hysteresis margin.
+    const margin = set === 'standard' ? PEG_GUARD_HYSTERESIS_PCT.standard : PEG_GUARD_HYSTERESIS_PCT.wide;
+    const exitAbove = bands[prev] + margin;
+    return deviationPct > exitAbove ? raw : prev;
 }
 
 export type PegObservationIssue = PegResolutionIssue | 'no_price' | 'stale_price' | 'thin_liquidity';
@@ -270,6 +324,8 @@ export interface EvaluatePegObservationInput {
     now: number;
     priceStaleMs: number;
     minLiquidityUsd: number;
+    /** Tier stored by the previous evaluation (exit hysteresis); omit or null for a first sighting. */
+    prevTier?: PegTier | null;
 }
 
 /**
@@ -298,7 +354,15 @@ export function evaluatePegObservation(input: EvaluatePegObservationInput): PegE
     ) {
         return { ok: false, issue: 'thin_liquidity', deviationPct };
     }
-    return { ok: true, tier: pegTierFromDeviation(deviationPct, { reference }), deviationPct };
+    return {
+        ok: true,
+        tier: pegTierFromDeviation(deviationPct, {
+            reference,
+            liquidityUsd: input.liquidityUsd,
+            prevTier: input.prevTier ?? null,
+        }),
+        deviationPct,
+    };
 }
 
 export interface WebacyCoverageRow {

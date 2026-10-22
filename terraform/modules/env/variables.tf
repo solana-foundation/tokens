@@ -228,8 +228,8 @@ variable "webacy_depeg_dry_run" {
 
 variable "webacy_depeg_max_pages" {
   type        = number
-  default     = 4
-  description = "Maximum GET /rwa pages (200 items each) the depeg sweep fetches per run. Bounds Webacy CU spend; Webacy listed 572 Solana pegged tokens on 2026-09-14, so 4 pages leaves headroom."
+  default     = 6
+  description = "Maximum GET /rwa pages (200 items each) the depeg sweep fetches per run. Bounds Webacy CU spend; Webacy listed 572 Solana pegged tokens on 2026-09-14 and more than 800 by 2026-10-21 (4 pages truncated, ~96 tracked mints missing_from_list), so 6 pages leaves headroom. A page takes ~340 ms against the 90 s budget."
 }
 
 variable "peg_guard_schedule" {

@@ -216,7 +216,10 @@ const PEG_GUARD_ARG_SPECS = {
     mints: { kind: 'targets', label: 'mints' },
     criticalImmediate: { kind: 'bool', fallback: false },
     criticalConfirmMs: { kind: 'int', fallback: 10 * MINUTE_MS, min: 0, max: 6 * HOUR_MS },
-    warningConfirmMs: { kind: 'int', fallback: 20 * MINUTE_MS, min: 0, max: 6 * HOUR_MS },
+    // 60 minutes: a warning-level dip (1-3% on a liquid peg, 2-5% on a thin
+    // one) is not an emergency, and a caution advisory on tokens.xyz is
+    // costly to be wrong about. Critical stays at 10 minutes.
+    warningConfirmMs: { kind: 'int', fallback: 60 * MINUTE_MS, min: 0, max: 6 * HOUR_MS },
     clearCooldownMs: { kind: 'int', fallback: 6 * HOUR_MS, min: 0, max: 48 * HOUR_MS },
     clearOnWatch: { kind: 'bool', fallback: false },
     staleObservationMs: { kind: 'int', fallback: 30 * MINUTE_MS, min: MINUTE_MS, max: 72 * HOUR_MS },
@@ -710,6 +713,7 @@ export async function refreshPegGuard(deps: DepegCronDeps, rawArgs: unknown): Pr
                 now,
                 priceStaleMs: args.priceStaleMs,
                 minLiquidityUsd: args.minLiquidityUsd,
+                prevTier: prev?.tier ?? null,
             });
             if (!evaluation.ok) {
                 result.issues[evaluation.issue] += 1;
