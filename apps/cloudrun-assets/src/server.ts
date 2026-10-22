@@ -161,6 +161,17 @@ import {
     type SolanaDataReadsRepo,
 } from './handlers/solanaDataReads';
 import { depegJobs, type DepegCronDeps, type DepegJobHandler } from './handlers/crons.depeg';
+import { v2AssetsJobs, type V2AssetsCronDeps, type V2AssetsJobHandler } from './handlers/crons.v2Assets';
+import {
+    v2AssetsChains,
+    v2AssetsCuratedPrefetch,
+    v2AssetsGetDetail,
+    v2AssetsGetMarketsByKeys,
+    v2AssetsGetVariant,
+    v2AssetsListVariantsByAssetIds,
+    type V2AssetsReadsDeps,
+    type V2AssetsReadsRepo,
+} from './handlers/v2AssetsReads';
 import { trendingJobs, type TrendingCronDeps, type TrendingJobHandler } from './handlers/crons.trending';
 import {
     clickhouseExtrasJobs,
@@ -216,6 +227,8 @@ export interface ServerDeps {
     ohlcvReadsRepo: OhlcvReadsRepo;
     prestocksReadsRepo: PrestocksReadsRepo;
     launchpadReadsRepo: LaunchpadReadsRepo;
+    /** v2 multichain tables (migration 0033); served as the `v2Assets*` queries. */
+    v2AssetsReadsRepo: V2AssetsReadsRepo;
     solanaDataReadsRepo: SolanaDataReadsRepo;
     /** Current shared bearer, or [current, previous] during a rotation. */
     authToken: string | readonly string[];
@@ -244,6 +257,8 @@ export interface ServerDeps {
     launchpadAdminDeps?: LaunchpadAdminDeps;
     /** Webacy depeg reconcile + structural health; present only when WEBACY_API_KEY is set. */
     depegCronDeps?: DepegCronDeps;
+    /** v2 multichain jobs (Solana mirror, EVM derivation, EVM market refresh); present with BIRDEYE_API_KEY. */
+    v2AssetsCronDeps?: V2AssetsCronDeps;
     cacheWarmDeps?: CacheWarmDeps;
     adminActionsDeps?: AdminActionsDeps;
     /** Admin-only token-list build tools (CSV import, create-for-project); allowlist-gated. */
@@ -281,6 +296,11 @@ type JobHandler = (deps: CronDeps, args: unknown) => Promise<CronResult>;
 // never replays an entire fan-out.
 const ATOMIC_RETRY_QUERY_NAMES = new Set([
     'getByAssetId',
+    'v2AssetsChains',
+    'v2AssetsGetDetail',
+    'v2AssetsListVariantsByAssetIds',
+    'v2AssetsGetVariant',
+    'v2AssetsGetMarketsByKeys',
     'getByAssetIds',
     'listActiveWithCoinGeckoIds',
     'listByCategory',
@@ -577,6 +597,20 @@ export function createApp(deps: ServerDeps) {
     queries.prestocksGetLatestByMints = args => prestocksGetLatestByMints(deps.prestocksReadsRepo, args);
     queries.launchpadListByQuoteMints = args => launchpadListByQuoteMints(deps.launchpadReadsRepo, args);
     queries.launchpadApprovedMints = args => launchpadApprovedMints(deps.launchpadReadsRepo, args);
+    const v2AssetsReadsDeps: V2AssetsReadsDeps = {
+        v2: deps.v2AssetsReadsRepo,
+        assetsRepo: deps.repo,
+        assetCollectionsReadsRepo: deps.assetCollectionsReadsRepo,
+        deletionTombstonesRepo: deps.deletionTombstonesRepo,
+        stockReadsRepo: deps.stockReadsRepo,
+        coingeckoReadsRepo: deps.coingeckoReadsRepo,
+    };
+    queries.v2AssetsChains = args => v2AssetsChains(v2AssetsReadsDeps, args);
+    queries.v2AssetsCuratedPrefetch = args => v2AssetsCuratedPrefetch(v2AssetsReadsDeps, args);
+    queries.v2AssetsGetDetail = args => v2AssetsGetDetail(v2AssetsReadsDeps, args);
+    queries.v2AssetsListVariantsByAssetIds = args => v2AssetsListVariantsByAssetIds(v2AssetsReadsDeps, args);
+    queries.v2AssetsGetVariant = args => v2AssetsGetVariant(v2AssetsReadsDeps, args);
+    queries.v2AssetsGetMarketsByKeys = args => v2AssetsGetMarketsByKeys(v2AssetsReadsDeps, args);
     queries.solanaDataAssetsList = args => solanaDataAssetsList(deps.solanaDataReadsRepo, args);
     queries.solanaDataAssetsGetByMint = args => solanaDataAssetsGetByMint(deps.solanaDataReadsRepo, args);
     queries.stockOhlcvList = args => listStockOhlcv(deps.ohlcvReadsRepo, args);
@@ -768,6 +802,7 @@ export function createApp(deps: ServerDeps) {
     const logoSyncJobsTable: Record<string, LogoSyncJobHandler> = { ...logoSyncJobs };
     const solanaDataJobsTable: Record<string, SolanaDataJobHandler> = { ...solanaDataJobs };
     const depegJobsTable: Record<string, DepegJobHandler> = { ...depegJobs };
+    const v2AssetsJobsTable: Record<string, V2AssetsJobHandler> = { ...v2AssetsJobs };
 
     interface JobGroup {
         has(name: string): boolean;
@@ -843,6 +878,11 @@ export function createApp(deps: ServerDeps) {
             has: name => Object.hasOwn(depegJobsTable, name),
             run: deps.depegCronDeps ? (name, args) => depegJobsTable[name]!(deps.depegCronDeps!, args) : null,
             disabledError: 'depeg_jobs_disabled',
+        },
+        {
+            has: name => Object.hasOwn(v2AssetsJobsTable, name),
+            run: deps.v2AssetsCronDeps ? (name, args) => v2AssetsJobsTable[name]!(deps.v2AssetsCronDeps!, args) : null,
+            disabledError: 'v2_assets_jobs_disabled',
         },
     ];
 

@@ -423,7 +423,7 @@ function dateKeyUtc(ms: number): string {
 }
 
 function isAssetEndpoint(endpoint: string): boolean {
-    return endpoint.startsWith('/api/v1/assets');
+    return endpoint.startsWith('/api/v1/assets') || endpoint.startsWith('/api/v2/assets') || endpoint.startsWith('/api/v2/variants');
 }
 
 function binLatencyMs(latencyMs: number): number {

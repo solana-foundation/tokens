@@ -1,10 +1,10 @@
 ---
 title: Overview
-description: API v2 introduces community token lists and risk-aware search — composable list plugins plus a judgment layer you can tune.
+description: API v2 introduces community token lists, risk-aware search, and chain-native multichain assets — composable list plugins, a judgment layer you can tune, and one key per token on every chain.
 ---
 
 API v2 is additive: every v1 endpoint keeps working unchanged. v2 currently covers **token lists**,
-**risk-aware search / resolve**, and the Solana Foundation's **asset registry**.
+**risk-aware search / resolve**, **multichain assets**, and the Solana Foundation's **asset registry**.
 
 - **Base URL**: `https://api.tokens.xyz/v2` — same host and key as v1; only the prefix changes.
 - **Auth**: `x-api-key: <YOUR_API_KEY>`; every v2 endpoint needs only the default `assets:read` scope.
@@ -40,6 +40,39 @@ gate removes comes back in `suppressed[]` with the gate that fired, so nothing i
 explicitly (`ambiguous` / `no_confident_match`) rather than guessing.
 
 See [Search & Resolve](/docs/v2/endpoints/search) for the full reference.
+
+## Multichain assets
+
+The v2 asset surface is chain-native: the same curated assets as v1, with their tokens on Solana,
+Ethereum, Base, Arbitrum, Polygon and BNB Smart Chain. It has exactly **two nouns**:
+
+- An **asset** is the curated, chain-agnostic thing — `usd`, `bitcoin`, `tesla`. It lives under
+  `GET /v2/assets` and `GET /v2/assets/{assetId}`.
+- A **variant** is one token on one chain that represents an asset. It has exactly one identifier,
+  the key **`<chain>:<address>`** — `solana:EPjF…`, `base:0x8335…` — and lives under
+  `GET /v2/variants/{chain}/{address}` and the batch `GET /v2/variants?keys=`.
+
+The rules that follow from that:
+
+- **All chains by default.** An asset's `chains`, per-chain `chainStats`, cross-chain `aggregate`,
+  `stats`, `primaryVariant` and `primaryVariantByChain` are always computed from its full variant
+  set. `chain=` narrows what is *listed* (which assets qualify, which variants come back), never
+  what is *summed*.
+- **The chain is always explicit.** A `0x` address is the same string on every EVM chain, so no
+  v2 input is a bare address: the chain is a path segment or the key prefix. EVM addresses are
+  accepted in any casing and always returned **lowercase**; Solana addresses are case-sensitive
+  base58, as ever.
+- **No singletons.** v1 synthesised `solana-<mint>` assets for unregistered mints; v2 does not.
+  An address-shaped `{assetId}` is `400 invalid_asset_id`, and a token the registry does not know is
+  `404 variant_not_found` (or `missing[]` in a batch). Unregistered Solana tokens are the job of
+  `GET /v2/search`.
+- **Capabilities per chain.** `GET /v2/chains` publishes a capability flag set per chain. Solana has
+  everything; the EVM chains have `markets` only for now — no OHLCV, risk, DEX market lists,
+  execution quality or swap routing yet — and advisories are keyed by Solana mint. Gate features on
+  the flags, not on `chain === 'solana'`.
+
+See [Chains](/docs/v2/endpoints/chains), [Assets](/docs/v2/endpoints/assets) (including the
+v1 → v2 field map) and [Variants](/docs/v2/endpoints/variants) for the full reference.
 
 ## Asset registry
 

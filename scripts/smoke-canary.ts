@@ -7,6 +7,7 @@
 // SMOKE_RETRY_BACKOFF_MS (delay between attempts, default 1000).
 
 const SOL_MINT = 'So11111111111111111111111111111111111111112';
+const USDC_MINT = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
 
 const apiBaseUrl = (process.env.TOKENS_API_BASE_URL ?? '').trim().replace(/\/$/, '');
 const appBaseUrl = (process.env.TOKENS_APP_BASE_URL ?? '').trim().replace(/\/$/, '');
@@ -35,6 +36,8 @@ type Probe = {
     auth: boolean;
     expectJson?: boolean;
     budgetMs: number;
+    /** Feature the probe needs; see `v2AssetsSkipReason`. */
+    requires?: 'v2-assets';
     assert: (ctx: { json: unknown; body: string; status: number; finalUrl: string }) => void;
 };
 
@@ -48,6 +51,8 @@ type ProbeResult = {
     ok: boolean;
     attempts: number;
     error?: string;
+    /** Set when the probe did not run because its feature is not live yet. */
+    skipped?: string;
 };
 
 function isObject(value: unknown): value is Record<string, unknown> {
@@ -127,6 +132,69 @@ const apiProbes: Probe[] = [
                 isObject(json) && typeof json.status === 'string',
                 'expected a resolve envelope with a string status (a 404 here means the /v2 rewrite is missing)',
             );
+        },
+    },
+    {
+        name: 'v2-chains',
+        target: 'api',
+        requires: 'v2-assets',
+        method: 'GET',
+        path: '/api/v2/chains',
+        auth: true,
+        budgetMs: 3000,
+        assert: ({ json, status }) => {
+            assert(status === 200, `expected 200, got ${status}`);
+            assert(isObject(json) && Array.isArray(json.chains), 'expected { chains: [] }');
+            assert((json.chains as unknown[]).length === 6, `expected exactly 6 chains, got ${(json.chains as unknown[]).length}`);
+        },
+    },
+    {
+        name: 'v2-assets-majors',
+        target: 'api',
+        requires: 'v2-assets',
+        method: 'GET',
+        path: '/api/v2/assets?list=majors&limit=5',
+        auth: true,
+        budgetMs: 5000,
+        assert: ({ json, status }) => {
+            assert(status === 200, `expected 200, got ${status}`);
+            assert(isObject(json) && Array.isArray(json.assets), 'expected { assets: [] }');
+            assert((json.assets as unknown[]).length > 0, 'v2 majors must be non-empty');
+            assert(
+                (json.assets as unknown[]).every(row => isObject(row) && Array.isArray(row.chains)),
+                'every v2 asset row must carry a chains[] array',
+            );
+        },
+    },
+    {
+        // Public path (`/v2/...` rewrite), as v2-resolve-public-path does for search.
+        name: 'v2-variant-usdc-public-path',
+        target: 'api',
+        requires: 'v2-assets',
+        method: 'GET',
+        path: `/v2/variants/solana/${USDC_MINT}`,
+        auth: true,
+        budgetMs: 5000,
+        assert: ({ json, status }) => {
+            assert(status === 200, `expected 200 via the /v2 rewrite, got ${status}`);
+            assert(
+                isObject(json) && isObject(json.variant) && json.variant.key === `solana:${USDC_MINT}`,
+                'expected variant.key === "solana:<USDC mint>" (a 404 here means the /v2 rewrite is missing)',
+            );
+        },
+    },
+    {
+        name: 'v2-variants-batch',
+        target: 'api',
+        requires: 'v2-assets',
+        method: 'GET',
+        path: `/api/v2/variants?keys=solana:${SOL_MINT}`,
+        auth: true,
+        budgetMs: 5000,
+        assert: ({ json, status }) => {
+            assert(status === 200, `expected 200, got ${status}`);
+            assert(isObject(json) && Array.isArray(json.variants), 'expected { variants: [] }');
+            assert((json.variants as unknown[]).length === 1, `expected exactly 1 variant for wrapped SOL, got ${(json.variants as unknown[]).length}`);
         },
     },
     {
@@ -421,8 +489,73 @@ async function runProbe(probe: Probe): Promise<ProbeResult> {
     return last!;
 }
 
+/**
+ * The v2 asset routes ship with this script, but the deploy workflow's pre-API
+ * prod canary runs against the *previous* API, and the data those probes
+ * assert on only exists once sync-v2-solana-variants has run. Until both are
+ * true, probes marked `requires: 'v2-assets'` are reported as skipped rather
+ * than failed; as soon as the routes answer with data they are enforced like
+ * every other probe. Any other state (5xx, network error) is left to the
+ * probes themselves so a real outage still fails.
+ */
+async function v2AssetsSkipReason(): Promise<string | null> {
+    const get = async (path: string): Promise<{ status: number; json: unknown }> => {
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), timeoutMs);
+        try {
+            const res = await fetch(`${apiBaseUrl}${path}`, { headers: { 'x-api-key': apiKey }, signal: controller.signal });
+            const text = await res.text();
+            let json: unknown = null;
+            try {
+                json = text ? JSON.parse(text) : null;
+            } catch {
+                json = null;
+            }
+            return { status: res.status, json };
+        } finally {
+            clearTimeout(timer);
+        }
+    };
+    try {
+        const chains = await get('/api/v2/chains');
+        if (chains.status === 404) return 'v2 asset routes not deployed yet (GET /api/v2/chains → 404)';
+        if (chains.status !== 200) return null;
+        const majors = await get('/api/v2/assets?list=majors&limit=1');
+        if (
+            majors.status === 200 &&
+            isObject(majors.json) &&
+            Array.isArray(majors.json.assets) &&
+            majors.json.assets.length === 0
+        ) {
+            return 'v2 asset data not mirrored yet (GET /api/v2/assets?list=majors is empty)';
+        }
+        return null;
+    } catch {
+        return null;
+    }
+}
+
+function skippedResult(probe: Probe, reason: string): ProbeResult {
+    return {
+        name: probe.name,
+        target: probe.target,
+        method: probe.method,
+        path: probe.path,
+        status: null,
+        durationMs: 0,
+        ok: true,
+        attempts: 0,
+        skipped: reason,
+    };
+}
+
 async function main(): Promise<void> {
-    const settled = await Promise.allSettled(probes.map(runProbe));
+    const v2Skip = probes.some(p => p.requires === 'v2-assets') ? await v2AssetsSkipReason() : null;
+    const settled = await Promise.allSettled(
+        probes.map(probe =>
+            probe.requires === 'v2-assets' && v2Skip ? Promise.resolve(skippedResult(probe, v2Skip)) : runProbe(probe),
+        ),
+    );
     const results: ProbeResult[] = settled.map((s, i) => {
         if (s.status === 'fulfilled') return s.value;
         const probe = probes[i]!;
@@ -441,25 +574,29 @@ async function main(): Promise<void> {
     });
 
     for (const result of results) {
-        const tag = result.ok ? 'PASS' : 'FAIL';
+        const tag = result.skipped ? 'SKIP' : result.ok ? 'PASS' : 'FAIL';
         const statusStr = result.status === null ? '---' : String(result.status);
         const retryNote = result.attempts > 1 ? ` (took ${result.attempts}/${maxAttempts} attempts)` : '';
         console.log(
             `[${tag}] [${result.target}] ${result.name} ${result.method} ${result.path} status=${statusStr} duration=${result.durationMs}ms${retryNote}${
                 result.error ? ` error="${result.error}"` : ''
+            }${
+                result.skipped ? ` skipped="${result.skipped}"` : ''
             }`,
         );
     }
 
     const failed = results.filter(r => !r.ok);
+    const skipped = results.filter(r => r.skipped !== undefined);
     const summary = {
         event: 'smoke_canary_summary',
         api_base_url: apiBaseUrl,
         app_base_url: appBaseUrl || null,
         web_base_url: webBaseUrl || null,
         total: results.length,
-        passed: results.length - failed.length,
+        passed: results.length - failed.length - skipped.length,
         failed: failed.length,
+        skipped: skipped.length,
         results,
     };
     console.log(JSON.stringify(summary));

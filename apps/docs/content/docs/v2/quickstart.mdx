@@ -63,6 +63,31 @@ curl -sS "$API_BASE_URL/v2/resolve?q=USDC" -H "x-api-key: $API_KEY"
 
 Reference: [Search & Resolve](/docs/v2/endpoints/search).
 
+## Multichain assets
+
+Assets are chain-agnostic; a variant is one token on one chain, keyed `<chain>:<address>`.
+
+```bash
+# The chains covered, with CAIP-2 ids and capability flags
+curl -sS "$API_BASE_URL/v2/chains" -H "x-api-key: $API_KEY"
+
+# Majors with per-chain stats and a cross-chain aggregate; chain= narrows the listed variants only
+curl -sS "$API_BASE_URL/v2/assets?list=majors&chain=base&include=variants&limit=20" -H "x-api-key: $API_KEY"
+
+# One asset with every variant on every chain
+curl -sS "$API_BASE_URL/v2/assets/usd" -H "x-api-key: $API_KEY"
+
+# One token on one chain — the chain is in the path, EVM addresses come back lowercase
+curl -sS "$API_BASE_URL/v2/variants/base/0x833589fcd6edb6e08f4c7c32d4f71b54bda02913" -H "x-api-key: $API_KEY"
+
+# Batch lookup by key (≤ 50), request order kept, unknown keys in missing[]
+curl -sS "$API_BASE_URL/v2/variants?keys=solana:EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v,ethereum:0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2" \
+  -H "x-api-key: $API_KEY"
+```
+
+Reference: [Chains](/docs/v2/endpoints/chains), [Assets](/docs/v2/endpoints/assets),
+[Variants](/docs/v2/endpoints/variants).
+
 ## Publish your own list
 
 Any key can create lists; the creating key's project owns them.
@@ -96,4 +121,5 @@ Reference: [Lists → Managing lists](/docs/v2/endpoints/lists#managing-lists).
 
 - [Rate limits & errors](/docs/v2/rate-limits-and-errors) — the error envelope, `details.code`
   values, and the provider lookup budget behind `429`.
-- [Overview](/docs/v2/overview) — why lists are composed explicitly and how the judgment pipeline works.
+- [Overview](/docs/v2/overview) — why lists are composed explicitly, how the judgment pipeline works,
+  and the two-noun model behind multichain assets.

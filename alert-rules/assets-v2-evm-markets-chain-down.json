@@ -1,0 +1,95 @@
+{
+    "uid": "tokens-assets-v2-evm-markets-chain-down",
+    "title": "tokens-assets: an EVM chain refreshed zero v2 variant markets",
+    "ruleGroup": "tokens-assets-availability",
+    "folderUID": "tokens",
+    "noDataState": "OK",
+    "execErrState": "OK",
+    "for": "0s",
+    "data": [
+        {
+            "refId": "A",
+            "datasourceUid": "grafanacloud-logs",
+            "queryType": "range",
+            "relativeTimeRange": {
+                "from": 3600,
+                "to": 0
+            },
+            "model": {
+                "expr": "sum(count_over_time({service=~\"tokens-assets(-jobs)?-prd-us\"} | json | job=\"refresh-v2-evm-variant-markets\" | event=\"v2_evm_markets_chain_down\" [1h]))",
+                "queryType": "range",
+                "refId": "A"
+            }
+        },
+        {
+            "refId": "B",
+            "datasourceUid": "__expr__",
+            "queryType": "",
+            "relativeTimeRange": {
+                "from": 0,
+                "to": 0
+            },
+            "model": {
+                "type": "reduce",
+                "refId": "B",
+                "expression": "A",
+                "reducer": "last",
+                "settings": {
+                    "mode": "replaceNN",
+                    "replaceWithValue": 0
+                }
+            }
+        },
+        {
+            "refId": "C",
+            "datasourceUid": "__expr__",
+            "queryType": "",
+            "relativeTimeRange": {
+                "from": 0,
+                "to": 0
+            },
+            "model": {
+                "type": "threshold",
+                "refId": "C",
+                "expression": "B",
+                "conditions": [
+                    {
+                        "evaluator": {
+                            "type": "gt",
+                            "params": [0]
+                        },
+                        "operator": {
+                            "type": "and"
+                        },
+                        "query": {
+                            "params": ["B"]
+                        },
+                        "reducer": {
+                            "type": "last",
+                            "params": []
+                        },
+                        "type": "query"
+                    }
+                ]
+            }
+        }
+    ],
+    "condition": "C",
+    "labels": {
+        "service": "tokens-assets",
+        "severity": "warning",
+        "slack": "true"
+    },
+    "notification_settings": {
+        "receiver": "tokens-slack",
+        "group_by": ["grafana_folder", "alertname"],
+        "group_wait": "30s",
+        "group_interval": "5m",
+        "repeat_interval": "4h"
+    },
+    "annotations": {
+        "summary": "refresh-v2-evm-variant-markets reported at least one EVM chain down in the last hour",
+        "description": "A v2_evm_markets_chain_down log line was emitted by refresh-v2-evm-variant-markets in the last hour: a chain was attempted at least 3 times in one run and refreshed nothing (the line carries `chains` and the per-chain `byChain` attempted/refreshed/failed/noClient counts; the run summary v2_evm_markets_refresh logs ok=false and lists it in downChains). Usually Birdeye is failing or rate-limiting that x-chain (check external_call lines with provider=birdeye for the same window), or the chain's addresses are wrong (mixed-case 0x rows; see the runbook SQL). Rows the run could not refresh are stamped so the batch moves on; the last snapshot keeps being served, so this is staleness on one chain, not an outage. Other chains and v1 Solana are unaffected.",
+        "runbook_url": "https://github.com/solana-foundation/tokens/blob/main/docs/operations/v2-multichain-assets.md"
+    }
+}

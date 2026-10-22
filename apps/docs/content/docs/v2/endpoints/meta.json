@@ -4,6 +4,9 @@
   "pages": [
     "lists",
     "search",
+    "chains",
+    "assets",
+    "variants",
     "registry"
   ]
 }

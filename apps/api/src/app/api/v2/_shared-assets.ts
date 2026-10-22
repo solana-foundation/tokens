@@ -1,0 +1,1164 @@
+/**
+ * Shared contract + assembly for the v2 multichain asset surface:
+ * GET /v2/chains, /v2/assets, /v2/assets/{assetId}, /v2/assets/{assetId}/variants,
+ * /v2/variants/{chain}/{address}, /v2/variants?keys=.
+ *
+ * Two nouns. An **asset** is the curated, chain-agnostic thing (`usd`,
+ * `bitcoin`, `tesla`). A **variant** is one token on one chain that represents
+ * it, addressed by exactly one key `<chain>:<address>` (EVM lowercase, Solana
+ * base58). Every response includes every chain; `chain=` narrows what is
+ * listed, never what is summed. There are no singleton ids and no bare-address
+ * inputs, so a `0x` address never has to guess its chain.
+ *
+ * `buildV2Asset` is the one assembly path for list and detail so the two can
+ * never drift. The numeric helpers are reused from v1 (`_asset-helpers.ts`)
+ * through a key adapter: the registry's mint-keyed ranking / aggregation is fed
+ * variants whose `mint` is the variant key, so nothing in the package changes.
+ */
+import { Effect } from 'effect';
+
+import {
+    ASSET_CATEGORIES,
+    STOCK_VARIANT_TIERS,
+    VARIANT_KINDS,
+    getVariantByMint,
+    isAdvisorySource,
+    isHiddenAdvisory,
+    pickPrimaryVariantWithRanking,
+    type AssetCategory,
+    type AssetVariant,
+    type CanonicalAsset,
+    type LiquidityTier,
+    type PrimaryVariantStrategy,
+    type StockVariantTier,
+    type TrustTier,
+    type VariantAdvisory,
+    type VariantKind,
+} from '@tokens/asset-registry';
+import {
+    CHAINS,
+    CHAIN_KINDS,
+    chainAddressKey,
+    explorerTokenUrl,
+    isChainKind,
+    looksLikeEvmAddress,
+    looksLikeSolanaAddress,
+    normalizeAddressForChain,
+    type ChainCapabilities,
+    type ChainKind,
+} from '@tokens/asset-registry/chains';
+import {
+    CURATED_LIST_ORDER,
+    normalizeCuratedListSlug,
+    type CuratedListSlug,
+} from '@tokens/asset-registry/curated-lists';
+import { BadRequestError } from '@tokens/effect';
+
+import { getAdvisoriesByMintSync, tradeRestrictedMints } from '@/lib/advisories';
+import type { V2ChainRollupResult, V2MarketResult, V2VariantResult } from '@/lib/cloudrun';
+import type { PrestocksPriceResult } from '@/lib/cloudrun/prestocksReads';
+import type { AssetResult } from '../../../../../cloudrun-assets/src/handlers/assets';
+import type { CoingeckoPriceSnapshot } from '../../../../../cloudrun-assets/src/handlers/coingeckoReads';
+import type { StockInstrumentResult, StockPriceResult } from '../../../../../cloudrun-assets/src/handlers/stockReads';
+import type { VariantMarketSnapshotResult } from '../../../../../cloudrun-assets/src/handlers/variantMarkets';
+
+import {
+    aggregateTokenStats,
+    buildCuratedMintRank,
+    computeCompanyMarketCapUsd,
+    deriveVariantTierFields,
+    isCanonicalPublicEquityAsset,
+    mergeAssetStatsWithAggregates,
+    optionalText,
+    parsePrimaryVariantStrategy,
+    resolveAssetImageUrl,
+    resolveVariantSymbol,
+    selectCanonicalAssetStats,
+    toFiniteNumberOrNull,
+    tokenMarketSnapshotFromConvexMarket,
+    type AssetStats,
+    type TokenMarketSnapshot,
+} from '../v1/assets/_asset-helpers';
+import type { PreStocksMintSnapshot } from '../v1/assets/_asset-detail-response';
+import { normalizeCoinGeckoCoinIdForAsset } from '../v1/assets/_coingecko-id';
+import {
+    buildPreStocksCanonicalMarket,
+    freshPreStocksByMint,
+    selectPreStocksMints,
+} from '../v1/assets/_prestocks-canonical';
+
+// ---------------------------------------------------------------------------
+// Public types (the docs' source of truth). Type aliases, not interfaces, so
+// payloads satisfy withStaleFallback's Record<string, unknown> bound.
+// Every documented key is always present; `null` means unknown / n.a.
+// Timestamps are unix milliseconds (`*At`); numbers are JSON numbers.
+// ---------------------------------------------------------------------------
+
+export type ChainId = ChainKind;
+export type ChainFamily = 'svm' | 'evm';
+/** `<chain>:<address>` — the one identifier for a token. */
+export type VariantKey = string;
+
+export type V2Chain = {
+    id: ChainId;
+    caip2: string;
+    family: ChainFamily;
+    evmChainId: number | null;
+    label: string;
+    explorer: { name: string; tokenUrlTemplate: string };
+    capabilities: ChainCapabilities;
+    /** Active variants / assets with ≥1 active variant on the chain; null when the data layer is unreachable. */
+    variantCount: number | null;
+    assetCount: number | null;
+};
+
+export type V2ChainsResponse = { chains: V2Chain[]; total: number };
+
+export type V2MarketSource = 'birdeye' | 'rwa_xyz' | 'clickhouse_trades';
+
+export type V2Market = {
+    source: V2MarketSource;
+    metricsSource: V2MarketSource | null;
+    price: number | null;
+    liquidity: number | null;
+    volume1hUSD: number | null;
+    volume24hUSD: number | null;
+    trade1h: number | null;
+    trade24h: number | null;
+    uniqueWallet1h: number | null;
+    uniqueWallet24h: number | null;
+    marketCap: number | null;
+    fdv: number | null;
+    holder: number | null;
+    totalSupply: number | null;
+    circulatingSupply: number | null;
+    priceChange1hPercent: number | null;
+    priceChange24hPercent: number | null;
+    lastTradeAt: number | null;
+    /** Provider timestamp. */
+    asOf: number | null;
+    /** Our fetch. */
+    lastFetchedAt: number | null;
+};
+
+export type V2Advisory = {
+    status: VariantAdvisory['status'];
+    reason: string;
+    url: string | null;
+    since: number;
+    source: NonNullable<VariantAdvisory['source']>;
+};
+
+export type VariantIssuance = 'native' | 'bridged' | 'wrapped';
+
+export type V2Variant = {
+    key: VariantKey;
+    chain: ChainId;
+    address: string;
+    assetId: string;
+    variantId: string;
+    kind: VariantKind;
+    /** `issuance:<x>` tag, else from kind (bridged / wrapped), else native. Drives supply and market-cap counting. */
+    issuance: VariantIssuance;
+    symbol: string | null;
+    name: string | null;
+    label: string | null;
+    decimals: number | null;
+    logoURI: string | null;
+    issuer: string | null;
+    issuerUrl: string | null;
+    trustTier: TrustTier;
+    liquidityTier: LiquidityTier;
+    stockVariantTier: StockVariantTier | null;
+    tags: string[];
+    advisory: V2Advisory | null;
+    /** 0-based liquidity rank within the asset across chains; null when the asset's full variant set was not loaded (batch lookups). */
+    rank: number | null;
+    explorerUrl: string;
+    market: V2Market | null;
+};
+
+export type V2AssetStats = AssetStats;
+
+export type V2ChainStats = {
+    liquidity: number | null;
+    volume24hUSD: number | null;
+    /** Sum over this chain's issued (non-bridged, non-wrapped) variants. */
+    marketCap: number | null;
+    fdv: number | null;
+    circulatingSupply: number | null;
+    variantCount: number;
+    /** Variants counted toward supply / market cap. */
+    issuedVariantCount: number;
+};
+
+export type V2Aggregate = V2ChainStats & {
+    chainCount: number;
+    /** Bridged / wrapped variants left out of supply and market cap. */
+    excludedFromSupplyCount: number;
+};
+
+export type V2ReferenceMarket =
+    | {
+          source: 'coingecko';
+          coinId: string;
+          price: number | null;
+          marketCap: number | null;
+          volume24hUSD: number | null;
+          priceChange24hPercent: number | null;
+          circulatingSupply: number | null;
+          totalSupply: number | null;
+          maxSupply: number | null;
+          asOf: number | null;
+          lastFetchedAt: number | null;
+      }
+    | {
+          source: 'stock';
+          symbol: string;
+          price: number | null;
+          marketCap: number | null;
+          volume24hUSD: number | null;
+          priceChange24hPercent: number | null;
+          asOf: number | null;
+          lastFetchedAt: number | null;
+      }
+    | {
+          source: 'prestocks';
+          symbol: string;
+          key: VariantKey;
+          price: number | null;
+          marketCap: number | null;
+          markPriceUsd: number | null;
+          markValuationUsd: number | null;
+          impliedValuationUsd: number | null;
+          premiumToMarkPercent: number | null;
+          volume24hUSD: number | null;
+          priceChange24hPercent: number | null;
+          asOf: number | null;
+          lastFetchedAt: number | null;
+      };
+
+export type V2AssetAdvisory = V2Advisory & { key: VariantKey; chain: ChainId; address: string; variantId: string };
+
+export type V2PrimaryVariantStrategy = PrimaryVariantStrategy;
+
+export type V2Asset = {
+    assetId: string;
+    name: string | null;
+    symbol: string | null;
+    description: string | null;
+    category: AssetCategory;
+    aliases: string[];
+    symbols: string[];
+    imageUrl: string | null;
+    coingeckoId: string | null;
+    /** Every chain with ≥1 variant, canonical order, from the unfiltered set. */
+    chains: ChainId[];
+    /** Headline numbers: v1's selection logic fed the cross-chain aggregate. */
+    stats: V2AssetStats | null;
+    /** Per-chain on-chain stats from the unfiltered set; `chainStats.solana` is v1's on-Solana number. */
+    chainStats: Partial<Record<ChainId, V2ChainStats>>;
+    aggregate: V2Aggregate;
+    /** The off-chain reference (CoinGecko / stock benchmark / PreStocks mark); v1 called it `canonicalMarket`. */
+    referenceMarket: V2ReferenceMarket | null;
+    /** Most severe first; names hidden (blocked) siblings too. */
+    advisories: V2AssetAdvisory[];
+    primaryVariantStrategy: V2PrimaryVariantStrategy;
+    primaryVariant: V2Variant | null;
+    primaryVariantByChain: Partial<Record<ChainId, V2Variant>>;
+    /** 0-based position in the requested curated list; null outside a list context. */
+    rank: number | null;
+    variants?: V2Variant[];
+};
+
+export type V2AssetSummary = Pick<V2Asset, 'assetId' | 'name' | 'symbol' | 'category' | 'imageUrl' | 'chains'>;
+
+export type V2AssetsResponse = {
+    assets: V2Asset[];
+    total: number;
+    list: string;
+    primaryVariantStrategy: V2PrimaryVariantStrategy;
+};
+
+export type V2AssetResponse = V2Asset & { resolvedBy: 'assetId' | 'alias' | 'rename' };
+
+export type V2AssetVariantsResponse = { assetId: string; variants: V2Variant[]; total: number; sort: V2VariantSort };
+
+export type V2VariantResponse = { variant: V2Variant; asset: V2AssetSummary };
+
+export type V2VariantsBatchResponse = {
+    variants: V2Variant[];
+    missing: Array<{ key: VariantKey; chain: ChainId; address: string }>;
+    total: number;
+};
+
+export type V2VariantSort = 'liquidity' | 'execution_quality' | 'stock_redeemability';
+export const V2_VARIANT_SORTS: readonly V2VariantSort[] = ['liquidity', 'execution_quality', 'stock_redeemability'];
+
+export const V2_MAX_BATCH_KEYS = 50;
+
+// ---------------------------------------------------------------------------
+// Chains
+// ---------------------------------------------------------------------------
+
+export function toV2Chain(chain: ChainId, counts: { variantCount: number | null; assetCount: number | null }): V2Chain {
+    const config = CHAINS[chain];
+    return {
+        id: chain,
+        caip2: config.caip2,
+        family: config.family,
+        evmChainId: config.evmChainId ?? null,
+        label: config.label,
+        explorer: { name: config.explorer.name, tokenUrlTemplate: config.explorer.tokenUrl('{address}') },
+        capabilities: { ...config.capabilities },
+        variantCount: counts.variantCount,
+        assetCount: counts.assetCount,
+    };
+}
+
+// ---------------------------------------------------------------------------
+// Param decoding (machine-readable `details.code` on every 400)
+// ---------------------------------------------------------------------------
+
+function badRequest(message: string, details: Record<string, unknown>): BadRequestError {
+    return new BadRequestError({ message, details });
+}
+
+export function invalidChainError(raw: string): BadRequestError {
+    return badRequest(`Invalid chain: ${raw}`, { code: 'invalid_chain', chain: raw, chains: [...CHAIN_KINDS] });
+}
+
+export function invalidAddressError(chain: ChainId, raw: string): BadRequestError {
+    const expected = CHAINS[chain].family === 'evm' ? '0x40hex' : 'base58';
+    return badRequest(`\`${raw}\` is not a valid ${CHAINS[chain].label} address`, {
+        code: 'invalid_address',
+        chain,
+        address: raw,
+        expected,
+    });
+}
+
+/** `chain=<id>` — optional single chain. */
+export function decodeChainParam(params: URLSearchParams): Effect.Effect<ChainId | null, BadRequestError> {
+    const raw = (params.get('chain') ?? '').trim();
+    if (!raw) return Effect.succeed(null);
+    return isChainKind(raw) ? Effect.succeed(raw) : Effect.fail(invalidChainError(raw));
+}
+
+export type DecodedChainAddress = { chain: ChainId; address: string; key: VariantKey };
+
+/** `/{chain}/{address}` path segments: chain must be known, address valid for its family (EVM lowercased). */
+export function decodeChainAddressPath(raw: {
+    chain: string;
+    address: string;
+}): Effect.Effect<DecodedChainAddress, BadRequestError> {
+    const chainRaw = raw.chain.trim();
+    if (!isChainKind(chainRaw)) return Effect.fail(invalidChainError(chainRaw));
+    const addressRaw = raw.address.trim();
+    const address = normalizeAddressForChain(chainRaw, addressRaw);
+    if (!address) return Effect.fail(invalidAddressError(chainRaw, addressRaw));
+    return Effect.succeed({ chain: chainRaw, address, key: chainAddressKey(chainRaw, address) });
+}
+
+/** `keys=<chain>:<address>,…` — required, ≤ max, deduped, request order kept. */
+export function decodeKeysParam(
+    params: URLSearchParams,
+    options: { max: number } = { max: V2_MAX_BATCH_KEYS },
+): Effect.Effect<DecodedChainAddress[], BadRequestError> {
+    const raw = params.getAll('keys').flatMap(value => value.split(','));
+    const items = raw.map(item => item.trim()).filter(Boolean);
+    if (items.length === 0) {
+        return Effect.fail(
+            badRequest('`keys` is required: a comma-separated list of <chain>:<address>', { code: 'invalid_key' }),
+        );
+    }
+    if (items.length > options.max) {
+        return Effect.fail(
+            badRequest(`Too many keys: max ${options.max} per request`, {
+                code: 'too_many_keys',
+                max: options.max,
+                count: items.length,
+            }),
+        );
+    }
+    const out: DecodedChainAddress[] = [];
+    const seen = new Set<string>();
+    for (const item of items) {
+        const colon = item.indexOf(':');
+        if (colon <= 0) {
+            return Effect.fail(
+                badRequest(`Invalid key: ${item} (expected <chain>:<address>)`, { code: 'invalid_key', key: item }),
+            );
+        }
+        const chain = item.slice(0, colon);
+        if (!isChainKind(chain)) return Effect.fail(invalidChainError(chain));
+        const addressRaw = item.slice(colon + 1);
+        const address = normalizeAddressForChain(chain, addressRaw);
+        if (!address) return Effect.fail(invalidAddressError(chain, addressRaw));
+        const key = chainAddressKey(chain, address);
+        if (seen.has(key)) continue;
+        seen.add(key);
+        out.push({ chain, address, key });
+    }
+    return Effect.succeed(out);
+}
+
+/**
+ * `{assetId}` path segment: an asset id or alias. Address-shaped values and
+ * `<chain>:<address>` keys are rejected — tokens live under /v2/variants.
+ */
+export function decodeAssetIdPath(raw: string): Effect.Effect<string, BadRequestError> {
+    const value = raw.trim();
+    if (!value) return Effect.fail(badRequest('assetId is required', { code: 'invalid_asset_id' }));
+    const looksLikeKey = value.includes(':') && isChainKind(value.slice(0, value.indexOf(':')));
+    if (looksLikeKey || looksLikeSolanaAddress(value) || looksLikeEvmAddress(value)) {
+        return Effect.fail(
+            badRequest('assetId must be an asset id or alias, not a token address', {
+                code: 'invalid_asset_id',
+                assetId: value,
+                hint: 'Look up a token with GET /v2/variants/{chain}/{address}',
+            }),
+        );
+    }
+    if (value.length > 120) return Effect.fail(badRequest('assetId is too long', { code: 'invalid_asset_id' }));
+    return Effect.succeed(value);
+}
+
+/** `list=all|<curated slug>`; absent = `all`. Unknown slugs are rejected (v1 silently coerced). */
+export function decodeListParam(params: URLSearchParams): Effect.Effect<'all' | CuratedListSlug, BadRequestError> {
+    const raw = (params.get('list') ?? '').trim();
+    if (!raw || raw === 'all') return Effect.succeed('all');
+    const slug = normalizeCuratedListSlug(raw);
+    if (!slug)
+        return Effect.fail(
+            badRequest(`Invalid list: ${raw}`, {
+                code: 'invalid_list',
+                list: raw,
+                lists: ['all', ...CURATED_LIST_ORDER],
+            }),
+        );
+    return Effect.succeed(slug);
+}
+
+export function decodeEnumParam<T extends string>(
+    params: URLSearchParams,
+    name: string,
+    values: readonly T[],
+    code: string,
+): Effect.Effect<T | null, BadRequestError> {
+    const raw = (params.get(name) ?? '').trim();
+    if (!raw) return Effect.succeed(null);
+    return (values as readonly string[]).includes(raw)
+        ? Effect.succeed(raw as T)
+        : Effect.fail(badRequest(`Invalid ${name}: ${raw}`, { code, [name]: raw, values: [...values] }));
+}
+
+export function decodeCategoryParam(params: URLSearchParams): Effect.Effect<AssetCategory | null, BadRequestError> {
+    return decodeEnumParam(params, 'category', ASSET_CATEGORIES, 'invalid_category');
+}
+
+export function decodeIncludeParam(
+    params: URLSearchParams,
+    allowed: readonly string[],
+): Effect.Effect<Set<string>, BadRequestError> {
+    const raw = params.getAll('include').flatMap(value => value.split(','));
+    const out = new Set<string>();
+    for (const item of raw) {
+        const value = item.trim();
+        if (!value) continue;
+        if (!allowed.includes(value)) {
+            return Effect.fail(
+                badRequest(`Invalid include: ${value}`, {
+                    code: 'invalid_include',
+                    include: value,
+                    values: [...allowed],
+                }),
+            );
+        }
+        out.add(value);
+    }
+    return Effect.succeed(out);
+}
+
+export function decodeQueryParam(params: URLSearchParams, max = 100): Effect.Effect<string | null, BadRequestError> {
+    const raw = (params.get('q') ?? '').trim();
+    if (!raw) return Effect.succeed(null);
+    if (raw.length > max)
+        return Effect.fail(badRequest(`q must be at most ${max} characters`, { code: 'invalid_query', max }));
+    return Effect.succeed(raw);
+}
+
+export function decodePrimaryVariantStrategyParam(
+    params: URLSearchParams,
+): Effect.Effect<V2PrimaryVariantStrategy | null, BadRequestError> {
+    const raw = params.get('primaryVariantStrategy');
+    if (raw === null || raw.trim() === '') return Effect.succeed(null);
+    const values: readonly V2PrimaryVariantStrategy[] = ['liquidity', 'execution_quality', 'stock_redeemability'];
+    return (values as readonly string[]).includes(raw.trim())
+        ? Effect.succeed(parsePrimaryVariantStrategy(raw))
+        : Effect.fail(
+              badRequest(`Invalid primaryVariantStrategy: ${raw}`, {
+                  code: 'invalid_primary_variant_strategy',
+                  values: [...values],
+              }),
+          );
+}
+
+// ---------------------------------------------------------------------------
+// Mappers
+// ---------------------------------------------------------------------------
+
+function isVariantKind(value: string): value is VariantKind {
+    return (VARIANT_KINDS as readonly string[]).includes(value);
+}
+
+function toTrustTier(value: string): TrustTier {
+    return value === 'tier1' || value === 'tier2' ? value : 'tier3';
+}
+
+function toStockVariantTier(value: string | null): StockVariantTier | null {
+    return value !== null && (STOCK_VARIANT_TIERS as readonly string[]).includes(value)
+        ? (value as StockVariantTier)
+        : null;
+}
+
+const ISSUANCE_TAG_PREFIX = 'issuance:';
+
+export function variantIssuance(variant: { kind: string; tags: readonly string[] }): VariantIssuance {
+    for (const tag of variant.tags) {
+        if (!tag.startsWith(ISSUANCE_TAG_PREFIX)) continue;
+        const value = tag.slice(ISSUANCE_TAG_PREFIX.length);
+        if (value === 'native' || value === 'bridged' || value === 'wrapped') return value;
+    }
+    if (variant.kind === 'bridged') return 'bridged';
+    if (variant.kind === 'wrapped') return 'wrapped';
+    return 'native';
+}
+
+export function toV2Market(snapshot: VariantMarketSnapshotResult | null | undefined): V2Market | null {
+    if (!snapshot) return null;
+    const metricsSource = snapshot.metricsSource ?? null;
+    return {
+        source: snapshot.source,
+        metricsSource,
+        price: toFiniteNumberOrNull(snapshot.price),
+        liquidity: toFiniteNumberOrNull(snapshot.liquidity),
+        volume1hUSD: toFiniteNumberOrNull(snapshot.volume1hUSD),
+        volume24hUSD: toFiniteNumberOrNull(snapshot.volume24hUSD),
+        trade1h: toFiniteNumberOrNull(snapshot.trade1h),
+        trade24h: toFiniteNumberOrNull(snapshot.trade24h),
+        uniqueWallet1h: toFiniteNumberOrNull(snapshot.uniqueWallet1h),
+        uniqueWallet24h: toFiniteNumberOrNull(snapshot.uniqueWallet24h),
+        marketCap: toFiniteNumberOrNull(snapshot.marketCap),
+        fdv: toFiniteNumberOrNull(snapshot.fdv),
+        holder: toFiniteNumberOrNull(snapshot.holder),
+        totalSupply: toFiniteNumberOrNull(snapshot.totalSupply),
+        circulatingSupply: toFiniteNumberOrNull(snapshot.circulatingSupply),
+        priceChange1hPercent: toFiniteNumberOrNull(snapshot.priceChange1hPercent),
+        priceChange24hPercent: toFiniteNumberOrNull(snapshot.priceChange24hPercent),
+        lastTradeAt: toFiniteNumberOrNull(snapshot.lastTradeAt),
+        asOf: toFiniteNumberOrNull(snapshot.asOf),
+        lastFetchedAt: toFiniteNumberOrNull(snapshot.lastFetchedAt),
+    };
+}
+
+export function toV2Advisory(advisory: VariantAdvisory | null | undefined): V2Advisory | null {
+    if (!advisory) return null;
+    return {
+        status: advisory.status,
+        reason: advisory.reason,
+        url: advisory.url ?? null,
+        since: advisory.since,
+        source: isAdvisorySource(advisory.source) ? advisory.source : 'admin',
+    };
+}
+
+/** Advisories are mint-keyed (Solana only) today; EVM variants never carry one. */
+export function advisoryForVariant(
+    variant: Pick<V2VariantResult, 'chain' | 'address'>,
+    advisoriesByMint: ReadonlyMap<string, VariantAdvisory>,
+): VariantAdvisory | null {
+    return variant.chain === 'solana' ? (advisoriesByMint.get(variant.address) ?? null) : null;
+}
+
+export function marketByKeyFrom(markets: readonly V2MarketResult[]): Map<VariantKey, VariantMarketSnapshotResult> {
+    const out = new Map<VariantKey, VariantMarketSnapshotResult>();
+    for (const row of markets) if (row.market) out.set(row.key, row.market);
+    return out;
+}
+
+export function rollupsByAssetFrom(
+    rollups: readonly V2ChainRollupResult[],
+): Map<string, Map<ChainId, V2ChainRollupResult>> {
+    const out = new Map<string, Map<ChainId, V2ChainRollupResult>>();
+    for (const row of rollups) {
+        const byChain = out.get(row.assetId) ?? new Map<ChainId, V2ChainRollupResult>();
+        byChain.set(row.chain, row);
+        out.set(row.assetId, byChain);
+    }
+    return out;
+}
+
+/** Variants whose advisory hides them from list surfaces (`blocked`). */
+export function isHiddenVariant(
+    variant: Pick<V2VariantResult, 'chain' | 'address'>,
+    advisoriesByMint: ReadonlyMap<string, VariantAdvisory>,
+): boolean {
+    return isHiddenAdvisory(advisoryForVariant(variant, advisoriesByMint));
+}
+
+/**
+ * List surfaces qualify an asset for `chain=` by its *visible* variants: a
+ * chain whose only variants are hidden (blocked) must not list the asset with
+ * an empty `variants[]` and no entry in `chains`.
+ */
+export function hasVisibleVariantOnChain(
+    variants: readonly Pick<V2VariantResult, 'chain' | 'address'>[],
+    chain: ChainId,
+    advisoriesByMint: ReadonlyMap<string, VariantAdvisory>,
+): boolean {
+    return variants.some(v => v.chain === chain && !isHiddenVariant(v, advisoriesByMint));
+}
+
+// ---------------------------------------------------------------------------
+// Chain stats
+// ---------------------------------------------------------------------------
+
+function addFinite(total: number | null, value: number | null | undefined): number | null {
+    return typeof value === 'number' && Number.isFinite(value) ? (total ?? 0) + value : total;
+}
+
+/**
+ * Per-chain stats over `variants` (pass the UNFILTERED set so the numbers do
+ * not depend on `chain=`), canonical chain order. Liquidity and 24h volume
+ * are summed over every variant (pools are distinct); supply and market cap
+ * only over issued variants (bridged / wrapped are claims on supply issued
+ * elsewhere). For Solana the worker rollup (v1's `asset_markets_latest`)
+ * supplies liquidity / volume when present, so `chainStats.solana` equals v1.
+ */
+export function computeChainStats(
+    variants: ReadonlyArray<Pick<V2VariantResult, 'chain' | 'address' | 'key' | 'kind' | 'tags'>>,
+    marketByKey: ReadonlyMap<VariantKey, VariantMarketSnapshotResult>,
+    rollupByChain: ReadonlyMap<ChainId, V2ChainRollupResult> | null,
+): Partial<Record<ChainId, V2ChainStats>> {
+    const byChain = new Map<ChainId, V2ChainStats>();
+    const seen = new Set<VariantKey>();
+    for (const variant of variants) {
+        if (seen.has(variant.key)) continue;
+        seen.add(variant.key);
+        const entry = byChain.get(variant.chain) ?? {
+            liquidity: null,
+            volume24hUSD: null,
+            marketCap: null,
+            fdv: null,
+            circulatingSupply: null,
+            variantCount: 0,
+            issuedVariantCount: 0,
+        };
+        entry.variantCount += 1;
+        const market = marketByKey.get(variant.key);
+        entry.liquidity = addFinite(entry.liquidity, market?.liquidity);
+        entry.volume24hUSD = addFinite(entry.volume24hUSD, market?.volume24hUSD);
+        if (variantIssuance(variant) === 'native') {
+            entry.issuedVariantCount += 1;
+            entry.marketCap = addFinite(entry.marketCap, market?.marketCap);
+            entry.fdv = addFinite(entry.fdv, market?.fdv);
+            entry.circulatingSupply = addFinite(entry.circulatingSupply, market?.circulatingSupply);
+        }
+        byChain.set(variant.chain, entry);
+    }
+    const out: Partial<Record<ChainId, V2ChainStats>> = {};
+    for (const chain of CHAIN_KINDS) {
+        const entry = byChain.get(chain);
+        if (!entry) continue;
+        const rollup = rollupByChain?.get(chain);
+        if (rollup && (rollup.liquidity > 0 || rollup.volume24hUSD > 0)) {
+            entry.liquidity = rollup.liquidity;
+            entry.volume24hUSD = rollup.volume24hUSD;
+        }
+        out[chain] = entry;
+    }
+    return out;
+}
+
+export function aggregateChainStats(chainStats: Partial<Record<ChainId, V2ChainStats>>): V2Aggregate {
+    const out: V2Aggregate = {
+        liquidity: null,
+        volume24hUSD: null,
+        marketCap: null,
+        fdv: null,
+        circulatingSupply: null,
+        variantCount: 0,
+        issuedVariantCount: 0,
+        chainCount: 0,
+        excludedFromSupplyCount: 0,
+    };
+    for (const entry of Object.values(chainStats)) {
+        if (!entry) continue;
+        out.chainCount += 1;
+        out.variantCount += entry.variantCount;
+        out.issuedVariantCount += entry.issuedVariantCount;
+        out.excludedFromSupplyCount += entry.variantCount - entry.issuedVariantCount;
+        out.liquidity = addFinite(out.liquidity, entry.liquidity);
+        out.volume24hUSD = addFinite(out.volume24hUSD, entry.volume24hUSD);
+        out.marketCap = addFinite(out.marketCap, entry.marketCap);
+        out.fdv = addFinite(out.fdv, entry.fdv);
+        out.circulatingSupply = addFinite(out.circulatingSupply, entry.circulatingSupply);
+    }
+    return out;
+}
+
+/**
+ * Headline on-chain stats for `stats`: v1's aggregation, with liquidity and
+ * volume from the chain stats, and, whenever some variants are claims on supply
+ * issued elsewhere, supply / market cap / FDV from the issuance-aware
+ * `aggregate`. Otherwise `stats` would count a wrapped or bridged claim on top
+ * of the native supply it represents and disagree with `aggregate` in the same
+ * response. (`totalSupply` keeps v1's figure: the chain stats do not carry it.)
+ */
+export function headlineOnChainStats(
+    v1Stats: AssetStats | null,
+    aggregate: V2Aggregate,
+    volume30dUSD: number | null,
+): AssetStats | null {
+    const merged = mergeAssetStatsWithAggregates(v1Stats, {
+        liquidity: aggregate.liquidity ?? 0,
+        volume24hUSD: aggregate.volume24hUSD ?? 0,
+        volume30dUSD,
+    });
+    if (!merged || aggregate.excludedFromSupplyCount === 0) return merged;
+    return {
+        ...merged,
+        marketCap: aggregate.marketCap,
+        fdv: aggregate.fdv,
+        circulatingSupply: aggregate.circulatingSupply,
+    };
+}
+
+// ---------------------------------------------------------------------------
+// Assembly
+// ---------------------------------------------------------------------------
+
+export interface V2AssetBuildContext {
+    request: Request;
+    asset: AssetResult;
+    /** Every variant of the asset on every chain (active only). */
+    variants: readonly V2VariantResult[];
+    marketByKey: ReadonlyMap<VariantKey, VariantMarketSnapshotResult>;
+    rollupByChain: ReadonlyMap<ChainId, V2ChainRollupResult> | null;
+    advisoriesByMint: ReadonlyMap<string, VariantAdvisory>;
+    coingeckoPrice: CoingeckoPriceSnapshot | null;
+    stockInstrument: StockInstrumentResult | null;
+    stockPrice: StockPriceResult | null;
+    preStocksByMint: ReadonlyMap<string, PreStocksMintSnapshot>;
+    /** Requested strategy, or null for the per-asset default (equities → stock_redeemability). */
+    requestedStrategy: V2PrimaryVariantStrategy | null;
+    /** Drop `blocked` variants before assembling (list surfaces). Detail keeps them. */
+    hideBlocked: boolean;
+    /** Narrow `variants[]` to one chain (stats stay cross-chain). */
+    listChain: ChainId | null;
+    includeVariants: boolean;
+    rank: number | null;
+}
+
+/** Registry-keyed adapter: the ranking / aggregation helpers see the variant key as `mint`. */
+function toRegistryVariant(
+    variant: V2VariantResult,
+    advisory: VariantAdvisory | null,
+    symbol: string | null,
+    name: string | null,
+): AssetVariant {
+    return {
+        variantId: variant.variantId,
+        mint: variant.key,
+        ...(symbol ? { symbol } : {}),
+        ...(name ? { name } : {}),
+        kind: isVariantKind(variant.kind) ? variant.kind : 'spot',
+        ...(variant.issuer ? { issuer: variant.issuer } : {}),
+        ...(variant.issuerUrl ? { issuerUrl: variant.issuerUrl } : {}),
+        trustTier: toTrustTier(variant.trustTier),
+        tags: [...variant.tags],
+        ...(variant.label ? { label: variant.label } : {}),
+        ...(toStockVariantTier(variant.stockVariantTier)
+            ? { stockVariantTier: toStockVariantTier(variant.stockVariantTier)! }
+            : {}),
+        advisory,
+    };
+}
+
+function toCanonicalAsset(asset: AssetResult, variants: readonly AssetVariant[]): CanonicalAsset {
+    return {
+        assetId: asset.assetId,
+        ...(asset.name ? { name: asset.name } : {}),
+        ...(asset.symbol ? { symbol: asset.symbol } : {}),
+        category: asset.category,
+        aliases: asset.aliases,
+        ...(asset.coingeckoId ? { coingeckoId: asset.coingeckoId } : {}),
+        variants: [...variants],
+    };
+}
+
+/** Compiled-registry identity (symbol / name / issuer) for a Solana mint, as v1 merges at read time. */
+function registryIdentity(variant: V2VariantResult): {
+    symbol?: string;
+    name?: string;
+    issuer?: string;
+    issuerUrl?: string;
+} {
+    if (variant.chain !== 'solana') return {};
+    const match = getVariantByMint(variant.address);
+    if (!match) return {};
+    const { symbol, name, issuer, issuerUrl } = match.variant;
+    return {
+        ...(symbol ? { symbol } : {}),
+        ...(name ? { name } : {}),
+        ...(issuer ? { issuer } : {}),
+        ...(issuerUrl ? { issuerUrl } : {}),
+    };
+}
+
+const ASSET_IDS_PREFERRING_REDEEMABLE_VARIANT_PRICE: ReadonlySet<string> = new Set(['tesla', 'nvidia', 'spacex']);
+
+export function buildV2Asset(ctx: V2AssetBuildContext): V2Asset | null {
+    const { asset, request } = ctx;
+    const visible = ctx.hideBlocked
+        ? ctx.variants.filter(v => !isHiddenVariant(v, ctx.advisoriesByMint))
+        : [...ctx.variants];
+    if (ctx.hideBlocked && visible.length === 0 && ctx.variants.length > 0) return null;
+
+    const stockInstrument = ctx.stockInstrument;
+    const responseSymbol = stockInstrument?.symbol ?? asset.symbol ?? null;
+    const imageUrl = resolveAssetImageUrl(request, {
+        assetId: asset.assetId,
+        symbol: responseSymbol,
+        imageUrl: asset.imageUrl ?? null,
+    });
+
+    // Identity per variant: registry (Solana) → market → label; same fallbacks as v1.
+    const identityByKey = new Map<
+        VariantKey,
+        { symbol: string | null; name: string | null; issuer: string | null; issuerUrl: string | null }
+    >();
+    for (const variant of visible) {
+        const registry = registryIdentity(variant);
+        const market = ctx.marketByKey.get(variant.key);
+        const symbol = resolveVariantSymbol({
+            variantSymbol: registry.symbol,
+            marketSymbol: market?.symbol,
+            label: variant.label,
+            canonicalSymbol: responseSymbol,
+        });
+        const name =
+            optionalText(registry.name) ??
+            optionalText(market?.name) ??
+            optionalText(variant.label) ??
+            (symbol || null);
+        identityByKey.set(variant.key, {
+            symbol: symbol || null,
+            name,
+            issuer: registry.issuer ?? variant.issuer,
+            issuerUrl: registry.issuerUrl ?? variant.issuerUrl,
+        });
+    }
+
+    const registryVariants = visible.map(variant => {
+        const identity = identityByKey.get(variant.key)!;
+        return toRegistryVariant(
+            variant,
+            advisoryForVariant(variant, ctx.advisoriesByMint),
+            identity.symbol,
+            identity.name,
+        );
+    });
+    const canonical = toCanonicalAsset(asset, registryVariants);
+
+    const tokenByKey = new Map<VariantKey, TokenMarketSnapshot>();
+    for (const variant of visible) {
+        const market = ctx.marketByKey.get(variant.key);
+        if (!market) continue;
+        tokenByKey.set(variant.key, tokenMarketSnapshotFromConvexMarket(variant.address, market));
+    }
+    const keyRank = new Map<string, number>();
+    for (const [mint, rank] of buildCuratedMintRank()) keyRank.set(chainAddressKey('solana', mint), rank);
+    const excludeKeys = new Set<string>();
+    for (const mint of tradeRestrictedMints(getAdvisoriesByMintSync()))
+        excludeKeys.add(chainAddressKey('solana', mint));
+
+    const strategy: V2PrimaryVariantStrategy =
+        ctx.requestedStrategy ?? (asset.category === 'equity' ? 'stock_redeemability' : 'liquidity');
+    const pick = (pool: CanonicalAsset) =>
+        pickPrimaryVariantWithRanking({
+            asset: pool,
+            mintRank: keyRank,
+            marketByMint: tokenByKey,
+            excludeMints: excludeKeys,
+            options: { strategy },
+        }).variant;
+
+    const priceSelectionAsset = ASSET_IDS_PREFERRING_REDEEMABLE_VARIANT_PRICE.has(asset.assetId)
+        ? (() => {
+              const redeemable = canonical.variants.filter(
+                  v => v.stockVariantTier === 'share_redeemable' || v.stockVariantTier === 'cash_redeemable',
+              );
+              return redeemable.length > 0 ? { ...canonical, variants: redeemable } : canonical;
+          })()
+        : canonical;
+    const primary = pick(priceSelectionAsset);
+    const primaryByChain: Partial<Record<ChainId, AssetVariant>> = {};
+    for (const chain of CHAIN_KINDS) {
+        const pool = canonical.variants.filter(v => v.mint.startsWith(`${chain}:`));
+        if (pool.length === 0) continue;
+        const winner = pick({ ...canonical, variants: pool });
+        if (winner) primaryByChain[chain] = winner;
+    }
+
+    // Stats: v1's aggregation over every chain, liquidity / volume from the chain stats
+    // (worker rollup for Solana), then the v1 headline selection against the reference.
+    const chainStats = computeChainStats(visible, ctx.marketByKey, ctx.rollupByChain);
+    const aggregate = aggregateChainStats(chainStats);
+    const primaryToken = primary ? tokenByKey.get(primary.mint) : undefined;
+    const solanaRollup = ctx.rollupByChain?.get('solana') ?? null;
+    const onChainStats = headlineOnChainStats(
+        aggregateTokenStats(canonical, tokenByKey, primaryToken),
+        aggregate,
+        solanaRollup?.volume30dUSD ?? null,
+    );
+
+    const preStocksMints = selectPreStocksMints(visible.filter(v => v.chain === 'solana').map(v => v.address));
+    const preStocksMarket =
+        preStocksMints.length > 0
+            ? buildPreStocksCanonicalMarket({
+                  variantMints: preStocksMints,
+                  preStocksByMint: ctx.preStocksByMint,
+                  onChainPriceUsd: mint => tokenByKey.get(chainAddressKey('solana', mint))?.price,
+              })
+            : null;
+    const usesStockMarket = stockInstrument !== null || (isCanonicalPublicEquityAsset(canonical) && !preStocksMarket);
+    const coinId = normalizeCoinGeckoCoinIdForAsset({ assetId: asset.assetId, coinId: asset.coingeckoId }) ?? '';
+    const stockSnapshot = ctx.stockPrice;
+    const stats = selectCanonicalAssetStats({
+        coingecko: usesStockMarket ? null : coinId ? ctx.coingeckoPrice : null,
+        stock: stockSnapshot
+            ? { ...stockSnapshot, marketCapUsd: computeCompanyMarketCapUsd(canonical, stockSnapshot) }
+            : null,
+        aggregate: onChainStats,
+        preferAggregateVolume24h: !usesStockMarket,
+        preferStockMarket: usesStockMarket,
+        stockPriceMatchesTokenUnits: isCanonicalPublicEquityAsset(canonical),
+    });
+
+    const referenceMarket: V2ReferenceMarket | null = usesStockMarket
+        ? {
+              source: 'stock',
+              symbol: stockInstrument?.symbol ?? asset.symbol ?? asset.assetId.toUpperCase(),
+              price: stockSnapshot?.priceUsd ?? null,
+              marketCap: computeCompanyMarketCapUsd(canonical, stockSnapshot),
+              volume24hUSD: stockSnapshot?.volume24hUsd ?? null,
+              priceChange24hPercent: stockSnapshot?.priceChange24hPercent ?? null,
+              asOf: stockSnapshot?.asOf ?? null,
+              lastFetchedAt: stockSnapshot?.lastFetchedAt ?? null,
+          }
+        : preStocksMarket
+          ? {
+                source: 'prestocks',
+                symbol: preStocksMarket.symbol,
+                key: chainAddressKey('solana', preStocksMarket.mint),
+                price: preStocksMarket.price,
+                marketCap: preStocksMarket.marketCap,
+                markPriceUsd: preStocksMarket.markPriceUsd,
+                markValuationUsd: preStocksMarket.markValuationUsd,
+                impliedValuationUsd: preStocksMarket.impliedValuationUsd,
+                premiumToMarkPercent: preStocksMarket.premiumToMarkPercent,
+                volume24hUSD: null,
+                priceChange24hPercent: null,
+                asOf: preStocksMarket.asOf,
+                lastFetchedAt: preStocksMarket.lastFetchedAt,
+            }
+          : coinId
+            ? {
+                  source: 'coingecko',
+                  coinId,
+                  price: ctx.coingeckoPrice?.priceUsd ?? null,
+                  marketCap: ctx.coingeckoPrice?.marketCapUsd ?? null,
+                  volume24hUSD: ctx.coingeckoPrice?.volume24hUsd ?? null,
+                  priceChange24hPercent: ctx.coingeckoPrice?.priceChange24hPercent ?? null,
+                  circulatingSupply: ctx.coingeckoPrice?.circulatingSupply ?? null,
+                  totalSupply: ctx.coingeckoPrice?.totalSupply ?? null,
+                  maxSupply: ctx.coingeckoPrice?.maxSupply ?? null,
+                  asOf: ctx.coingeckoPrice?.providerLastUpdatedAt ?? null,
+                  lastFetchedAt: ctx.coingeckoPrice?.lastFetchedAt ?? null,
+              }
+            : null;
+
+    // Liquidity rank across chains (0-based), then the public variant objects.
+    const ordered = [...visible].sort(
+        (a, b) => (ctx.marketByKey.get(b.key)?.liquidity ?? 0) - (ctx.marketByKey.get(a.key)?.liquidity ?? 0),
+    );
+    const rankByKey = new Map<VariantKey, number>(ordered.map((v, index) => [v.key, index] as const));
+    const publicByKey = new Map<VariantKey, V2Variant>();
+    for (const variant of ordered) {
+        const identity = identityByKey.get(variant.key)!;
+        const market = ctx.marketByKey.get(variant.key) ?? null;
+        const tiers = deriveVariantTierFields(market?.liquidity);
+        publicByKey.set(variant.key, {
+            key: variant.key,
+            chain: variant.chain,
+            address: variant.address,
+            assetId: asset.assetId,
+            variantId: variant.variantId,
+            kind: isVariantKind(variant.kind) ? variant.kind : 'spot',
+            issuance: variantIssuance(variant),
+            symbol: identity.symbol,
+            name: identity.name,
+            label: variant.label,
+            decimals: variant.decimals ?? toFiniteNumberOrNull(market?.decimals),
+            logoURI: optionalText(market?.logoURI) ?? imageUrl,
+            issuer: identity.issuer,
+            issuerUrl: identity.issuerUrl,
+            trustTier: tiers.trustTier,
+            liquidityTier: tiers.liquidityTier,
+            stockVariantTier: toStockVariantTier(variant.stockVariantTier),
+            tags: [...variant.tags],
+            advisory: toV2Advisory(advisoryForVariant(variant, ctx.advisoriesByMint)),
+            rank: rankByKey.get(variant.key) ?? 0,
+            explorerUrl: explorerTokenUrl(variant.chain, variant.address),
+            market: toV2Market(market),
+        });
+    }
+
+    // Advisories: from the full (unhidden) set so hidden siblings are still named.
+    const advisories: V2AssetAdvisory[] = [];
+    for (const variant of ctx.variants) {
+        const advisory = toV2Advisory(advisoryForVariant(variant, ctx.advisoriesByMint));
+        if (!advisory) continue;
+        advisories.push({
+            ...advisory,
+            key: variant.key,
+            chain: variant.chain,
+            address: variant.address,
+            variantId: variant.variantId,
+        });
+    }
+    const severity = { blocked: 0, compromised: 1, caution: 2 } as const;
+    advisories.sort((a, b) => severity[a.status] - severity[b.status] || a.key.localeCompare(b.key));
+
+    const chains = CHAIN_KINDS.filter(chain => visible.some(v => v.chain === chain));
+    const primaryVariantByChain: Partial<Record<ChainId, V2Variant>> = {};
+    for (const chain of chains) {
+        const winner = primaryByChain[chain];
+        const out = winner ? publicByKey.get(winner.mint) : undefined;
+        if (out) primaryVariantByChain[chain] = out;
+    }
+    const listed = ctx.listChain ? ordered.filter(v => v.chain === ctx.listChain) : ordered;
+    const symbols = uniqueStrings([responseSymbol ?? '', ...ordered.map(v => identityByKey.get(v.key)?.symbol ?? '')]);
+
+    return {
+        assetId: asset.assetId,
+        name: asset.name ?? null,
+        symbol: responseSymbol,
+        description: optionalText(asset.description),
+        category: asset.category,
+        aliases: [...asset.aliases],
+        symbols,
+        imageUrl,
+        coingeckoId: coinId || null,
+        chains,
+        stats,
+        chainStats,
+        aggregate,
+        referenceMarket,
+        advisories,
+        primaryVariantStrategy: strategy,
+        primaryVariant: primary ? (publicByKey.get(primary.mint) ?? null) : null,
+        primaryVariantByChain,
+        rank: ctx.rank,
+        ...(ctx.includeVariants ? { variants: listed.map(v => publicByKey.get(v.key)!) } : {}),
+    };
+}
+
+/**
+ * A variant on its own, without its asset's full variant set (batch lookups):
+ * same identity / market / advisory rules as `buildV2Asset`, `rank` null.
+ */
+export function buildStandaloneV2Variant(ctx: {
+    request: Request;
+    variant: V2VariantResult;
+    market: VariantMarketSnapshotResult | null;
+    advisoriesByMint: ReadonlyMap<string, VariantAdvisory>;
+    canonicalSymbol: string | null;
+}): V2Variant {
+    const { variant, market } = ctx;
+    const registry = registryIdentity(variant);
+    const symbol = resolveVariantSymbol({
+        variantSymbol: registry.symbol,
+        marketSymbol: market?.symbol,
+        label: variant.label,
+        canonicalSymbol: ctx.canonicalSymbol,
+    });
+    const name =
+        optionalText(registry.name) ?? optionalText(market?.name) ?? optionalText(variant.label) ?? (symbol || null);
+    const tiers = deriveVariantTierFields(market?.liquidity);
+    return {
+        key: variant.key,
+        chain: variant.chain,
+        address: variant.address,
+        assetId: variant.assetId,
+        variantId: variant.variantId,
+        kind: isVariantKind(variant.kind) ? variant.kind : 'spot',
+        issuance: variantIssuance(variant),
+        symbol: symbol || null,
+        name,
+        label: variant.label,
+        decimals: variant.decimals ?? toFiniteNumberOrNull(market?.decimals),
+        logoURI: optionalText(market?.logoURI),
+        issuer: registry.issuer ?? variant.issuer,
+        issuerUrl: registry.issuerUrl ?? variant.issuerUrl,
+        trustTier: tiers.trustTier,
+        liquidityTier: tiers.liquidityTier,
+        stockVariantTier: toStockVariantTier(variant.stockVariantTier),
+        tags: [...variant.tags],
+        advisory: toV2Advisory(advisoryForVariant(variant, ctx.advisoriesByMint)),
+        rank: null,
+        explorerUrl: explorerTokenUrl(variant.chain, variant.address),
+        market: toV2Market(market),
+    };
+}
+
+export function toV2AssetSummary(asset: V2Asset): V2AssetSummary {
+    return {
+        assetId: asset.assetId,
+        name: asset.name,
+        symbol: asset.symbol,
+        category: asset.category,
+        imageUrl: asset.imageUrl,
+        chains: asset.chains,
+    };
+}
+
+function uniqueStrings(values: readonly string[]): string[] {
+    const seen = new Set<string>();
+    const out: string[] = [];
+    for (const value of values) {
+        const trimmed = value.trim();
+        if (!trimmed || seen.has(trimmed)) continue;
+        seen.add(trimmed);
+        out.push(trimmed);
+    }
+    return out;
+}
+
+/** PreStocks reference rows for the Solana variants of `variants`, fresh ones only. */
+export function preStocksMintsOf(variants: readonly V2VariantResult[]): string[] {
+    return selectPreStocksMints(variants.filter(v => v.chain === 'solana').map(v => v.address));
+}
+
+export function preStocksMapFrom(entries: ReadonlyArray<{ mint: string; snapshot: PrestocksPriceResult | null }>) {
+    return freshPreStocksByMint(entries);
+}
+
+/** Stale-fallback health: a list is hollow when fewer than half the rows carry stats. */
+export function assetsResponseLooksHealthy(payload: V2AssetsResponse): boolean {
+    if (payload.assets.length === 0) return payload.total === 0;
+    const withStats = payload.assets.filter(asset => asset.stats !== null).length;
+    return withStats * 2 >= payload.assets.length;
+}

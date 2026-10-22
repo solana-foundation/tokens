@@ -463,6 +463,29 @@ function sanitizeStringRecordAllowEmptyValues(value: unknown): Record<string, st
     return out;
 }
 
+/**
+ * `detail_platforms`: per-platform `{ decimal_place, contract_address }`. Kept
+ * because it is the only CoinGecko source of EVM token decimals; the v2 EVM
+ * variant derivation reads it back from the stored coin jsonb. v1 never
+ * forwards the stored coin verbatim (the detail route picks specific keys),
+ * so storing one more key is wire-safe.
+ */
+export function sanitizeDetailPlatforms(value: unknown): Record<string, { decimal_place: number | null; contract_address: string }> {
+    if (!isRecord(value)) return {};
+    const out: Record<string, { decimal_place: number | null; contract_address: string }> = {};
+    for (const [rawKey, rawValue] of Object.entries(value)) {
+        const key = asNonEmptyString(rawKey);
+        if (!key || !isRecord(rawValue)) continue;
+        const contractAddress = typeof rawValue.contract_address === 'string' ? rawValue.contract_address : '';
+        const decimalPlace =
+            typeof rawValue.decimal_place === 'number' && Number.isFinite(rawValue.decimal_place)
+                ? rawValue.decimal_place
+                : null;
+        out[key] = { decimal_place: decimalPlace, contract_address: contractAddress };
+    }
+    return out;
+}
+
 export function sanitizeCoinMetadata(value: unknown): { ok: true; coin: Record<string, unknown> } | { ok: false; error: string } {
     if (!isRecord(value)) return { ok: false, error: 'CoinGecko coin response is not an object' };
 
@@ -479,6 +502,7 @@ export function sanitizeCoinMetadata(value: unknown): { ok: true; coin: Record<s
     }
 
     coin.platforms = sanitizeStringRecordAllowEmptyValues(value.platforms);
+    coin.detail_platforms = sanitizeDetailPlatforms(value.detail_platforms);
 
     if (Array.isArray(value.categories)) coin.categories = sanitizeStringArray(value.categories);
     if (Array.isArray(value.additional_notices)) coin.additional_notices = sanitizeStringArray(value.additional_notices);

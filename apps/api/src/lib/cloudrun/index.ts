@@ -280,3 +280,27 @@ export {
     type StockOhlcvListArgs,
     type StockOhlcvListResult,
 } from './ohlcvReads';
+
+export {
+    v2AssetsChains,
+    v2AssetsCuratedPrefetch,
+    v2AssetsGetDetail,
+    v2AssetsGetMarketsByKeys,
+    v2AssetsGetVariant,
+    v2AssetsListVariantsByAssetIds,
+    type V2AssetDetailResult,
+    type V2AssetsCuratedPrefetchArgs,
+    type V2AssetsGetDetailArgs,
+    type V2AssetsGetMarketsByKeysArgs,
+    type V2AssetsGetVariantArgs,
+    type V2AssetsListVariantsByAssetIdsArgs,
+    type V2ChainId,
+    type V2ChainRollupResult,
+    type V2ChainsResult,
+    type V2CuratedPrefetchResult,
+    type V2MarketResult,
+    type V2MarketsByKeysEntry,
+    type V2VariantLookupResult,
+    type V2VariantResult,
+    type V2VariantsByAssetIdsEntry,
+} from './v2AssetsReads';
