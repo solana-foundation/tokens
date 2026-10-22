@@ -226,6 +226,12 @@ variable "webacy_depeg_dry_run" {
   description = "When true the depeg sweep records observations and logs would_set/would_clear decisions but never writes an advisory. Flip to false together with WEBACY_DEPEG_DRY_RUN=false on the assets worker at go-live."
 }
 
+variable "webacy_webhook_subscription_id" {
+  type        = map(string)
+  default     = { prd = "497", stg = "496" }
+  description = "Webacy webhook subscription id per env (scripts/webacy-webhook-subscribe.ts --list), keyed by var.env. The daily webacy-webhook-heartbeat job POSTs /webhooks/subscriptions/{id}/test so the usage service logs a signed delivery and the webhook-silent alert measures the pipe, not the market. Update after a --create rotation."
+}
+
 variable "webacy_depeg_max_pages" {
   type        = number
   default     = 4

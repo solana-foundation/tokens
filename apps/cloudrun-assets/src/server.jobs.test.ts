@@ -601,6 +601,9 @@ describe('POST /jobs/:name', () => {
         const depegCronDeps: DepegCronDeps = {
             webacyDepeg: {
                 isConfigured: () => false,
+                async testWebhookSubscription() {
+                    return { ok: false, status: 0, message: 'n/a' };
+                },
                 async fetchDepegToken() {
                     return { ok: false, status: 0, message: 'n/a' };
                 },
@@ -645,6 +648,9 @@ describe('POST /jobs/:name', () => {
         const depegCronDeps: DepegCronDeps = {
             webacyDepeg: {
                 isConfigured: () => false,
+                async testWebhookSubscription() {
+                    return { ok: false, status: 0, message: 'n/a' };
+                },
                 async fetchDepegToken() {
                     return { ok: false, status: 0, message: 'n/a' };
                 },

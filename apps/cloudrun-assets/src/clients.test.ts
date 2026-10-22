@@ -528,6 +528,26 @@ describe('makeWebacyDepegClient', () => {
         }
     });
 
+    test('testWebhookSubscription POSTs /webhooks/subscriptions/{id}/test with the api key and accepts an empty 2xx body', async () => {
+        const { fetchImpl, calls } = recordingFetch(() => new Response(null, { status: 204 }));
+        const client = makeWebacyDepegClient({ apiKey: 'k', baseUrl: 'https://webacy.test/', fetchImpl });
+        const out = await client.testWebhookSubscription('497');
+        expect(calls[0]!.url.href).toBe('https://webacy.test/webhooks/subscriptions/497/test');
+        expect(calls[0]!.init!.method).toBe('POST');
+        expect((calls[0]!.init!.headers as Record<string, string>)['x-api-key']).toBe('k');
+        expect(calls[0]!.init!.body).toBeUndefined();
+        expect(out).toEqual({ ok: true, status: 204 });
+    });
+
+    test('testWebhookSubscription reports HTTP errors and a missing key as ok:false', async () => {
+        const c404 = makeWebacyDepegClient({ apiKey: 'k', fetchImpl: recordingFetch(() => json({ error: 'Subscription not found' }, 404)).fetchImpl });
+        expect(await c404.testWebhookSubscription('9999')).toMatchObject({ ok: false, status: 404, message: expect.stringContaining('Subscription not found') });
+        const { fetchImpl, calls } = recordingFetch(() => json({}));
+        const noKey = makeWebacyDepegClient({ apiKey: undefined, fetchImpl });
+        expect(await noKey.testWebhookSubscription('497')).toMatchObject({ ok: false, status: 0 });
+        expect(calls).toHaveLength(0);
+    });
+
     test('unmonitored list items (tier/score null) normalise to tier null', async () => {
         const { fetchImpl } = recordingFetch(() =>
             json({ items: [{ address: USDT, chain: 'sol', symbol: 'usde', score: null, tier: null, price: null, peg_value: null, has_monitor_data: false }] }),

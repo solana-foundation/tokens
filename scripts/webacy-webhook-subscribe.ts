@@ -5,6 +5,7 @@
  *   bun scripts/webacy-webhook-subscribe.ts --list
  *   bun scripts/webacy-webhook-subscribe.ts --create [--dry-run]
  *   bun scripts/webacy-webhook-subscribe.ts --deliveries [--since 2026-06-19T00:00:00Z]
+ *   bun scripts/webacy-webhook-subscribe.ts --test <subscriptionId>
  *   bun scripts/webacy-webhook-subscribe.ts --retry <deliveryId>
  *   bun scripts/webacy-webhook-subscribe.ts --delete <subscriptionId>
  *
@@ -12,6 +13,12 @@
  * `<usage service url>/hooks/webacy`), WEBACY_API_BASE (default
  * https://api.webacy.com), DOPPLER_PROJECT (default tokens), DOPPLER_CONFIG
  * (default prd).
+ *
+ * `--test` asks Webacy to deliver a signed synthetic `{ test: true }` event to
+ * the subscription's URL (same call the daily `webacy-webhook-heartbeat` job
+ * on the assets worker makes). The receiver logs `depeg_webhook_received` +
+ * `depeg_webhook_ignored why=test_event`; a `rejected_signature` row instead
+ * means WEBACY_WEBHOOK_SECRET on our side is stale.
  *
  * `--create` refuses when a subscription for the same webhookUrl already
  * exists, then POSTs `{ webhookUrl, eventTypes: ['DEPEG_TIER_CHANGE'],
@@ -57,21 +64,29 @@ type Subscription = {
     event_types?: string[];
     filters?: unknown;
     active?: boolean;
+    is_active?: boolean;
     status?: string;
     createdAt?: string;
     created_at?: string;
+    updated_at?: string;
 };
 
+// Live field names (2026-10-21): id, subscription_id, event_type, status,
+// http_status_code, error_message, attempts, created_at, last_attempt_at.
 type Delivery = {
     id?: string;
     delivery_id?: string;
+    subscription_id?: string;
     event_id?: string;
     event_type?: string;
     status?: string;
     response_status?: number;
+    http_status_code?: number | null;
+    error_message?: string | null;
     attempts?: number;
     delivered_at?: string;
     created_at?: string;
+    last_attempt_at?: string;
 };
 
 interface Args {
@@ -79,6 +94,7 @@ interface Args {
     create: boolean;
     deliveries: boolean;
     since: string | null;
+    test: string | null;
     retry: string | null;
     del: string | null;
     dryRun: boolean;
@@ -91,6 +107,7 @@ function usage(exitCode: number): never {
             '  --list',
             '  --create                      (env WEBACY_WEBHOOK_URL required)',
             '  --deliveries [--since <iso>]',
+            '  --test <subscriptionId>      (Webacy delivers a signed synthetic event)',
             '  --retry <deliveryId>',
             '  --delete <subscriptionId>',
         ].join('\n'),
@@ -104,6 +121,7 @@ function parseArgs(argv: string[]): Args {
         create: false,
         deliveries: false,
         since: null,
+        test: null,
         retry: null,
         del: null,
         dryRun: false,
@@ -132,6 +150,9 @@ function parseArgs(argv: string[]): Args {
             case '--since':
                 args.since = next();
                 break;
+            case '--test':
+                args.test = next();
+                break;
             case '--retry':
                 args.retry = next();
                 break;
@@ -150,9 +171,14 @@ function parseArgs(argv: string[]): Args {
                 usage(2);
         }
     }
-    const commands = [args.list, args.create, args.deliveries, args.retry !== null, args.del !== null].filter(
-        Boolean,
-    ).length;
+    const commands = [
+        args.list,
+        args.create,
+        args.deliveries,
+        args.test !== null,
+        args.retry !== null,
+        args.del !== null,
+    ].filter(Boolean).length;
     if (commands !== 1) usage(2);
     if (args.since && !Number.isFinite(Date.parse(args.since))) {
         console.error(`--since must be an ISO timestamp, got ${args.since}`);
@@ -234,8 +260,9 @@ function printSubscriptions(subs: Subscription[]): void {
                 webhookUrl: subscriptionUrl(sub),
                 eventTypes: sub.eventTypes ?? sub.event_types ?? null,
                 filters: sub.filters ?? null,
-                active: sub.active ?? sub.status ?? null,
+                active: sub.active ?? sub.is_active ?? sub.status ?? null,
                 createdAt: sub.createdAt ?? sub.created_at ?? null,
+                updatedAt: sub.updated_at ?? null,
             }),
         );
     }
@@ -370,16 +397,41 @@ async function deliveries(since: string | null): Promise<void> {
         console.log(
             JSON.stringify({
                 id: row.id ?? row.delivery_id ?? null,
+                subscriptionId: row.subscription_id ?? null,
                 eventId: row.event_id ?? null,
                 eventType: row.event_type ?? null,
                 status: row.status ?? null,
-                responseStatus: row.response_status ?? null,
+                responseStatus: row.response_status ?? row.http_status_code ?? null,
+                error: row.error_message ?? null,
                 attempts: row.attempts ?? null,
-                deliveredAt: row.delivered_at ?? row.created_at ?? null,
+                createdAt: row.created_at ?? row.delivered_at ?? null,
+                lastAttemptAt: row.last_attempt_at ?? null,
             }),
         );
     }
     console.log(`${filtered.length} deliveries`);
+}
+
+async function testSubscription(id: string, dryRun: boolean): Promise<void> {
+    const existing = await listSubscriptions();
+    const target = existing.find(sub => subscriptionId(sub) === id);
+    if (!target) {
+        console.error(`FAILED: no subscription with id ${id}. Current subscriptions:`);
+        printSubscriptions(existing);
+        process.exit(1);
+    }
+    if (dryRun) {
+        console.log(
+            `DRY RUN: would POST ${apiBase}/webhooks/subscriptions/${encodeURIComponent(id)}/test (${subscriptionUrl(target)})`,
+        );
+        return;
+    }
+    const { status, data } = await api<unknown>('POST', `/webhooks/subscriptions/${encodeURIComponent(id)}/test`);
+    console.log(`test delivery requested for subscription ${id} -> ${subscriptionUrl(target)} (HTTP ${status})`);
+    if (data) console.log(JSON.stringify(data));
+    console.log(
+        'next: expect depeg_webhook_received + depeg_webhook_ignored why=test_event on the usage service, and a new row in --deliveries',
+    );
 }
 
 async function retry(deliveryId: string, dryRun: boolean): Promise<void> {
@@ -425,6 +477,8 @@ async function main(): Promise<void> {
         await create(args.dryRun);
     } else if (args.deliveries) {
         await deliveries(args.since);
+    } else if (args.test !== null) {
+        await testSubscription(args.test, args.dryRun);
     } else if (args.retry !== null) {
         await retry(args.retry, args.dryRun);
     } else if (args.del !== null) {

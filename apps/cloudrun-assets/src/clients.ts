@@ -458,7 +458,10 @@ export function makeWebacyDepegClient(opts: MakeWebacyDepegOptions): WebacyDepeg
 
     type Raw = { ok: true; status: number; data: unknown } | { ok: false; status: number; message: string };
 
-    async function request(url: string, init?: { method: 'POST'; body: unknown }): Promise<Raw> {
+    async function request(
+        url: string,
+        init?: { method: 'POST'; body?: unknown; allowEmpty?: boolean },
+    ): Promise<Raw> {
         if (!apiKey) return { ok: false, status: 0, message: 'WEBACY_API_KEY not configured' };
         try {
             const res = await withExternalTiming('webacy', url, () =>
@@ -467,9 +470,9 @@ export function makeWebacyDepegClient(opts: MakeWebacyDepegOptions): WebacyDepeg
                     headers: {
                         'x-api-key': apiKey,
                         Accept: 'application/json',
-                        ...(init ? { 'content-type': 'application/json' } : {}),
+                        ...(init?.body !== undefined ? { 'content-type': 'application/json' } : {}),
                     },
-                    ...(init ? { body: JSON.stringify(init.body) } : {}),
+                    ...(init?.body !== undefined ? { body: JSON.stringify(init.body) } : {}),
                     signal: AbortSignal.timeout(EXTERNAL_FETCH_TIMEOUT_MS),
                 }),
             );
@@ -487,7 +490,12 @@ export function makeWebacyDepegClient(opts: MakeWebacyDepegOptions): WebacyDepeg
                     message: json ? JSON.stringify(json).slice(0, 500) : res.statusText || 'Request failed',
                 };
             }
-            if (json === null) return { ok: false, status: res.status, message: 'non-JSON response' };
+            if (json === null) {
+                // Side-effecting endpoints (webhook test deliveries) may answer
+                // 2xx with an empty body; that is a success, not a parse error.
+                if (init?.allowEmpty) return { ok: true, status: res.status, data: null };
+                return { ok: false, status: res.status, message: 'non-JSON response' };
+            }
             return { ok: true, status: res.status, data: json };
         } catch (err) {
             return { ok: false, status: 0, message: err instanceof Error ? err.message : String(err) };
@@ -521,6 +529,16 @@ export function makeWebacyDepegClient(opts: MakeWebacyDepegOptions): WebacyDepeg
 
     return {
         isConfigured: () => apiKey.length > 0,
+
+        async testWebhookSubscription(subscriptionId) {
+            // Webacy signs and delivers a synthetic `{ test: true }` event to
+            // the subscription's URL, so a 2xx here means the whole pipe
+            // (subscription, URL, secret) is exercised end to end.
+            const url = `${baseUrl}/webhooks/subscriptions/${encodeURIComponent(subscriptionId)}/test`;
+            const res = await request(url, { method: 'POST', allowEmpty: true });
+            if (!res.ok) return res;
+            return { ok: true, status: res.status };
+        },
 
         async fetchDepegToken({ chain: chainArg, address }) {
             const chain = toWebacyChainSlug(chainArg);
