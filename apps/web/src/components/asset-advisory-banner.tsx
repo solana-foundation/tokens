@@ -15,6 +15,7 @@ import {
     type AssetAdvisory,
     type AssetAdvisoryEntry,
 } from '@/lib/asset-advisory';
+import { buildVariantHref } from '@/lib/coin-href';
 import { WEBACY_ATTRIBUTION_URL, advisorySourceAttribution } from '@/lib/stablecoin-health';
 
 interface AssetAdvisoryBannerProps {
@@ -161,13 +162,15 @@ export function AssetAdvisorySiblingNotice({
                 {siblingNoticeCopy(entries, displayName)}{' '}
                 <span className="inline-flex flex-wrap items-center gap-x-1">
                     {entries.map((entry, index) => (
-                        <span key={entry.mint} className="inline-flex items-center">
+                        <span key={entry.key} className="inline-flex items-center">
                             <TrackedLink
-                                href={`/${encodeURIComponent(assetId)}?solana=${encodeURIComponent(entry.mint)}`}
+                                href={buildVariantHref(assetId, entry)}
                                 trackingEvent="variant_clicked"
                                 trackingProperties={advisoryEventProps(entry, {
                                     asset_id: assetId,
-                                    variant_mint: entry.mint,
+                                    variant_key: entry.key,
+                                    variant_chain: entry.chain,
+                                    variant_mint: entry.address,
                                     ...(entry.symbol ? { variant_symbol: entry.symbol } : {}),
                                     surface: 'advisory_sibling_notice',
                                 })}

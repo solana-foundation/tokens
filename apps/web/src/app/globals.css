@@ -317,3 +317,44 @@ samp {
         animation: registry-badge-out 0.01ms linear both;
     }
 }
+
+/* Asset header chain mark: scales up from nothing on select, down to nothing on clear (250ms). */
+@keyframes token-scale-in {
+    from {
+        transform: scale(0);
+    }
+
+    to {
+        transform: scale(1);
+    }
+}
+
+@keyframes token-scale-out {
+    from {
+        transform: scale(1);
+    }
+
+    to {
+        transform: scale(0);
+    }
+}
+
+.token-chain-badge {
+    transform-origin: center;
+    animation: token-scale-in 0.25s cubic-bezier(0, 0, 0.2, 1) both;
+}
+
+.token-chain-badge[data-state='closed'] {
+    animation: token-scale-out 0.25s cubic-bezier(0.4, 0, 1, 1) both;
+}
+
+/* Reduced motion: no scaling; keep near-instant exits so `animationend` still unmounts. */
+@media (prefers-reduced-motion: reduce) {
+    .token-chain-badge {
+        animation: none;
+    }
+
+    .token-chain-badge[data-state='closed'] {
+        animation: token-scale-out 0.01ms linear both;
+    }
+}

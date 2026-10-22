@@ -2,37 +2,35 @@ import { Suspense, cache, type ComponentProps } from 'react';
 import Image from 'next/image';
 import Link from 'next/link';
 import { ArrowUpRight } from 'lucide-react';
+import { connection } from 'next/server';
 
-import type {
-    AssetVariant,
-    CanonicalAsset,
-    CompactPegHealth,
-    LiquidityTier,
-    TrustTier,
-    VariantHub,
-} from '@tokens/asset-registry';
-import { getVariantHubById, liquidityTierPriority } from '@tokens/asset-registry';
+import type { AssetCategory, CanonicalAsset, VariantHub } from '@tokens/asset-registry';
+import { getVariantHubById } from '@tokens/asset-registry';
+import { CHAINS, CHAIN_KINDS, explorerTokenUrl, type ChainKind } from '@tokens/asset-registry/chains';
 import { Skeleton } from '@tokens/ui/skeleton';
 
 import { TokenHeader } from '@/app/token/[address]/components/token-header';
 import { AssetAdvisoryBanner, AssetAdvisorySiblingNotice } from '@/components/asset-advisory-banner';
 import { Logo } from '@/components/logo';
 import { TokenViewedEvent } from '@/components/token-viewed-event';
+import type { V2AssetStats, V2ChainStats, V2ReferenceMarket, V2Variant } from '@/lib/api-v2-types';
+import { formatChainList } from '@/lib/format-chain-list';
 import {
     collectVariantAdvisories,
     getSiblingAdvisories,
     getViewedAdvisory,
     isTradeBlocked,
-    normalizeAdvisory,
     type AssetAdvisory,
-    type AssetAdvisoryEntry,
 } from '@/lib/asset-advisory';
+import { resolveAssetPageCapabilities } from '@/lib/asset-page-capabilities';
+import { solanaMintOf, toAssetPageVariant, type AssetPageVariant } from '@/lib/asset-page-variant';
+import { buildVariantHref } from '@/lib/coin-href';
 import { cleanTokenName, getMintLogoOverride, getTokenLogoURLForMintWithSecondarySymbol } from '@/lib/logo-overrides';
 import { fetchApiAppJsonOrNull } from '@/lib/api-app';
 import { formatLargeNumber } from '@/lib/format';
-import { isStablecoinCategory, normalizeCompactPegHealth } from '@/lib/stablecoin-health';
+import { isStablecoinCategory } from '@/lib/stablecoin-health';
 import { getGlobalTokenStats, type GlobalTokenStats } from '@/lib/coingecko';
-import { looksLikeSolanaMintAddress } from '@/lib/solana-address';
+import type { RequestedVariantRef } from '@/lib/requested-variant';
 import { AssetPriceChartSection } from './components/asset-price-chart-section';
 import { AssetMarketsSection } from './components/asset-markets-section';
 import { AssetMarketsOverviewSection } from './components/asset-markets-overview-section';
@@ -42,152 +40,31 @@ import { AssetStatsSection } from './components/asset-stats-section';
 import { AssetVariantsList } from './components/asset-variants-list';
 import { TokenPageBackgroundBlur, TokenPageScaffold, TokenPageSidebar } from './components/token-page-shell';
 import { normalizeOptionalText, pickFirstDisplayName, pickFirstSymbol } from './lib/asset-display';
+import { selectOrLoadVariantForKey } from '@/lib/token-social-image-data';
+import { loadV1MintDetail, loadV2Asset, loadV2VariantOwner } from './lib/load-v2-asset';
 import { normalizeLogoSrc } from '@/lib/normalize-logo-src';
 
-interface AssetPageProps {
-    asset: CanonicalAsset;
-    /** The original `/[name]` param; can differ from `asset.assetId` when using CoinGecko IDs. */
-    requestedName: string;
-    /** Optional mint to render as the active variant (e.g. `?solana=...` or `/token/[mint]`). */
-    requestedMint?: string;
-}
-
-interface MarketSnapshot {
-    source?: 'birdeye' | 'rwa_xyz' | 'clickhouse_trades';
-    metricsSource?: 'birdeye' | 'rwa_xyz' | 'clickhouse_trades';
-    price: number | null;
-    liquidity: number | null;
-    volume1hUSD?: number | null;
-    volume24hUSD: number | null;
-    trade1h?: number | null;
-    trade24h?: number | null;
-    uniqueWallet1h?: number | null;
-    uniqueWallet24h?: number | null;
-    marketCap: number | null;
-    fdv?: number | null;
-    holder?: number | null;
-    totalSupply?: number | null;
-    circulatingSupply?: number | null;
-    priceChange24hPercent: number | null;
-    priceChange1hPercent: number | null;
-    decimals: number | null;
-    logoURI: string | null;
-    // These may or may not be present depending on the endpoint/version.
-    symbol?: string;
+/** Identity the streamed shell renders before the v2 response lands (registry or already-cached v2). */
+export interface AssetShellIdentity {
+    assetId: string;
     name?: string;
-    lastTradeAt?: number | null;
-    asOf?: number | null;
-    lastFetchedAt?: number | null;
-}
-
-interface VariantExecutionQualitySnapshot {
-    source: 'clickhouse_fill_quality';
-    range: '24h';
-    horizon: '5s';
-    quoteMint: string;
-    volume24hUSD: number;
-    trade24h: number;
-    botVolume24hUSD: number;
-    botTrade24h: number;
-    botVolumeRatio: number;
-    fee24hUSD: number;
-    feeBps: number;
-    flowSourceCount: number;
-    markoutPnl24hUSD: number | null;
-    markoutCount: number | null;
-    markoutBps: number | null;
-    executionScore: number;
-    isEligibleForPrimary: boolean;
-    asOf: number | null;
-    lastComputedAt: number;
-}
-
-type CanonicalMarketSnapshot =
-    | {
-          source: 'coingecko';
-          coinId: string;
-          price: number | null;
-          marketCap: number | null;
-          volume24hUSD: number | null;
-          priceChange24hPercent: number | null;
-          lastFetchedAt: number | null;
-          providerLastUpdatedAt: number | null;
-      }
-    | {
-          source: 'clickhouse_stock';
-          symbol: string;
-          price: number | null;
-          marketCap?: number | null;
-          volume24hUSD: number | null;
-          priceChange24hPercent: number | null;
-          lastFetchedAt: number | null;
-          providerLastUpdatedAt: number | null;
-          asOf: number | null;
-      }
-    | {
-          source: 'prestocks';
-          symbol: string;
-          mint: string;
-          price: number | null;
-          /** Implied company valuation — NOT the tokenized float value. */
-          marketCap: number | null;
-          markPriceUsd: number | null;
-          markValuationUsd: number | null;
-          impliedValuationUsd: number | null;
-          premiumToMarkPercent: number | null;
-          volume24hUSD: number | null;
-          priceChange24hPercent: number | null;
-          lastFetchedAt: number | null;
-          providerLastUpdatedAt: number | null;
-          asOf: number | null;
-      };
-
-/** PreStocks reference block attached to variants whose mint is a PreStocks token. */
-interface PreStocksVariantSnapshot {
     symbol?: string;
-    markPriceUsd: number | null;
-    markValuationUsd: number | null;
-    impliedValuationUsd: number | null;
-    premiumToMarkPercent: number | null;
-    lastFetchedAt?: number | null;
+    category: AssetCategory;
+    coingeckoId?: string;
+    /** Compiled registry asset when the id is in the registry (supplies Solana variants for the fallback). */
+    registryAsset?: CanonicalAsset | null;
+    /** `registryAsset` came from the v1 resolver (a mint v2 has no variant row for); v2 is never consulted. */
+    v1Fallback?: boolean;
 }
 
-interface AssetStatsSnapshot {
-    price: number | null;
-    liquidity: number | null;
-    volume24hUSD: number | null;
-    marketCap: number | null;
-    fdv?: number | null;
-    totalSupply?: number | null;
-    circulatingSupply?: number | null;
-    priceChange24hPercent: number | null;
-    priceChange1hPercent: number | null;
+interface AssetPageProps {
+    assetId: string;
+    /** The original `/[name]` param; can differ from `assetId` when using aliases / CoinGecko ids. */
+    requestedName: string;
+    /** The variant the URL selects (`?{chain}={address}` or a bare mint path), if any. */
+    requested: RequestedVariantRef | null;
+    shell: AssetShellIdentity;
 }
-
-interface VariantWithMarket extends AssetVariant {
-    liquidityTier?: LiquidityTier;
-    market: MarketSnapshot | null;
-    executionQuality?: VariantExecutionQualitySnapshot | null;
-    /** Best-effort display */
-    displaySymbol: string;
-    displayName: string;
-    /** Normalized advisory on this mint (set explicitly in `buildVariantsWithMarket`). */
-    advisory?: AssetAdvisory | null;
-    /** Normalized live peg status (stablecoin assets only; set explicitly in `buildVariantsWithMarket`). */
-    pegHealth?: CompactPegHealth | null;
-}
-
-type ApiAssetVariant = AssetVariant & {
-    liquidityTier?: LiquidityTier;
-    market?: MarketSnapshot & { lastFetchedAt?: number; source?: string };
-    executionQuality?: VariantExecutionQualitySnapshot | null;
-    rank?: number;
-    preStocks?: PreStocksVariantSnapshot | null;
-    /** `{ status, reason, url, since } | null`, always present on the API; decoded defensively. */
-    advisory?: AssetAdvisory | null;
-    /** `{ tier, deviationPct, updatedAt, stale } | null`; only emitted for `category === 'stablecoin'`. */
-    pegHealth?: CompactPegHealth | null;
-};
 
 interface AssetIncludeOk<T> {
     ok: true;
@@ -202,149 +79,48 @@ interface AssetIncludeError {
 
 type AssetIncludeResult<T> = AssetIncludeOk<T> | AssetIncludeError;
 
-interface AssetsV1AssetResponse {
-    asset: {
-        assetId: string;
-        name?: string;
-        symbol?: string;
-        category?: CanonicalAsset['category'];
-        coingeckoId?: string;
-        description?: string;
-        canonicalMarket?: CanonicalMarketSnapshot;
-        imageUrl?: string | null;
-        stats?: AssetStatsSnapshot | null;
-        primaryVariant:
-            | (AssetVariant & {
-                  liquidityTier?: LiquidityTier;
-                  market?: MarketSnapshot & { lastFetchedAt?: number; source?: string };
-                  executionQuality?: VariantExecutionQualitySnapshot | null;
-                  rank?: number;
-                  preStocks?: PreStocksVariantSnapshot | null;
-                  advisory?: AssetAdvisory | null;
-                  pegHealth?: CompactPegHealth | null;
-              })
-            | null;
-        variantGroups: Partial<
-            Record<'spot' | 'etf' | 'yield' | 'leveraged' | 'basket' | 'lst' | 'tokenizedEquity', ApiAssetVariant[]>
-        >;
-        /** Asset-level summary (`[]` when none); includes variants the route hid. */
-        advisories?: AssetAdvisoryEntry[] | null;
-    };
+/** v1 `include=profile` payload (CoinGecko profile: links, description, global stats); still v1-served. */
+interface AssetsV1ProfileResponse {
     includes?: {
         profile?: AssetIncludeResult<GlobalTokenStats>;
     };
 }
 
-function effectiveLiquidityTier(variant: { liquidityTier?: LiquidityTier; trustTier: TrustTier }): LiquidityTier {
-    return variant.liquidityTier ?? variant.trustTier;
-}
-
-function pickPrimaryVariant(
-    variants: VariantWithMarket[],
-    options: { category?: CanonicalAsset['category'] } = {},
-): VariantWithMarket | null {
-    if (variants.length === 0) return null;
-
-    const candidates =
-        options.category === 'equity'
-            ? variants.filter(
-                  v => v.stockVariantTier === 'share_redeemable' || v.stockVariantTier === 'cash_redeemable',
-              )
-            : variants;
-    const rankedVariants = candidates.length > 0 ? candidates : variants;
-
-    const byLiquidity = rankedVariants.slice().sort((a, b) => (b.market?.liquidity ?? 0) - (a.market?.liquidity ?? 0));
-    const bestLiquidity = byLiquidity[0]?.market?.liquidity ?? 0;
-    const liquidityCandidates = byLiquidity.filter(v => (v.market?.liquidity ?? 0) === bestLiquidity);
-
-    const byTrust = liquidityCandidates
-        .slice()
-        .sort(
-            (a, b) =>
-                liquidityTierPriority(effectiveLiquidityTier(b)) - liquidityTierPriority(effectiveLiquidityTier(a)),
-        );
-    const bestTrust = liquidityTierPriority(effectiveLiquidityTier(byTrust[0] ?? { trustTier: 'tier3' }));
-    const trustCandidates = byTrust.filter(v => liquidityTierPriority(effectiveLiquidityTier(v)) === bestTrust);
-
-    const byVolume = trustCandidates
-        .slice()
-        .sort((a, b) => (b.market?.volume24hUSD ?? 0) - (a.market?.volume24hUSD ?? 0));
-
-    return byVolume[0] ?? trustCandidates[0] ?? rankedVariants[0] ?? null;
-}
-
-function shouldShowSingletonVariantBadge(asset: CanonicalAsset): boolean {
-    return asset.category === 'equity' && asset.variants.length === 1;
+function shouldShowSingletonVariantBadge(category: AssetCategory, variantCount: number): boolean {
+    return category === 'equity' && variantCount === 1;
 }
 
 function buildVariantGroup(
     assetId: string,
     displayName: string,
-    variants: VariantWithMarket[],
+    variants: readonly AssetPageVariant[],
     registryHub?: VariantHub | null,
-) {
+): VariantHub | null {
     if (variants.length === 0) return null;
 
-    // API variants (registry ∪ DB) decide membership so admin-added variants
-    // appear without a redeploy; the static registry hub only supplies labels.
+    // API variants (registry ∪ DB, every chain) decide membership so admin-added
+    // variants appear without a redeploy; the static registry hub only supplies
+    // labels for Solana rows.
     const registryLabelByMint = new Map(
         (registryHub?.addresses ?? []).map(item => [item.address, item.label] as const),
     );
 
-    return {
-        id: assetId,
-        label: `${displayName} variants`,
-        addresses: (() => {
-            const unique: Array<{ address: string; label?: string }> = [];
-            const seen = new Set<string>();
-            for (const variant of variants) {
-                if (seen.has(variant.mint)) continue;
-                seen.add(variant.mint);
-                const label = registryLabelByMint.get(variant.mint) ?? variant.label?.trim() ?? undefined;
-                unique.push({ address: variant.mint, ...(label ? { label } : {}) });
-            }
-            return unique;
-        })(),
-    };
-}
+    const unique: VariantHub['addresses'] = [];
+    const seen = new Set<string>();
+    for (const variant of variants) {
+        if (seen.has(variant.key)) continue;
+        seen.add(variant.key);
+        const registryLabel = variant.chain === 'solana' ? registryLabelByMint.get(variant.address) : undefined;
+        const label = registryLabel ?? variant.label?.trim() ?? undefined;
+        unique.push({ address: variant.address, chain: variant.chain, ...(label ? { label } : {}) });
+    }
 
-function getProviderOnlyLabel(value: string | undefined | null): 'xstock' | 'ondo' | null {
-    const normalized = (value ?? '')
-        .trim()
-        .toLowerCase()
-        .replace(/[^a-z0-9]/g, '');
-    if (normalized === 'xstock') return 'xstock';
-    if (normalized === 'ondo') return 'ondo';
-    return null;
-}
-
-function deriveProviderVariantSymbol(
-    provider: 'xstock' | 'ondo' | null,
-    canonicalSymbol: string,
-    marketSymbol: string | undefined | null,
-): string {
-    if (!provider || !canonicalSymbol) return '';
-
-    const normalizedCanonical = canonicalSymbol.trim();
-    const normalizedMarket = (marketSymbol ?? '').trim();
-    const marketLooksCanonical =
-        !normalizedMarket || normalizedMarket.toLowerCase() === normalizedCanonical.toLowerCase();
-
-    if (!marketLooksCanonical) return '';
-    return provider === 'xstock' ? `${normalizedCanonical}x` : `${normalizedCanonical}on`;
-}
-
-function isCanonicalSymbolMatch(value: string | undefined | null, canonicalSymbol: string): boolean {
-    const normalizedValue = (value ?? '').trim();
-    const normalizedCanonical = canonicalSymbol.trim();
-    return Boolean(
-        normalizedValue && normalizedCanonical && normalizedValue.toLowerCase() === normalizedCanonical.toLowerCase(),
-    );
+    return { id: assetId, label: `${displayName} variants`, addresses: unique };
 }
 
 function humanizeAssetRef(value: string | undefined | null): string {
     const trimmed = (value ?? '').trim();
-    if (!trimmed || looksLikeSolanaMintAddress(trimmed)) return '';
+    if (!trimmed || /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(trimmed) || /^0x[0-9a-fA-F]{40}$/.test(trimmed)) return '';
 
     const withoutProviderPrefix = trimmed.replace(/^xstock[-_]/i, '').replace(/^ondo[-_]/i, '');
     return withoutProviderPrefix
@@ -354,72 +130,50 @@ function humanizeAssetRef(value: string | undefined | null): string {
         .join(' ');
 }
 
-function buildVariantsWithMarket(
+/** Registry fallback when the v2 fetch returns null: Solana identity only, no markets. */
+function registryVariantToPageVariant(
     asset: CanonicalAsset,
-    tokenByMint: Map<string, MarketSnapshot>,
-    options?: {
-        assetSymbol?: string;
-        assetName?: string;
-        advisoryByMint?: ReadonlyMap<string, AssetAdvisory>;
-        pegHealthByMint?: ReadonlyMap<string, CompactPegHealth>;
-    },
-): VariantWithMarket[] {
-    const assetFallbackSymbol = pickFirstSymbol(options?.assetSymbol, asset.symbol);
-    const assetFallbackName = pickFirstDisplayName(options?.assetName, asset.name) || assetFallbackSymbol;
-
-    return asset.variants.map(variant => {
-        const market = tokenByMint.get(variant.mint) ?? null;
-        // A label equal to the asset's own symbol (e.g. ONDO) is not the Ondo/xStock issuer marker.
-        const providerLabel = isCanonicalSymbolMatch(variant.label, assetFallbackSymbol)
-            ? null
-            : getProviderOnlyLabel(variant.label);
-        const labelFallback = providerLabel ? '' : variant.label;
-        const variantSymbol = pickFirstSymbol(variant.symbol);
-        const variantSymbolFallback =
-            providerLabel &&
-            (isCanonicalSymbolMatch(variantSymbol, assetFallbackSymbol) || getProviderOnlyLabel(variantSymbol))
-                ? ''
-                : variantSymbol;
-        const marketSymbolFallback =
-            providerLabel && isCanonicalSymbolMatch(market?.symbol, assetFallbackSymbol) ? '' : market?.symbol;
-        const providerDisplaySymbol = deriveProviderVariantSymbol(providerLabel, assetFallbackSymbol, market?.symbol);
-
-        const displaySymbol =
-            pickFirstSymbol(variantSymbolFallback, providerDisplaySymbol, marketSymbolFallback, labelFallback) ||
-            assetFallbackSymbol ||
-            '???';
-        const displayName =
-            pickFirstDisplayName(variant.name, market?.name, assetFallbackName, labelFallback) || displaySymbol;
-
-        return {
-            ...variant,
-            market,
-            executionQuality: (variant as { executionQuality?: VariantExecutionQualitySnapshot | null })
-                .executionQuality,
-            displaySymbol,
-            displayName,
-            // Set explicitly (not via the spread) so the API annotation always
-            // wins over whatever the registry/DB variant object carried.
-            advisory: options?.advisoryByMint?.get(variant.mint) ?? normalizeAdvisory(variant.advisory),
-            pegHealth:
-                options?.pegHealthByMint?.get(variant.mint) ??
-                normalizeCompactPegHealth((variant as { pegHealth?: unknown }).pegHealth),
-        };
-    });
+    variant: CanonicalAsset['variants'][number],
+): AssetPageVariant {
+    const v2: V2Variant = {
+        key: `solana:${variant.mint}`,
+        chain: 'solana',
+        address: variant.mint,
+        assetId: asset.assetId,
+        variantId: variant.variantId,
+        kind: variant.kind,
+        issuance: variant.kind === 'bridged' ? 'bridged' : variant.kind === 'wrapped' ? 'wrapped' : 'native',
+        symbol: variant.symbol ?? null,
+        name: variant.name ?? null,
+        label: variant.label ?? null,
+        decimals: null,
+        logoURI: null,
+        issuer: variant.issuer ?? null,
+        issuerUrl: variant.issuerUrl ?? null,
+        trustTier: variant.trustTier,
+        liquidityTier: variant.trustTier,
+        stockVariantTier: variant.stockVariantTier ?? null,
+        tags: [...variant.tags],
+        // Compiled registry data never carries an advisory; the v1 fallback does, and it must survive.
+        advisory: variant.advisory ? { ...variant.advisory, source: variant.advisory.source ?? 'admin' } : null,
+        rank: null,
+        explorerUrl: explorerTokenUrl('solana', variant.mint),
+        market: null,
+    };
+    return toAssetPageVariant(v2, { symbol: asset.symbol, name: asset.name });
 }
 
-function getApiVariantRows(groups: AssetsV1AssetResponse['asset']['variantGroups'] | undefined): ApiAssetVariant[] {
-    if (!groups) return [];
-
-    return [
-        ...(groups.spot ?? []),
-        ...(groups.etf ?? []),
-        ...(groups.yield ?? []),
-        ...(groups.leveraged ?? []),
-        ...(groups.basket ?? []),
-        ...(groups.lst ?? []),
-        ...(groups.tokenizedEquity ?? []),
-    ];
+/** Liquidity-first fallback primary (the API picks the real one). */
+function pickFallbackPrimary(variants: readonly AssetPageVariant[], category: AssetCategory): AssetPageVariant | null {
+    if (variants.length === 0) return null;
+    const candidates =
+        category === 'equity'
+            ? variants.filter(
+                  v => v.stockVariantTier === 'share_redeemable' || v.stockVariantTier === 'cash_redeemable',
+              )
+            : variants;
+    const pool = candidates.length > 0 ? candidates : variants;
+    return pool.slice().sort((a, b) => (b.market?.liquidity ?? 0) - (a.market?.liquidity ?? 0))[0] ?? null;
 }
 
 const loadGlobalStats = cache(
@@ -429,7 +183,7 @@ const loadGlobalStats = cache(
         enableCoinGeckoFallback: boolean,
     ): Promise<GlobalTokenStats | null> => {
         // Profile is optional (requires extra scopes). Load separately so `assets:read` can still render the page.
-        const apiProfile = await fetchApiAppJsonOrNull<AssetsV1AssetResponse>(
+        const apiProfile = await fetchApiAppJsonOrNull<AssetsV1ProfileResponse>(
             `/api/v1/assets/${encodeURIComponent(assetId)}?${new URLSearchParams({ include: 'profile' }).toString()}`,
             { next: { revalidate: 300 } },
         );
@@ -440,6 +194,9 @@ const loadGlobalStats = cache(
 
         const resolvedCoinGeckoId = (coingeckoId ?? '').trim();
         if (enableCoinGeckoFallback && resolvedCoinGeckoId) {
+            // The direct CoinGecko fallback reads the clock; under cacheComponents
+            // that must happen at request time or a cold profile cache blocks the prerender.
+            await connection();
             return await getGlobalTokenStats(resolvedCoinGeckoId);
         }
 
@@ -502,6 +259,8 @@ interface TokenSidebarWithDataProps {
      * streams, so omitting it there would flash an enabled CTA.
      */
     advisory: AssetAdvisory | null;
+    tradeOnChainHref?: string | null;
+    tradeOnChainLabel?: string | null;
 }
 
 function TokenSidebarWithData({
@@ -514,6 +273,8 @@ function TokenSidebarWithData({
     buyLogoURI,
     displayName,
     advisory,
+    tradeOnChainHref,
+    tradeOnChainLabel,
 }: TokenSidebarWithDataProps) {
     return (
         <Suspense
@@ -525,6 +286,8 @@ function TokenSidebarWithData({
                     displayName={displayName}
                     description={descriptionOverride ?? null}
                     advisory={advisory}
+                    tradeOnChainHref={tradeOnChainHref}
+                    tradeOnChainLabel={tradeOnChainLabel}
                 />
             }
         >
@@ -538,6 +301,8 @@ function TokenSidebarWithData({
                 buyLogoURI={buyLogoURI}
                 displayName={displayName}
                 advisory={advisory}
+                tradeOnChainHref={tradeOnChainHref}
+                tradeOnChainLabel={tradeOnChainLabel}
             />
         </Suspense>
     );
@@ -553,6 +318,8 @@ async function TokenSidebarWithDataLoader({
     buyLogoURI,
     displayName,
     advisory,
+    tradeOnChainHref,
+    tradeOnChainLabel,
 }: TokenSidebarWithDataProps) {
     const globalStats = await loadGlobalStats(assetId, coingeckoId, enableCoinGeckoFallback);
 
@@ -566,6 +333,8 @@ async function TokenSidebarWithDataLoader({
             tokenFeedCoinId={coingeckoId ?? undefined}
             tokenFeedTerms={buildTokenFeedTerms({ assetId, coingeckoId, buySymbol, displayName })}
             advisory={advisory}
+            tradeOnChainHref={tradeOnChainHref}
+            tradeOnChainLabel={tradeOnChainLabel}
         />
     );
 }
@@ -599,29 +368,26 @@ function pickFiniteNumber(primary: number | undefined | null, fallback: number |
     return null;
 }
 
-function canonicalVolumeLabel(source: CanonicalMarketSnapshot['source'] | undefined): string | null {
+function canonicalVolumeLabel(source: V2ReferenceMarket['source'] | undefined): string | null {
     if (source === 'coingecko') return 'Canonical';
     return null;
 }
 
-function shouldShowCanonicalVolumePill(
-    category: CanonicalAsset['category'] | undefined,
-    canonicalMarket: CanonicalMarketSnapshot | null,
-) {
-    return category === 'crypto' && canonicalMarket?.source === 'coingecko';
+function shouldShowCanonicalVolumePill(category: AssetCategory | undefined, referenceMarket: V2ReferenceMarket | null) {
+    return category === 'crypto' && referenceMarket?.source === 'coingecko';
 }
 
 function buildCanonicalStatsMarket(
-    stats: AssetStatsSnapshot | null | undefined,
-    canonicalMarket: CanonicalMarketSnapshot | null,
-    category?: CanonicalAsset['category'],
+    stats: V2AssetStats | null | undefined,
+    referenceMarket: V2ReferenceMarket | null,
+    category?: AssetCategory,
 ): ComponentProps<typeof AssetStatsSection>['market'] {
-    if (!stats && !canonicalMarket) return null;
+    if (!stats && !referenceMarket) return null;
 
-    if (canonicalMarket?.source === 'clickhouse_stock') {
+    if (referenceMarket?.source === 'stock') {
         // Prefer the underlying company's market cap (price × shares
         // outstanding) over the aggregated tokenized-supply mcap.
-        const companyMarketCap = pickFiniteNumber(canonicalMarket.marketCap ?? null, null);
+        const companyMarketCap = pickFiniteNumber(referenceMarket.marketCap ?? null, null);
         return {
             price: pickFiniteNumber(stats?.price, null),
             liquidity: pickFiniteNumber(stats?.liquidity, null),
@@ -635,12 +401,12 @@ function buildCanonicalStatsMarket(
         };
     }
 
-    if (canonicalMarket?.source === 'prestocks') {
+    if (referenceMarket?.source === 'prestocks') {
         // Tokenized pre-IPO exposure: `marketCap` stays the on-chain token
         // float; the implied company valuation and premium-to-mark render from
         // the dedicated `preStocks` block.
         return {
-            price: pickFiniteNumber(stats?.price, canonicalMarket.price),
+            price: pickFiniteNumber(stats?.price, referenceMarket.price),
             liquidity: pickFiniteNumber(stats?.liquidity, null),
             volume24hUSD: pickFiniteNumber(stats?.volume24hUSD, null),
             marketCap: pickFiniteNumber(stats?.marketCap, null),
@@ -649,31 +415,31 @@ function buildCanonicalStatsMarket(
             circulatingSupply: pickFiniteNumber(stats?.circulatingSupply, null),
             priceChange24hPercent: pickFiniteNumber(stats?.priceChange24hPercent, null),
             preStocks: {
-                markPriceUsd: canonicalMarket.markPriceUsd,
-                markValuationUsd: canonicalMarket.markValuationUsd,
-                impliedValuationUsd: canonicalMarket.impliedValuationUsd,
-                premiumToMarkPercent: canonicalMarket.premiumToMarkPercent,
+                markPriceUsd: referenceMarket.markPriceUsd,
+                markValuationUsd: referenceMarket.markValuationUsd,
+                impliedValuationUsd: referenceMarket.impliedValuationUsd,
+                premiumToMarkPercent: referenceMarket.premiumToMarkPercent,
             },
         };
     }
 
-    const showCanonicalVolumePill = shouldShowCanonicalVolumePill(category, canonicalMarket);
+    const showCanonicalVolumePill = shouldShowCanonicalVolumePill(category, referenceMarket);
     const underlyingVolume24hUSD =
-        showCanonicalVolumePill && canonicalMarket ? pickFiniteNumber(canonicalMarket.volume24hUSD, null) : null;
+        showCanonicalVolumePill && referenceMarket ? pickFiniteNumber(referenceMarket.volume24hUSD, null) : null;
     const underlyingVolume24hLabel =
-        underlyingVolume24hUSD !== null ? canonicalVolumeLabel(canonicalMarket?.source) : null;
+        underlyingVolume24hUSD !== null ? canonicalVolumeLabel(referenceMarket?.source) : null;
 
     return {
-        price: pickFiniteNumber(stats?.price, canonicalMarket?.price),
+        price: pickFiniteNumber(stats?.price, referenceMarket?.price),
         liquidity: pickFiniteNumber(stats?.liquidity, null),
-        volume24hUSD: pickFiniteNumber(stats?.volume24hUSD, canonicalMarket?.volume24hUSD),
+        volume24hUSD: pickFiniteNumber(stats?.volume24hUSD, referenceMarket?.volume24hUSD),
         ...(underlyingVolume24hUSD !== null ? { underlyingVolume24hUSD } : {}),
         ...(underlyingVolume24hLabel ? { underlyingVolume24hLabel } : {}),
-        marketCap: pickFiniteNumber(stats?.marketCap, canonicalMarket?.marketCap ?? null),
+        marketCap: pickFiniteNumber(stats?.marketCap, referenceMarket?.marketCap ?? null),
         fdv: pickFiniteNumber(stats?.fdv, null),
         totalSupply: pickFiniteNumber(stats?.totalSupply, null),
         circulatingSupply: pickFiniteNumber(stats?.circulatingSupply, null),
-        priceChange24hPercent: pickFiniteNumber(stats?.priceChange24hPercent, canonicalMarket?.priceChange24hPercent),
+        priceChange24hPercent: pickFiniteNumber(stats?.priceChange24hPercent, referenceMarket?.priceChange24hPercent),
     };
 }
 
@@ -683,21 +449,37 @@ function AssetStatsSectionWithData({
     enableCoinGeckoFallback,
     market,
     mode,
+    chainLabel,
+    chainList,
 }: {
     assetId: string;
     coingeckoId: string | null;
     enableCoinGeckoFallback: boolean;
     market: ComponentProps<typeof AssetStatsSection>['market'];
     mode: ComponentProps<typeof AssetStatsSection>['mode'];
+    chainLabel: string;
+    chainList: string;
 }) {
     return (
-        <Suspense fallback={<AssetStatsSection market={market} globalStats={null} mode={mode} />}>
+        <Suspense
+            fallback={
+                <AssetStatsSection
+                    market={market}
+                    globalStats={null}
+                    mode={mode}
+                    chainLabel={chainLabel}
+                    chainList={chainList}
+                />
+            }
+        >
             <AssetStatsSectionWithDataLoader
                 assetId={assetId}
                 coingeckoId={coingeckoId}
                 enableCoinGeckoFallback={enableCoinGeckoFallback}
                 market={market}
                 mode={mode}
+                chainLabel={chainLabel}
+                chainList={chainList}
             />
         </Suspense>
     );
@@ -709,23 +491,35 @@ async function AssetStatsSectionWithDataLoader({
     enableCoinGeckoFallback,
     market,
     mode,
+    chainLabel,
+    chainList,
 }: {
     assetId: string;
     coingeckoId: string | null;
     enableCoinGeckoFallback: boolean;
     market: ComponentProps<typeof AssetStatsSection>['market'];
     mode: ComponentProps<typeof AssetStatsSection>['mode'];
+    chainLabel: string;
+    chainList: string;
 }) {
     const globalStats = await loadGlobalStats(assetId, coingeckoId, enableCoinGeckoFallback);
-    return <AssetStatsSection market={market} globalStats={globalStats} mode={mode} />;
+    return (
+        <AssetStatsSection
+            market={market}
+            globalStats={globalStats}
+            mode={mode}
+            chainLabel={chainLabel}
+            chainList={chainList}
+        />
+    );
 }
 
 export function AssetPage(props: AssetPageProps) {
     // No awaits before JSX: flush the page shell (breadcrumb, header identity,
-    // section chrome) immediately and stream the `/api/v1/assets/:id`-dependent
+    // section chrome) immediately and stream the `/api/v2/assets/:id`-dependent
     // content in via Suspense. `page.tsx` has already validated the asset
-    // (registry or resolve API) and owns notFound(); `AssetPageContent` degrades
-    // gracefully to registry data when the fetch returns null, so no
+    // (registry or v2) and owns notFound(); `AssetPageContent` degrades
+    // gracefully to shell identity when the fetch returns null, so no
     // notFound/error semantics cross the Suspense boundary.
     return (
         <Suspense fallback={<AssetPageShellFallback {...props} />}>
@@ -763,81 +557,97 @@ function AssetPageBackground({ logoURI }: { logoURI: string }) {
  * twice) and any buy CTA (the active mint isn't confirmed until the API
  * response arrives).
  */
-function AssetPageShellFallback({ asset, requestedName, requestedMint }: AssetPageProps) {
-    const assetRef = requestedName.trim() || asset.assetId;
-    const canonicalAssetId = asset.assetId;
-    const requestedMintClean = (requestedMint ?? '').trim();
 
-    const variants = buildVariantsWithMarket(asset, new Map());
-    const primary = pickPrimaryVariant(variants, { category: asset.category });
-    const requestedVariant =
-        requestedMintClean.length > 0 && looksLikeSolanaMintAddress(requestedMintClean)
-            ? (variants.find(v => v.mint === requestedMintClean) ?? null)
-            : null;
+/**
+ * Shell that renders before the v2 response lands. Identity comes from the
+ * registry (Solana variants, no markets) or the already-resolved shell
+ * identity, through the same helpers as the full page, so in the common case
+ * the streamed swap is visually seamless. Intentionally excludes
+ * `TokenViewedEvent` and `TokenPageSidebar` (their client effects would fire
+ * twice) and any buy CTA (the active variant isn't confirmed until the API
+ * response arrives).
+ */
+function AssetPageShellFallback({ assetId, requestedName, requested, shell }: AssetPageProps) {
+    const assetRef = requestedName.trim() || assetId;
+    const registryAsset = shell.registryAsset ?? null;
+    const variants = registryAsset
+        ? registryAsset.variants.map(v => registryVariantToPageVariant(registryAsset, v))
+        : [];
+    const primary = pickFallbackPrimary(variants, shell.category);
+    const requestedVariant = requested ? (variants.find(v => v.key === requested.key) ?? null) : null;
     const isVariantView = Boolean(requestedVariant);
     const active = requestedVariant ?? primary;
+    const activeChain: ChainKind | null = active?.chain ?? requested?.chain ?? null;
 
     const displayNameRaw =
         pickFirstDisplayName(
-            asset.name,
-            humanizeAssetRef(canonicalAssetId),
+            shell.name,
+            humanizeAssetRef(assetId),
             humanizeAssetRef(requestedName),
             active?.displayName,
         ) || 'Unknown';
     const displayName = cleanTokenName(displayNameRaw);
     const displaySymbol =
         (isVariantView
-            ? pickFirstSymbol(active?.displaySymbol, asset.symbol)
-            : pickFirstSymbol(asset.symbol, active?.displaySymbol)) || '???';
+            ? pickFirstSymbol(active?.displaySymbol, shell.symbol)
+            : pickFirstSymbol(shell.symbol, active?.displaySymbol)) || '???';
 
-    const selectedVariantLogoURI = requestedVariant ? getMintLogoOverride(requestedVariant.mint) : undefined;
+    const selectedVariantLogoURI = requestedVariant ? getMintLogoOverride(solanaMintOf(requestedVariant)) : undefined;
     const canonicalLogoURI = getTokenLogoURLForMintWithSecondarySymbol(
-        active?.mint,
+        solanaMintOf(active),
         displaySymbol,
         displayName,
         undefined,
     );
     const displayLogoURI = isVariantView ? selectedVariantLogoURI || canonicalLogoURI : canonicalLogoURI;
 
-    const activeMint = active?.mint ?? null;
-    const variantHubFromRegistry = getVariantHubById(canonicalAssetId);
-    const showSingletonVariantBadge = shouldShowSingletonVariantBadge(asset);
+    const variantHubFromRegistry = getVariantHubById(assetId);
+    const showSingletonVariantBadge = shouldShowSingletonVariantBadge(shell.category, variants.length);
     const variantGroup =
         (variants.length > 1 || showSingletonVariantBadge
-            ? buildVariantGroup(canonicalAssetId, displayName, variants, variantHubFromRegistry)
+            ? buildVariantGroup(assetId, displayName, variants, variantHubFromRegistry)
             : null) ?? variantHubFromRegistry;
+    const caps = resolveAssetPageCapabilities({
+        activeChain,
+        isVariantView,
+        assetChains: variants.length > 0 ? ['solana'] : [],
+        isStablecoin: isStablecoinCategory(shell.category),
+        variantCount: variants.length,
+    });
 
     return (
         <TokenPageScaffold
             background={displayLogoURI ? <AssetPageBackground logoURI={displayLogoURI} /> : null}
             displayName={displayName}
-            breadcrumbCanonicalHref={requestedVariant ? `/${encodeURIComponent(assetRef)}` : undefined}
+            breadcrumbCanonicalHref={requested ? `/${encodeURIComponent(assetRef)}` : undefined}
             breadcrumbVariantSymbol={requestedVariant ? requestedVariant.displaySymbol : undefined}
             buyAddress={null}
             header={
                 <TokenHeader
-                    address={activeMint ?? canonicalAssetId}
+                    address={active?.address ?? assetId}
+                    chain={activeChain}
                     symbol={displaySymbol}
                     displayName={displayName}
                     displayLogoURI={displayLogoURI}
                     selectedVariant={
                         requestedVariant
                             ? {
-                                  mint: requestedVariant.mint,
+                                  chain: requestedVariant.chain,
+                                  address: requestedVariant.address,
                                   symbol: requestedVariant.displaySymbol,
                               }
                             : null
                     }
                     variantLinkMode="coingecko"
-                    variantLinkCoinId={asset.coingeckoId ?? canonicalAssetId}
+                    variantLinkCoinId={shell.coingeckoId ?? assetId}
                     variantGroup={variantGroup}
                     showSingletonVariantBadge={showSingletonVariantBadge}
-                    variantCurrentAddress={activeMint ?? undefined}
+                    variantCurrentKey={active?.key}
                 />
             }
-            sidebar={<AssetPageSidebarSkeleton showBuyButton={Boolean(activeMint)} />}
+            sidebar={<AssetPageSidebarSkeleton showBuyButton={Boolean(active) && caps.swap} />}
         >
-            <AssetPageSectionsSkeleton showChart={Boolean(activeMint)} />
+            <AssetPageSectionsSkeleton showChart={caps.chart !== 'none'} />
         </TokenPageScaffold>
     );
 }
@@ -919,138 +729,95 @@ function AssetPageSectionsSkeleton({ showChart }: { showChart: boolean }) {
 }
 
 /**
- * Fetch `/api/v1/assets/:id` and derive everything `AssetPageContent` renders:
- * the effective asset (API overrides layered over the registry), variant list
- * with market snapshots, the active/primary variant, and display identity
- * (name/symbol/logo). Degrades gracefully to registry data when the fetch
- * returns null.
+ * Fetch `/api/v2/assets/:id` and derive everything `AssetPageContent` renders:
+ * the variants on every chain with their markets, the active/primary variant,
+ * per-chain stats, the reference market, advisories and display identity.
+ * Degrades gracefully to shell / registry identity when the fetch returns null.
  */
-async function loadAssetPageModel({ asset, requestedName, requestedMint }: AssetPageProps) {
-    const tokenByMint = new Map<string, MarketSnapshot>();
+async function loadAssetPageModel({ assetId, requestedName, requested, shell }: AssetPageProps) {
+    // v1-backed shells are mints v2 has no row for; the v2 asset they resolve to (`solana` for a
+    // Sanctum-only LST) would replace the requested mint with the parent's variants.
+    const api = shell.v1Fallback ? null : await loadV2Asset(assetId);
+    const canonicalAssetId = (api?.assetId ?? assetId).trim() || assetId;
+    const category: AssetCategory = api?.category ?? shell.category;
+    const coingeckoId = api?.coingeckoId ?? shell.coingeckoId ?? null;
+    const assetSymbol = api?.symbol ?? shell.symbol ?? null;
+    const assetName = api?.name ?? shell.name ?? null;
 
-    const assetRef = requestedName.trim() || asset.assetId;
-    const apiAssetRef = asset.assetId.trim() || assetRef;
-    const requestedMintClean = (requestedMint ?? '').trim();
-    const apiAssetUrl =
-        requestedMintClean.length > 0 && looksLikeSolanaMintAddress(requestedMintClean)
-            ? `/api/v1/assets/${encodeURIComponent(apiAssetRef)}?mint=${encodeURIComponent(requestedMintClean)}`
-            : `/api/v1/assets/${encodeURIComponent(apiAssetRef)}`;
-    const apiAsset = await fetchApiAppJsonOrNull<AssetsV1AssetResponse>(apiAssetUrl, {
-        next: { revalidate: 60 },
-    });
-    const preStocksByMint = new Map<string, PreStocksVariantSnapshot>();
-    // API advisory annotations keyed by mint. Built here (not read off the
-    // spread variant) so the page's badges, banner, and trade gating all
-    // agree on one normalized value per mint.
-    const advisoryByMint = new Map<string, AssetAdvisory>();
-    // Compact peg status per mint; the API only emits it for stablecoin assets.
-    const pegHealthByMint = new Map<string, CompactPegHealth>();
-    if (apiAsset) {
-        const primary = apiAsset.asset.primaryVariant;
-        if (primary?.market) tokenByMint.set(primary.mint, primary.market);
-        if (primary?.preStocks) preStocksByMint.set(primary.mint, primary.preStocks);
-        const primaryAdvisory = normalizeAdvisory(primary?.advisory);
-        if (primary && primaryAdvisory) advisoryByMint.set(primary.mint, primaryAdvisory);
-        const primaryPegHealth = normalizeCompactPegHealth(primary?.pegHealth);
-        if (primary && primaryPegHealth) pegHealthByMint.set(primary.mint, primaryPegHealth);
-
-        for (const variant of getApiVariantRows(apiAsset.asset.variantGroups)) {
-            if (variant.preStocks) preStocksByMint.set(variant.mint, variant.preStocks);
-            const variantAdvisory = normalizeAdvisory(variant.advisory);
-            if (variantAdvisory && !advisoryByMint.has(variant.mint)) advisoryByMint.set(variant.mint, variantAdvisory);
-            const variantPegHealth = normalizeCompactPegHealth(variant.pegHealth);
-            if (variantPegHealth && !pegHealthByMint.has(variant.mint)) {
-                pegHealthByMint.set(variant.mint, variantPegHealth);
-            }
-            if (!variant.market) continue;
-            tokenByMint.set(variant.mint, variant.market);
+    const registryAsset = shell.registryAsset ?? null;
+    const variants: AssetPageVariant[] = api
+        ? api.variants.map(v => toAssetPageVariant(v, { symbol: assetSymbol, name: assetName }))
+        : registryAsset
+          ? registryAsset.variants.map(v => registryVariantToPageVariant(registryAsset, v))
+          : [];
+    // v1-backed pages (mints v2 has no row for) take price/liquidity/supply from the v1 detail
+    // so they are not identity-only shells.
+    const v1Detail =
+        !api && shell.v1Fallback && registryAsset
+            ? await loadV1MintDetail(registryAsset.assetId, requested?.address ?? registryAsset.variants[0]?.mint ?? '')
+            : null;
+    if (v1Detail) {
+        for (const variant of variants) {
+            variant.market = v1Detail.marketByMint.get(variant.address) ?? variant.market;
+            variant.logoURI ??= v1Detail.logoByMint.get(variant.address) ?? null;
+        }
+    }
+    const byKey = new Map(variants.map(v => [v.key, v] as const));
+    // The detail payload is capped (the `solana` asset drops thin yield variants), so a
+    // `?{chain}={address}` link to a variant outside the cap is fetched on its own and added
+    // to the page model instead of silently falling back to the canonical view.
+    if (requested && api && !byKey.has(requested.key)) {
+        const missing = await selectOrLoadVariantForKey({
+            variants: api.variants,
+            assetId: api.assetId,
+            requested,
+            loadOwner: loadV2VariantOwner,
+        });
+        if (missing) {
+            const extra = toAssetPageVariant(missing, { symbol: assetSymbol, name: assetName });
+            variants.push(extra);
+            byKey.set(extra.key, extra);
         }
     }
 
-    const canonicalMarket = apiAsset?.asset.canonicalMarket ?? null;
-    const stockCanonicalSymbol =
-        canonicalMarket?.source === 'clickhouse_stock' ? pickFirstSymbol(canonicalMarket.symbol) : null;
-    const apiDisplayName = pickFirstDisplayName(apiAsset?.asset.name, apiAsset?.asset.primaryVariant?.name);
-    const apiDisplaySymbol = pickFirstSymbol(
-        stockCanonicalSymbol,
-        apiAsset?.asset.symbol,
-        apiAsset?.asset.primaryVariant?.symbol,
-    );
-
-    const canonicalAssetId = (apiAsset?.asset.assetId ?? asset.assetId).trim() || asset.assetId;
-    const coingeckoId = apiAsset?.asset.coingeckoId ?? asset.coingeckoId;
-
-    const apiVariants = apiAsset
-        ? (() => {
-              const rows = getApiVariantRows(apiAsset.asset.variantGroups);
-              const unique: AssetVariant[] = [];
-              const seen = new Set<string>();
-              for (const row of rows) {
-                  if (seen.has(row.mint)) continue;
-                  seen.add(row.mint);
-                  const {
-                      market: _market,
-                      executionQuality: _executionQuality,
-                      rank: _rank,
-                      ...variant
-                  } = row as AssetVariant & {
-                      market?: unknown;
-                      executionQuality?: VariantExecutionQualitySnapshot | null;
-                      rank?: unknown;
-                  };
-                  unique.push({
-                      ...variant,
-                      ...(_executionQuality ? { executionQuality: _executionQuality } : {}),
-                  } as AssetVariant);
-              }
-              return unique.length > 0 ? unique : asset.variants;
-          })()
-        : asset.variants;
-
-    const effectiveAsset: CanonicalAsset = {
-        assetId: canonicalAssetId,
-        ...(apiDisplayName ? { name: apiDisplayName } : asset.name ? { name: asset.name } : {}),
-        ...(apiDisplaySymbol ? { symbol: apiDisplaySymbol } : asset.symbol ? { symbol: asset.symbol } : {}),
-        category: asset.category,
-        aliases: asset.aliases,
-        ...(apiAsset?.asset.coingeckoId
-            ? { coingeckoId: apiAsset.asset.coingeckoId }
-            : asset.coingeckoId
-              ? { coingeckoId: asset.coingeckoId }
-              : {}),
-        variants: apiVariants,
-    };
-
-    const variants = buildVariantsWithMarket(effectiveAsset, tokenByMint, {
-        assetName: apiDisplayName,
-        assetSymbol: apiDisplaySymbol,
-        advisoryByMint,
-        pegHealthByMint,
-    });
-    const apiPrimaryMint = apiAsset?.asset.primaryVariant?.mint ?? null;
-    const apiPrimaryVariant = apiPrimaryMint ? (variants.find(v => v.mint === apiPrimaryMint) ?? null) : null;
-    const assetDescription = normalizeOptionalText(apiAsset?.asset.description) ?? null;
-    const primary = apiPrimaryVariant ?? pickPrimaryVariant(variants, { category: effectiveAsset.category });
-    const requestedVariant =
-        requestedMintClean.length > 0 && looksLikeSolanaMintAddress(requestedMintClean)
-            ? (variants.find(v => v.mint === requestedMintClean) ?? null)
-            : null;
+    const primary =
+        (api?.primaryVariant ? (byKey.get(api.primaryVariant.key) ?? null) : null) ??
+        pickFallbackPrimary(variants, category);
+    const requestedVariant = requested ? (byKey.get(requested.key) ?? null) : null;
     const isVariantView = Boolean(requestedVariant);
     const active = requestedVariant ?? primary;
-    const shouldUseCanonicalMarket = !isVariantView && canonicalMarket !== null;
-    const shouldEnableRealtimePrice = isVariantView || canonicalMarket?.source !== 'clickhouse_stock';
-    const canonicalStatsMarket = buildCanonicalStatsMarket(
-        apiAsset?.asset.stats,
-        canonicalMarket,
-        effectiveAsset.category,
-    );
+    const activeChain: ChainKind | null = active?.chain ?? null;
+
+    const assetChains: ChainKind[] = api?.chains ?? (variants.length > 0 ? ['solana'] : []);
+    const chainStats: Partial<Record<ChainKind, V2ChainStats>> = api?.chainStats ?? {};
+    const primaryVariantByChain = new Map<ChainKind, AssetPageVariant>();
+    for (const chain of CHAIN_KINDS) {
+        const key = api?.primaryVariantByChain[chain]?.key;
+        const variant = key ? byKey.get(key) : undefined;
+        if (variant) primaryVariantByChain.set(chain, variant);
+    }
+
+    const isStablecoin = isStablecoinCategory(category);
+    const caps = resolveAssetPageCapabilities({
+        activeChain,
+        isVariantView,
+        assetChains,
+        isStablecoin,
+        variantCount: variants.length,
+    });
+
+    const referenceMarket = api?.referenceMarket ?? null;
+    const shouldUseCanonicalMarket = !isVariantView && referenceMarket !== null;
+    const shouldEnableRealtimePrice = isVariantView || referenceMarket?.source !== 'stock';
+    const canonicalStatsMarket = buildCanonicalStatsMarket(api?.stats ?? v1Detail?.stats, referenceMarket, category);
     // Variant view: merge the variant's PreStocks reference block into its
     // market snapshot so the stats section renders the same premium/implied
     // valuation treatment as the canonical view.
-    const activePreStocks = active ? (preStocksByMint.get(active.mint) ?? null) : null;
+    const activePreStocks = active?.preStocks ?? null;
     const variantStatsMarket: ComponentProps<typeof AssetStatsSection>['market'] = active?.market
         ? {
               ...active.market,
+              metricsSource: active.market.metricsSource ?? undefined,
               ...(activePreStocks
                   ? {
                         preStocks: {
@@ -1066,37 +833,42 @@ async function loadAssetPageModel({ asset, requestedName, requestedMint }: Asset
 
     const displayNameRaw =
         pickFirstDisplayName(
-            apiDisplayName,
-            asset.name,
+            assetName,
+            shell.name,
             humanizeAssetRef(canonicalAssetId),
             humanizeAssetRef(requestedName),
             active?.displayName,
         ) || 'Unknown';
     const displayName = cleanTokenName(displayNameRaw);
-
     const displaySymbol =
         (isVariantView
-            ? pickFirstSymbol(active?.displaySymbol, apiDisplaySymbol, asset.symbol)
-            : pickFirstSymbol(apiDisplaySymbol, active?.displaySymbol, asset.symbol)) || '???';
-    const canonicalSymbolForRealtime = pickFirstSymbol(apiDisplaySymbol, asset.symbol) || displaySymbol;
-    const uploadedLogoURI = normalizeOptionalText(apiAsset?.asset.imageUrl);
+            ? pickFirstSymbol(active?.displaySymbol, assetSymbol, shell.symbol)
+            : pickFirstSymbol(assetSymbol, active?.displaySymbol, shell.symbol)) || '???';
+    const canonicalSymbolForRealtime = pickFirstSymbol(assetSymbol, shell.symbol) || displaySymbol;
+    const uploadedLogoURI = normalizeOptionalText(api?.imageUrl);
     const selectedVariantLogoURI = requestedVariant
-        ? normalizeOptionalText(requestedVariant.market?.logoURI) || getMintLogoOverride(requestedVariant.mint)
+        ? normalizeOptionalText(requestedVariant.logoURI) || getMintLogoOverride(solanaMintOf(requestedVariant))
         : undefined;
     const canonicalLogoURI =
         uploadedLogoURI ||
         getTokenLogoURLForMintWithSecondarySymbol(
-            active?.mint,
+            solanaMintOf(active),
             displaySymbol,
             displayName,
-            active?.market?.logoURI ?? undefined,
+            active?.logoURI ?? undefined,
         );
     const displayLogoURI = isVariantView ? selectedVariantLogoURI || canonicalLogoURI : canonicalLogoURI;
 
-    const activeMint = active?.mint ?? null;
-    const buyAddress = activeMint;
+    const activeKey = active?.key ?? null;
+    const activeAddress = active?.address ?? null;
+    const buyAddress = active && caps.swap ? active.address : null;
+    const tradeOnChainVariant = caps.tradeOnChain ? (primaryVariantByChain.get(caps.tradeOnChain) ?? null) : null;
+    const tradeOnChainHref =
+        caps.tradeOnChain && tradeOnChainVariant ? buildVariantHref(canonicalAssetId, tradeOnChainVariant) : null;
+    const tradeOnChainLabel = caps.tradeOnChain ? CHAINS[caps.tradeOnChain].label : null;
+
     const variantHubFromRegistry = getVariantHubById(canonicalAssetId);
-    const showSingletonVariantBadge = shouldShowSingletonVariantBadge(effectiveAsset);
+    const showSingletonVariantBadge = shouldShowSingletonVariantBadge(category, variants.length);
     const variantGroup =
         (variants.length > 1 || showSingletonVariantBadge
             ? buildVariantGroup(canonicalAssetId, displayName, variants, variantHubFromRegistry)
@@ -1106,34 +878,49 @@ async function loadAssetPageModel({ asset, requestedName, requestedMint }: Asset
     // header links, and trade gating; sibling advisories (flagged variants
     // other than the viewed one) drive the compact notice on the canonical view.
     const viewedAdvisory = getViewedAdvisory({ requestedVariant, primary });
-    const advisoryEntries = collectVariantAdvisories(variants, apiAsset?.asset.advisories);
-    const siblingAdvisories = getSiblingAdvisories(advisoryEntries, activeMint);
+    const advisoryEntries = collectVariantAdvisories(variants, api?.advisories);
+    const siblingAdvisories = getSiblingAdvisories(advisoryEntries, activeKey);
     const tradeBlocked = isTradeBlocked(viewedAdvisory);
 
     // Stablecoin health: the viewed variant's peg status drives the header
-    // pill (single-mint views only) and unlocks the Security section on the
+    // pill (single-variant views only) and unlocks the Security section on the
     // canonical view for single-variant stablecoins.
-    const isStablecoin = isStablecoinCategory(effectiveAsset.category);
     const viewedPegHealth = (requestedVariant ?? primary)?.pegHealth ?? null;
 
+    // The server already caps the `solana` asset's yield tail (≥ $250K
+    // liquidity, max 500); the note reports how many it left out.
+    const solanaRowCount = variants.filter(v => v.chain === 'solana').length;
+    const solanaHiddenCount =
+        canonicalAssetId === 'solana'
+            ? Math.max(0, (chainStats.solana?.variantCount ?? solanaRowCount) - solanaRowCount)
+            : 0;
+
     return {
-        assetRef,
+        api,
+        assetRef: requestedName.trim() || assetId,
         canonicalAssetId,
+        category,
         coingeckoId,
-        assetDescription,
+        assetDescription: normalizeOptionalText(api?.description) || null,
+        assetChains,
         variants,
         requestedVariant,
         isVariantView,
         active,
-        activeMint,
+        activeKey,
+        activeAddress,
+        activeChain,
+        caps,
         buyAddress,
+        tradeOnChainHref,
+        tradeOnChainLabel,
         viewedAdvisory,
         advisoryEntries,
         siblingAdvisories,
         tradeBlocked,
         isStablecoin,
         viewedPegHealth,
-        canonicalMarket,
+        referenceMarket,
         shouldUseCanonicalMarket,
         shouldEnableRealtimePrice,
         canonicalStatsMarket,
@@ -1145,6 +932,7 @@ async function loadAssetPageModel({ asset, requestedName, requestedMint }: Asset
         displayLogoURI,
         variantGroup,
         showSingletonVariantBadge,
+        solanaHiddenCount,
     };
 }
 
@@ -1154,12 +942,18 @@ async function AssetPageContent(props: AssetPageProps) {
         canonicalAssetId,
         coingeckoId,
         assetDescription,
+        assetChains,
         requestedVariant,
         isVariantView,
         active,
-        activeMint,
+        activeKey,
+        activeAddress,
+        activeChain,
+        caps,
         buyAddress,
-        canonicalMarket,
+        tradeOnChainHref,
+        tradeOnChainLabel,
+        referenceMarket,
         shouldUseCanonicalMarket,
         shouldEnableRealtimePrice,
         canonicalStatsMarket,
@@ -1174,43 +968,45 @@ async function AssetPageContent(props: AssetPageProps) {
         variants,
         viewedAdvisory,
         siblingAdvisories,
-        isStablecoin,
         viewedPegHealth,
+        solanaHiddenCount,
     } = await loadAssetPageModel(props);
 
     const activeSymbol = requestedVariant?.displaySymbol ?? displaySymbol;
-    // The header describes exactly one mint on a variant view or when the
-    // asset has a single variant; otherwise the per-mint pills live in the
-    // variants list so the canonical `usd` view never shows one mint's peg
+    // The header describes exactly one token on a variant view or when the
+    // asset has a single variant; otherwise the per-variant pills live in the
+    // variants list so the canonical `usd` view never shows one token's peg
     // as if it were the asset's.
-    const isSingleMintView = isVariantView || variants.length === 1;
-    const headerPegHealth = isSingleMintView ? viewedPegHealth : null;
-    const showSecuritySection = Boolean(activeMint) && (isVariantView || (isStablecoin && variants.length === 1));
+    const isSingleVariantView = isVariantView || variants.length === 1;
+    const headerPegHealth = isSingleVariantView ? viewedPegHealth : null;
+    const activeChainLabel = activeChain ? CHAINS[activeChain].label : 'Solana';
+    const activeSolanaMint = solanaMintOf(active);
 
     return (
         <TokenPageScaffold
             viewedEvent={
                 <TokenViewedEvent
-                    tokenAddress={!isVariantView && coingeckoId ? coingeckoId : (activeMint ?? canonicalAssetId)}
-                    tokenAddressType={!isVariantView && coingeckoId ? 'coingecko' : 'solana'}
+                    tokenAddress={!isVariantView && coingeckoId ? coingeckoId : (activeAddress ?? canonicalAssetId)}
+                    tokenAddressType={!isVariantView && coingeckoId ? 'coingecko' : (activeChain ?? 'solana')}
+                    tokenChain={activeChain}
                     tokenSymbol={displaySymbol}
                     tokenName={displayName}
                     advisoryStatus={viewedAdvisory?.status ?? null}
                     tokenPrice={
-                        shouldUseCanonicalMarket ? (canonicalMarket?.price ?? null) : (active?.market?.price ?? null)
+                        shouldUseCanonicalMarket ? (referenceMarket?.price ?? null) : (active?.market?.price ?? null)
                     }
                     tokenPriceChange24h={
                         shouldUseCanonicalMarket
-                            ? (canonicalMarket?.priceChange24hPercent ?? null)
+                            ? (referenceMarket?.priceChange24hPercent ?? null)
                             : (active?.market?.priceChange24hPercent ?? null)
                     }
                     tokenMarketCap={
                         shouldUseCanonicalMarket
-                            ? (canonicalMarket?.marketCap ?? null)
+                            ? (referenceMarket?.marketCap ?? null)
                             : (active?.market?.marketCap ?? null)
                     }
                     hasCoingeckoId={Boolean(coingeckoId)}
-                    coingeckoId={coingeckoId}
+                    coingeckoId={coingeckoId ?? undefined}
                     source="assets"
                 />
             }
@@ -1222,10 +1018,12 @@ async function AssetPageContent(props: AssetPageProps) {
             buySymbol={activeSymbol}
             buyLogoURI={displayLogoURI ?? undefined}
             advisory={viewedAdvisory}
+            tradeOnChainHref={tradeOnChainHref}
+            tradeOnChainLabel={tradeOnChainLabel}
             advisoryBanner={
                 viewedAdvisory || siblingAdvisories.length > 0 ? (
                     <>
-                        <AssetAdvisoryBanner advisory={viewedAdvisory} symbol={activeSymbol} mint={activeMint} />
+                        <AssetAdvisoryBanner advisory={viewedAdvisory} symbol={activeSymbol} mint={activeAddress} />
                         <AssetAdvisorySiblingNotice
                             entries={siblingAdvisories}
                             assetId={canonicalAssetId}
@@ -1240,13 +1038,15 @@ async function AssetPageContent(props: AssetPageProps) {
                     coingeckoId={coingeckoId ?? null}
                     enableCoinGeckoFallback={!isVariantView}
                     baseProps={{
-                        address: activeMint ?? canonicalAssetId,
+                        address: activeAddress ?? canonicalAssetId,
+                        chain: activeChain,
                         symbol: displaySymbol,
                         displayName,
                         displayLogoURI,
                         selectedVariant: requestedVariant
                             ? {
-                                  mint: requestedVariant.mint,
+                                  chain: requestedVariant.chain,
+                                  address: requestedVariant.address,
                                   symbol: requestedVariant.displaySymbol,
                               }
                             : null,
@@ -1254,7 +1054,7 @@ async function AssetPageContent(props: AssetPageProps) {
                         variantLinkCoinId: coingeckoId ?? canonicalAssetId,
                         variantGroup,
                         showSingletonVariantBadge,
-                        variantCurrentAddress: activeMint ?? undefined,
+                        variantCurrentKey: activeKey ?? undefined,
                         advisory: viewedAdvisory,
                         pegHealth: headerPegHealth,
                     }}
@@ -1271,28 +1071,30 @@ async function AssetPageContent(props: AssetPageProps) {
                     buyLogoURI={displayLogoURI ?? undefined}
                     displayName={displayName}
                     advisory={viewedAdvisory}
+                    tradeOnChainHref={tradeOnChainHref}
+                    tradeOnChainLabel={tradeOnChainLabel}
                 />
             }
         >
-            {activeMint && (
+            {active && caps.chart !== 'none' && (
                 <AssetPriceChartSection
                     assetId={canonicalAssetId}
                     coingeckoId={coingeckoId ?? undefined}
-                    mint={isVariantView ? activeMint : undefined}
-                    mode={isVariantView ? 'variant' : 'canonical'}
-                    symbol={isVariantView ? (active?.displaySymbol ?? displaySymbol) : displaySymbol}
+                    mint={caps.chart === 'variant' ? activeSolanaMint : undefined}
+                    mode={caps.chart}
+                    symbol={caps.chart === 'variant' ? (active.displaySymbol ?? displaySymbol) : displaySymbol}
                     realtimeSymbol={(() => {
                         const canonicalUpper = canonicalSymbolForRealtime.trim().toUpperCase();
                         if (!canonicalUpper) return undefined;
 
-                        if (!isVariantView) return canonicalSymbolForRealtime;
+                        if (caps.chart !== 'variant') return canonicalSymbolForRealtime;
 
-                        const raw = (requestedVariant?.market?.symbol ??
+                        const raw =
                             requestedVariant?.symbol ??
                             requestedVariant?.label ??
                             requestedVariant?.displaySymbol ??
-                            '') as string;
-                        const trimmed = (raw ?? '').trim();
+                            '';
+                        const trimmed = raw.trim();
                         if (!trimmed) return undefined;
 
                         const ticker = trimmed.toUpperCase();
@@ -1307,7 +1109,7 @@ async function AssetPageContent(props: AssetPageProps) {
                         isVariantView
                             ? selectedVariantLogoURI || displayLogoURI
                             : getTokenLogoURLForMintWithSecondarySymbol(
-                                  activeMint ?? undefined,
+                                  activeSolanaMint,
                                   displaySymbol,
                                   displayName,
                                   undefined,
@@ -1315,18 +1117,18 @@ async function AssetPageContent(props: AssetPageProps) {
                     }
                     currentPrice={
                         isVariantView
-                            ? (active?.market?.price ?? undefined)
-                            : canonicalMarket?.source === 'clickhouse_stock'
-                              ? (canonicalMarket.price ?? undefined)
-                              : (canonicalMarket?.price ?? active?.market?.price ?? undefined)
+                            ? (active.market?.price ?? undefined)
+                            : referenceMarket?.source === 'stock'
+                              ? (referenceMarket.price ?? undefined)
+                              : (referenceMarket?.price ?? active.market?.price ?? undefined)
                     }
                     priceChange24h={
                         isVariantView
-                            ? (active?.market?.priceChange24hPercent ?? undefined)
-                            : canonicalMarket?.source === 'clickhouse_stock'
-                              ? (canonicalMarket.priceChange24hPercent ?? undefined)
-                              : (canonicalMarket?.priceChange24hPercent ??
-                                active?.market?.priceChange24hPercent ??
+                            ? (active.market?.priceChange24hPercent ?? undefined)
+                            : referenceMarket?.source === 'stock'
+                              ? (referenceMarket.priceChange24hPercent ?? undefined)
+                              : (referenceMarket?.priceChange24hPercent ??
+                                active.market?.priceChange24hPercent ??
                                 undefined)
                     }
                 />
@@ -1338,28 +1140,29 @@ async function AssetPageContent(props: AssetPageProps) {
                 enableCoinGeckoFallback={!isVariantView}
                 mode={isVariantView ? 'variant' : 'canonical'}
                 market={isVariantView ? variantStatsMarket : canonicalStatsMarket}
+                chainLabel={activeChainLabel}
+                chainList={isVariantView ? activeChainLabel : formatChainList(assetChains)}
             />
 
-            {!isVariantView && <AssetMarketsOverviewSection assetId={canonicalAssetId} />}
+            {caps.marketsOverview && <AssetMarketsOverviewSection assetId={canonicalAssetId} />}
 
             {!isVariantView && <AssetLaunchesSection assetId={canonicalAssetId} displaySymbol={displaySymbol} />}
 
-            {isVariantView && activeMint && (
+            {caps.dexMarkets && activeSolanaMint && (
                 <AssetMarketsSection
                     assetId={canonicalAssetId}
-                    tokenMint={activeMint}
+                    tokenMint={activeSolanaMint}
                     tokenSymbol={displaySymbol}
                     tokenName={displayName}
                 />
             )}
 
-            {showSecuritySection && activeMint && <AssetRiskSection assetId={canonicalAssetId} mint={activeMint} />}
+            {caps.risk && activeSolanaMint && <AssetRiskSection assetId={canonicalAssetId} mint={activeSolanaMint} />}
 
             <AssetVariantsSection
                 canonicalAssetId={canonicalAssetId}
-                displayName={displayName}
                 variants={variants}
-                activeMint={active?.mint ?? null}
+                hiddenCount={solanaHiddenCount}
             />
 
             <AssetDataSourceNote />
@@ -1369,42 +1172,23 @@ async function AssetPageContent(props: AssetPageProps) {
 
 function AssetVariantsSection({
     canonicalAssetId,
-    displayName,
     variants,
-    activeMint,
+    hiddenCount,
 }: {
     canonicalAssetId: string;
-    displayName: string;
-    variants: VariantWithMarket[];
-    activeMint: string | null;
+    variants: AssetPageVariant[];
+    hiddenCount: number;
 }) {
     const MIN_LIQUIDITY_USD = 250_000;
-
-    // The Solana asset can have a large number of yield variants (LSTs).
-    // Hide the long tail by default; still include the active mint so deep-links remain navigable.
-    const isSolana = canonicalAssetId === 'solana';
-
-    const shouldHide = (v: VariantWithMarket): boolean => {
-        if (!isSolana) return false;
-        if (v.kind !== 'yield') return false;
-        if (activeMint && v.mint === activeMint) return false;
-        const liq = v.market?.liquidity ?? 0;
-        return !(typeof liq === 'number' && Number.isFinite(liq) && liq >= MIN_LIQUIDITY_USD);
-    };
-
-    const visible = variants.filter(v => !shouldHide(v));
-    const hidden = variants.length - visible.length;
-    const hasExecutionQuality = visible.some(v => v.executionQuality);
+    const hasExecutionQuality = variants.some(v => v.executionQuality);
 
     return (
         <section className="mt-10">
             <h2 className="text-title-md text-text-extra-high text-balance">Variants</h2>
-            <p className="mt-2 text-body-md text-text-medium text-pretty">
-                Token representations of {displayName} on Solana.
-            </p>
-            {isSolana && hidden > 0 ? (
+            {hiddenCount > 0 ? (
                 <p className="mt-3 text-[13px] text-text-low">
-                    Showing variants with at least {formatLargeNumber(MIN_LIQUIDITY_USD)} liquidity ({hidden} hidden).
+                    Showing variants with at least {formatLargeNumber(MIN_LIQUIDITY_USD)} liquidity ({hiddenCount}{' '}
+                    hidden).
                 </p>
             ) : null}
             {hasExecutionQuality ? (
@@ -1412,7 +1196,7 @@ function AssetVariantsSection({
                     Execution quality is available for highlighted variants to compare execution and routing quality.
                 </p>
             ) : null}
-            <AssetVariantsList canonicalAssetId={canonicalAssetId} variants={visible} />
+            <AssetVariantsList canonicalAssetId={canonicalAssetId} variants={variants} />
         </section>
     );
 }

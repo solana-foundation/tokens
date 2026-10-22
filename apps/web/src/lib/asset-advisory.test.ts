@@ -80,6 +80,10 @@ describe('normalizeAdvisory', () => {
     });
 });
 
+function entryRef(mint: string) {
+    return { key: `solana:${mint}`, chain: 'solana' as const, address: mint, mint };
+}
+
 describe('normalizeAdvisoryEntries', () => {
     test('returns [] for non-arrays and skips rows without a mint or status', () => {
         expect(normalizeAdvisoryEntries(undefined)).toEqual([]);
@@ -90,7 +94,22 @@ describe('normalizeAdvisoryEntries', () => {
                 { ...advisory({ status: 'nope' as never }), mint: SILV_MINT },
                 { mint: SILV_MINT, status: 'caution', reason: 'r', url: null, since: 1, variantId: 'silver:silv' },
             ]),
-        ).toEqual([{ mint: SILV_MINT, status: 'caution', reason: 'r', url: null, since: 1, variantId: 'silver:silv' }]);
+        ).toEqual([
+            { ...entryRef(SILV_MINT), status: 'caution', reason: 'r', url: null, since: 1, variantId: 'silver:silv' },
+        ]);
+    });
+});
+
+describe('normalizeAdvisoryEntries (v2 shape)', () => {
+    test('reads chain + address and lowercases EVM addresses; legacy mint rows mean solana', () => {
+        const evm = '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913';
+        const entries = normalizeAdvisoryEntries([
+            { chain: 'base', address: evm, status: 'caution', reason: 'r', url: null, since: 1 },
+            { mint: SILV_MINT, status: 'caution', reason: 'r', url: null, since: 2 },
+            { chain: 'base', address: SILV_MINT, status: 'caution', reason: 'bad family', url: null, since: 3 },
+        ]);
+        expect(entries.map(e => e.key)).toEqual([`solana:${SILV_MINT}`, `base:${evm.toLowerCase()}`]);
+        expect(entries[1]?.address).toBe(evm.toLowerCase());
     });
 });
 
@@ -116,10 +135,10 @@ describe('severity ordering', () => {
 
     test('sortAdvisoryEntries orders by severity then most recent since', () => {
         const entries: AssetAdvisoryEntry[] = [
-            { ...advisory({ status: 'caution', since: 300 }), mint: 'a' },
-            { ...advisory({ status: 'compromised', since: 100 }), mint: 'b' },
-            { ...advisory({ status: 'compromised', since: 200 }), mint: 'c' },
-            { ...advisory({ status: 'blocked', since: 1 }), mint: 'd' },
+            { ...advisory({ status: 'caution', since: 300 }), ...entryRef('a') },
+            { ...advisory({ status: 'compromised', since: 100 }), ...entryRef('b') },
+            { ...advisory({ status: 'compromised', since: 200 }), ...entryRef('c') },
+            { ...advisory({ status: 'blocked', since: 1 }), ...entryRef('d') },
         ];
         expect(sortAdvisoryEntries(entries).map(e => e.mint)).toEqual(['d', 'c', 'b', 'a']);
         expect(pickMostSevere(entries)?.mint).toBe('d');
@@ -179,9 +198,9 @@ describe('collectVariantAdvisories / getSiblingAdvisories', () => {
 
 describe('copy helpers', () => {
     test('siblingNoticeCopy singular vs plural', () => {
-        const one: AssetAdvisoryEntry[] = [{ ...advisory(), mint: SILV_MINT }];
-        const blocked: AssetAdvisoryEntry[] = [{ ...advisory({ status: 'blocked' }), mint: SILV_MINT }];
-        const many: AssetAdvisoryEntry[] = [...one, { ...advisory({ status: 'caution' }), mint: THIRD_MINT }];
+        const one: AssetAdvisoryEntry[] = [{ ...advisory(), ...entryRef(SILV_MINT) }];
+        const blocked: AssetAdvisoryEntry[] = [{ ...advisory({ status: 'blocked' }), ...entryRef(SILV_MINT) }];
+        const many: AssetAdvisoryEntry[] = [...one, { ...advisory({ status: 'caution' }), ...entryRef(THIRD_MINT) }];
 
         expect(siblingNoticeCopy(one, 'Silver')).toBe('One Silver variant has been flagged as compromised.');
         expect(siblingNoticeCopy(blocked, 'Silver')).toBe('One Silver variant has been removed from listings.');
