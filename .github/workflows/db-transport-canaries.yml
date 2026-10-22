@@ -71,11 +71,13 @@ jobs:
           echo "BUN_IMAGE=$BUN_IMAGE" >> "$GITHUB_ENV"
           echo "NODE_IMAGE=$NODE_IMAGE" >> "$GITHUB_ENV"
 
+      # The connector range must not overlap any subnet; the Cloud Run subnet
+      # is 10.20.0.0/22 (terraform/modules/network), so this sits just above it.
       - name: Ensure connector
         if: inputs.action == 'deploy'
         run: |
           gcloud compute networks vpc-access connectors describe "$CONNECTOR" --region="$REGION" --project="$PROJECT" >/dev/null 2>&1 || \
-            gcloud compute networks vpc-access connectors create "$CONNECTOR" --region="$REGION" --project="$PROJECT" --network="$NETWORK" --range=10.20.1.0/28 --min-instances=2 --max-instances=3 --machine-type=e2-micro --quiet
+            gcloud compute networks vpc-access connectors create "$CONNECTOR" --region="$REGION" --project="$PROJECT" --network="$NETWORK" --range=10.20.4.0/28 --min-instances=2 --max-instances=3 --machine-type=e2-micro --quiet
 
       - name: Deploy canary services
         if: inputs.action == 'deploy'
