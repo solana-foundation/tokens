@@ -51,7 +51,7 @@
         "typescript": "^5.9.3"
     },
     "overrides": {
-        "next": "16.3.8",
+        "next": "16.4.1",
         "js-yaml": "4.3.2",
         "effect": "4.0.0-rc.108",
         "vite": "6.4.4",
@@ -60,7 +60,7 @@
         "@clerk/clerk-react": "5.61.8",
         "@clerk/shared": "3.47.7",
         "@clerk/types": "4.101.25",
-        "dompurify": "3.4.16",
+        "dompurify": "3.4.17",
         "js-cookie": "3.0.8",
         "nanoid": "3.3.18",
         "postcss": "8.5.23",
