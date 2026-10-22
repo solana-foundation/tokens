@@ -94,17 +94,37 @@ Log: one `event:"v2_solana_sync"` line per run with the same fields plus `ok`,
 
 ### sync-v2-evm-variants
 
-Derives EVM variants for every active, non-tombstoned asset with a
-`coingecko_id` (not only curated ones: curation is list membership, not
-identity) from `coingecko_coins.platforms` (CoinGecko platform id →
-contract), plus `AGGREGATE_COIN_IDS` (several coin ids under one canonical
-such as `usd`) and `NATIVE_COIN_DEPLOYMENTS` (native coin + canonical wrapped
-token per chain, `origin='config'`). Identity only; markets come from the
-refresh below. Kind: `stablecoin` / `lst` / `tokenized_equity` by asset
+Step 0 links existing rows to their CoinGecko coin by address
+(`resolveVariantCoinIds`: one set-based UPDATE per chain against
+`coingecko_coins.platforms`, freshest coin row wins; only rows with no
+`coingecko_id` or one the resolver wrote earlier; `coingecko_id_source` =
+`resolved`). With `resolveOnly: true` the job stops there.
+
+Then it derives EVM variants from every (asset, coin) source of each active,
+non-tombstoned asset (not only curated ones: curation is list membership, not
+identity): the asset's reference coin (`assets.coingecko_id`, role
+`reference`) and every distinct coin its active variants link to (role
+`variant`: an Ondo / Backpack / xStock issue, a wrapper), reading
+`coingecko_coins.platforms` (CoinGecko platform id → contract); plus
+`AGGREGATE_COIN_IDS` (several coin ids under one canonical such as `usd`) and
+`NATIVE_COIN_DEPLOYMENTS` (native coin + canonical wrapped token per chain,
+`origin='config'`). A variant coin only contributes when the linking variant
+resolves to `issuance: native` (an LST's or ETF's other-chain copies are not
+the asset's supply; counted as `coinSourcesSkipped`); at most
+`MAX_COIN_SOURCES_PER_ASSET` (8) coins per asset (`coinSourcesCapped`).
+Sources are visited reference first, then coin id order, so when two coins
+list the same (chain, address) the first wins deterministically
+(`coinConflicts`). Identity only; markets come from the refresh below.
+
+Kind: an equity / stablecoin source variant pins `tokenized_equity` /
+`stablecoin`; otherwise `stablecoin` / `lst` / `tokenized_equity` by asset
 category, otherwise `native` when the coin's home platform is that chain and
 `bridged` elsewhere; aggregates use `stablecoin` / `spot` / `wrapped`. Trust
-tier `tier3`, tags `coingecko-derived` + `coin:<id>` (or `native-coin`).
-Addresses are lowercased; invalid ones are counted as `skippedInvalid`.
+tier `tier3`, tags `coingecko-derived` + `coin:<id>` + `issuer:<label>` for
+variant-sourced rows (or `native-coin`). Every derived row carries its coin
+in `coingecko_id` (`coingecko_id_source = derived`; an admin-set id is never
+overwritten); native config rows carry the asset's reference id. Addresses
+are lowercased; invalid ones are counted as `skippedInvalid`.
 
 Deactivation (never deletion) happens only when the asset is no longer active
 / registered / linked to a coin id, or when the coin row is fresh (synced in
@@ -114,20 +134,54 @@ lists the chain. Rows whose coin row is stale are kept and counted as
 
 | arg         | default         | range   | meaning                                             |
 | ----------- | --------------- | ------- | --------------------------------------------------- |
-| `chains`    | every EVM chain | EVM ids | subset of chain ids to derive; `solana` is rejected |
-| `dryRun`    | false           | bool    | compute and log the plan, write nothing             |
-| `maxAssets` | 5000            | 1–50000 | assets with a coingecko_id scanned per run          |
+| `chains`      | every EVM chain | EVM ids | subset of chain ids to derive; `solana` is rejected |
+| `dryRun`      | false           | bool    | compute and log the plan, write nothing (skips step 0 too) |
+| `maxAssets`   | 5000            | 1–50000 | assets with at least one coin source scanned per run |
+| `resolveOnly` | false           | bool    | run step 0 (coin-id resolution) and stop            |
 
 Schedule: `10 6 * * *` both envs; deadline 540 s, one retry.
 
 Result: `processed` (assets scanned), `dryRun`, `chains`,
 `assetsWithVariants`, `desired`, `inserted`, `updated`, `skippedOwned`,
 `skippedInvalid`, `deactivated` (in a dry run: what would be deactivated),
-`keptStale`, `failed`, `byChain` (`{ <chain>: { desired } }`), `partial`.
+`keptStale`, `failed`, `byChain` (`{ <chain>: { desired } }`), `resolved`
+(`{ <chain>: rows linked }`), `coinSources`, `coinSourcesSkipped`,
+`coinSourcesCapped`, `coinConflicts`, `partial`.
 
 Log: `event:"v2_evm_variants_sync"` per run (same fields plus `assetsScanned`,
 `duration_ms`); `event:"v2_evm_variants_kept_stale"` with `keptStale` when
 any row was kept because its coin row is stale (a warning, not a failure).
+
+### validate-coingecko-ids (CoinGecko job group)
+
+`assets.coingecko_id` was never validated: the registry used to generate
+`${slug}-xstock` by convention and a third of those ids did not exist on
+CoinGecko. Weekly (`30 5 * * 0`, after the Sunday coin-list sync; terraform
+`crons_coingecko.tf`) and by hand after a seed, the job checks every active
+asset's id against `coingecko_coins`. A missing or unknown id is resolved by
+the asset's active Solana mints (`platforms.solana`), preferring
+`-xstock` > `-ondo-tokenized-stock` > `-backpack-securities` > `-bstock`,
+tie-broken by liquidity. The id and the asset's `coingeckoId` alias are
+written only while the asset has never been admin-edited
+(`assets.admin_edited_at IS NULL`); an id is never nulled. A known id that the
+API remap changes (`bnb` → `binancecoin`) is persisted as the real id. An
+equity / ETF whose coin lists a Solana contract that is not one of the asset's
+mints is `suspect` (the `chewy` meme coin under the Chewy equity) and only
+reported. Every asset gets a row in `asset_coingecko_id_audit`
+(`status` ok | suspect | repaired | assigned | needsAdmin | unresolved,
+`current_id`, `suggested_id`, `candidates`, `note`, `checked_at`).
+
+Args: `write` (default true; false reports candidates as `needsAdmin` and
+writes nothing), `maxAssets` (5000). Result / log event
+`coingecko_id_validation`: `assets`, `statuses` (counts per status),
+`writeFailed`, `auditWritten`; `ok:false` + `partial` when a write failed.
+
+The price refresh (`refresh-curated-coingecko-prices`) reads
+`getPriceCoinIdsInOrder()`: curated ids first, then every other active
+asset's reference id, then the coin ids active variants link to, so
+`coingecko_prices_latest` covers per-issuer / per-wrapper coins and
+registered-but-not-curated assets (`maxCoins` 500 in prd). Metadata, tickers
+and OHLCV stay curated-only.
 
 ### refresh-v2-evm-variant-markets
 
@@ -256,6 +310,25 @@ SELECT count(*) FROM v2_variant_markets_latest WHERE address LIKE '0x%' AND addr
    empty; re-run the per-chain shape SQL.
 6. Only then enable `GET /api/v2/*` consumers; the endpoints are live as soon
    as the image is, serving whatever the tables hold.
+
+Per-variant coin ids (migration 0035, `db/migrations/0035_v2_variant_coingecko_id.sql`):
+
+1. Apply 0035 (stg, then prd) before promoting the worker / API image that
+   selects `coingecko_id` from `v2_asset_variants`. Additive and idempotent.
+2. Promote the image and apply terraform (adds the `validate-coingecko-ids`
+   scheduler job, raises the price refresh to `maxCoins 500`).
+3. If `sync-coingecko-coin-list` last ran more than a day ago, dispatch it.
+4. `validate-coingecko-ids` with `{"write":false}` first: read `statuses` and
+   `SELECT status, count(*) FROM asset_coingecko_id_audit GROUP BY 1`; then
+   with `{}` to write. Expect most `*-xstock` ids to be `repaired`, Ondo /
+   Backpack-only equities `assigned`, `chewy` `suspect` (fix in admin).
+5. `sync-v2-evm-variants` with `{"resolveOnly":true}` (links the Solana mirror
+   rows and existing EVM rows to coins; `resolved` per chain), then
+   `{"dryRun":true}` to read `coinSources`, `desired`, `coinConflicts`, then
+   `{}`. Expect roughly 200 new Ondo rows on Ethereum and BNB.
+6. `refresh-v2-evm-variant-markets` catches the new rows up over a few ticks;
+   the price refresh picks the new coin ids up on its next source reload
+   (10 min TTL).
 
 ## Rollback
 

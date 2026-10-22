@@ -14,13 +14,13 @@
 
 import type { Sql } from 'postgres';
 
-import { EVM_NATIVE_ASSET_ADDRESS, isChainKind, type ChainKind } from '@tokens/asset-registry/chains';
+import { CHAINS, CHAIN_KINDS, EVM_NATIVE_ASSET_ADDRESS, isChainKind, type ChainKind } from '@tokens/asset-registry/chains';
 
 import { CURATED_COLLECTION_SLUGS, CURATED_COLLECTION_SLUGS_SQL_LITERAL } from '../db';
 import type {
     V2AssetsJobsRepo,
     V2CoinPlatformsRow,
-    V2DerivationAssetRow,
+    V2AssetCoinSourceRow,
     V2DerivedVariantRow,
     V2VariantKeyRef,
 } from '../handlers/crons.v2Assets';
@@ -95,9 +95,16 @@ const V2_VARIANT_COLUMNS = [
     'origin',
     'source',
     'is_active',
+    'coingecko_id',
+    'coingecko_id_source',
 ] as const;
 const V2_VARIANT_COLUMNS_SQL = V2_VARIANT_COLUMNS.join(', ');
 const V2_VARIANT_COLUMNS_PREFIXED_SQL = V2_VARIANT_COLUMNS.map(c => `v.${c}`).join(', ');
+
+function toStringArray(value: unknown): string[] {
+    const parsed = parseJsonb(value);
+    return Array.isArray(parsed) ? parsed.filter((item): item is string => typeof item === 'string') : [];
+}
 
 function parseJsonb(value: unknown): unknown {
     if (typeof value !== 'string') return value;
@@ -272,12 +279,60 @@ export function makePostgresV2AssetsJobsRepo(sql: Sql): V2AssetsJobsRepo {
             return rows.length;
         },
 
-        async listAssetsWithCoinPlatforms(limit) {
+        async resolveVariantCoinIds(nowMs) {
+            // One set-based UPDATE per chain: a row with no coin id, or one the
+            // resolver itself wrote earlier, takes the coin whose `platforms`
+            // lists its address (freshest coin row wins when CoinGecko lists two
+            // coins on one contract). Admin- and derivation-sourced ids are never
+            // touched. Solana addresses are case-sensitive base58; EVM ones are
+            // stored lowercase here and compared through the lower() indexes.
+            const out: Partial<Record<ChainKind, number>> = {};
+            for (const chain of CHAIN_KINDS) {
+                const platform = CHAINS[chain].providers.coingeckoPlatform;
+                if (!platform) continue;
+                const isEvm = CHAINS[chain].family === 'evm';
+                const rows = await sql<{ address: string }[]>`
+                    UPDATE v2_asset_variants v
+                    SET coingecko_id = c.coin_id,
+                        coingecko_id_source = 'resolved',
+                        updated_at = ${new Date(nowMs)}
+                    FROM (
+                        SELECT DISTINCT ON (addr) addr, coin_id
+                        FROM (
+                            SELECT ${isEvm ? sql`lower(platforms->>${platform})` : sql`platforms->>${platform}`} AS addr,
+                                   coin_id, last_synced_at
+                            FROM coingecko_coins
+                            WHERE coalesce(platforms->>${platform}, '') <> ''
+                        ) p
+                        ORDER BY addr, last_synced_at DESC, coin_id ASC
+                    ) c
+                    WHERE v.chain = ${chain}
+                      AND v.address = c.addr
+                      AND (v.coingecko_id IS NULL OR v.coingecko_id_source = 'resolved')
+                      AND v.coingecko_id IS DISTINCT FROM c.coin_id
+                    RETURNING v.address
+                `;
+                out[chain] = rows.length;
+            }
+            return out;
+        },
+
+        async listAssetCoinSources(maxAssets) {
+            // One row per (asset, coin) the derivation should read platforms
+            // for: the asset's own reference coin, plus every distinct coin its
+            // active variants link to. `maxAssets` bounds the scan by asset so
+            // the caller can tell a complete scan from a truncated one.
             const rows = await sql<
                 {
                     asset_id: string;
                     category: string;
-                    coingecko_id: string;
+                    coin_id: string;
+                    role: 'reference' | 'variant';
+                    source_chain: string | null;
+                    source_address: string | null;
+                    source_kind: string | null;
+                    source_tags: unknown;
+                    source_label: string | null;
                     platforms: unknown;
                     detail_platforms: unknown;
                     asset_platform_id: string | null;
@@ -285,27 +340,61 @@ export function makePostgresV2AssetsJobsRepo(sql: Sql): V2AssetsJobsRepo {
                     last_synced_at: number | string | bigint | null;
                 }[]
             >`
-                SELECT a.asset_id, a.category, a.coingecko_id,
+                WITH live_assets AS (
+                    SELECT a.asset_id, a.category, a.coingecko_id
+                    FROM assets a
+                    WHERE a.is_active = true
+                      AND NOT EXISTS (
+                          SELECT 1 FROM asset_deletion_tombstones dt WHERE dt.asset_id = a.asset_id
+                      )
+                ),
+                sources AS (
+                    SELECT a.asset_id, a.category, trim(a.coingecko_id) AS coin_id, 'reference' AS role,
+                           NULL::text AS source_chain, NULL::text AS source_address, NULL::text AS source_kind,
+                           NULL::jsonb AS source_tags, NULL::text AS source_label
+                    FROM live_assets a
+                    WHERE a.coingecko_id IS NOT NULL AND length(trim(a.coingecko_id)) > 0
+                    UNION ALL
+                    SELECT DISTINCT ON (v.asset_id, v.coingecko_id)
+                           v.asset_id, a.category, v.coingecko_id, 'variant',
+                           v.chain, v.address, v.kind, v.tags, v.label
+                    FROM v2_asset_variants v
+                    JOIN live_assets a ON a.asset_id = v.asset_id
+                    WHERE v.is_active = true
+                      AND v.coingecko_id IS NOT NULL
+                      AND v.coingecko_id IS DISTINCT FROM trim(a.coingecko_id)
+                    ORDER BY v.asset_id, v.coingecko_id, (v.chain = 'solana') DESC, v.address ASC
+                ),
+                scoped AS (
+                    SELECT DISTINCT asset_id FROM sources ORDER BY asset_id ASC LIMIT ${Math.max(1, Math.floor(maxAssets))}
+                )
+                SELECT s.asset_id, s.category, s.coin_id, s.role,
+                       s.source_chain, s.source_address, s.source_kind, s.source_tags, s.source_label,
                        c.platforms,
                        c.coin->'detail_platforms' AS detail_platforms,
                        c.coin->>'asset_platform_id' AS asset_platform_id,
                        c.symbol AS coin_symbol,
                        c.last_synced_at
-                FROM assets a
-                JOIN coingecko_coins c ON c.coin_id = a.coingecko_id
-                WHERE a.is_active = true
-                  AND a.coingecko_id IS NOT NULL
-                  AND length(trim(a.coingecko_id)) > 0
-                  AND NOT EXISTS (
-                      SELECT 1 FROM asset_deletion_tombstones dt WHERE dt.asset_id = a.asset_id
-                  )
-                ORDER BY a.asset_id ASC
-                LIMIT ${Math.max(1, Math.floor(limit))}
+                FROM sources s
+                JOIN scoped sc ON sc.asset_id = s.asset_id
+                JOIN coingecko_coins c ON c.coin_id = s.coin_id
+                ORDER BY s.asset_id ASC, (s.role = 'reference') DESC, s.coin_id ASC
             `;
-            return rows.map((row): V2DerivationAssetRow => ({
+            return rows.map((row): V2AssetCoinSourceRow => ({
                 assetId: row.asset_id,
                 category: row.category,
-                coingeckoId: row.coingecko_id,
+                coinId: row.coin_id,
+                role: row.role,
+                source:
+                    row.role === 'variant' && row.source_chain && row.source_address && isChainKind(row.source_chain)
+                        ? {
+                              chain: row.source_chain,
+                              address: row.source_address,
+                              kind: row.source_kind ?? 'spot',
+                              tags: toStringArray(row.source_tags),
+                              label: row.source_label ?? null,
+                          }
+                        : null,
                 platforms: toStringRecord(row.platforms),
                 decimalsByPlatform: toDecimalsRecord(row.detail_platforms),
                 assetPlatformId: row.asset_platform_id ?? null,
@@ -382,12 +471,14 @@ export function makePostgresV2AssetsJobsRepo(sql: Sql): V2AssetsJobsRepo {
                 INSERT INTO v2_asset_variants (
                     chain, address, asset_id, variant_id, kind, trust_tier, stock_variant_tier, tags,
                     label, issuer, issuer_url, decimals, origin, source, is_active,
+                    coingecko_id, coingecko_id_source,
                     first_seen_at, last_seen_at, created_at, updated_at
                 )
                 VALUES (
                     ${args.chain}, ${args.address}, ${args.assetId}, ${args.variantId}, ${args.kind}, ${args.trustTier},
                     NULL, ${sql.json([...args.tags] as never)},
                     ${args.label}, NULL, NULL, ${args.decimals}, ${args.origin}, ${args.origin}, true,
+                    ${args.coingeckoId}, ${args.coingeckoId === null ? null : 'derived'},
                     ${args.nowMs}, ${args.nowMs}, ${now}, ${now}
                 )
                 ON CONFLICT (chain, address, asset_id) DO UPDATE SET
@@ -399,6 +490,17 @@ export function makePostgresV2AssetsJobsRepo(sql: Sql): V2AssetsJobsRepo {
                     origin = EXCLUDED.origin,
                     source = EXCLUDED.source,
                     is_active = true,
+                    -- An admin-set coin id outranks the derivation; otherwise the
+                    -- coin this row was derived from is the row's coin.
+                    coingecko_id = CASE
+                        WHEN v2_asset_variants.coingecko_id_source = 'admin' THEN v2_asset_variants.coingecko_id
+                        ELSE coalesce(EXCLUDED.coingecko_id, v2_asset_variants.coingecko_id)
+                    END,
+                    coingecko_id_source = CASE
+                        WHEN v2_asset_variants.coingecko_id_source = 'admin' THEN 'admin'
+                        WHEN EXCLUDED.coingecko_id IS NOT NULL THEN 'derived'
+                        ELSE v2_asset_variants.coingecko_id_source
+                    END,
                     last_seen_at = EXCLUDED.last_seen_at,
                     updated_at = EXCLUDED.updated_at
                 WHERE v2_asset_variants.origin IN ('coingecko', 'config')

@@ -63,6 +63,8 @@ export interface V2VariantDbRow {
     origin: string;
     source: string | null;
     is_active: boolean;
+    coingecko_id?: string | null;
+    coingecko_id_source?: string | null;
 }
 
 /** One `v2_variant_markets_latest` row, selected with `address AS mint` so the v1 snapshot builder applies. */
@@ -137,6 +139,8 @@ export interface V2VariantResult {
     origin: string;
     isActive: boolean;
     explorerUrl: string;
+    /** The CoinGecko coin this deployment is (an issuer's, an LST's, a wrapper's); null when unlinked. */
+    coingeckoId: string | null;
 }
 
 export interface V2MarketResult {
@@ -193,6 +197,8 @@ export interface V2AssetDetailResult {
     stockInstrument: GetInstrumentsByAssetIdsEntry | null;
     stockPrice: GetPricesByAssetIdsEntry | null;
     coingeckoPrice: CoingeckoPriceBatchEntry | null;
+    /** Prices of the coins the asset's variants link to (other than the reference coin). */
+    variantCoingeckoPrices: CoingeckoPriceBatchEntry[];
 }
 
 export interface V2VariantsByAssetIdsEntry {
@@ -205,6 +211,8 @@ export interface V2VariantLookupResult {
     variants: V2VariantResult[];
     assets: AssetResult[];
     market: VariantMarketSnapshotResult | null;
+    /** Price of the coin the owning variant links to, when it has one. */
+    coingeckoPrice: CoingeckoPriceBatchEntry | null;
 }
 
 export interface V2MarketsByKeysEntry {
@@ -338,6 +346,7 @@ export function rowToVariantResult(row: V2VariantDbRow): V2VariantResult | null 
         origin: row.origin,
         isActive: row.is_active,
         explorerUrl: explorerTokenUrl(row.chain, row.address),
+        coingeckoId: typeof row.coingecko_id === 'string' && row.coingecko_id.trim() ? row.coingecko_id.trim() : null,
     };
 }
 
@@ -571,7 +580,19 @@ export async function v2AssetsGetDetail(deps: V2AssetsReadsDeps, args: unknown):
             : Promise.resolve<CoingeckoPriceBatchEntry[]>([]),
     ]);
     const variants = variantResults(variantRows);
-    const markets = await loadMarketsForKeys(deps.v2, keysOf(variants), runDb);
+    const variantCoinIds = uniqueStrings(
+        variants.flatMap(v => (v.coingeckoId && v.coingeckoId !== coinId ? [v.coingeckoId] : [])),
+    );
+    const [markets, variantCoingeckoPricesChunks] = await Promise.all([
+        loadMarketsForKeys(deps.v2, keysOf(variants), runDb),
+        Promise.all(
+            chunkArray(variantCoinIds, COINGECKO_PRICE_CHUNK).map(chunk =>
+                runDb(() => coingeckoGetPriceLatestByCoinIds(deps.coingeckoReadsRepo, { coinIds: chunk })).catch(
+                    recoverOptional<CoingeckoPriceBatchEntry[]>([]),
+                ),
+            ),
+        ),
+    ]);
 
     return {
         asset,
@@ -582,6 +603,7 @@ export async function v2AssetsGetDetail(deps: V2AssetsReadsDeps, args: unknown):
         stockInstrument: stockInstruments[0] ?? null,
         stockPrice: stockPrices[0] ?? null,
         coingeckoPrice: coingeckoPrices[0] ?? null,
+        variantCoingeckoPrices: variantCoingeckoPricesChunks.flat(),
     };
 }
 
@@ -630,6 +652,12 @@ export async function v2AssetsGetVariant(
     const liveVariants = variants.filter(v => assetById.has(v.assetId));
     if (liveVariants.length === 0) return null;
     const market = marketResults(marketRows)[0]?.market ?? null;
+    const ownerCoinId = liveVariants[0]?.coingeckoId ?? null;
+    const coingeckoPrices = ownerCoinId
+        ? await coingeckoGetPriceLatestByCoinIds(deps.coingeckoReadsRepo, { coinIds: [ownerCoinId] }).catch(
+              recoverOptional<CoingeckoPriceBatchEntry[]>([]),
+          )
+        : [];
     return {
         variants: liveVariants,
         assets: liveVariants.flatMap(v => {
@@ -637,6 +665,7 @@ export async function v2AssetsGetVariant(
             return asset ? [asset] : [];
         }),
         market,
+        coingeckoPrice: coingeckoPrices[0] ?? null,
     };
 }
 

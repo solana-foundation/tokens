@@ -159,6 +159,8 @@ function registryVariantToPageVariant(
         rank: null,
         explorerUrl: explorerTokenUrl('solana', variant.mint),
         market: null,
+        coingeckoId: null,
+        reference: null,
     };
     return toAssetPageVariant(v2, { symbol: asset.symbol, name: asset.name });
 }

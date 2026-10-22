@@ -53,6 +53,7 @@ function variant(chain: V2VariantResult['chain'], address: string, kind: string,
         origin: 'coingecko',
         isActive: true,
         explorerUrl: 'https://example.test',
+        coingeckoId: null,
     };
 }
 

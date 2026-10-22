@@ -125,6 +125,10 @@ export interface V2Variant extends V2VariantEnrichments {
     rank: number | null;
     explorerUrl: string;
     market: V2Market | null;
+    /** The CoinGecko coin this deployment is; null when unlinked. */
+    coingeckoId: string | null;
+    /** CoinGecko's figures for that coin; null when unlinked or not loaded (batch lookups). */
+    reference: Extract<V2ReferenceMarket, { source: 'coingecko' }> | null;
 }
 
 export interface V2AssetStats {

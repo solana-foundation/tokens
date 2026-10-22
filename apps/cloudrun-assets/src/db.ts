@@ -1943,8 +1943,35 @@ export function makePostgresJobsRepo(sql: Sql): JobsRepo {
 
 export function makePostgresCoingeckoCuratedSource(sql: Sql): CoingeckoCuratedSource & { warmup(): Promise<void> } {
     let cachedIds: string[] | null = null;
+    let cachedPriceIds: string[] | null = null;
     let loadedAtMs = 0;
     let inflight: Promise<void> | null = null;
+
+    async function loadPriceIds(curated: readonly string[]): Promise<string[]> {
+        // Curated ids first (the curated order is also the price priority), then
+        // every other active asset's reference id, then the coins active variants
+        // link to. Prices are the one CoinGecko read that must cover all of them.
+        const rows = await sql<{ coin_id: string; is_variant: boolean }[]>`
+            SELECT trim(a.coingecko_id) AS coin_id, false AS is_variant
+            FROM assets a
+            WHERE a.is_active = true AND a.coingecko_id IS NOT NULL AND length(trim(a.coingecko_id)) > 0
+            UNION
+            SELECT v.coingecko_id AS coin_id, true AS is_variant
+            FROM v2_asset_variants v
+            JOIN assets a ON a.asset_id = v.asset_id AND a.is_active = true
+            WHERE v.is_active = true AND v.coingecko_id IS NOT NULL
+            ORDER BY is_variant ASC, coin_id ASC
+        `;
+        const seen = new Set(curated);
+        const out = [...curated];
+        for (const row of rows) {
+            const coinId = row.coin_id?.trim();
+            if (!coinId || seen.has(coinId)) continue;
+            seen.add(coinId);
+            out.push(coinId);
+        }
+        return out;
+    }
 
     async function load(): Promise<void> {
         const rows = await sql<{ coingecko_id: string }[]>`
@@ -1973,6 +2000,13 @@ export function makePostgresCoingeckoCuratedSource(sql: Sql): CoingeckoCuratedSo
             out.push(coinId);
         }
         cachedIds = out;
+        try {
+            cachedPriceIds = await loadPriceIds(out);
+        } catch (err) {
+            // The v2 tables may not exist yet (pre-0033 env): prices then cover curated ids only.
+            console.error('[cloudrun-assets] price coin ids load failed; falling back to curated', err);
+            cachedPriceIds = out;
+        }
         loadedAtMs = Date.now();
     }
 
@@ -1995,6 +2029,10 @@ export function makePostgresCoingeckoCuratedSource(sql: Sql): CoingeckoCuratedSo
         getCuratedCoinIdsInOrder(): string[] {
             refreshIfStale();
             return cachedIds ?? [];
+        },
+        getPriceCoinIdsInOrder(): string[] {
+            refreshIfStale();
+            return cachedPriceIds ?? cachedIds ?? [];
         },
     };
 }
@@ -2206,6 +2244,122 @@ export function makePostgresCoingeckoRepo(sql: Sql): CoingeckoRepo {
                 LIMIT 1
             `;
             return rows.length > 0;
+        },
+        async listAssetsForCoinIdValidation(limit) {
+            const rows = await sql<
+                {
+                    asset_id: string;
+                    category: string;
+                    coingecko_id: string | null;
+                    admin_edited_at: number | string | bigint | null;
+                    mints: unknown;
+                }[]
+            >`
+                SELECT a.asset_id, a.category, a.coingecko_id, a.admin_edited_at,
+                       coalesce(
+                           jsonb_agg(jsonb_build_object('mint', av.mint, 'liquidity', vml.liquidity) ORDER BY av.mint)
+                               FILTER (WHERE av.mint IS NOT NULL),
+                           '[]'::jsonb
+                       ) AS mints
+                FROM assets a
+                LEFT JOIN asset_variants av
+                    ON av.asset_id = a.asset_id AND av.chain = 'solana' AND av.is_active = true
+                LEFT JOIN variant_markets_latest vml ON vml.mint = av.mint
+                WHERE a.is_active = true
+                  AND NOT EXISTS (SELECT 1 FROM asset_deletion_tombstones dt WHERE dt.asset_id = a.asset_id)
+                GROUP BY a.asset_id, a.category, a.coingecko_id, a.admin_edited_at
+                ORDER BY a.asset_id ASC
+                LIMIT ${Math.max(1, Math.floor(limit))}
+            `;
+            return rows.map(row => {
+                const parsed = typeof row.mints === 'string' ? JSON.parse(row.mints) : row.mints;
+                const mints = Array.isArray(parsed) ? parsed : [];
+                return {
+                    assetId: row.asset_id,
+                    category: row.category,
+                    coingeckoId: row.coingecko_id,
+                    adminEditedAt:
+                        row.admin_edited_at === null || row.admin_edited_at === undefined ? null : Number(row.admin_edited_at),
+                    solanaMints: mints.flatMap((m: unknown) => {
+                        if (typeof m !== 'object' || m === null) return [];
+                        const mint = (m as { mint?: unknown }).mint;
+                        const liquidity = (m as { liquidity?: unknown }).liquidity;
+                        if (typeof mint !== 'string' || !mint) return [];
+                        return [{ mint, liquidity: typeof liquidity === 'number' && Number.isFinite(liquidity) ? liquidity : null }];
+                    }),
+                };
+            });
+        },
+        async findKnownCoins(coinIds) {
+            const out = new Map<string, { solanaMint: string | null }>();
+            if (coinIds.length === 0) return out;
+            const rows = await sql<{ coin_id: string; solana: string | null }[]>`
+                SELECT coin_id, nullif(platforms->>'solana', '') AS solana
+                FROM coingecko_coins
+                WHERE coin_id IN ${sql(coinIds as string[])}
+            `;
+            for (const row of rows) out.set(row.coin_id, { solanaMint: row.solana });
+            return out;
+        },
+        async findCoinsBySolanaMints(mints) {
+            if (mints.length === 0) return [];
+            const rows = await sql<{ mint: string; coin_id: string; last_synced_at: number | string | bigint | null }[]>`
+                SELECT platforms->>'solana' AS mint, coin_id, last_synced_at
+                FROM coingecko_coins
+                WHERE platforms->>'solana' IN ${sql(mints as string[])}
+                ORDER BY platforms->>'solana', last_synced_at DESC, coin_id ASC
+            `;
+            return rows.map(row => ({
+                mint: row.mint,
+                coinId: row.coin_id,
+                lastSyncedAt: row.last_synced_at === null ? null : Number(row.last_synced_at),
+            }));
+        },
+        async repairAssetCoinId(args) {
+            return await sql.begin(async tx => {
+                const updated = await tx<{ asset_id: string }[]>`
+                    UPDATE assets
+                    SET coingecko_id = ${args.coinId}, updated_at = now()
+                    WHERE asset_id = ${args.assetId} AND admin_edited_at IS NULL
+                    RETURNING asset_id
+                `;
+                if (updated.length === 0) return false;
+                await tx`DELETE FROM asset_aliases WHERE asset_id = ${args.assetId} AND kind = 'coingeckoId'`;
+                const now = new Date(args.nowMs);
+                await tx`
+                    INSERT INTO asset_aliases (id, normalized, alias, asset_id, kind, priority, created_at, updated_at)
+                    VALUES (${randomId('aal')}, ${args.coinId.toLowerCase()}, ${args.coinId}, ${args.assetId}, 'coingeckoId', 700, ${now}, ${now})
+                    ON CONFLICT (asset_id, normalized, kind) DO UPDATE SET
+                        alias = EXCLUDED.alias, priority = EXCLUDED.priority, updated_at = EXCLUDED.updated_at
+                `;
+                return true;
+            });
+        },
+        async upsertCoinIdAudit(rows) {
+            if (rows.length === 0) return;
+            await sql`
+                INSERT INTO asset_coingecko_id_audit (asset_id, status, current_id, suggested_id, candidates, note, checked_at, updated_at)
+                SELECT r.asset_id, r.status, r.current_id, r.suggested_id, r.candidates, r.note, r.checked_at, now()
+                FROM jsonb_to_recordset(${sql.json(
+                    rows.map(r => ({
+                        asset_id: r.assetId,
+                        status: r.status,
+                        current_id: r.currentId,
+                        suggested_id: r.suggestedId,
+                        candidates: r.candidates,
+                        note: r.note,
+                        checked_at: r.checkedAt,
+                    })) as never,
+                )}) AS r(asset_id text, status text, current_id text, suggested_id text, candidates jsonb, note text, checked_at bigint)
+                ON CONFLICT (asset_id) DO UPDATE SET
+                    status = EXCLUDED.status,
+                    current_id = EXCLUDED.current_id,
+                    suggested_id = EXCLUDED.suggested_id,
+                    candidates = EXCLUDED.candidates,
+                    note = EXCLUDED.note,
+                    checked_at = EXCLUDED.checked_at,
+                    updated_at = now()
+            `;
         },
         async getOhlcvBounds(coinId, interval) {
             const rows = await sql<{ min_time: number | null; max_time: number | null }[]>`

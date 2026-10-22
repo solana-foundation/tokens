@@ -188,6 +188,10 @@ export type V2Variant = {
     rank: number | null;
     explorerUrl: string;
     market: V2Market | null;
+    /** The CoinGecko coin this deployment is (an issuer's, an LST's, a wrapper's); null when unlinked. */
+    coingeckoId: string | null;
+    /** CoinGecko's own figures for that coin (per-issuer / per-wrapper supply and cap); null when unlinked or not loaded. */
+    reference: V2CoinGeckoReference | null;
 } & V2VariantEnrichments;
 
 /** `GET /v2/assets/{id}?include=` values. Each adds one key to EVERY variant in the response. */
@@ -252,6 +256,24 @@ export type V2Aggregate = V2ChainStats & {
     /** Bridged / wrapped / derivative variants left out of supply and market cap (= the sum of `excludedByIssuance`). */
     excludedFromSupplyCount: number;
 };
+
+export type V2CoinGeckoReference = Extract<V2ReferenceMarket, { source: 'coingecko' }>;
+
+export function toCoinGeckoReference(coinId: string, snapshot: CoingeckoPriceSnapshot | null): V2CoinGeckoReference {
+    return {
+        source: 'coingecko',
+        coinId,
+        price: snapshot?.priceUsd ?? null,
+        marketCap: snapshot?.marketCapUsd ?? null,
+        volume24hUSD: snapshot?.volume24hUsd ?? null,
+        priceChange24hPercent: snapshot?.priceChange24hPercent ?? null,
+        circulatingSupply: snapshot?.circulatingSupply ?? null,
+        totalSupply: snapshot?.totalSupply ?? null,
+        maxSupply: snapshot?.maxSupply ?? null,
+        asOf: snapshot?.providerLastUpdatedAt ?? null,
+        lastFetchedAt: snapshot?.lastFetchedAt ?? null,
+    };
+}
 
 export type V2ReferenceMarket =
     | {
@@ -870,6 +892,8 @@ export interface V2AssetBuildContext {
     rollupByChain: ReadonlyMap<ChainId, V2ChainRollupResult> | null;
     advisoriesByMint: ReadonlyMap<string, VariantAdvisory>;
     coingeckoPrice: CoingeckoPriceSnapshot | null;
+    /** Prices of the coins variants link to, by coin id (detail surfaces); absent = `variant.reference` null. */
+    variantCoingeckoPriceByCoinId?: ReadonlyMap<string, CoingeckoPriceSnapshot | null>;
     stockInstrument: StockInstrumentResult | null;
     stockPrice: StockPriceResult | null;
     preStocksByMint: ReadonlyMap<string, PreStocksMintSnapshot>;
@@ -1183,20 +1207,14 @@ export function buildV2Asset(ctx: V2AssetBuildContext): V2Asset | null {
                 lastFetchedAt: preStocksMarket.lastFetchedAt,
             }
           : coinId
-            ? {
-                  source: 'coingecko',
-                  coinId,
-                  price: ctx.coingeckoPrice?.priceUsd ?? null,
-                  marketCap: ctx.coingeckoPrice?.marketCapUsd ?? null,
-                  volume24hUSD: ctx.coingeckoPrice?.volume24hUsd ?? null,
-                  priceChange24hPercent: ctx.coingeckoPrice?.priceChange24hPercent ?? null,
-                  circulatingSupply: ctx.coingeckoPrice?.circulatingSupply ?? null,
-                  totalSupply: ctx.coingeckoPrice?.totalSupply ?? null,
-                  maxSupply: ctx.coingeckoPrice?.maxSupply ?? null,
-                  asOf: ctx.coingeckoPrice?.providerLastUpdatedAt ?? null,
-                  lastFetchedAt: ctx.coingeckoPrice?.lastFetchedAt ?? null,
-              }
+            ? toCoinGeckoReference(coinId, ctx.coingeckoPrice)
             : null;
+    const variantReference = (variant: V2VariantResult): V2CoinGeckoReference | null => {
+        if (!variant.coingeckoId) return null;
+        if (variant.coingeckoId === coinId) return referenceMarket?.source === 'coingecko' ? referenceMarket : null;
+        const snapshot = ctx.variantCoingeckoPriceByCoinId?.get(variant.coingeckoId);
+        return snapshot === undefined ? null : toCoinGeckoReference(variant.coingeckoId, snapshot);
+    };
 
     // Liquidity rank across chains (0-based), then the public variant objects.
     const ordered = [...visible].sort(
@@ -1231,6 +1249,8 @@ export function buildV2Asset(ctx: V2AssetBuildContext): V2Asset | null {
             rank: rankByKey.get(variant.key) ?? 0,
             explorerUrl: explorerTokenUrl(variant.chain, variant.address),
             market: toV2Market(market),
+            coingeckoId: variant.coingeckoId,
+            reference: variantReference(variant),
             ...variantEnrichments(variant, ctx.enrichments, ctx.preStocksByMint, market?.price),
         });
     }
@@ -1342,6 +1362,8 @@ export function buildStandaloneV2Variant(ctx: {
     market: VariantMarketSnapshotResult | null;
     advisoriesByMint: ReadonlyMap<string, VariantAdvisory>;
     canonicalSymbol: string | null;
+    /** Price of the variant's own CoinGecko coin, when loaded; absent = `reference` null. */
+    coingeckoPrice?: CoingeckoPriceSnapshot | null;
 }): V2Variant {
     const { variant, market } = ctx;
     const registry = registryIdentity(variant);
@@ -1379,6 +1401,11 @@ export function buildStandaloneV2Variant(ctx: {
         rank: null,
         explorerUrl: explorerTokenUrl(variant.chain, variant.address),
         market: toV2Market(market),
+        coingeckoId: variant.coingeckoId,
+        reference:
+            variant.coingeckoId && ctx.coingeckoPrice !== undefined
+                ? toCoinGeckoReference(variant.coingeckoId, ctx.coingeckoPrice)
+                : null,
     };
 }
 

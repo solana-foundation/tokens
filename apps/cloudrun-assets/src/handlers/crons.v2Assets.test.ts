@@ -15,7 +15,7 @@ import {
     syncSolanaVariants,
     type V2AssetsCronDeps,
     type V2AssetsJobsRepo,
-    type V2DerivationAssetRow,
+    type V2AssetCoinSourceRow,
     type V2DerivedVariantRow,
     type V2DerivedVariantUpsert,
     type V2VariantKeyRef,
@@ -52,7 +52,10 @@ function fakeRepo(overrides: Partial<V2AssetsJobsRepo> = {}): V2AssetsJobsRepo &
         async mirrorSolanaRollups() {
             return 1;
         },
-        async listAssetsWithCoinPlatforms() {
+        async resolveVariantCoinIds() {
+            return {};
+        },
+        async listAssetCoinSources() {
             return [];
         },
         async listActiveAssets() {
@@ -136,6 +139,18 @@ describe('deriveVariantKindForChain', () => {
         ).toBe('native');
     });
 
+    test('an equity or stablecoin source variant pins the kind regardless of category', () => {
+        expect(
+            deriveVariantKindForChain({ category: 'equity', assetPlatformId: null, chain: 'bnb', sourceKind: 'tokenized_equity' }),
+        ).toBe('tokenized_equity');
+        expect(
+            deriveVariantKindForChain({ category: 'crypto', assetPlatformId: 'ethereum', chain: 'bnb', sourceKind: 'stablecoin' }),
+        ).toBe('stablecoin');
+        expect(deriveVariantKindForChain({ category: 'crypto', assetPlatformId: 'ethereum', chain: 'bnb', sourceKind: 'yield' })).toBe(
+            'bridged',
+        );
+    });
+
     test('without the home platform, the platforms map decides instead of defaulting to bridged', () => {
         const base = { category: 'crypto', assetPlatformId: null, chain: 'ethereum' as const };
         // A Solana deployment marks the EVM copies as bridged.
@@ -201,10 +216,12 @@ describe('sync-v2-solana-variants', () => {
 });
 
 describe('sync-v2-evm-variants', () => {
-    const usdcCoin = (lastSyncedAt: number | null): V2DerivationAssetRow => ({
+    const usdcCoin = (lastSyncedAt: number | null): V2AssetCoinSourceRow => ({
         assetId: 'usd-coin-asset',
         category: 'stablecoin',
-        coingeckoId: 'usd-coin',
+        coinId: 'usd-coin',
+        role: 'reference',
+        source: null,
         platforms: {
             ethereum: USDC_ETH.toUpperCase().replace('0X', '0x'),
             base: USDC_BASE,
@@ -218,7 +235,7 @@ describe('sync-v2-evm-variants', () => {
 
     test('derives one normalized variant per EVM platform with decimals from detail_platforms', async () => {
         const repo = fakeRepo({
-            async listAssetsWithCoinPlatforms() {
+            async listAssetCoinSources() {
                 return [usdcCoin(NOW)];
             },
             async listActiveAssets() {
@@ -238,8 +255,161 @@ describe('sync-v2-evm-variants', () => {
         expect(eth.label).toBe('USDC');
         expect(eth.tags).toEqual(['coingecko-derived', 'coin:usd-coin']);
         expect(eth.origin).toBe('coingecko');
+        expect(eth.coingeckoId).toBe('usd-coin');
         const base = repo.upserts.find(u => u.chain === 'base')!;
         expect(base.decimals).toBeNull();
+    });
+
+    test('a variant coin derives the issuer\'s own EVM rows under the same asset, tagged with the issuer', async () => {
+        const ONDO_ETH = '0x0000000000000000000000000000000000000aaa';
+        const ONDO_BNB = '0x0000000000000000000000000000000000000bbb';
+        const XSTOCK_ETH = '0x0000000000000000000000000000000000000ccc';
+        const sources: V2AssetCoinSourceRow[] = [
+            {
+                assetId: 'tesla',
+                category: 'equity',
+                coinId: 'tesla-xstock',
+                role: 'reference',
+                source: null,
+                platforms: { solana: 'TSLAx', ethereum: XSTOCK_ETH },
+                decimalsByPlatform: {},
+                assetPlatformId: 'arbitrum-one',
+                coinSymbol: 'tslax',
+                coinLastSyncedAt: NOW,
+            },
+            {
+                assetId: 'tesla',
+                category: 'equity',
+                coinId: 'tesla-ondo-tokenized-stock',
+                role: 'variant',
+                source: { chain: 'solana', address: 'TSLAon', kind: 'tokenized_equity', tags: ['Ondo'], label: 'Ondo' },
+                platforms: { solana: 'TSLAon', ethereum: ONDO_ETH, 'binance-smart-chain': ONDO_BNB },
+                decimalsByPlatform: { ethereum: 18 },
+                assetPlatformId: 'ethereum',
+                coinSymbol: 'tslaon',
+                coinLastSyncedAt: NOW,
+            },
+        ];
+        const repo = fakeRepo({
+            async listAssetCoinSources() {
+                return sources;
+            },
+            async listActiveAssets() {
+                return [{ assetId: 'tesla', category: 'equity' }];
+            },
+        });
+        const result = await syncEvmVariants(deps(repo), { chains: ['ethereum', 'bnb'] });
+        expect(result.ok).toBe(true);
+        expect(result.coinSources).toBe(2);
+        expect(result.desired).toBe(3);
+        const ondoEth = repo.upserts.find(u => u.address === ONDO_ETH)!;
+        expect(ondoEth.assetId).toBe('tesla');
+        expect(ondoEth.coingeckoId).toBe('tesla-ondo-tokenized-stock');
+        expect(ondoEth.kind).toBe('tokenized_equity');
+        expect(ondoEth.tags).toEqual(['coingecko-derived', 'coin:tesla-ondo-tokenized-stock', 'issuer:Ondo']);
+        expect(ondoEth.decimals).toBe(18);
+        expect(repo.upserts.find(u => u.address === ONDO_BNB)?.chain).toBe('bnb');
+        const xstockEth = repo.upserts.find(u => u.address === XSTOCK_ETH)!;
+        expect(xstockEth.coingeckoId).toBe('tesla-xstock');
+        expect(xstockEth.tags).toEqual(['coingecko-derived', 'coin:tesla-xstock']);
+    });
+
+    test('a derivative (LST) source variant contributes no deployments; two coins on one address keep the first', async () => {
+        const SHARED = '0x0000000000000000000000000000000000000ddd';
+        const sources: V2AssetCoinSourceRow[] = [
+            {
+                assetId: 'solana',
+                category: 'crypto',
+                coinId: 'solana',
+                role: 'reference',
+                source: null,
+                platforms: { ethereum: SHARED },
+                decimalsByPlatform: {},
+                assetPlatformId: null,
+                coinSymbol: 'sol',
+                coinLastSyncedAt: NOW,
+            },
+            {
+                assetId: 'solana',
+                category: 'crypto',
+                coinId: 'jito-staked-sol',
+                role: 'variant',
+                source: { chain: 'solana', address: 'J1to', kind: 'yield', tags: [], label: 'JitoSOL' },
+                platforms: { solana: 'J1to', ethereum: '0x0000000000000000000000000000000000000eee' },
+                decimalsByPlatform: {},
+                assetPlatformId: 'solana',
+                coinSymbol: 'jitosol',
+                coinLastSyncedAt: NOW,
+            },
+            {
+                assetId: 'solana',
+                category: 'crypto',
+                coinId: 'wrapped-solana-other',
+                role: 'variant',
+                source: { chain: 'solana', address: 'So11', kind: 'spot', tags: [], label: null },
+                platforms: { ethereum: SHARED },
+                decimalsByPlatform: {},
+                assetPlatformId: 'solana',
+                coinSymbol: 'wsol',
+                coinLastSyncedAt: NOW,
+            },
+        ];
+        const repo = fakeRepo({
+            async listAssetCoinSources() {
+                return sources;
+            },
+            async listActiveAssets() {
+                return [{ assetId: 'solana', category: 'crypto' }];
+            },
+        });
+        const result = await syncEvmVariants(deps(repo), { chains: ['ethereum'] });
+        expect(result.coinSourcesSkipped).toBe(1);
+        expect(result.coinConflicts).toBe(1);
+        expect(result.desired).toBe(1);
+        expect(repo.upserts[0]?.coingeckoId).toBe('solana');
+    });
+
+    test('resolveOnly links rows to coins and stops before deriving', async () => {
+        let listed = false;
+        const repo = fakeRepo({
+            async resolveVariantCoinIds() {
+                return { solana: 1464, ethereum: 12 };
+            },
+            async listAssetCoinSources() {
+                listed = true;
+                return [];
+            },
+        });
+        const result = await syncEvmVariants(deps(repo), { resolveOnly: true });
+        expect(result.ok).toBe(true);
+        expect(result.resolved).toEqual({ solana: 1464, ethereum: 12 });
+        expect(listed).toBe(false);
+    });
+
+    test('native config rows carry the asset\'s reference coin id', async () => {
+        const repo = fakeRepo({
+            async listAssetCoinSources() {
+                return [
+                    {
+                        assetId: 'ethereum',
+                        category: 'crypto',
+                        coinId: 'ethereum',
+                        role: 'reference',
+                        source: null,
+                        platforms: {},
+                        decimalsByPlatform: {},
+                        assetPlatformId: null,
+                        coinSymbol: 'eth',
+                        coinLastSyncedAt: NOW,
+                    },
+                ];
+            },
+            async listActiveAssets() {
+                return [{ assetId: 'ethereum', category: 'crypto' }];
+            },
+        });
+        await syncEvmVariants(deps(repo), { chains: ['ethereum'] });
+        expect(repo.upserts.every(u => u.coingeckoId === 'ethereum')).toBe(true);
     });
 
     test('native coins come from the registry table for registered assets only', async () => {
@@ -262,7 +432,7 @@ describe('sync-v2-evm-variants', () => {
 
     test('dry run computes but writes nothing', async () => {
         const repo = fakeRepo({
-            async listAssetsWithCoinPlatforms() {
+            async listAssetCoinSources() {
                 return [usdcCoin(NOW)];
             },
             async listActiveAssets() {
@@ -283,13 +453,13 @@ describe('sync-v2-evm-variants', () => {
             variantId: `base:${USDC_BASE}`,
             isActive: true,
         };
-        const withoutBase = (lastSyncedAt: number | null): V2DerivationAssetRow => ({
+        const withoutBase = (lastSyncedAt: number | null): V2AssetCoinSourceRow => ({
             ...usdcCoin(lastSyncedAt),
             platforms: { ethereum: USDC_ETH },
         });
 
         const freshRepo = fakeRepo({
-            async listAssetsWithCoinPlatforms() {
+            async listAssetCoinSources() {
                 return [withoutBase(NOW)];
             },
             async listActiveAssets() {
@@ -304,7 +474,7 @@ describe('sync-v2-evm-variants', () => {
         expect(fresh.keptStale).toBe(0);
 
         const staleRepo = fakeRepo({
-            async listAssetsWithCoinPlatforms() {
+            async listAssetCoinSources() {
                 return [withoutBase(NOW - COIN_LIST_FRESHNESS_WINDOW_MS - 1)];
             },
             async listActiveAssets() {
@@ -330,7 +500,7 @@ describe('sync-v2-evm-variants', () => {
         const repoFor = () =>
             fakeRepo({
                 // One scanned asset (usd-coin), the other active asset fell outside the window.
-                async listAssetsWithCoinPlatforms() {
+                async listAssetCoinSources() {
                     return [usdcCoin(NOW)];
                 },
                 async listActiveAssets() {
@@ -372,7 +542,7 @@ describe('sync-v2-evm-variants', () => {
             isActive: true,
         };
         const repo = fakeRepo({
-            async listAssetsWithCoinPlatforms() {
+            async listAssetCoinSources() {
                 return [usdcCoin(NOW)];
             },
             async listActiveAssets() {
@@ -399,7 +569,7 @@ describe('sync-v2-evm-variants', () => {
 
     test('a run where every write fails is ok:false so the scheduler retries', async () => {
         const repo = fakeRepo({
-            async listAssetsWithCoinPlatforms() {
+            async listAssetCoinSources() {
                 return [usdcCoin(NOW)];
             },
             async listActiveAssets() {

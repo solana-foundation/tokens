@@ -185,6 +185,11 @@ describe('row mappers', () => {
         expect(out.key).toBe(`base:${USDC_BASE}`);
         expect(out.explorerUrl).toBe(`https://basescan.org/token/${USDC_BASE}`);
         expect(out.tags).toEqual(['coingecko-derived']);
+        expect(out.coingeckoId).toBeNull();
+        expect(rowToVariantResult(variantRow({ coingecko_id: 'usd-coin', coingecko_id_source: 'resolved' }))?.coingeckoId).toBe(
+            'usd-coin',
+        );
+        expect(rowToVariantResult(variantRow({ coingecko_id: '  ' }))?.coingeckoId).toBeNull();
         expect(rowToVariantResult(variantRow({ chain: 'tron' }))).toBeNull();
     });
 

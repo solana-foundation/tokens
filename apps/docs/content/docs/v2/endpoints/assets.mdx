@@ -147,6 +147,8 @@ interface V2Variant extends V2VariantEnrichments {
     rank: number | null;      // 0-based liquidity rank within the asset across chains; null in batch lookups
     explorerUrl: string;
     market: V2Market | null;
+    coingeckoId: string | null;        // the CoinGecko coin this deployment is (issuer / LST / wrapper); null when unlinked
+    reference: V2ReferenceMarket | null; // that coin's CoinGecko figures (source 'coingecko'); detail surfaces only
 }
 
 interface V2ChainStats {

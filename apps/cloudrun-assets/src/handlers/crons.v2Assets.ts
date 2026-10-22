@@ -10,6 +10,7 @@ import {
     normalizeAddressForChain,
     type ChainKind,
 } from '@tokens/asset-registry/chains';
+import { resolveVariantIssuance } from '@tokens/asset-registry/issuance';
 import { decodeJobArgs, type JobArgSpecs } from '@tokens/effect/job-args';
 import { runJobPool } from '@tokens/effect/job-runner';
 
@@ -60,10 +61,26 @@ export const NATIVE_COIN_TAG = 'native-coin';
  */
 export const COIN_LIST_FRESHNESS_WINDOW_MS = 15 * 24 * 60 * 60 * 1000;
 
-export interface V2DerivationAssetRow {
+/**
+ * One CoinGecko coin the derivation reads deployments from, under one asset:
+ * the asset's own reference coin (`role: 'reference'`, `assets.coingecko_id`)
+ * or a coin one of its active variants links to (`role: 'variant'`,
+ * `v2_asset_variants.coingecko_id`: an Ondo / Backpack / xStock issue, an LST,
+ * a wrapper). `source` describes that linking variant so the derivation can
+ * decide whether the coin's other deployments are issued supply.
+ */
+export interface V2AssetCoinSourceRow {
     assetId: string;
     category: string;
-    coingeckoId: string;
+    coinId: string;
+    role: 'reference' | 'variant';
+    source: {
+        chain: ChainKind;
+        address: string;
+        kind: string;
+        tags: string[];
+        label: string | null;
+    } | null;
     /** CoinGecko `platforms` map: platform id → contract address ('' for the coin's home chain). */
     platforms: Record<string, string>;
     /** CoinGecko `detail_platforms`: platform id → decimals, when the per-coin metadata was fetched. */
@@ -73,6 +90,9 @@ export interface V2DerivationAssetRow {
     coinSymbol: string | null;
     coinLastSyncedAt: number | null;
 }
+
+/** Coins read per asset beyond this are dropped with a `coinSourcesCapped` warning (an LST-heavy asset could otherwise fan out to hundreds). */
+export const MAX_COIN_SOURCES_PER_ASSET = 8;
 
 export interface V2CoinPlatformsRow {
     coinId: string;
@@ -101,6 +121,8 @@ export interface V2DerivedVariantUpsert {
     label: string | null;
     decimals: number | null;
     origin: 'coingecko' | 'config';
+    /** The CoinGecko coin this row was derived from (null for native-coin config rows of assets without a reference id). */
+    coingeckoId: string | null;
     nowMs: number;
 }
 
@@ -134,8 +156,17 @@ export interface V2AssetsJobsRepo {
     /** Copy `asset_markets_latest` into the chain='solana' rollup rows; returns rows written. */
     mirrorSolanaRollups(): Promise<number>;
 
-    /** Active, non-tombstoned assets with a coingecko_id, joined to their synced coin row. */
-    listAssetsWithCoinPlatforms(limit: number): Promise<V2DerivationAssetRow[]>;
+    /**
+     * Link rows to their CoinGecko coin by contract address (`coingecko_coins.platforms`),
+     * only where no id is set or the resolver set it earlier; returns rows updated per chain.
+     */
+    resolveVariantCoinIds(nowMs: number): Promise<Partial<Record<ChainKind, number>>>;
+    /**
+     * (asset, coin) pairs for active, non-tombstoned assets: the reference coin
+     * plus every distinct coin its active variants link to, each joined to the
+     * synced coin row; reference first, then coin id order. Bounded by asset.
+     */
+    listAssetCoinSources(maxAssets: number): Promise<V2AssetCoinSourceRow[]>;
     /** Active, non-tombstoned assets regardless of coingecko_id (for AGGREGATE_COIN_IDS / NATIVE_COIN_DEPLOYMENTS). */
     listActiveAssets(): Promise<Array<{ assetId: string; category: string }>>;
     /** Platform maps for explicit coin ids (missing ids are simply absent). */
@@ -303,6 +334,8 @@ export async function syncSolanaVariants(deps: V2AssetsCronDeps, rawArgs: unknow
 const EVM_VARIANTS_ARG_SPECS = {
     dryRun: { kind: 'bool', fallback: false },
     maxAssets: { kind: 'int', fallback: 5_000, min: 1, max: 50_000 },
+    /** Run only the coin-id resolution step (links existing rows to CoinGecko coins) and stop. */
+    resolveOnly: { kind: 'bool', fallback: false },
 } satisfies JobArgSpecs;
 
 /**
@@ -320,7 +353,10 @@ export function deriveVariantKindForChain(args: {
     assetPlatformId: string | null;
     chain: ChainKind;
     platforms?: Record<string, string>;
+    /** Kind of the variant whose coin is being derived (an Ondo equity mint's EVM deployments are equity too). */
+    sourceKind?: string | null;
 }): string {
+    if (args.sourceKind === 'tokenized_equity' || args.sourceKind === 'stablecoin') return args.sourceKind;
     switch (args.category) {
         case 'stablecoin':
             return 'stablecoin';
@@ -380,6 +416,15 @@ interface EvmVariantsSyncSummary {
     keptPendingWrite: number;
     failed: number;
     byChain: Partial<Record<ChainKind, { desired: number }>>;
+    /** Rows linked to a CoinGecko coin by the resolution step, per chain. */
+    resolved: Partial<Record<ChainKind, number>>;
+    /** (asset, coin) pairs read; `coinSourcesSkipped` are variant coins whose linking variant is not issued supply. */
+    coinSources: number;
+    coinSourcesSkipped: number;
+    /** Assets whose coin list was cut at MAX_COIN_SOURCES_PER_ASSET. */
+    coinSourcesCapped: number;
+    /** Two coins of one asset listing the same (chain, address): the first (reference, then coin id order) won. */
+    coinConflicts: number;
     duration_ms: number;
 }
 
@@ -405,57 +450,127 @@ export async function syncEvmVariants(deps: V2AssetsCronDeps, rawArgs: unknown):
     const start = deps.now();
     const freshnessCutoff = start - COIN_LIST_FRESHNESS_WINDOW_MS;
 
-    const assets = await deps.repo.listAssetsWithCoinPlatforms(args.maxAssets);
+    // Step 0: link rows to their CoinGecko coin by address so the scan below
+    // sees every issuer's coin, not only the asset's reference coin.
+    const resolved = args.dryRun ? {} : await deps.repo.resolveVariantCoinIds(start);
+    if (args.resolveOnly) {
+        const duration = deps.now() - start;
+        console.log(
+            JSON.stringify({ job: V2_EVM_VARIANTS_SYNC_JOB, event: V2_EVM_VARIANTS_SYNC_EVENT, ok: true, resolveOnly: true, resolved, duration_ms: duration }),
+        );
+        return { ok: true, processed: 0, durationMs: duration, dryRun: args.dryRun, resolveOnly: true, resolved };
+    }
+
+    const sources = await deps.repo.listAssetCoinSources(args.maxAssets);
+    const scannedAssetIds = new Set(sources.map(s => s.assetId));
     // `maxAssets` bounds the scan. An asset outside the window was never
     // examined, so "no longer linked to a coin" is only a DB fact when the
     // scan came back short of the bound (i.e. it saw everything).
-    const scanComplete = assets.length < args.maxAssets;
+    const scanComplete = scannedAssetIds.size < args.maxAssets;
     const activeAssets = await deps.repo.listActiveAssets();
     const existing = await deps.repo.listDerivedVariants(chains);
 
     const desired = new Map<string, V2DerivedVariantUpsert>();
     const assetsWithVariants = new Set<string>();
     let skippedInvalid = 0;
+    let coinConflicts = 0;
 
     const add = (upsert: V2DerivedVariantUpsert) => {
         const key = desiredKey(upsert.assetId, upsert.chain, upsert.address);
-        if (desired.has(key)) return;
+        const prior = desired.get(key);
+        if (prior) {
+            if (prior.coingeckoId !== upsert.coingeckoId) {
+                coinConflicts += 1;
+                console.warn(
+                    `[${V2_EVM_VARIANTS_SYNC_JOB}] ${upsert.assetId} ${upsert.chain}:${upsert.address} claimed by ${prior.coingeckoId} and ${upsert.coingeckoId}; keeping ${prior.coingeckoId}`,
+                );
+            }
+            return;
+        }
         desired.set(key, upsert);
         assetsWithVariants.add(upsert.assetId);
     };
 
-    for (const asset of assets) {
-        for (const chain of chains) {
-            const platform = CHAINS[chain].providers.coingeckoPlatform;
-            const rawAddress = asset.platforms[platform];
-            if (!rawAddress || !rawAddress.trim()) continue;
-            const address = normalizeAddressForChain(chain, rawAddress);
-            if (!address) {
-                skippedInvalid += 1;
-                console.warn(
-                    `[${V2_EVM_VARIANTS_SYNC_JOB}] invalid ${chain} address for ${asset.assetId} (${asset.coingeckoId}): ${rawAddress}`,
-                );
+    // Group the (asset, coin) pairs: reference coin first, then variant coins in
+    // coin-id order (the repo returns them that way), so that when two coins list
+    // one address the outcome does not depend on scan order.
+    const sourcesByAsset = new Map<string, V2AssetCoinSourceRow[]>();
+    for (const source of sources) {
+        const list = sourcesByAsset.get(source.assetId) ?? [];
+        list.push(source);
+        sourcesByAsset.set(source.assetId, list);
+    }
+    const referenceCoinByAsset = new Map<string, string>();
+    /** Freshest coin row per asset, over every source read (drives deactivation). */
+    const sourceFreshness = new Map<string, number | null>();
+    let coinSourcesSkipped = 0;
+    let coinSourcesCapped = 0;
+    for (const [assetId, list] of sourcesByAsset) {
+        let freshest: number | null = null;
+        let coinsUsed = 0;
+        let capped = false;
+        for (const source of list) {
+            if (source.coinLastSyncedAt !== null && (freshest === null || source.coinLastSyncedAt > freshest)) {
+                freshest = source.coinLastSyncedAt;
+            }
+            if (source.role === 'reference') referenceCoinByAsset.set(assetId, source.coinId);
+            // A variant coin only contributes deployments when the linking variant is
+            // itself issued supply: an LST's or ETF's other-chain copies are not the
+            // asset's supply anywhere, and a bridged copy's coin is the bridge's.
+            if (source.role === 'variant') {
+                const issuance = source.source ? resolveVariantIssuance(source.source) : 'native';
+                if (issuance !== 'native') {
+                    coinSourcesSkipped += 1;
+                    continue;
+                }
+            }
+            if (coinsUsed >= MAX_COIN_SOURCES_PER_ASSET) {
+                capped = true;
                 continue;
             }
-            add({
-                assetId: asset.assetId,
-                chain,
-                address,
-                variantId: chainAddressKey(chain, address),
-                kind: deriveVariantKindForChain({
-                    category: asset.category,
-                    assetPlatformId: asset.assetPlatformId,
+            coinsUsed += 1;
+            const issuerLabel = source.source?.label?.trim() ? `issuer:${source.source.label.trim()}` : null;
+            for (const chain of chains) {
+                const platform = CHAINS[chain].providers.coingeckoPlatform;
+                const rawAddress = source.platforms[platform];
+                if (!rawAddress || !rawAddress.trim()) continue;
+                const address = normalizeAddressForChain(chain, rawAddress);
+                if (!address) {
+                    skippedInvalid += 1;
+                    console.warn(
+                        `[${V2_EVM_VARIANTS_SYNC_JOB}] invalid ${chain} address for ${assetId} (${source.coinId}): ${rawAddress}`,
+                    );
+                    continue;
+                }
+                add({
+                    assetId,
                     chain,
-                    platforms: asset.platforms,
-                }),
-                trustTier: 'tier3',
-                tags: [DERIVED_VARIANT_TAG, `coin:${asset.coingeckoId}`],
-                label: upperLabel(asset.coinSymbol),
-                decimals: asset.decimalsByPlatform[platform] ?? null,
-                origin: 'coingecko',
-                nowMs: start,
-            });
+                    address,
+                    variantId: chainAddressKey(chain, address),
+                    kind: deriveVariantKindForChain({
+                        category: source.category,
+                        assetPlatformId: source.assetPlatformId,
+                        chain,
+                        platforms: source.platforms,
+                        sourceKind: source.source?.kind ?? null,
+                    }),
+                    trustTier: 'tier3',
+                    tags: [DERIVED_VARIANT_TAG, `coin:${source.coinId}`, ...(issuerLabel ? [issuerLabel] : [])],
+                    label: upperLabel(source.coinSymbol),
+                    decimals: source.decimalsByPlatform[platform] ?? null,
+                    origin: 'coingecko',
+                    coingeckoId: source.coinId,
+                    nowMs: start,
+                });
+            }
         }
+        if (capped) coinSourcesCapped += 1;
+        sourceFreshness.set(assetId, freshest);
+    }
+    if (coinSourcesCapped > 0) {
+        console.warn(
+            JSON.stringify({ job: V2_EVM_VARIANTS_SYNC_JOB, event: 'v2_evm_variants_coin_sources_capped', coinSourcesCapped, cap: MAX_COIN_SOURCES_PER_ASSET }),
+        );
     }
 
     // Aggregate canonicals (usd, bitcoin, …) and native coins: keyed by asset id,
@@ -491,6 +606,7 @@ export async function syncEvmVariants(deps: V2AssetsCronDeps, rawArgs: unknown):
                     label: upperLabel(coin.symbol),
                     decimals: coin.decimalsByPlatform[platform] ?? null,
                     origin: 'coingecko',
+                    coingeckoId: coin.coinId,
                     nowMs: start,
                 });
             }
@@ -512,35 +628,35 @@ export async function syncEvmVariants(deps: V2AssetsCronDeps, rawArgs: unknown):
                 label: native.label,
                 decimals: 18,
                 origin: 'config',
+                coingeckoId: referenceCoinByAsset.get(assetId) ?? null,
                 nowMs: start,
             });
         }
     }
 
-    const assetById = new Map(assets.map(a => [a.assetId, a] as const));
     const toDeactivate: Array<V2VariantKeyRef & { assetId: string }> = [];
     let keptStale = 0;
     let keptUnscanned = 0;
     for (const row of existing) {
         if (!row.isActive) continue;
         if (desired.has(desiredKey(row.assetId, row.chain, row.address))) continue;
-        const asset = assetById.get(row.assetId);
+        const scannedSyncedAt = sourceFreshness.get(row.assetId);
         const aggregateSyncedAt = aggregateFreshness.get(row.assetId);
         if (!activeById.has(row.assetId)) {
             // No longer active / registered: `listActiveAssets` is unbounded, so this is a DB fact.
             toDeactivate.push({ chain: row.chain, address: row.address, assetId: row.assetId });
             continue;
         }
-        if (!asset && aggregateSyncedAt === undefined) {
+        if (scannedSyncedAt === undefined && aggregateSyncedAt === undefined) {
             if (scanComplete) {
-                // Active but no longer linked to a coin id: a DB fact only because the scan saw every linked asset.
+                // Active but no longer linked to any coin id: a DB fact only because the scan saw every linked asset.
                 toDeactivate.push({ chain: row.chain, address: row.address, assetId: row.assetId });
             } else {
                 keptUnscanned += 1;
             }
             continue;
         }
-        const syncedAt = asset ? asset.coinLastSyncedAt : (aggregateSyncedAt ?? null);
+        const syncedAt = scannedSyncedAt !== undefined ? scannedSyncedAt : (aggregateSyncedAt ?? null);
         if (syncedAt !== null && syncedAt >= freshnessCutoff) {
             toDeactivate.push({ chain: row.chain, address: row.address, assetId: row.assetId });
         } else {
@@ -617,7 +733,7 @@ export async function syncEvmVariants(deps: V2AssetsCronDeps, rawArgs: unknown):
         ok: !allWritesFailed,
         dryRun: args.dryRun,
         chains,
-        assetsScanned: assets.length,
+        assetsScanned: scannedAssetIds.size,
         assetsWithVariants: assetsWithVariants.size,
         desired: desired.size,
         inserted,
@@ -630,13 +746,18 @@ export async function syncEvmVariants(deps: V2AssetsCronDeps, rawArgs: unknown):
         keptPendingWrite,
         failed,
         byChain,
+        resolved,
+        coinSources: sources.length,
+        coinSourcesSkipped,
+        coinSourcesCapped,
+        coinConflicts,
         duration_ms: deps.now() - start,
     };
     console.log(JSON.stringify(summary));
 
     return {
         ok: !allWritesFailed,
-        processed: assets.length,
+        processed: scannedAssetIds.size,
         durationMs: summary.duration_ms,
         ...(allWritesFailed ? { reason: 'upserts_failed' } : {}),
         dryRun: args.dryRun,
@@ -653,6 +774,11 @@ export async function syncEvmVariants(deps: V2AssetsCronDeps, rawArgs: unknown):
         keptPendingWrite,
         failed,
         byChain,
+        resolved,
+        coinSources: sources.length,
+        coinSourcesSkipped,
+        coinSourcesCapped,
+        coinConflicts,
         ...(failed > 0 ? { partial: true } : {}),
     };
 }
