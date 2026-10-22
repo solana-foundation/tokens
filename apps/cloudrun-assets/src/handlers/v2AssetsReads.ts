@@ -1,3 +1,4 @@
+import { normalizeCoinGeckoCoinIdForAsset } from '@tokens/asset-registry/coingecko-id';
 import { CURATED_LIST_ORDER, normalizeCuratedListSlug } from '@tokens/asset-registry/curated-lists';
 import {
     CHAIN_KINDS,
@@ -408,19 +409,6 @@ async function loadMarketsForKeys(
     return marketResults(rows.flat());
 }
 
-/** CoinGecko coin ids an asset set needs prices for (the API applies the same normalization on its side). */
-function normalizeCoinGeckoCoinIdForAsset(params: {
-    assetId: string;
-    coinId: string | null | undefined;
-}): string | null {
-    const rawCoinId = (params.coinId ?? '').trim();
-    if (!rawCoinId) return null;
-    const assetId = params.assetId.trim();
-    if (assetId === 'bnb' && rawCoinId === 'bnb') return 'binancecoin';
-    if (assetId === 'tron' && rawCoinId === 'tron-xstock') return 'tron';
-    if (assetId === 'spacex' && rawCoinId === 'spacex-prestocks-2') return null;
-    return rawCoinId;
-}
 
 // ---------------------------------------------------------------------------
 // RPCs

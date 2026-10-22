@@ -58,7 +58,7 @@ export interface V2Advisory {
     source: AdvisorySource;
 }
 
-export type VariantIssuance = 'native' | 'bridged' | 'wrapped';
+export type VariantIssuance = 'native' | 'bridged' | 'wrapped' | 'derivative';
 
 export interface V2ExecutionQuality {
     source: 'clickhouse_fill_quality';
@@ -149,6 +149,7 @@ export interface V2ChainStats {
     circulatingSupply: number | null;
     variantCount: number;
     issuedVariantCount: number;
+    excludedByIssuance: { bridged: number; wrapped: number; derivative: number };
 }
 
 /** `executable` (default): chains we can swap on rank first; `global`: every chain. */

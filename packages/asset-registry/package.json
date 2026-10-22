@@ -16,6 +16,8 @@
     "./curated-lists": "./src/curated-lists.ts",
     "./chains": "./src/chains.ts",
     "./chain-deployments": "./src/data/chain-deployments.ts",
+    "./coingecko-id": "./src/coingecko-id.ts",
+    "./issuance": "./src/issuance.ts",
     "./taxonomy": "./src/taxonomy.ts"
   },
   "files": [

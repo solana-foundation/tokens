@@ -95,6 +95,7 @@ describe('headlineOnChainStats', () => {
         circulatingSupply: 1500,
         variantCount: 4,
         issuedVariantCount: 4 - excludedFromSupplyCount,
+        excludedByIssuance: { bridged: excludedFromSupplyCount, wrapped: 0, derivative: 0 },
         chainCount: 3,
         excludedFromSupplyCount,
     });
@@ -210,11 +211,33 @@ describe('chain stats', () => {
         ['ethereum:0x0000000000000000000000000000000000000002', market(1, 10)],
     ]);
 
-    test('issuance: tag wins, then kind', () => {
-        expect(variantIssuance({ kind: 'bridged', tags: [] })).toBe('bridged');
-        expect(variantIssuance({ kind: 'wrapped', tags: [] })).toBe('wrapped');
-        expect(variantIssuance({ kind: 'stablecoin', tags: [] })).toBe('native');
-        expect(variantIssuance({ kind: 'bridged', tags: ['issuance:native'] })).toBe('native');
+    test('issuance: tag wins, then kind; LST / ETF kinds are derivatives', () => {
+        const at = (kind: string, tags: string[] = []) => ({ chain: 'solana' as const, address: USDC_SOLANA, kind, tags });
+        expect(variantIssuance(at('bridged'))).toBe('bridged');
+        expect(variantIssuance(at('wrapped'))).toBe('wrapped');
+        expect(variantIssuance(at('stablecoin'))).toBe('native');
+        expect(variantIssuance(at('yield'))).toBe('derivative');
+        expect(variantIssuance(at('lst'))).toBe('derivative');
+        expect(variantIssuance(at('etf'))).toBe('derivative');
+        expect(variantIssuance(at('bridged', ['issuance:native']))).toBe('native');
+        expect(variantIssuance(at('stablecoin', ['issuance:derivative']))).toBe('derivative');
+    });
+
+    test('a Solana LST adds liquidity to the chain but never to issued supply or market cap', () => {
+        const lst = variant('solana', 'J1toso1uCk3RLmjorhTtrVwY9HJ7X8V9yYac6Y7kGCPn', 'yield');
+        const byKey = new Map([
+            [`solana:${USDC_SOLANA}`, market(100, 1000)],
+            [lst.key, market(900, 9000)],
+        ]);
+        const stats = computeChainStats([variants[0]!, lst], byKey, null);
+        expect(stats.solana?.liquidity).toBe(1000);
+        expect(stats.solana?.marketCap).toBe(1000);
+        expect(stats.solana?.circulatingSupply).toBe(5);
+        expect(stats.solana?.issuedVariantCount).toBe(1);
+        expect(stats.solana?.excludedByIssuance).toEqual({ bridged: 0, wrapped: 0, derivative: 1 });
+        const aggregate = aggregateChainStats(stats);
+        expect(aggregate.excludedFromSupplyCount).toBe(1);
+        expect(aggregate.excludedByIssuance.derivative).toBe(1);
     });
 
     test('liquidity sums every variant; supply / mcap only issued ones; canonical chain order', () => {
@@ -229,8 +252,10 @@ describe('chain stats', () => {
             circulatingSupply: 5,
             variantCount: 2,
             issuedVariantCount: 1,
+            excludedByIssuance: { bridged: 1, wrapped: 0, derivative: 0 },
         });
         expect(stats.ethereum?.marketCap).toBeNull();
+        expect(stats.ethereum?.excludedByIssuance).toEqual({ bridged: 0, wrapped: 1, derivative: 0 });
         expect(stats.ethereum?.liquidity).toBe(1);
         const aggregate = aggregateChainStats(stats);
         expect(aggregate.liquidity).toBe(156);
@@ -238,6 +263,7 @@ describe('chain stats', () => {
         expect(aggregate.chainCount).toBe(3);
         expect(aggregate.variantCount).toBe(4);
         expect(aggregate.excludedFromSupplyCount).toBe(2);
+        expect(aggregate.excludedByIssuance).toEqual({ bridged: 1, wrapped: 1, derivative: 0 });
     });
 
     test('trade24h sums known counts per chain and in the aggregate', () => {

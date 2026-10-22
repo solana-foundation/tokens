@@ -5,7 +5,7 @@ import { ArrowUpRight } from 'lucide-react';
 import { connection } from 'next/server';
 
 import type { AssetCategory, CanonicalAsset, VariantHub } from '@tokens/asset-registry';
-import { getVariantHubById } from '@tokens/asset-registry';
+import { getVariantHubById, issuanceFromKind } from '@tokens/asset-registry';
 import { CHAINS, CHAIN_KINDS, explorerTokenUrl, type ChainKind } from '@tokens/asset-registry/chains';
 import { Skeleton } from '@tokens/ui/skeleton';
 
@@ -142,7 +142,7 @@ function registryVariantToPageVariant(
         assetId: asset.assetId,
         variantId: variant.variantId,
         kind: variant.kind,
-        issuance: variant.kind === 'bridged' ? 'bridged' : variant.kind === 'wrapped' ? 'wrapped' : 'native',
+        issuance: issuanceFromKind(variant.kind),
         symbol: variant.symbol ?? null,
         name: variant.name ?? null,
         label: variant.label ?? null,

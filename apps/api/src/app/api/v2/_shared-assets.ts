@@ -39,6 +39,8 @@ import {
     type VariantAdvisory,
     type VariantKind,
     isPrimaryEligibleVariant,
+    resolveVariantIssuance,
+    type VariantIssuance,
 } from '@tokens/asset-registry';
 import {
     CHAINS,
@@ -158,7 +160,7 @@ export type V2Advisory = {
     source: NonNullable<VariantAdvisory['source']>;
 };
 
-export type VariantIssuance = 'native' | 'bridged' | 'wrapped';
+export type { VariantIssuance };
 
 export type V2Variant = {
     key: VariantKey;
@@ -167,7 +169,7 @@ export type V2Variant = {
     assetId: string;
     variantId: string;
     kind: VariantKind;
-    /** `issuance:<x>` tag, else from kind (bridged / wrapped), else native. Drives supply and market-cap counting. */
+    /** `issuance:<x>` tag, else the curated override for this deployment, else from kind (bridged / wrapped / derivative kinds), else native. Drives supply and market-cap counting. */
     issuance: VariantIssuance;
     symbol: string | null;
     name: string | null;
@@ -221,23 +223,32 @@ export type V2VariantEnrichments = {
 
 export type V2AssetStats = AssetStats;
 
+/** Variants left out of supply / market cap, by why. */
+export type V2ExcludedByIssuance = {
+    bridged: number;
+    wrapped: number;
+    derivative: number;
+};
+
 export type V2ChainStats = {
     liquidity: number | null;
     volume24hUSD: number | null;
     /** Sum of the chain's variant 24h trade counts. */
     trade24h: number | null;
-    /** Sum over this chain's issued (non-bridged, non-wrapped) variants. */
+    /** Sum over this chain's issued (`issuance: native`) variants. */
     marketCap: number | null;
     fdv: number | null;
     circulatingSupply: number | null;
     variantCount: number;
     /** Variants counted toward supply / market cap. */
     issuedVariantCount: number;
+    /** Variants left out of supply / market cap on this chain, by issuance class. */
+    excludedByIssuance: V2ExcludedByIssuance;
 };
 
 export type V2Aggregate = V2ChainStats & {
     chainCount: number;
-    /** Bridged / wrapped variants left out of supply and market cap. */
+    /** Bridged / wrapped / derivative variants left out of supply and market cap (= the sum of `excludedByIssuance`). */
     excludedFromSupplyCount: number;
 };
 
@@ -602,17 +613,14 @@ function toStockVariantTier(value: string | null): StockVariantTier | null {
         : null;
 }
 
-const ISSUANCE_TAG_PREFIX = 'issuance:';
-
-export function variantIssuance(variant: { kind: string; tags: readonly string[] }): VariantIssuance {
-    for (const tag of variant.tags) {
-        if (!tag.startsWith(ISSUANCE_TAG_PREFIX)) continue;
-        const value = tag.slice(ISSUANCE_TAG_PREFIX.length);
-        if (value === 'native' || value === 'bridged' || value === 'wrapped') return value;
-    }
-    if (variant.kind === 'bridged') return 'bridged';
-    if (variant.kind === 'wrapped') return 'wrapped';
-    return 'native';
+/** Tag > curated override > kind; see `resolveVariantIssuance` in the registry. */
+export function variantIssuance(variant: {
+    chain: ChainId;
+    address: string;
+    kind: string;
+    tags: readonly string[];
+}): VariantIssuance {
+    return resolveVariantIssuance(variant);
 }
 
 export function toV2Market(snapshot: VariantMarketSnapshotResult | null | undefined): V2Market | null {
@@ -735,17 +743,21 @@ export function computeChainStats(
             circulatingSupply: null,
             variantCount: 0,
             issuedVariantCount: 0,
+            excludedByIssuance: { bridged: 0, wrapped: 0, derivative: 0 },
         };
         entry.variantCount += 1;
         const market = marketByKey.get(variant.key);
         entry.liquidity = addFinite(entry.liquidity, market?.liquidity);
         entry.volume24hUSD = addFinite(entry.volume24hUSD, market?.volume24hUSD);
         entry.trade24h = addFinite(entry.trade24h, market?.trade24h);
-        if (variantIssuance(variant) === 'native') {
+        const issuance = variantIssuance(variant);
+        if (issuance === 'native') {
             entry.issuedVariantCount += 1;
             entry.marketCap = addFinite(entry.marketCap, market?.marketCap);
             entry.fdv = addFinite(entry.fdv, market?.fdv);
             entry.circulatingSupply = addFinite(entry.circulatingSupply, market?.circulatingSupply);
+        } else {
+            entry.excludedByIssuance[issuance] += 1;
         }
         byChain.set(variant.chain, entry);
     }
@@ -773,6 +785,7 @@ export function aggregateChainStats(chainStats: Partial<Record<ChainId, V2ChainS
         circulatingSupply: null,
         variantCount: 0,
         issuedVariantCount: 0,
+        excludedByIssuance: { bridged: 0, wrapped: 0, derivative: 0 },
         chainCount: 0,
         excludedFromSupplyCount: 0,
     };
@@ -782,6 +795,9 @@ export function aggregateChainStats(chainStats: Partial<Record<ChainId, V2ChainS
         out.variantCount += entry.variantCount;
         out.issuedVariantCount += entry.issuedVariantCount;
         out.excludedFromSupplyCount += entry.variantCount - entry.issuedVariantCount;
+        out.excludedByIssuance.bridged += entry.excludedByIssuance.bridged;
+        out.excludedByIssuance.wrapped += entry.excludedByIssuance.wrapped;
+        out.excludedByIssuance.derivative += entry.excludedByIssuance.derivative;
         out.liquidity = addFinite(out.liquidity, entry.liquidity);
         out.volume24hUSD = addFinite(out.volume24hUSD, entry.volume24hUSD);
         out.trade24h = addFinite(out.trade24h, entry.trade24h);
