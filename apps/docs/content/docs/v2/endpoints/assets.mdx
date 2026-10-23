@@ -277,7 +277,8 @@ Reading the numbers:
   not stale (last successful provider write within 2 h on Solana / 3 h on EVM), not dust (liquidity
   and 24h volume both under $1k, unless nothing else survives), and priced within 25% of the
   reference price (CoinGecko, or the stock price for one-share-per-token equities) or, without one,
-  of the surviving rows' liquidity-weighted median. A failing row leaves every sum and average
+  of the surviving rows' liquidity-weighted median (a derivative, such as an LST or an ETF share, is
+  not priced in the asset's units and skips that last check). A failing row leaves every sum and average
   (market cap and supply included) and says so in `variants[].market.quality`; `excludedCount` and
   `excludedByQuality` count them per chain and in aggregate. `chainStats.solana` is the number
   v1 reported.

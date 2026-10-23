@@ -711,11 +711,14 @@ export function toV2Market(
 
 /** Quality verdict per variant key for an asset's market rows (see `_market-quality.ts`). */
 export function assessVariantMarkets(
-    variants: ReadonlyArray<Pick<V2VariantResult, 'key' | 'chain'>>,
+    variants: ReadonlyArray<Pick<V2VariantResult, 'key' | 'chain' | 'address' | 'kind' | 'tags'>>,
     marketByKey: ReadonlyMap<VariantKey, VariantMarketSnapshotResult>,
     reference: { priceUsd: number | null | undefined } | null,
     nowMs: number,
+    /** From `variantIssuanceByKey(variants, asset.category)`; derivatives skip the price check. Computed category-blind when absent. */
+    issuanceByKey?: ReadonlyMap<VariantKey, VariantIssuance>,
 ): Map<VariantKey, MarketQuality> {
+    const issuance = issuanceByKey ?? variantIssuanceByKey(variants);
     const rows: MarketQualityInput[] = [];
     const seen = new Set<VariantKey>();
     for (const variant of variants) {
@@ -730,6 +733,8 @@ export function assessVariantMarkets(
             liquidity: market.liquidity,
             volume24hUSD: market.volume24hUSD,
             lastFetchedAt: market.lastFetchedAt,
+            // An LST or ETF share is not priced in the asset's units; the reference says nothing about it.
+            priceChecked: (issuance.get(variant.key) ?? variantIssuance(variant)) !== 'derivative',
         });
     }
     return assessMarkets(rows, reference, nowMs) as Map<VariantKey, MarketQuality>;
@@ -1210,7 +1215,6 @@ export function buildV2Asset(ctx: V2AssetBuildContext): V2Asset | null {
         if (winner) primaryByChain[chain] = winner;
     }
 
-    const issuanceByKey = variantIssuanceByKey(visible, asset.category);
     const preStocksMints = selectPreStocksMints(visible.filter(v => v.chain === 'solana').map(v => v.address));
     const preStocksMarket =
         preStocksMints.length > 0
@@ -1234,7 +1238,8 @@ export function buildV2Asset(ctx: V2AssetBuildContext): V2Asset | null {
         : coinId
           ? { priceUsd: ctx.coingeckoPrice?.priceUsd ?? null }
           : null;
-    const qualityByKey = assessVariantMarkets(visible, ctx.marketByKey, qualityReference, ctx.nowMs ?? Date.now());
+    const issuanceByKey = variantIssuanceByKey(visible, asset.category);
+    const qualityByKey = assessVariantMarkets(visible, ctx.marketByKey, qualityReference, ctx.nowMs ?? Date.now(), issuanceByKey);
 
     // Stats: v1's aggregation over every chain, liquidity / volume from the chain stats
     // (worker rollup for Solana), then the v1 headline selection against the reference.
@@ -1446,6 +1451,8 @@ export function buildStandaloneV2Variant(ctx: {
     canonicalSymbol: string | null;
     /** Price of the variant's own CoinGecko coin, when loaded; absent = `reference` null. */
     coingeckoPrice?: CoingeckoPriceSnapshot | null;
+    /** Clock for the staleness check; defaults to `Date.now()`. */
+    nowMs?: number;
 }): V2Variant {
     const { variant, market } = ctx;
     const registry = registryIdentity(variant);
@@ -1482,7 +1489,12 @@ export function buildStandaloneV2Variant(ctx: {
         advisory: toV2Advisory(advisoryForVariant(variant, ctx.advisoriesByMint)),
         rank: null,
         explorerUrl: explorerTokenUrl(variant.chain, variant.address),
-        market: toV2Market(market),
+        // The row's own verdict (stale; dust is relative and a lone row is kept):
+        // the asset-level outlier pass needs the siblings, which a batch lookup does not load.
+        market: toV2Market(
+            market,
+            assessVariantMarkets([variant], new Map(market ? [[variant.key, market]] : []), null, ctx.nowMs ?? Date.now()).get(variant.key),
+        ),
         coingeckoId: variant.coingeckoId,
         reference:
             variant.coingeckoId && ctx.coingeckoPrice !== undefined

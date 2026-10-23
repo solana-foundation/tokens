@@ -287,6 +287,24 @@ describe('aggregate token stats', () => {
         expect(stats?.marketCap).toBe(90_000_000);
     });
 
+    it('a yield variant next to the native coin skips the price check (mSOL at 1.3 SOL stays included)', () => {
+        const NOW = 1_800_000_000_000;
+        const asset = {
+            assetId: 'solana',
+            category: 'crypto',
+            variants: [
+                { mint: 'sol', kind: 'native' as const, tags: [] },
+                { mint: 'msol', kind: 'yield' as const, tags: [] },
+            ],
+        } as unknown as CanonicalAsset;
+        const tokens = new Map([
+            ['sol', makeToken('sol', { price: 100, liquidity: 1_000_000, volume24hUSD: 500_000, lastFetchedAt: NOW })],
+            ['msol', makeToken('msol', { price: 130, liquidity: 200_000, volume24hUSD: 50_000, lastFetchedAt: NOW })],
+        ]);
+        const quality = assessTokenMarkets(asset, tokens, { priceUsd: 100 }, NOW);
+        expect(quality.get('msol')).toEqual({ included: true, reasons: [] });
+    });
+
     it('falls back to volume-weighted price when no variants have liquidity', () => {
         const primary = makeToken('primary', {
             price: 100,

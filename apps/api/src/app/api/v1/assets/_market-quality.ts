@@ -18,6 +18,9 @@
  *    anchor, which is the reference price (CoinGecko / stock) when the caller
  *    has one in the token's units, else the liquidity-weighted median of the
  *    surviving rows (needs at least two priced survivors; a lone row passes).
+ *    Rows flagged `priceChecked: false` (derivative-class variants: an LST at
+ *    1.3 SOL, an ETF share) are not priced in the asset's units, so they
+ *    neither take this check nor anchor the median; stale and dust still apply.
  *
  * Excluded rows leave every sum and average, market cap and supply included.
  * They stay in the response with `market.quality.included = false` so a
@@ -50,6 +53,8 @@ export interface MarketQualityInput {
     volume24hUSD: number | null | undefined;
     /** ms epoch of the last successful provider write; null = unknown (never stale). */
     lastFetchedAt: number | null | undefined;
+    /** False for a row not priced in the asset's units (a derivative); it skips the outlier pass. Default true. */
+    priceChecked?: boolean;
 }
 
 export interface MarketQualityReference {
@@ -105,7 +110,7 @@ export function assessMarkets(
 
     // Pass 2: price outliers against the reference, else against the survivors' weighted median.
     const referencePrice = finite(reference?.priceUsd);
-    const priced = survivors.filter(row => (finite(row.price) ?? 0) > 0);
+    const priced = survivors.filter(row => row.priceChecked !== false && (finite(row.price) ?? 0) > 0);
     let anchor: number | null = referencePrice !== null && referencePrice > 0 ? referencePrice : null;
     if (anchor === null && priced.length >= 2) {
         anchor = weightedMedian(

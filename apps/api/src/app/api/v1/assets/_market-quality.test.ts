@@ -89,6 +89,23 @@ describe('assessMarkets', () => {
         expect(dead.get('dead')?.included).toBe(false);
     });
 
+    test('a row with priceChecked false is never an outlier and does not anchor the median', () => {
+        // mSOL at 1.3 SOL next to SOL: valid, in other units.
+        const withReference = assessMarkets([row('sol'), row('msol', { price: 130, priceChecked: false })], { priceUsd: 100 }, NOW);
+        expect(withReference.get('msol')).toEqual({ included: true, reasons: [] });
+        // Without a reference the exempt row must not drag the median: two spot rows at 100, a big
+        // exempt row at 1000, a spot row at 500 is still the outlier.
+        const noReference = assessMarkets(
+            [row('a'), row('b'), row('lst', { price: 1000, liquidity: 10_000_000, priceChecked: false }), row('c', { price: 500 })],
+            null,
+            NOW,
+        );
+        expect(noReference.get('lst')?.included).toBe(true);
+        expect(noReference.get('c')?.reasons).toEqual(['price_outlier']);
+        // Stale and dust still apply to exempt rows.
+        expect(assessMarkets([row('a'), row('old', { priceChecked: false, lastFetchedAt: NOW - 3 * DAY })], null, NOW).get('old')?.reasons).toEqual(['stale']);
+    });
+
     test('rows without a price are never outliers, and a null fetch time is never stale', () => {
         const out = assessMarkets([row('nop', { price: null, lastFetchedAt: null }), row('ref', { price: 100 })], { priceUsd: 100 }, NOW);
         expect(out.get('nop')?.included).toBe(true);

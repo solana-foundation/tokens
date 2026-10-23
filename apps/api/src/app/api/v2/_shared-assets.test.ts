@@ -7,6 +7,7 @@ import type { V2ChainRollupResult, V2VariantResult } from '@/lib/cloudrun';
 
 import {
     aggregateChainStats,
+    buildStandaloneV2Variant,
     buildV2Asset,
     computeChainStats,
     decodeAssetIdPath,
@@ -259,7 +260,7 @@ describe('chain stats', () => {
         expect(computeChainStats([tagged], byKey, null).solana?.marketCap).toBeNull();
         // A commodity's lone ETF-share token is not the metal's supply.
         const slv = variant('solana', '4MmJVdwYN8LwvbGeCowYjSx7KoEi6BJWg8XXnW4fDDp6', 'etf');
-        const commodity = computeChainStats([slv], byKey, null, variantIssuanceByKey([slv], 'commodity'));
+        const commodity = computeChainStats([slv], byKey, null, undefined, variantIssuanceByKey([slv], 'commodity'));
         expect(commodity.solana?.marketCap).toBeNull();
         expect(commodity.solana?.liquidity).toBe(300);
         expect(commodity.solana?.excludedByIssuance.derivative).toBe(1);
@@ -331,6 +332,40 @@ describe('chain stats', () => {
         expect(aggregate.excludedCount).toBe(1);
         expect(aggregate.excludedByQuality.dust).toBe(1);
         expect(aggregate.excludedFromSupplyCount).toBe(0);
+    });
+
+    test('an LST priced at 1.3 SOL is a derivative and exempt from the outlier check; a spot row at 2× is not', () => {
+        const NOW = 1_800_000_000_000;
+        const sol = variant('solana', 'So11111111111111111111111111111111111111112', 'native');
+        const msol = variant('solana', 'mSoLzYCxHdYgdzU16g5QSh3i5K3z3KZK7ytfqcJm7So', 'yield');
+        const odd = variant('solana', 'OddPool1111111111111111111111111111111111111', 'spot');
+        const byKey = new Map([
+            [sol.key, { ...market(1_000_000, 0), price: 100, volume24hUSD: 500_000, lastFetchedAt: NOW - 60_000 }],
+            [msol.key, { ...market(200_000, 0), price: 130, volume24hUSD: 50_000, lastFetchedAt: NOW - 60_000 }],
+            [odd.key, { ...market(20_000, 0), price: 200, volume24hUSD: 5_000, lastFetchedAt: NOW - 60_000 }],
+        ]);
+        const quality = assessVariantMarkets([sol, msol, odd], byKey, { priceUsd: 100 }, NOW);
+        expect(quality.get(msol.key)).toEqual({ included: true, reasons: [] });
+        expect(quality.get(odd.key)?.reasons).toEqual(['price_outlier']);
+        const stats = computeChainStats([sol, msol, odd], byKey, null, quality);
+        expect(stats.solana?.liquidity).toBe(1_200_000);
+        expect(stats.solana?.excludedByIssuance.derivative).toBe(1);
+    });
+
+    test('a batch (standalone) variant carries its own staleness verdict instead of a default included', () => {
+        const NOW = 1_800_000_000_000;
+        const v = variant('base', USDC_BASE, 'stablecoin');
+        const build = (lastFetchedAt: number) =>
+            buildStandaloneV2Variant({
+                request: new Request('https://api.example.test/api/v2/variants?keys=x'),
+                variant: v,
+                market: { ...market(50_000, 500), price: 1, volume24hUSD: 20_000, lastFetchedAt },
+                advisoriesByMint: new Map(),
+                canonicalSymbol: 'USDC',
+                nowMs: NOW,
+            });
+        expect(build(NOW - 60_000).market?.quality).toEqual({ included: true, reasons: [] });
+        expect(build(NOW - 3 * 24 * 60 * 60 * 1000).market?.quality).toEqual({ included: false, reasons: ['stale'] });
     });
 
     test('the Solana worker rollup overrides liquidity / volume for parity with v1', () => {

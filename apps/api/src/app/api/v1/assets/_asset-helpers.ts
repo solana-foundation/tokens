@@ -15,6 +15,7 @@ import {
     type StockVariantTier,
     type TrustTier,
     type VariantAdvisory,
+    resolveAssetIssuance,
 } from '@tokens/asset-registry';
 import { getAdvisoriesByMintSync, tradeRestrictedMints } from '@/lib/advisories';
 import { getCuratedMintRankSync } from '@/lib/curated-membership';
@@ -407,15 +408,21 @@ export function tokenMarketSnapshotFromConvexMarket(address: string, market: obj
  * caller has one (CoinGecko, or the stock price for a share-per-token equity).
  */
 export function assessTokenMarkets(
-    asset: Pick<CanonicalAsset, 'variants'>,
+    asset: Pick<CanonicalAsset, 'variants' | 'category'>,
     tokenByMint: ReadonlyMap<string, TokenMarketSnapshot>,
     reference: MarketQualityReference | null,
     nowMs: number,
 ): Map<string, MarketQuality> {
+    // Derivative-class variants (an LST, an ETF share) are not priced in the
+    // asset's units and skip the outlier pass; see `resolveAssetIssuance`.
+    const issuance = resolveAssetIssuance(
+        asset.variants.map(v => ({ chain: 'solana' as const, address: v.mint, kind: v.kind, tags: v.tags ?? [] })),
+        { category: asset.category },
+    );
     const rows: MarketQualityInput[] = [];
-    for (const variant of asset.variants) {
+    asset.variants.forEach((variant, index) => {
         const token = tokenByMint.get(variant.mint);
-        if (!token) continue;
+        if (!token) return;
         rows.push({
             key: variant.mint,
             chain: 'solana',
@@ -423,8 +430,9 @@ export function assessTokenMarkets(
             liquidity: token.liquidity,
             volume24hUSD: token.volume24hUSD,
             lastFetchedAt: token.lastFetchedAt ?? null,
+            priceChecked: issuance[index] !== 'derivative',
         });
-    }
+    });
     return assessMarkets(rows, reference, nowMs);
 }
 
