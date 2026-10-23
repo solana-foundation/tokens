@@ -674,9 +674,11 @@ describe('chain stats', () => {
             liquidity: 100_011,
             volume24hUSD: 50_040,
             volume30dUSD: 7,
+            volume30dDays: 30,
             primaryAddress: null,
             variantCount: 2,
             lastComputedAt: 1,
+            origin: 'solana_v1',
         };
         const quality = assessVariantMarkets([variants[0]!, junk], byKey, { priceUsd: 1 }, NOW);
         expect(quality.get(junk.key)?.included).toBe(false);
@@ -1124,11 +1126,18 @@ describe('selectVolume30d', () => {
         }
         return out;
     };
-    const rollup = (chain: 'solana' | 'ethereum' | 'base', volume30dUSD: number | null, days: number, origin: 'solana_v1' | 'computed') =>
-        [chain, { assetId: 'x', chain, liquidity: 0, volume24hUSD: 0, volume30dUSD, volume30dDays: days, primaryAddress: null, variantCount: 1, lastComputedAt: 1, origin }] as const;
+    const NOW = 1_800_000_000_000;
+    const rollup = (
+        chain: 'solana' | 'ethereum' | 'base',
+        volume30dUSD: number | null,
+        days: number,
+        origin: 'solana_v1' | 'computed',
+        lastComputedAt: number = NOW - 60_000,
+    ) =>
+        [chain, { assetId: 'x', chain, liquidity: 0, volume24hUSD: 0, volume30dUSD, volume30dDays: days, primaryAddress: null, variantCount: 1, lastComputedAt, origin }] as const;
 
     test('Solana-only volume with the mirrored rollup is served with scope solana', () => {
-        expect(selectVolume30d(chainStats({ solana: 100 }), new Map([rollup('solana', 3_000, 30, 'solana_v1')]))).toEqual({
+        expect(selectVolume30d(chainStats({ solana: 100 }), new Map([rollup('solana', 3_000, 30, 'solana_v1')]), NOW)).toEqual({
             volume30dUSD: 3_000,
             scope: 'solana',
         });
@@ -1136,11 +1145,20 @@ describe('selectVolume30d', () => {
 
     test('a traded EVM chain with fewer than 28 sampled days makes the figure null', () => {
         const rollups = new Map([rollup('solana', 3_000, 30, 'solana_v1'), rollup('ethereum', 900, 20, 'computed')]);
-        expect(selectVolume30d(chainStats({ solana: 100, ethereum: 50 }), rollups)).toEqual({ volume30dUSD: null, scope: null });
-        expect(selectVolume30d(chainStats({ solana: 100, ethereum: 50 }), new Map([rollup('solana', 3_000, 30, 'solana_v1')]))).toEqual({
+        expect(selectVolume30d(chainStats({ solana: 100, ethereum: 50 }), rollups, NOW)).toEqual({ volume30dUSD: null, scope: null });
+        expect(selectVolume30d(chainStats({ solana: 100, ethereum: 50 }), new Map([rollup('solana', 3_000, 30, 'solana_v1')]), NOW)).toEqual({
             volume30dUSD: null,
             scope: null,
         });
+    });
+
+    test('a computed rollup the daily job stopped refreshing is not served, however many days it had', () => {
+        const stale = new Map([rollup('solana', 3_000, 30, 'solana_v1'), rollup('ethereum', 900, 30, 'computed', NOW - 3 * 24 * 60 * 60 * 1000)]);
+        expect(selectVolume30d(chainStats({ solana: 100, ethereum: 50 }), stale, NOW)).toEqual({ volume30dUSD: null, scope: null });
+        const fresh = new Map([rollup('solana', 3_000, 30, 'solana_v1'), rollup('ethereum', 900, 30, 'computed', NOW - 40 * 60 * 60 * 1000)]);
+        expect(selectVolume30d(chainStats({ solana: 100, ethereum: 50 }), fresh, NOW)).toEqual({ volume30dUSD: 3_900, scope: 'all' });
+        // The mirrored Solana rollup is v1's and is not age-checked here.
+        expect(selectVolume30d(chainStats({ solana: 100 }), new Map([rollup('solana', 3_000, 30, 'solana_v1', 1)]), NOW)).toEqual({ volume30dUSD: 3_000, scope: 'solana' });
     });
 
     test('complete windows on every traded chain sum with scope all; untraded chains are ignored', () => {
@@ -1149,7 +1167,7 @@ describe('selectVolume30d', () => {
             rollup('ethereum', 900, 29, 'computed'),
             rollup('base', 50, 3, 'computed'),
         ]);
-        expect(selectVolume30d(chainStats({ solana: 100, ethereum: 50, base: 0 }), rollups)).toEqual({ volume30dUSD: 3_900, scope: 'all' });
-        expect(selectVolume30d(chainStats({}), rollups)).toEqual({ volume30dUSD: null, scope: null });
+        expect(selectVolume30d(chainStats({ solana: 100, ethereum: 50, base: 0 }), rollups, NOW)).toEqual({ volume30dUSD: 3_900, scope: 'all' });
+        expect(selectVolume30d(chainStats({}), rollups, NOW)).toEqual({ volume30dUSD: null, scope: null });
     });
 });

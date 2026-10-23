@@ -707,26 +707,42 @@ export function makePostgresV2AssetsJobsRepo(sql: Sql): V2AssetsJobsRepo {
 
         async rollupChainVolume30d(chains, nowMs) {
             if (chains.length === 0) return { assetsWritten: 0, rowsWritten: 0 };
-            // Last 30 UTC days of daily samples, summed per (asset, chain) over the
-            // asset's active variants; `volume_30d_days` = distinct days with a
-            // sample so the API can tell a complete window from a partial one.
+            // The 30 completed UTC days before today (today's sample is a partial
+            // day that would double count yesterday's tail), summed per (asset,
+            // chain) over the asset's active variants. `volume_30d_days` is the
+            // smallest distinct-day count among the variants that matter to the
+            // total (>= 1% of it), so a variant added last week keeps the window
+            // "partial" until its own history is in, while a dust pool cannot
+            // hold a chain's figure hostage. (`span`, not `window`: reserved word.)
             const rows = await sql<{ asset_id: string; chain: string }[]>`
-                WITH window AS (
-                    SELECT ((to_timestamp(${nowMs} / 1000.0) AT TIME ZONE 'UTC')::date - 30) AS start_day
+                WITH span AS (
+                    SELECT ((to_timestamp(${nowMs} / 1000.0) AT TIME ZONE 'UTC')::date) AS end_day
                 ),
-                totals AS (
-                    SELECT v.asset_id, v.chain,
-                           sum(d.volume_24h_usd) AS volume_30d_usd,
-                           count(DISTINCT d.day)::int AS days,
-                           count(DISTINCT v.address)::int AS variant_count
+                per_variant AS (
+                    SELECT v.asset_id, v.chain, v.address,
+                           sum(d.volume_24h_usd) AS volume_usd,
+                           count(DISTINCT d.day)::int AS days
                     FROM v2_asset_variants v
                     JOIN assets a ON a.asset_id = v.asset_id AND a.is_active = true
                     JOIN v2_variant_volume_daily d ON d.chain = v.chain AND d.address = v.address
-                    CROSS JOIN window w
+                    CROSS JOIN span s
                     WHERE v.is_active = true
                       AND v.chain IN ${sql([...chains])}
-                      AND d.day >= w.start_day
-                    GROUP BY v.asset_id, v.chain
+                      AND d.day >= s.end_day - 30
+                      AND d.day < s.end_day
+                    GROUP BY v.asset_id, v.chain, v.address
+                ),
+                shares AS (
+                    SELECT p.*, sum(p.volume_usd) OVER (PARTITION BY p.asset_id, p.chain) AS chain_volume_usd
+                    FROM per_variant p
+                ),
+                totals AS (
+                    SELECT asset_id, chain,
+                           max(chain_volume_usd) AS volume_30d_usd,
+                           min(days) FILTER (WHERE chain_volume_usd <= 0 OR volume_usd >= 0.01 * chain_volume_usd)::int AS days,
+                           count(*)::int AS variant_count
+                    FROM shares
+                    GROUP BY asset_id, chain
                 )
                 INSERT INTO v2_asset_chain_markets_latest (
                     asset_id, chain, liquidity, volume_24h_usd, volume_30d_usd, volume_30d_days,

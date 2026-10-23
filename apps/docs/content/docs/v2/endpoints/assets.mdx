@@ -298,7 +298,8 @@ Reading the numbers:
   each figure came from (`coingecko` | `stock` | `onchain`). A native coin's home-chain row (ETH on
   Ethereum) has no pool; it carries the reference's supply so `chainStats.ethereum` is not empty.
   `volume30dUSD` sums each traded chain's 30-day DEX volume (Solana from candles, EVM from daily
-  Birdeye samples) and is null until every traded chain has at least 28 sampled days;
+  Birdeye samples over the 30 completed UTC days) and is null until every traded chain has at
+  least 28 sampled days for each variant that matters to its total, refreshed within 48 h;
   `volume30dScope` says whether it covers every chain or Solana alone.
 - `referenceMarket` is the off-chain reference v1 called `canonicalMarket`; `source: "stock"`
   replaces v1's `clickhouse_stock`. Consumers with an exhaustive `switch (source)` should keep a

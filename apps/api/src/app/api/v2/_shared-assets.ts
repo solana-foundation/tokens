@@ -249,6 +249,8 @@ export type V2AssetStats = AssetStats & {
 
 /** Days a computed EVM rollup row needs before its 30d figure is served. */
 export const VOLUME_30D_MIN_DAYS = 28;
+/** A computed rollup older than this is not served: the daily job stopped while the 24h refresh went on. */
+export const VOLUME_30D_MAX_AGE_MS = 48 * 60 * 60 * 1000;
 
 /**
  * 30d volume across chains: the sum of each chain's rollup when every chain
@@ -260,6 +262,8 @@ export const VOLUME_30D_MIN_DAYS = 28;
 export function selectVolume30d(
     chainStats: Partial<Record<ChainId, V2ChainStats>>,
     rollupByChain: ReadonlyMap<ChainId, V2ChainRollupResult> | null,
+    /** A computed row whose `lastComputedAt` is more than `VOLUME_30D_MAX_AGE_MS` before this is treated as missing. */
+    nowMs: number = Date.now(),
 ): { volume30dUSD: number | null; scope: V2Volume30dScope } {
     const tradedChains = CHAIN_KINDS.filter(chain => (chainStats[chain]?.volume24hUSD ?? 0) > 0);
     if (tradedChains.length === 0) return { volume30dUSD: null, scope: null };
@@ -268,8 +272,11 @@ export function selectVolume30d(
     for (const chain of tradedChains) {
         const rollup = rollupByChain?.get(chain);
         if (!rollup || rollup.volume30dUSD === null) return { volume30dUSD: null, scope: null };
+        const fresh =
+            rollup.origin === 'solana_v1' ||
+            (rollup.lastComputedAt !== null && nowMs - rollup.lastComputedAt <= VOLUME_30D_MAX_AGE_MS);
         const complete = rollup.origin === 'solana_v1' || (rollup.volume30dDays ?? 0) >= VOLUME_30D_MIN_DAYS;
-        if (!complete) return { volume30dUSD: null, scope: null };
+        if (!fresh || !complete) return { volume30dUSD: null, scope: null };
         sum += rollup.volume30dUSD;
         any = true;
     }
@@ -1530,7 +1537,7 @@ export function buildV2Asset(ctx: V2AssetBuildContext): V2Asset | null {
         issuanceByKey,
     );
     const aggregate = aggregateChainStats(chainStats, accumulatorsByChain);
-    const volume30d = selectVolume30d(chainStats, ctx.rollupByChain);
+    const volume30d = selectVolume30d(chainStats, ctx.rollupByChain, ctx.nowMs ?? Date.now());
     const stats = selectV2HeadlineStats({
         reference: {
             coingecko: coingeckoSnapshot,

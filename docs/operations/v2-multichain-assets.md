@@ -189,17 +189,20 @@ Cross-chain 30d volume. Every successful Birdeye write from the refresh
 below also records that UTC day's sample in `v2_variant_volume_daily`
 (migration 0036; the last sample of the day wins, since Birdeye's 24h volume
 is a trailing window and a per-day max would double count the previous
-day's tail). Daily at `25 0 * * *` this job sums the last 30 days per
-(asset, chain) over the asset's active EVM variants into
+day's tail). Daily at `25 0 * * *` this job sums the 30 completed UTC days
+before today per (asset, chain) over the asset's active EVM variants into
 `v2_asset_chain_markets_latest` with `origin='computed'` and
-`volume_30d_days` (distinct sampled days), then prunes samples older than
-`retentionDays` (45). Solana's 30d stays v1's candle rollup, mirrored as
-`solana_v1`.
+`volume_30d_days`, then prunes samples older than `retentionDays` (45).
+`volume_30d_days` is the smallest distinct-day count among the variants that
+matter to the total (≥ 1% of it): a variant added last week keeps the chain
+"partial" until its own history is in, a dust pool cannot. Solana's 30d
+stays v1's candle rollup, mirrored as `solana_v1`.
 
 The API serves `stats.volume30dUSD` only when every chain with 24h volume has
-a complete window (`solana_v1`, or `computed` with ≥ 28 days) and labels it
-with `stats.volume30dScope` (`all` | `solana` | null); after this ships, EVM
-assets show null for ~4 weeks while the samples accrue.
+a complete window (`solana_v1`, or `computed` with ≥ 28 days and
+`last_computed_at` within 48 h, so a stalled job is not served as current)
+and labels it with `stats.volume30dScope` (`all` | `solana` | null); after
+this ships, EVM assets show null for ~4 weeks while the samples accrue.
 
 Args: `chains` (EVM ids, default all), `retentionDays` (31–365, default
 45). Result / log event `v2_volume_30d_rollup`: `assetsWritten`,
