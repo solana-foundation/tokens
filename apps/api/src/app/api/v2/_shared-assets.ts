@@ -859,6 +859,12 @@ export interface WeightedAccumulator {
     change1h: MeanAccumulator;
 }
 
+/** A chain's accumulators: rows priced in the asset's units, and derivative rows (ETF shares, LSTs) kept apart. */
+export interface ChainAccumulators {
+    own: WeightedAccumulator;
+    derivative: WeightedAccumulator;
+}
+
 function emptyMean(): MeanAccumulator {
     return { sum: 0, weight: 0, plainSum: 0, count: 0 };
 }
@@ -927,7 +933,7 @@ export function computeChainStatsDetailed(
     nativeHomeSupply?: NativeHomeSupply | null,
     /** From `variantIssuanceByKey(variants, asset.category)`; computed category-blind when absent. */
     issuanceByKey?: ReadonlyMap<VariantKey, VariantIssuance>,
-): { chainStats: Partial<Record<ChainId, V2ChainStats>>; accumulatorsByChain: ReadonlyMap<ChainId, WeightedAccumulator> } {
+): { chainStats: Partial<Record<ChainId, V2ChainStats>>; accumulatorsByChain: ReadonlyMap<ChainId, ChainAccumulators> } {
     const byChain = new Map<ChainId, V2ChainStats>();
     const issuance = issuanceByKey ?? variantIssuanceByKey(variants);
     const accByChain = new Map<ChainId, WeightedAccumulator>();
@@ -1002,19 +1008,21 @@ export function computeChainStatsDetailed(
         }
     }
     const out: Partial<Record<ChainId, V2ChainStats>> = {};
+    const accumulators = new Map<ChainId, ChainAccumulators>();
     for (const chain of CHAIN_KINDS) {
         const entry = byChain.get(chain);
         if (!entry) continue;
         const own = accByChain.get(chain) ?? emptyAccumulator();
+        const derivative = derivativeAccByChain.get(chain) ?? emptyAccumulator();
         // Derivative prices only when nothing on the chain is priced in the asset's units.
-        const acc = own.price.count > 0 ? own : (derivativeAccByChain.get(chain) ?? own);
-        accByChain.set(chain, acc);
+        const acc = own.price.count > 0 ? own : derivative;
+        accumulators.set(chain, { own, derivative });
         entry.price = weighted(acc.price);
         entry.priceChange24hPercent = weighted(acc.change24h);
         entry.priceChange1hPercent = weighted(acc.change1h);
         out[chain] = entry;
     }
-    return { chainStats: out, accumulatorsByChain: accByChain };
+    return { chainStats: out, accumulatorsByChain: accumulators };
 }
 
 /**
@@ -1026,7 +1034,7 @@ export function computeChainStatsDetailed(
  */
 export function aggregateChainStats(
     chainStats: Partial<Record<ChainId, V2ChainStats>>,
-    accumulatorsByChain?: ReadonlyMap<ChainId, WeightedAccumulator>,
+    accumulatorsByChain?: ReadonlyMap<ChainId, ChainAccumulators>,
 ): V2Aggregate {
     const out: V2Aggregate = {
         price: null,
@@ -1047,14 +1055,21 @@ export function aggregateChainStats(
         chainCount: 0,
         excludedFromSupplyCount: 0,
     };
+    // Same rule as per chain: derivative rows (ETF shares, LSTs) only price the
+    // asset when no chain has a row priced in its units, so an ETF-only chain
+    // cannot mix its share price into another chain's spot price.
     const acc = emptyAccumulator();
+    const derivativeAcc = emptyAccumulator();
     for (const [chain, entry] of Object.entries(chainStats) as Array<[ChainId, V2ChainStats | undefined]>) {
         if (!entry) continue;
         const chainAcc = accumulatorsByChain?.get(chain);
         if (chainAcc) {
-            merge(acc.price, chainAcc.price);
-            merge(acc.change24h, chainAcc.change24h);
-            merge(acc.change1h, chainAcc.change1h);
+            merge(acc.price, chainAcc.own.price);
+            merge(acc.change24h, chainAcc.own.change24h);
+            merge(acc.change1h, chainAcc.own.change1h);
+            merge(derivativeAcc.price, chainAcc.derivative.price);
+            merge(derivativeAcc.change24h, chainAcc.derivative.change24h);
+            merge(derivativeAcc.change1h, chainAcc.derivative.change1h);
         } else {
             const weight = (entry.liquidity ?? 0) > 0 ? (entry.liquidity as number) : (entry.volume24hUSD ?? 0) > 0 ? (entry.volume24hUSD as number) : 0;
             accumulate(acc.price, entry.price, weight);
@@ -1082,9 +1097,10 @@ export function aggregateChainStats(
         out.fdv = addFinite(out.fdv, entry.fdv);
         out.circulatingSupply = addFinite(out.circulatingSupply, entry.circulatingSupply);
     }
-    out.price = weighted(acc.price);
-    out.priceChange24hPercent = weighted(acc.change24h);
-    out.priceChange1hPercent = weighted(acc.change1h);
+    const chosen = acc.price.count > 0 ? acc : derivativeAcc;
+    out.price = weighted(chosen.price);
+    out.priceChange24hPercent = weighted(chosen.change24h);
+    out.priceChange1hPercent = weighted(chosen.change1h);
     return out;
 }
 

@@ -695,6 +695,12 @@ describe('chain stats', () => {
         expect(chainStats.solana?.liquidity).toBe(1_000_000);
         expect(chainStats.solana?.excludedByIssuance.derivative).toBe(1);
         expect(aggregateChainStats(chainStats, accumulatorsByChain).price).toBe(4000);
+        // Across chains too: an ETF-only chain does not mix its share price into the aggregate.
+        const shareOnBase = variant('base', '0x00000000000000000000000000000000000000e1', 'etf');
+        byKey.set(shareOnBase.key, { ...market(5_000_000, 50_000), price: 310, volume24hUSD: 1_000_000 });
+        const cross = computeChainStatsDetailed([spot, share, shareOnBase], byKey, null);
+        expect(cross.chainStats.base?.price).toBe(310);
+        expect(aggregateChainStats(cross.chainStats, cross.accumulatorsByChain).price).toBe(4000);
         // Silver-like: a commodity whose only token is the fund share still has a price.
         const only = computeChainStats([share], byKey, null, undefined, undefined, variantIssuanceByKey([share], 'commodity'));
         expect(only.solana?.price).toBe(300);
