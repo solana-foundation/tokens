@@ -39,6 +39,10 @@ import {
 //
 // Ownership is the `origin` column: a job only updates / deactivates rows it
 // wrote (solana_v1 | coingecko | config | birdeye), so the three never fight.
+// The admin app is the fourth writer (handlers/adminActions.ts): Solana edits
+// still go through v1 and run the mirror inline; EVM variants are written
+// here directly as `origin='admin'`, which adopts a derived row so the daily
+// derivation stops touching it.
 
 export const V2_SOLANA_SYNC_JOB = 'sync-v2-solana-variants';
 export const V2_EVM_VARIANTS_SYNC_JOB = 'sync-v2-evm-variants';
@@ -105,6 +109,8 @@ export interface V2CoinPlatformsRow {
     symbol: string | null;
     platforms: Record<string, string>;
     decimalsByPlatform: Record<string, number>;
+    /** CoinGecko `asset_platform_id` (the coin's home chain), when the per-coin metadata was fetched. */
+    assetPlatformId: string | null;
     coinLastSyncedAt: number | null;
 }
 
@@ -135,6 +141,21 @@ export interface V2DerivedVariantUpsert {
 export interface V2VariantKeyRef {
     chain: ChainKind;
     address: string;
+}
+
+/** Admin-authored (EVM) variant: `origin='admin'`, adopting a derived row on conflict. */
+export interface V2AdminVariantUpsert {
+    chain: ChainKind;
+    address: string;
+    assetId: string;
+    variantId: string;
+    kind: string;
+    trustTier: string;
+    stockVariantTier: string | null;
+    tags: readonly string[];
+    label: string | null;
+    decimals: number | null;
+    nowMs: number;
 }
 
 /** Birdeye overview mapped for a v2 market row: no decimals default (EVM tokens are not 9). */
@@ -181,6 +202,13 @@ export interface V2AssetsJobsRepo {
     listDerivedVariants(chains: readonly ChainKind[]): Promise<V2DerivedVariantRow[]>;
     /** Insert-or-update on (chain, address, asset_id), touching ONLY derived rows (`skipped` otherwise). */
     upsertDerivedVariant(args: V2DerivedVariantUpsert): Promise<'inserted' | 'updated' | 'skipped'>;
+    /**
+     * Admin write on (chain, address, asset_id): insert as `origin='admin'`, or
+     * update an existing derived/admin row and flip it to `admin` (`adopted`
+     * when it was coingecko/config). Keeps the existing `variant_id` on
+     * update (the unique (asset_id, variant_id) index is per asset).
+     */
+    upsertAdminVariant(args: V2AdminVariantUpsert): Promise<'inserted' | 'adopted' | 'updated'>;
     /** Soft-deactivate derived rows (never hard-deletes); returns the count. */
     deactivateDerivedVariants(
         keys: ReadonlyArray<V2VariantKeyRef & { assetId: string }>,
@@ -198,8 +226,11 @@ export interface V2AssetsJobsRepo {
         cutoffs: { beforeOverviewFetchedAt: number; beforeEmptyFetchedAt?: number },
         limit: number,
     ): Promise<V2VariantKeyRef[]>;
-    /** Writes the market row and the day's volume sample (last sample of the UTC day wins). */
-    upsertVariantMarketFromBirdeye(args: V2VariantMarketUpsert): Promise<void>;
+    /**
+     * Writes the market row and the day's volume sample (last sample of the UTC day wins).
+     * `onlyIfNewer` leaves a stored row (and its sample) alone when its `last_fetched_at` is newer than `args.lastFetchedAt`.
+     */
+    upsertVariantMarketFromBirdeye(args: V2VariantMarketUpsert, options?: { onlyIfNewer?: boolean }): Promise<void>;
     /** Sum the last 30 UTC days of samples per (asset, chain) into the `computed` rollup rows. */
     rollupChainVolume30d(chains: readonly ChainKind[], nowMs: number): Promise<{ assetsWritten: number; rowsWritten: number }>;
     /** Delete daily samples older than `olderThanDays`; returns rows deleted. */

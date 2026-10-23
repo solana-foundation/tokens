@@ -49,12 +49,67 @@ and a bad run cannot damage another origin's rows:
 | `coingecko` | v2_asset_variants             | sync-v2-evm-variants           |
 | `config`    | v2_asset_variants             | sync-v2-evm-variants (natives) |
 | `birdeye`   | v2_variant_markets_latest     | refresh-v2-evm-variant-markets |
-| `admin`     | v2_asset_variants             | reserved, unused               |
+| `admin`     | v2_asset_variants             | admin app (Add Variant with chain ≠ solana; adopted derived rows) |
 | `computed`  | v2_asset_chain_markets_latest | rollup-v2-chain-volume-30d     |
 
 The upserts carry `WHERE <table>.origin = '<own origin>'` guards; a row that
 exists under another origin is reported as `skippedOwned` and left alone.
 Derived rows are only ever soft-deactivated (`is_active=false`), never deleted.
+An admin write on a `coingecko` / `config` row **adopts** it (`origin='admin'`,
+`source='admin'`), after which the derivation job skips it for good: without
+that, the next daily `sync-v2-evm-variants` would flip an admin deactivation
+back to active.
+
+## Admin writes
+
+The admin app (`apps/admin`) is the operator write path and never waits for a
+cron tick:
+
+- **Solana** (`adminAddCheckedVariant`, `adminSeedAsset` on cloudrun-assets):
+  the v1 write (`asset_variants` + `variant_markets_latest` +
+  `asset_markets_latest`) is followed inline by the same set-based mirror the
+  `sync-v2-solana-variants` cron runs, so the v2 tables (and therefore the
+  tokens.xyz asset page) see the row before the RPC returns. The mirror is
+  best effort: the RPC result carries `v2Synced: false` when it failed and the
+  next cron tick repairs it. `adminSyncV2SolanaVariants` runs the mirror on
+  demand. cloudrun-admin's variant mutations (edit / deactivate / delete /
+  move / rename / hard delete, and an advisory that re-activates the variant)
+  write the matching per-row v2 statements inside their own transactions. Both
+  mirrors take the advisory lock
+  `pg_advisory_xact_lock(830033)` (`V2_SOLANA_MIRROR_LOCK_KEY` in
+  `apps/cloudrun-assets/src/db/v2Assets.ts` and
+  `apps/cloudrun-admin/src/db/v2Mirror.ts`; keep the literals equal) so a cron
+  tick can never snapshot v1 between an admin write and its commit, and the
+  admin row is stamped from the DB clock once the lock is held so the
+  `last_seen_at` guard cannot reject it.
+- **EVM** (`adminCheckVariantMintForCanonical` + `adminAddCheckedVariant` with
+  `chain` ≠ `solana`): no v1 row (its `chain` CHECK is Solana-only); the
+  variant goes straight into `v2_asset_variants` with `origin='admin'` and
+  `variant_id='<chain>:<address>'`, plus a Birdeye snapshot into
+  `v2_variant_markets_latest` when the per-chain client had one. Decimals come
+  from Birdeye, else CoinGecko `detail_platforms`, else the operator. Several
+  assets may own one (chain, address) (PK includes `asset_id`); the check
+  reports other owners as `shared_with` without blocking. The refresh cron
+  keeps admin rows fresh (its stale selection has no origin filter);
+  `adminRefreshV2VariantMarket` refreshes one row now. The Check-time market
+  snapshot is written with an only-if-newer guard so it never rolls back a
+  fresher cron row for a shared address. **Moving** an EVM row copies it under
+  the destination (reusing and adopting any row already at that key, so a move
+  can be undone; the source's `is_active` travels with it) and leaves an
+  inactive `origin='admin'` row at the old key: the source asset still lists
+  the contract on CoinGecko, and the derivation skips non-derived rows, so the
+  tombstone is what stops it from re-inserting there. **Deleting** an EVM row
+  through `deleteVariant` leaves the same inactive `origin='admin'` row (a
+  hard DELETE of an adopted row or a move tombstone would not stick: the coin
+  still lists the contract, so the next derivation would re-insert it active),
+  which is why the admin app offers only Deactivate for EVM rows. Adopting a
+  derived row keeps its `kind` (the derivation knew the coin's home chain, and
+  `bridged` rows are excluded from v2 supply). Soft-deleting an asset is
+  refused while it has active v2 rows.
+
+Invariant: admin never writes Solana rows to v2 directly, so
+`SELECT count(*) FROM v2_asset_variants WHERE origin = 'admin' AND chain = 'solana'`
+must stay 0.
 
 ## Jobs
 
@@ -315,8 +370,9 @@ Commodities therefore need a CoinGecko id for a per-ounce reference
 
 ## SQL inspections
 
-Parity between v1 and the mirror (both counts should match; a difference of a
-few rows right after a v1 admin edit closes on the next tick):
+Parity between v1 and the mirror (both counts should match; admin edits mirror
+inline, so a lasting difference means a mirror failure — check the
+`v2_solana_sync` log lines):
 
 ```sql
 SELECT (SELECT count(*) FROM (SELECT DISTINCT asset_id, mint FROM asset_variants WHERE chain = 'solana') s) AS v1_pairs,

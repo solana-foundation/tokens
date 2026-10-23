@@ -4,20 +4,27 @@ import { useEffect, useMemo, useState } from 'react';
 import { toast } from 'sonner';
 
 import { useAdminMutation, useAdminQuery } from '@/hooks/use-admin-api';
-import type { CanonicalSearchRow, MoveVariantToCanonicalResult, VariantEditor } from '@/lib/admin-types';
+import type { CanonicalSearchRow, MoveVariantToCanonicalResult, VariantEditor, VariantRef } from '@/lib/admin-types';
+import { variantRefArgs } from '@/lib/admin-types';
+import { chainLabel, isDerivedOrigin } from '@/lib/variant-ref';
 import { Button } from '@tokens/ui/button';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@tokens/ui/dialog';
 import { Label } from '@tokens/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@tokens/ui/select';
 
 interface MoveVariantDialogProps {
-    mint: string | null;
+    variantRef: VariantRef | null;
     open: boolean;
     onOpenChange: (open: boolean) => void;
 }
 
-export function MoveVariantDialog({ mint, open, onOpenChange }: MoveVariantDialogProps): React.JSX.Element {
-    const { data: editor } = useAdminQuery<VariantEditor>('getVariantEditor', open && mint ? { mint } : 'skip');
+export function MoveVariantDialog({ variantRef, open, onOpenChange }: MoveVariantDialogProps): React.JSX.Element {
+    const mint = variantRef?.address ?? null;
+    const isSolana = variantRef === null || variantRef.chain === 'solana';
+    const { data: editor } = useAdminQuery<VariantEditor>(
+        'getVariantEditor',
+        open && variantRef ? variantRefArgs(variantRef) : 'skip',
+    );
     const { data: canonicalTargets } = useAdminQuery<CanonicalSearchRow[]>(
         'searchCanonicalAssets',
         open ? { query: '', limit: 100 } : 'skip',
@@ -42,11 +49,18 @@ export function MoveVariantDialog({ mint, open, onOpenChange }: MoveVariantDialo
     );
 
     async function onSubmit() {
-        if (!mint || !targetAssetId.trim() || !editor) return;
+        if (!variantRef || !mint || !targetAssetId.trim() || !editor) return;
         setIsSubmitting(true);
         const toastId = toast.loading('Moving variant…');
         try {
-            const result = await moveVariantToCanonical({ mint, assetId: targetAssetId });
+            // `assetId` stays the legacy target name; the ref's owner travels as `fromAssetId`.
+            const { assetId: fromAssetId, ...ref } = variantRefArgs(variantRef);
+            const result = await moveVariantToCanonical({
+                ...ref,
+                fromAssetId,
+                toAssetId: targetAssetId,
+                assetId: targetAssetId,
+            });
             if (result.moved) {
                 toast.success(`Moved ${mint} from ${result.fromAssetId} to ${result.toAssetId}`, { id: toastId });
             } else {
@@ -66,7 +80,10 @@ export function MoveVariantDialog({ mint, open, onOpenChange }: MoveVariantDialo
                 <DialogHeader>
                     <DialogTitle>Move Variant</DialogTitle>
                     <DialogDescription>
-                        Reassign this mint from its current canonical asset to a new one.
+                        Reassign this {isSolana ? 'mint' : 'token'} from its current canonical asset to a new one.
+                        {!isSolana && editor && isDerivedOrigin(editor.variant.origin)
+                            ? ' This row was derived from CoinGecko; moving takes it over for admin so the daily sync does not re-derive it under the old asset.'
+                            : ''}
                     </DialogDescription>
                 </DialogHeader>
 
@@ -83,7 +100,12 @@ export function MoveVariantDialog({ mint, open, onOpenChange }: MoveVariantDialo
                                 <span className="font-inter-medium">Current canonical:</span> {editor.canonical.assetId}
                             </div>
                             <div>
-                                <span className="font-inter-medium">Mint:</span> {editor.variant.mint}
+                                <span className="font-inter-medium">Chain:</span>{' '}
+                                {chainLabel(editor.variant.chain ?? 'solana')}
+                            </div>
+                            <div>
+                                <span className="font-inter-medium">{isSolana ? 'Mint:' : 'Address:'}</span>{' '}
+                                {editor.variant.address ?? editor.variant.mint}
                             </div>
                             <div>
                                 <span className="font-inter-medium">Variant:</span> {editor.variant.variantId}

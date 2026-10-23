@@ -36,6 +36,7 @@ function makeFakeSql(respond: (text: string) => unknown[] = () => []): { sql: Sq
     const fake = Object.assign(run, {
         json: (value: unknown) => new JsonParam(value),
         array: (value: unknown) => ({ array: value }),
+        unsafe: (text: string) => ({ unsafe: text }),
         begin: async (fn: (tx: unknown) => Promise<unknown>) => fn(fake),
     });
     return { sql: fake as unknown as Sql, queries };
@@ -87,5 +88,31 @@ describe('makePostgresHardDeleteRepo', () => {
 
         expect(counters).toBeNull();
         expect(queries.filter(q => /^(INSERT|DELETE|UPDATE)/.test(q.text))).toHaveLength(0);
+    });
+});
+
+describe('makePostgresHardDeleteRepo v2 cascade', () => {
+    it('deletes the v2 rows (all origins) before the v1 variants and reports the count', async () => {
+        const MINT = 'PreC1KtJ1sBPPqaeeqL6Qb15GTLCYVvyYEwxhdfTwfx';
+        const { sql, queries } = makeFakeSql(text => {
+            if (text.startsWith('SELECT name, symbol, coingecko_id, aliases')) {
+                return [{ name: 'xAI', symbol: 'XAI', coingecko_id: null, aliases: [] }];
+            }
+            if (text.startsWith('SELECT mint FROM asset_variants')) return [{ mint: MINT }];
+            if (text.startsWith('DELETE FROM v2_asset_variants')) return [{ address: MINT }, { address: '0xabc' }];
+            return [];
+        });
+        const repo = makePostgresHardDeleteRepo(sql);
+        const counters = await repo.hardDeleteAsset({ assetId: 'pre-prec1ktj', nowMs: 1_760_000_000_000 });
+        expect(counters?.v2VariantsDeleted).toBe(2);
+
+        const heads = queries.map(q => q.text.split(' ').slice(0, 3).join(' '));
+        expect(heads).toContain('DELETE FROM v2_asset_variants');
+        expect(heads).toContain('DELETE FROM v2_asset_chain_markets_latest');
+        expect(heads).toContain('DELETE FROM v2_variant_markets_latest');
+        expect(heads.indexOf('DELETE FROM v2_asset_variants')).toBeLessThan(heads.indexOf('DELETE FROM asset_variants'));
+        const v2Variants = queries.find(q => q.text.startsWith('DELETE FROM v2_asset_variants'));
+        expect(v2Variants!.text).not.toContain('origin'); // derived + admin rows go too
+        expect(v2Variants!.params).toEqual(['pre-prec1ktj']);
     });
 });

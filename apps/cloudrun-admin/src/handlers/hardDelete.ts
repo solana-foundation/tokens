@@ -79,6 +79,8 @@ export interface HardDeleteCounters {
     membershipsDeleted: number;
     aliasesDeleted: number;
     variantsDeleted: number;
+    /** v2_asset_variants rows removed (all chains and origins). */
+    v2VariantsDeleted: number;
     variantMarketsDeleted: number;
     tokenMarketsDeleted: number;
     tokenDocsDeleted: number;
@@ -131,6 +133,7 @@ export async function hardDeleteAsset(
         membershipsDeleted: counters.membershipsDeleted,
         aliasesDeleted: counters.aliasesDeleted,
         variantsDeleted: counters.variantsDeleted,
+        v2VariantsDeleted: counters.v2VariantsDeleted,
         variantMarketsDeleted: counters.variantMarketsDeleted,
         tokenMarketsDeleted: counters.tokenMarketsDeleted,
         tokenDocsDeleted: counters.tokenDocsDeleted,
