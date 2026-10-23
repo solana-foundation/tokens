@@ -180,7 +180,7 @@ function TokenMobileRow({
                 // faded-out zone).
                 <div
                     aria-hidden
-                    className="pointer-events-none absolute inset-y-2 right-0 w-[64%] opacity-25 [mask-image:linear-gradient(to_right,transparent_0%,black_30%,black_58%,transparent_90%)]"
+                    className="pointer-events-none absolute inset-y-2 right-0 w-[58%] opacity-25 [mask-image:linear-gradient(to_right,transparent_0%,black_38%,black_62%,transparent_90%)]"
                 >
                     <InlinePriceChart
                         assetId={token.assetId}
@@ -228,6 +228,7 @@ function TokenMobileRow({
                 </div>
                 <div className="flex items-center justify-between gap-3 text-[12px] leading-none">
                     <SplitBadge
+                        className="bg-white"
                         segments={spec.stats.map(stat => (
                             <React.Fragment key={stat.id}>
                                 <span className="font-normal text-text-extra-low">{stat.label} </span>
