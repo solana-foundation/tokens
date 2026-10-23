@@ -37,7 +37,7 @@ export interface TokenMobileStat {
 export interface TokenMobileRowSpec {
     showRank: boolean;
     showPrice: boolean;
-    /** Inline 24h sparkline between the name and the price. */
+    /** Paint the 24h sparkline as a faded backdrop in the row's middle band. */
     showChart: boolean;
     change: { key: 'priceChange1hPercent' | 'priceChange24hPercent'; label: string } | null;
     stats: TokenMobileStat[];
@@ -194,7 +194,7 @@ function TokenMobileRow({
             role="button"
             tabIndex={0}
             aria-label={`${spec.displayName(token)} details`}
-            className="flex cursor-pointer items-center gap-3 px-4 transition-colors active:bg-gray-50/60"
+            className="relative flex cursor-pointer items-center gap-3 px-4 transition-colors active:bg-gray-50/60"
             onClick={() => onOpen(token)}
             onKeyDown={event => {
                 if (event.key !== 'Enter' && event.key !== ' ') return;
@@ -203,13 +203,39 @@ function TokenMobileRow({
             }}
             onFocus={() => onPrefetch(token)}
         >
+            {spec.showChart ? (
+                // The 24h sparkline as a quiet backdrop in the row's middle band: a soft filled
+                // area that fades in after the name and out again under the price, so it reads
+                // as texture and never competes with the numbers (the end dot sits in the
+                // faded-out zone).
+                <div
+                    aria-hidden
+                    className="pointer-events-none absolute inset-y-2 right-0 w-[60%] opacity-25 [mask-image:linear-gradient(to_right,transparent_0%,black_35%,black_62%,transparent_92%)]"
+                >
+                    <InlinePriceChart
+                        assetId={token.assetId}
+                        coingeckoId={token.coingeckoId}
+                        useCanonicalAssetChart={token.canonicalMarketSource === 'clickhouse_stock'}
+                        address={token.address}
+                        percentChange24h={token.priceChange24hPercent}
+                        symbol={token.symbol}
+                        emptyText=""
+                        chartHeight={MOBILE_ROW_HEIGHT - 16}
+                        fallbackDays={INLINE_CHART_FALLBACK_DAYS}
+                        fill
+                        exaggerate={false}
+                        lineWidth={1.25}
+                        className="relative h-full w-full overflow-hidden bg-transparent"
+                    />
+                </div>
+            ) : null}
             {spec.showRank ? (
                 <span className="w-4 shrink-0 text-right text-[11px] font-medium tabular-nums text-text-low">
                     {token.trendingRank ?? index + 1}
                 </span>
             ) : null}
             <TokenLogo token={token} size={32} />
-            <div className="flex min-w-0 flex-1 flex-col leading-tight">
+            <div className="relative flex min-w-0 flex-1 flex-col leading-tight">
                 <span className="flex min-w-0 items-center gap-1.5">
                     <span className="truncate text-[15px] font-semibold text-text-extra-high">
                         {token.symbol || '???'}
@@ -220,22 +246,7 @@ function TokenMobileRow({
                     {spec.displayName(token)}
                 </span>
             </div>
-            {spec.showChart ? (
-                <InlinePriceChart
-                    assetId={token.assetId}
-                    coingeckoId={token.coingeckoId}
-                    useCanonicalAssetChart={token.canonicalMarketSource === 'clickhouse_stock'}
-                    address={token.address}
-                    percentChange24h={token.priceChange24hPercent}
-                    symbol={token.symbol}
-                    emptyText=""
-                    chartHeight={28}
-                    lineWidth={1.5}
-                    fallbackDays={INLINE_CHART_FALLBACK_DAYS}
-                    className="relative h-7 w-[72px] shrink-0 overflow-hidden bg-transparent"
-                />
-            ) : null}
-            <div className="flex shrink-0 flex-col items-end gap-0.5 leading-tight">
+            <div className="relative flex shrink-0 flex-col items-end gap-0.5 leading-tight">
                 {spec.showPrice ? <TokenTablePriceCell token={token} /> : null}
                 {spec.change ? <ChangeCell value={change} className="[&_span]:text-[12px]" /> : null}
             </div>

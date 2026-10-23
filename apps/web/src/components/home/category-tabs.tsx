@@ -394,7 +394,6 @@ function TokenTableSkeleton() {
                                     />
                                     <Skeleton className="h-3 w-28 rounded bg-gray-100" />
                                 </div>
-                                <Skeleton className="h-7 w-[72px] rounded bg-gray-100" />
                                 <div className="flex flex-col items-end gap-1.5">
                                     <Skeleton className="h-4 w-16 rounded bg-gray-100" />
                                     <Skeleton className="h-3 w-10 rounded bg-gray-100" />
