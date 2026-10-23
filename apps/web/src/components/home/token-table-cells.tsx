@@ -112,7 +112,7 @@ export function PercentChangeCell({ value }: { value: number }) {
     );
 }
 
-export function TokenLogo({ token }: { token: Token }) {
+export function TokenLogo({ token, size = 26 }: { token: Token; size?: number }) {
     const [hasError, setHasError] = React.useState(false);
 
     const symbol = token.symbol || token.name || '??';
@@ -125,8 +125,13 @@ export function TokenLogo({ token }: { token: Token }) {
 
     if (!resolvedLogoURI || hasError) {
         return (
-            <div className="size-[26px] rounded-full bg-gray-1400 flex items-center justify-center flex-shrink-0">
-                <span className="text-[10px] font-bold text-white">{initials}</span>
+            <div
+                className="rounded-full bg-gray-1400 flex items-center justify-center flex-shrink-0"
+                style={{ width: size, height: size }}
+            >
+                <span className={cn('font-bold text-white', size >= 40 ? 'text-[14px]' : 'text-[10px]')}>
+                    {initials}
+                </span>
             </div>
         );
     }
@@ -135,9 +140,10 @@ export function TokenLogo({ token }: { token: Token }) {
         <Image
             src={resolvedLogoURI}
             alt={symbol}
-            width={26}
-            height={26}
-            className="size-[26px] rounded-full bg-gray-50 object-cover flex-shrink-0"
+            width={size}
+            height={size}
+            style={{ width: size, height: size }}
+            className="rounded-full bg-gray-50 object-cover flex-shrink-0"
             loading="lazy"
             decoding="async"
             onError={() => setHasError(true)}

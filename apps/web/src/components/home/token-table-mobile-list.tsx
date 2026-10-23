@@ -12,6 +12,7 @@ import type { Token } from '@/lib/types';
 import { INLINE_CHART_FALLBACK_DAYS, PercentChangeCell, TokenLogo, TokenTablePriceCell } from './token-table-cells';
 
 const MOBILE_ROW_HEIGHT = 68;
+const MOBILE_LOGO_SIZE = 44;
 
 // Backdrop sparkline: no loading placeholder, it fades in once the data is there.
 const InlinePriceChart = dynamic(() => import('@/components/inline-price-chart').then(m => m.InlinePriceChart), {
@@ -161,7 +162,7 @@ function TokenMobileRow({
     return (
         <li
             style={{ height: MOBILE_ROW_HEIGHT }}
-            className="relative flex cursor-pointer items-center gap-2.5 px-4 transition-colors active:bg-gray-50/60"
+            className="relative flex cursor-pointer items-start gap-2.5 px-4 pt-[11px] transition-colors active:bg-gray-50/60"
             tabIndex={0}
             onClick={() => handlers.onClick(token)}
             onKeyDown={event => {
@@ -199,11 +200,12 @@ function TokenMobileRow({
                 </div>
             ) : null}
             {spec.showRank ? (
-                <span className="w-5 shrink-0 text-right text-[12px] font-medium tabular-nums text-text-low">
+                <span className="w-5 shrink-0 pt-1 text-right text-[12px] font-medium tabular-nums text-text-low">
                     {token.trendingRank ?? index + 1}
                 </span>
             ) : null}
-            <TokenLogo token={token} />
+            {/* Sized to span both text lines, top of the name to the bottom of the stats badge. */}
+            <TokenLogo token={token} size={MOBILE_LOGO_SIZE} />
             <div className="relative flex min-w-0 flex-1 flex-col gap-1">
                 <div className="flex items-center justify-between gap-3">
                     <div className="flex min-w-0 items-center gap-1.5">
