@@ -665,10 +665,12 @@ export function makePostgresV2AssetsJobsRepo(sql: Sql): V2AssetsJobsRepo {
                 FROM candidates c
                 LEFT JOIN v2_variant_markets_latest m ON m.chain = c.chain AND m.address = c.address
                 WHERE m.overview_last_fetched_at IS NULL
+                   -- Both CASE branches are bind parameters; without the casts Postgres
+                   -- types the CASE as text and "bigint < text" has no operator.
                    OR m.overview_last_fetched_at < CASE
                         WHEN m.last_empty_at IS NOT NULL AND m.last_empty_at >= coalesce(m.last_fetched_at, 0)
-                        THEN ${beforeEmptyFetchedAt}
-                        ELSE ${beforeOverviewFetchedAt}
+                        THEN ${beforeEmptyFetchedAt}::bigint
+                        ELSE ${beforeOverviewFetchedAt}::bigint
                       END
                 ORDER BY m.overview_last_fetched_at ASC NULLS FIRST,
                          c.slug_rank ASC NULLS LAST,
