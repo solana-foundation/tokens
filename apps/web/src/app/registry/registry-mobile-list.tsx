@@ -113,7 +113,7 @@ function RegistryMobileRow({ row }: { row: RegistryRow }) {
             <div className="flex min-w-0 flex-1 flex-col justify-center gap-2 py-3 pl-4 pr-2.5">
                 <div className="flex min-w-0 items-center gap-2.5">
                     <TokenLink row={row} className="-m-1 shrink-0 p-1">
-                        <RegistryTokenLogo row={row} size={32} />
+                        <RegistryTokenLogo row={row} size={28} />
                     </TokenLink>
                     <div className="flex min-w-0 flex-col leading-tight">
                         <TokenLink row={row} className="-my-1 py-1">

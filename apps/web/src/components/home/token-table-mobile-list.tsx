@@ -13,7 +13,7 @@ import { INLINE_CHART_FALLBACK_DAYS, PercentChangeCell, TokenLogo, TokenTablePri
 
 const MOBILE_ROW_HEIGHT = 68;
 // The logo sits inside the 20px name line, same height as the text, so it never outweighs the row.
-const MOBILE_LOGO_SIZE = 20;
+const MOBILE_LOGO_SIZE = 18;
 
 // Backdrop sparkline: no loading placeholder, it fades in once the data is there.
 const InlinePriceChart = dynamic(() => import('@/components/inline-price-chart').then(m => m.InlinePriceChart), {
