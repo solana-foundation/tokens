@@ -1,7 +1,6 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import Link from 'next/link';
 import {
     createColumnHelper,
     flexRender,
@@ -12,19 +11,24 @@ import {
     type PaginationState,
     type SortingState,
 } from '@tanstack/react-table';
-import { ArrowUpRight, Braces, ChevronDown, ChevronUp, ChevronsUpDown } from 'lucide-react';
+import { Braces, ChevronDown, ChevronUp, ChevronsUpDown } from 'lucide-react';
 
-import { cn, truncateAddress } from '@tokens/ui/cn';
-import { Button } from '@tokens/ui/button';
-import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@tokens/ui/tooltip';
+import { cn } from '@tokens/ui/cn';
 import { MarketsPagination } from '@/app/_components/markets/markets-pagination';
-import { buildCoinHref } from '@/lib/coin-href';
-import { formatLargeNumber } from '@/lib/format';
-import { cleanTokenName } from '@/lib/logo-overrides';
 import { downloadTextFile, registryCsvFilename, registryRowsToCsv } from './lib/csv';
 import { SORTABLE_COLUMN_IDS, applyFilters, type SortableColumnId } from './lib/filters';
 import type { RegistryData, RegistryRow } from './lib/types';
+import {
+    AddressLink,
+    ProviderValues,
+    RegistryEmptyState,
+    TextCell,
+    TokenLink,
+    UsdCell,
+    displayNameOf,
+} from './registry-cells';
 import type { CategoryOptions } from './registry-filter-editor';
+import { RegistryMobileList } from './registry-mobile-list';
 import { RegistryNuqsAdapter } from './registry-nuqs-adapter';
 import { RegistryResponseSheet } from './registry-response-sheet';
 import { RegistryTokenLogo } from './registry-token-logo';
@@ -35,119 +39,30 @@ const columnHelper = createColumnHelper<RegistryRow>();
 
 const RIGHT_ALIGNED_COLUMNS = new Set(['marketCapUsd']);
 
-// The Token column stays pinned while the table scrolls sideways; on phones the cell is compact
-// (logo + symbol, see TokenCell) so the pinned part leaves most of the viewport to scroll.
-// Sticky cells need an opaque background (the row/header tints are translucent), so mix the
-// same tint over white.
-const PINNED_CELL_CLASS =
-    'sticky left-0 z-10 shadow-[inset_-1px_0_0_var(--color-border-light)] bg-white group-hover/row:bg-[color-mix(in_srgb,var(--color-gray-50)_50%,white)]';
-const PINNED_HEADER_CLASS =
-    'sticky left-0 z-20 shadow-[inset_-1px_0_0_var(--color-border-light)] bg-[color-mix(in_srgb,var(--color-gray-50)_80%,white)]';
-
+// The table only renders at md and up (phones get RegistryMobileList), so the
+// cells carry no phone variants and the Token column needs no sticky pin.
 function TokenCell({ row }: { row: RegistryRow }) {
-    const displayName = row.name ? cleanTokenName(row.name) : row.symbol;
-    // Phones get logo + symbol only (the name is in the Response sheet and on the asset page),
-    // which keeps the pinned column to ~140px; md and up show name + $symbol.
-    const content = (
-        <>
+    const displayName = displayNameOf(row);
+    return (
+        <TokenLink row={row} className="flex max-w-[280px] items-center gap-[8px]">
             <RegistryTokenLogo row={row} />
             <div className="flex min-w-0 items-center gap-2">
-                <span
-                    className="hidden truncate text-[16px] font-medium text-text-extra-high md:inline"
-                    title={displayName}
-                >
+                <span className="truncate text-[16px] font-medium text-text-extra-high" title={displayName}>
                     {displayName}
                 </span>
-                <span className="truncate text-[14px] font-medium text-text-extra-high md:hidden" title={displayName}>
-                    {row.symbol}
-                </span>
                 {row.name ? (
-                    <span className="hidden shrink-0 text-[14px] text-text-extra-low font-medium md:inline">
-                        ${row.symbol}
-                    </span>
+                    <span className="shrink-0 text-[14px] text-text-extra-low font-medium">${row.symbol}</span>
                 ) : null}
             </div>
-        </>
-    );
-
-    if (!row.hasTokenPage) {
-        return <div className="flex max-w-[120px] items-center gap-[8px] md:max-w-[280px]">{content}</div>;
-    }
-    // Direct asset-page link (`/{assetId}?solana={mint}`), the same the home table builds;
-    // the mint redirect only covers a cached payload from before the API carried assetId.
-    const href = row.assetId ? buildCoinHref(row.assetId, row.mintAddress) : `/token/${row.mintAddress}`;
-    return (
-        <Link
-            href={href}
-            prefetch={false}
-            className="flex max-w-[120px] items-center gap-[8px] hover:opacity-80 transition-opacity md:max-w-[280px]"
-        >
-            {content}
-        </Link>
-    );
-}
-
-function EmptyValue({ align = 'left' }: { align?: 'left' | 'right' }) {
-    return <span className={cn('block text-[14px] text-text-extra-low', align === 'right' && 'text-right')}>—</span>;
-}
-
-function TextCell({ value }: { value: string | null }) {
-    return value ? <span className="whitespace-nowrap text-[14px] text-text-high">{value}</span> : <EmptyValue />;
-}
-
-function UsdCell({ value }: { value: number | null }) {
-    return value == null ? (
-        <EmptyValue align="right" />
-    ) : (
-        <span className="block text-right text-[14px] text-[#2D2D2D] font-medium tabular-nums">
-            {formatLargeNumber(value)}
-        </span>
-    );
-}
-
-const PROVIDER_LABELS = { allium: 'Allium', rwa: 'RWA.xyz' } as const;
-
-/**
- * The one on-chain value column. Allium and RWA.xyz measure the same thing, so
- * the table shows whichever reported (Allium first) with its source; when both
- * did, hovering lists both numbers.
- */
-function ProviderValueCell({ row }: { row: RegistryRow }) {
-    if (row.providerValueUsd == null || row.providerValueSource == null) return <EmptyValue />;
-    const both = row.alliumValueUsd != null && row.rwaValueUsd != null;
-    const content = (
-        <span className="flex flex-col items-start leading-tight">
-            <span className="text-[14px] text-[#2D2D2D] font-medium tabular-nums">
-                {formatLargeNumber(row.providerValueUsd)}
-            </span>
-            <span className="text-[11px] font-medium text-text-extra-low">
-                {PROVIDER_LABELS[row.providerValueSource]}
-            </span>
-        </span>
-    );
-    if (!both) return content;
-    return (
-        <Tooltip>
-            <TooltipTrigger asChild>
-                <span className="inline-flex cursor-help">{content}</span>
-            </TooltipTrigger>
-            <TooltipContent
-                side="top"
-                align="start"
-                className="rounded-xl bg-[#111111] px-3 py-2 text-xs leading-5 text-white shadow-[0_10px_30px_rgba(20,20,21,0.18)] tabular-nums"
-            >
-                <div>Allium {formatLargeNumber(row.alliumValueUsd)}</div>
-                <div>RWA.xyz {formatLargeNumber(row.rwaValueUsd)}</div>
-            </TooltipContent>
-        </Tooltip>
+        </TokenLink>
     );
 }
 
 /**
  * Six data columns. Group is implied by Category and both provider classes are
  * independent taxonomies with partial coverage, so they live in the filter chips
- * and the Response sheet rather than in the grid; the two provider values merge
- * into "Value". CSV columns are unchanged.
+ * and the Response sheet rather than in the grid; the two provider values share
+ * the one "Value" column. CSV columns are unchanged.
  */
 function buildColumns(onOpenResponse: (row: RegistryRow) => void) {
     return [
@@ -159,21 +74,7 @@ function buildColumns(onOpenResponse: (row: RegistryRow) => void) {
         columnHelper.accessor('mintAddress', {
             header: 'Address',
             enableSorting: false,
-            cell: info => {
-                const address = info.getValue();
-                return (
-                    <a
-                        href={`https://explorer.solana.com/address/${address}`}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="inline-flex items-center gap-1 font-mono text-[13px] text-text-medium transition-colors hover:text-text-extra-high"
-                        title={address}
-                    >
-                        {truncateAddress(address)}
-                        <ArrowUpRight className="h-3 w-3 text-text-extra-low" />
-                    </a>
-                );
-            },
+            cell: info => <AddressLink address={info.getValue()} />,
         }),
         columnHelper.accessor('category', {
             header: 'Category',
@@ -187,9 +88,14 @@ function buildColumns(onOpenResponse: (row: RegistryRow) => void) {
         }),
         columnHelper.accessor(row => row.providerValueUsd ?? undefined, {
             id: 'providerValueUsd',
-            header: 'Value',
+            header: () => (
+                <span className="flex flex-col items-start leading-tight">
+                    Value
+                    <span className="text-[11px] font-medium text-text-extra-low">Allium · RWA.xyz</span>
+                </span>
+            ),
             sortUndefined: 'last',
-            cell: info => <ProviderValueCell row={info.row.original} />,
+            cell: info => <ProviderValues row={info.row.original} />,
         }),
         columnHelper.accessor(row => row.marketCapUsd ?? undefined, {
             id: 'marketCapUsd',
@@ -301,7 +207,7 @@ function RegistryTableInner({ data }: { data: RegistryData }) {
     };
 
     return (
-        <TooltipProvider delayDuration={150}>
+        <>
             <div className="flex flex-col gap-4">
                 <RegistryToolbar
                     state={urlState}
@@ -312,7 +218,7 @@ function RegistryTableInner({ data }: { data: RegistryData }) {
                 />
 
                 <div className="bg-white rounded-[24px] border border-border-medium shadow-[0_8px_40px_rgba(0,0,0,0.03)] overflow-hidden">
-                    <div className="overflow-x-auto">
+                    <div className="hidden overflow-x-auto md:block">
                         <table className="w-full min-w-[1040px] text-left border-collapse">
                             <thead>
                                 {table.getHeaderGroups().map(headerGroup => (
@@ -330,14 +236,10 @@ function RegistryTableInner({ data }: { data: RegistryData }) {
                                                 <th
                                                     key={header.id}
                                                     className={cn(
-                                                        'py-3 text-[12px] md:text-[14px] font-medium text-text-high bg-gray-50/80 border-b border-border-light',
-                                                        index === 0 && 'pl-4 pr-3 md:pl-6 md:pr-4',
-                                                        // Auto layout hands the min-width surplus to every column;
-                                                        // on phones keep the pinned one at its content width.
-                                                        index === 0 && 'w-px md:w-auto',
-                                                        index === 0 && PINNED_HEADER_CLASS,
-                                                        index !== 0 && !isLast && 'px-3 md:px-5',
-                                                        isLast && 'pl-3 md:pl-5 pr-4 md:pr-8',
+                                                        'py-3 text-[14px] font-medium text-text-high bg-gray-50/80 border-b border-border-light align-bottom',
+                                                        index === 0 && 'pl-6 pr-4',
+                                                        index !== 0 && !isLast && 'px-5',
+                                                        isLast && 'pl-5 pr-8',
                                                         alignRight && 'text-right',
                                                     )}
                                                 >
@@ -377,22 +279,8 @@ function RegistryTableInner({ data }: { data: RegistryData }) {
                             <tbody className="divide-y divide-border-extra-light">
                                 {visibleRows.length === 0 ? (
                                     <tr>
-                                        <td colSpan={columns.length} className="px-6 py-12 text-center">
-                                            <p className="text-text-low text-[14px] md:text-[16px]">
-                                                No assets match your filters
-                                            </p>
-                                            <p className="text-text-extra-low text-[12px] md:text-[14px] mt-2">
-                                                Try a different symbol, name, or mint address, or loosen a filter
-                                            </p>
-                                            <Button
-                                                type="button"
-                                                variant="outline"
-                                                size="sm"
-                                                className="mt-4 h-9 rounded-full border-border-medium bg-white px-4 font-sans text-[13px] text-text-extra-high shadow-none hover:bg-gray-50/60"
-                                                onClick={clearAll}
-                                            >
-                                                Clear filters
-                                            </Button>
+                                        <td colSpan={columns.length}>
+                                            <RegistryEmptyState onClear={clearAll} />
                                         </td>
                                     </tr>
                                 ) : (
@@ -405,10 +293,9 @@ function RegistryTableInner({ data }: { data: RegistryData }) {
                                                         key={cell.id}
                                                         className={cn(
                                                             'py-3.5',
-                                                            index === 0 && 'pl-4 pr-3 md:pl-6 md:pr-4',
-                                                            index === 0 && PINNED_CELL_CLASS,
-                                                            index !== 0 && !isLast && 'px-3 md:px-5',
-                                                            isLast && 'pl-3 md:pl-5 pr-4 md:pr-8',
+                                                            index === 0 && 'pl-6 pr-4',
+                                                            index !== 0 && !isLast && 'px-5',
+                                                            isLast && 'pl-5 pr-8',
                                                         )}
                                                     >
                                                         {flexRender(cell.column.columnDef.cell, cell.getContext())}
@@ -421,6 +308,7 @@ function RegistryTableInner({ data }: { data: RegistryData }) {
                             </tbody>
                         </table>
                     </div>
+                    <RegistryMobileList rows={visibleRows} table={table} onClearFilters={clearAll} />
                     <MarketsPagination
                         state={{
                             pageIndex: pagination.pageIndex,
@@ -442,6 +330,6 @@ function RegistryTableInner({ data }: { data: RegistryData }) {
                     }}
                 />
             </div>
-        </TooltipProvider>
+        </>
     );
 }
