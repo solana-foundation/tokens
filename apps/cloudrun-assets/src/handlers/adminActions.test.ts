@@ -1289,6 +1289,31 @@ describe('adminCheckVariantMintForCanonical (EVM)', () => {
         expect(preview.variantWrite.kind).toBe('native');
     });
 
+    it('a different wrapper on the home chain does not inherit native from asset_platform_id', async () => {
+        const other = '0x2222222222222222222222222222222222222222';
+        const state = makeState({
+            assetsById: { wbtc: { assetId: 'wbtc', category: 'crypto', coingeckoId: 'wrapped-bitcoin' } },
+            evmOverviewByChain: { ethereum: USDC_OVERVIEW },
+            coinPlatformsById: {
+                'wrapped-bitcoin': {
+                    coinId: 'wrapped-bitcoin',
+                    symbol: 'wbtc',
+                    platforms: { ethereum: USDC_ETH, solana: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v' },
+                    decimalsByPlatform: { ethereum: 8 },
+                    assetPlatformId: 'ethereum',
+                    coinLastSyncedAt: FIXED_NOW,
+                },
+            },
+        });
+        const preview = await adminCheckVariantMintForCanonical(
+            makeDeps(state),
+            { assetId: 'wbtc', chain: 'ethereum', address: other },
+            ADMIN,
+        );
+        // Not the coin's deployment: the platforms heuristic applies (Solana listed → bridged).
+        expect(preview.variantWrite.kind).toBe('bridged');
+    });
+
     it('reports other owners as a non-blocking shared_with', async () => {
         const state = makeState({
             assetsById: { usdc: { assetId: 'usdc', category: 'stablecoin' } },

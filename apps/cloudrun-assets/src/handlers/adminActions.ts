@@ -1217,11 +1217,14 @@ async function checkEvmVariantForCanonical(
     // Adopting keeps the row's kind: the derivation knew the coin's home chain
     // when it wrote it, and `variantIssuance` drops a `bridged` row from v2
     // supply and market cap, so re-deriving here could demote a `native` row.
-    // A fresh add derives with the coin's `asset_platform_id` for the same reason.
+    // A fresh add derives with the coin's `asset_platform_id` for the same
+    // reason, but only when this address IS the coin's deployment here: a
+    // different wrapper on the home chain is not the native issuance and must
+    // not be counted as newly issued supply.
     const derivedKind = coinRow
         ? deriveVariantKindForChain({
               category,
-              assetPlatformId: coinRow.assetPlatformId,
+              assetPlatformId: coinMatchesAddress ? coinRow.assetPlatformId : null,
               chain,
               platforms: coinRow.platforms,
           })
