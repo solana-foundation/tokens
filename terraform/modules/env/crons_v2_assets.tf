@@ -48,8 +48,8 @@ locals {
         minAgeMs      = 900000
         emptyMinAgeMs = 3600000
         concurrency   = 2
-        delayMs     = 150
-        budgetMs    = 500000
+        delayMs       = 150
+        budgetMs      = 500000
       })
       attempt_deadline = "540s"
       retry_count      = 0
