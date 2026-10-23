@@ -253,6 +253,12 @@ describe('chain stats', () => {
         // An explicit tag is an operator decision and is not promoted.
         const tagged = variant('solana', '4MmJVdwYN8LwvbGeCowYjSx7KoEi6BJWg8XXnW4fDDp6', 'yield', ['issuance:derivative']);
         expect(computeChainStats([tagged], byKey, null).solana?.marketCap).toBeNull();
+        // A commodity's lone ETF-share token is not the metal's supply.
+        const slv = variant('solana', '4MmJVdwYN8LwvbGeCowYjSx7KoEi6BJWg8XXnW4fDDp6', 'etf');
+        const commodity = computeChainStats([slv], byKey, null, variantIssuanceByKey([slv], 'commodity'));
+        expect(commodity.solana?.marketCap).toBeNull();
+        expect(commodity.solana?.liquidity).toBe(300);
+        expect(commodity.solana?.excludedByIssuance.derivative).toBe(1);
     });
 
     test('liquidity sums every variant; supply / mcap only issued ones; canonical chain order', () => {

@@ -68,6 +68,14 @@ export function resolveVariantIssuance(variant: IssuanceInput): VariantIssuance 
     return resolveVariantIssuanceDetailed(variant).issuance;
 }
 
+export interface AssetIssuanceOptions {
+    /** The asset's category; ETF shares under a `commodity` are never the commodity itself. */
+    category?: string | null;
+}
+
+/** Categories whose asset is a thing (an ounce, a barrel) no tokenized fund share can be the supply of. */
+export const NEVER_STANDALONE_PRODUCT_CATEGORIES: ReadonlySet<string> = new Set(['commodity']);
+
 /**
  * Issuance across one asset's variants, in input order.
  *
@@ -81,11 +89,18 @@ export function resolveVariantIssuance(variant: IssuanceInput): VariantIssuance 
  * and curated overrides are never promoted: an operator who marked a variant
  * `derivative` meant it. A single native, bridged or wrapped sibling keeps the
  * derivative class for everyone else (an LST next to SOL stays derivative).
+ * A `commodity` is never promoted: `silver`'s only token may be an ETF share,
+ * but the asset is the metal and its supply comes from the per-ounce reference.
  */
-export function resolveAssetIssuance(variants: readonly IssuanceInput[]): VariantIssuance[] {
+export function resolveAssetIssuance(
+    variants: readonly IssuanceInput[],
+    options: AssetIssuanceOptions = {},
+): VariantIssuance[] {
     const detailed = variants.map(resolveVariantIssuanceDetailed);
     const standaloneProduct =
-        detailed.length > 0 && detailed.every(entry => entry.issuance === 'derivative');
+        detailed.length > 0 &&
+        !NEVER_STANDALONE_PRODUCT_CATEGORIES.has(options.category ?? '') &&
+        detailed.every(entry => entry.issuance === 'derivative');
     return detailed.map(entry =>
         standaloneProduct && entry.source === 'kind' ? 'native' : entry.issuance,
     );

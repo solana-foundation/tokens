@@ -66,6 +66,14 @@ describe('resolveVariantIssuance', () => {
         expect(resolveAssetIssuance([])).toEqual([]);
     });
 
+    test("a commodity's ETF-share token is never promoted: the asset is the metal, not the fund", () => {
+        const slv = { chain: 'solana' as const, address: 'SilverEtfMint11111111111111111111111111111111', kind: 'etf', tags: [] };
+        expect(resolveAssetIssuance([slv], { category: 'commodity' })).toEqual(['derivative']);
+        expect(resolveAssetIssuance([slv], { category: 'rwa' })).toEqual(['native']);
+        expect(resolveAssetIssuance([slv], { category: 'etf' })).toEqual(['native']);
+        expect(resolveAssetIssuance([slv])).toEqual(['native']);
+    });
+
     test('an explicit issuance:derivative tag is never promoted, but its kind-derived siblings are', () => {
         const fund = { chain: 'solana' as const, address: 'FundMint1111111111111111111111111111111111111', kind: 'yield', tags: [] };
         const tagged = { chain: 'solana' as const, address: 'FundMint2222222222222222222222222222222222222', kind: 'yield', tags: ['issuance:derivative'] };

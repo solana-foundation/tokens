@@ -633,8 +633,10 @@ export function variantIssuance(variant: {
 /** Issuance per variant key over one asset's variants (`resolveAssetIssuance` in the registry). */
 export function variantIssuanceByKey(
     variants: ReadonlyArray<Pick<V2VariantResult, 'chain' | 'address' | 'key' | 'kind' | 'tags'>>,
+    /** The asset's category: a commodity's ETF-share tokens are never promoted to its supply. */
+    category?: string | null,
 ): Map<VariantKey, VariantIssuance> {
-    const resolved = resolveAssetIssuance(variants);
+    const resolved = resolveAssetIssuance(variants, { category });
     const out = new Map<VariantKey, VariantIssuance>();
     variants.forEach((variant, index) => out.set(variant.key, resolved[index]!));
     return out;
@@ -745,9 +747,11 @@ export function computeChainStats(
     variants: ReadonlyArray<Pick<V2VariantResult, 'chain' | 'address' | 'key' | 'kind' | 'tags'>>,
     marketByKey: ReadonlyMap<VariantKey, VariantMarketSnapshotResult>,
     rollupByChain: ReadonlyMap<ChainId, V2ChainRollupResult> | null,
+    /** From `variantIssuanceByKey(variants, asset.category)`; computed category-blind when absent. */
+    issuanceByKey?: ReadonlyMap<VariantKey, VariantIssuance>,
 ): Partial<Record<ChainId, V2ChainStats>> {
     const byChain = new Map<ChainId, V2ChainStats>();
-    const issuanceByKey = variantIssuanceByKey(variants);
+    const issuance = issuanceByKey ?? variantIssuanceByKey(variants);
     const seen = new Set<VariantKey>();
     for (const variant of variants) {
         if (seen.has(variant.key)) continue;
@@ -768,14 +772,14 @@ export function computeChainStats(
         entry.liquidity = addFinite(entry.liquidity, market?.liquidity);
         entry.volume24hUSD = addFinite(entry.volume24hUSD, market?.volume24hUSD);
         entry.trade24h = addFinite(entry.trade24h, market?.trade24h);
-        const issuance = issuanceByKey.get(variant.key) ?? variantIssuance(variant);
-        if (issuance === 'native') {
+        const variantIssuanceClass = issuance.get(variant.key) ?? variantIssuance(variant);
+        if (variantIssuanceClass === 'native') {
             entry.issuedVariantCount += 1;
             entry.marketCap = addFinite(entry.marketCap, market?.marketCap);
             entry.fdv = addFinite(entry.fdv, market?.fdv);
             entry.circulatingSupply = addFinite(entry.circulatingSupply, market?.circulatingSupply);
         } else {
-            entry.excludedByIssuance[issuance] += 1;
+            entry.excludedByIssuance[variantIssuanceClass] += 1;
         }
         byChain.set(variant.chain, entry);
     }
@@ -1117,8 +1121,8 @@ export function buildV2Asset(ctx: V2AssetBuildContext): V2Asset | null {
 
     // Stats: v1's aggregation over every chain, liquidity / volume from the chain stats
     // (worker rollup for Solana), then the v1 headline selection against the reference.
-    const chainStats = computeChainStats(visible, ctx.marketByKey, ctx.rollupByChain);
-    const issuanceByKey = variantIssuanceByKey(visible);
+    const issuanceByKey = variantIssuanceByKey(visible, asset.category);
+    const chainStats = computeChainStats(visible, ctx.marketByKey, ctx.rollupByChain, issuanceByKey);
     const aggregate = aggregateChainStats(chainStats);
     const primaryToken = primary ? tokenByKey.get(primary.mint) : undefined;
     const solanaRollup = ctx.rollupByChain?.get('solana') ?? null;

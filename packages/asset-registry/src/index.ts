@@ -160,9 +160,10 @@ export {
     variantKeyFor,
 } from './chains';
 export { normalizeCoinGeckoCoinIdForAsset } from './coingecko-id';
-export type { IssuanceInput, IssuanceSource, VariantIssuance } from './issuance';
+export type { AssetIssuanceOptions, IssuanceInput, IssuanceSource, VariantIssuance } from './issuance';
 export {
     DERIVATIVE_KINDS,
+    NEVER_STANDALONE_PRODUCT_CATEGORIES,
     ISSUANCE_TAG_PREFIX,
     VARIANT_ISSUANCE,
     isVariantIssuance,
