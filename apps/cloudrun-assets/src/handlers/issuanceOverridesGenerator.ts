@@ -32,7 +32,10 @@ export interface OverrideVariantInput {
     category: string;
     kind: string;
     label: string | null;
-    /** v1 `asset_variants.source` for mirrored Solana rows (registry | admin | …); origin for derived rows. */
+    /**
+     * v1 `asset_variants.source` for mirrored Solana rows (`admin` for admin-created,
+     * null for registry-seeded: the seed never writes the column); origin for derived rows.
+     */
     source: string | null;
     coinId: string | null;
     /** The asset's own reference coin (`assets.coingecko_id`); its deployments are never a bridged copy of itself. */
@@ -58,6 +61,11 @@ const BRIDGED_COIN_PATTERN = /bridged|-peg-|binance-peg|-wormhole\b|\(wormhole\)
 const FUND_SHARE_PATTERN = /\b(etf|ishares|spdr|trust|fund)\b/i;
 const HOME_SOURCES: ReadonlySet<string> = new Set(['registry', 'admin', 'solana_v1']);
 
+/** A mirrored Solana row with no `source` was seeded from the registry (the seed never writes the column). */
+function sourceOf(variant: OverrideVariantInput): string {
+    return variant.source ?? (variant.chain === 'solana' ? 'registry' : '');
+}
+
 function overrideKey(chain: ChainKind, address: string): string {
     const normalized = CHAINS[chain]?.family === 'evm' ? address.toLowerCase() : address;
     return `${chain}:${normalized}`;
@@ -79,7 +87,7 @@ export function classifyIssuanceOverrides(
     const homeByAssetCoin = new Set<string>();
     for (const variant of variants) {
         if (variant.chain !== 'solana' || !variant.coinId) continue;
-        if (!HOME_SOURCES.has(variant.source ?? '')) continue;
+        if (!HOME_SOURCES.has(sourceOf(variant))) continue;
         const coin = coinById.get(variant.coinId);
         if (!coin) continue;
         if ((coin.platforms.solana ?? '') === variant.address) homeByAssetCoin.add(`${variant.assetId}\n${variant.coinId}`);

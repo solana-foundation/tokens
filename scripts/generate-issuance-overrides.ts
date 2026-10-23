@@ -56,7 +56,8 @@ try {
                       category: row.category,
                       kind: row.kind,
                       label: row.label,
-                      source: row.origin === 'solana_v1' ? row.source : row.origin,
+                      // Registry-seeded v1 rows carry no source (the seed never writes the column); admin rows say 'admin'.
+                      source: row.origin === 'solana_v1' ? (row.source ?? 'registry') : row.origin,
                       coinId: row.coingecko_id,
                       assetCoinId: row.asset_coingecko_id,
                   },

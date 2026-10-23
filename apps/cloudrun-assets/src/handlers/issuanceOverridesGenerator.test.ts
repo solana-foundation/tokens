@@ -93,6 +93,14 @@ describe('classifyIssuanceOverrides', () => {
         expect(out).toEqual([{ key: 'solana:IAUonMint', issuance: 'derivative', reason: "iShares Gold Trust is a fund share, not the commodity's own supply", coinId: 'ishares-gold-trust' }]);
     });
 
+    test('a registry-seeded Solana mint with no source column is still the home', () => {
+        const out = classifyIssuanceOverrides(
+            [variant({ source: null }), variant({ chain: 'arbitrum', address: TSLAX_ARB, source: 'coingecko', label: null })],
+            coins,
+        );
+        expect(out.map(e => e.key)).toEqual([`arbitrum:${TSLAX_ARB.toLowerCase()}`]);
+    });
+
     test('an equity whose Solana mint is derived (not registry / admin) is not treated as the home', () => {
         const out = classifyIssuanceOverrides(
             [variant({ source: 'coingecko' }), variant({ chain: 'arbitrum', address: TSLAX_ARB, source: 'coingecko' })],
