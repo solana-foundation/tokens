@@ -22,7 +22,7 @@
     "@tokens/asset-registry": "workspace:*",
     "@tokens/ui": "workspace:*",
     "@vercel/oidc": "^3.8.4",
-    "next": "16.3.8",
+    "next": "16.4.1",
     "react": "^19.2.3",
     "react-dom": "^19.2.3",
     "sonner": "^2.0.7",
