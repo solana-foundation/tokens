@@ -17,6 +17,7 @@ import {
     decodePrimaryScopeParam,
     hasVisibleVariantOnChain,
     headlineOnChainStats,
+    assessVariantMarkets,
     toV2Chain,
     toV2Market,
     toV2PegHealth,
@@ -98,6 +99,8 @@ describe('headlineOnChainStats', () => {
         variantCount: 4,
         issuedVariantCount: 4 - excludedFromSupplyCount,
         excludedByIssuance: { bridged: excludedFromSupplyCount, wrapped: 0, derivative: 0 },
+        excludedCount: 0,
+        excludedByQuality: { stale: 0, dust: 0, priceOutlier: 0 },
         chainCount: 3,
         excludedFromSupplyCount,
     });
@@ -275,6 +278,8 @@ describe('chain stats', () => {
             variantCount: 2,
             issuedVariantCount: 1,
             excludedByIssuance: { bridged: 1, wrapped: 0, derivative: 0 },
+            excludedCount: 0,
+            excludedByQuality: { stale: 0, dust: 0, priceOutlier: 0 },
         });
         expect(stats.ethereum?.marketCap).toBeNull();
         expect(stats.ethereum?.excludedByIssuance).toEqual({ bridged: 0, wrapped: 1, derivative: 0 });
@@ -300,6 +305,32 @@ describe('chain stats', () => {
         expect(stats.base?.trade24h).toBe(7);
         expect(stats.ethereum?.trade24h).toBeNull();
         expect(aggregateChainStats(stats).trade24h).toBe(77);
+    });
+
+    test('a row the quality guard excludes leaves every sum but still counts as a variant', () => {
+        const NOW = 1_800_000_000_000;
+        const byKey = new Map([
+            [`solana:${USDC_SOLANA}`, { ...market(100_000, 1000), price: 1, volume24hUSD: 50_000, lastFetchedAt: NOW - 60_000 }],
+            // Dust-liquidity row priced 40× the reference: the Tesla Arbitrum case.
+            [`base:${USDC_BASE}`, { ...market(11, 739_000_000), price: 40, volume24hUSD: 40, lastFetchedAt: NOW - 60_000 }],
+        ]);
+        const quality = assessVariantMarkets([variants[0]!, variants[1]!], byKey, { priceUsd: 1 }, NOW);
+        expect(quality.get(`base:${USDC_BASE}`)?.included).toBe(false);
+        const stats = computeChainStats([variants[0]!, variants[1]!], byKey, null, quality);
+        expect(stats.base?.liquidity).toBeNull();
+        expect(stats.base?.marketCap).toBeNull();
+        expect(stats.base?.variantCount).toBe(1);
+        expect(stats.base?.issuedVariantCount).toBe(0);
+        expect(stats.base?.excludedCount).toBe(1);
+        // Dust rows never reach the price pass: one reason, not two.
+        expect(stats.base?.excludedByQuality).toEqual({ stale: 0, dust: 1, priceOutlier: 0 });
+        expect(stats.solana?.marketCap).toBe(1000);
+        expect(stats.solana?.liquidity).toBe(100_000);
+        const aggregate = aggregateChainStats(stats);
+        expect(aggregate.marketCap).toBe(1000);
+        expect(aggregate.excludedCount).toBe(1);
+        expect(aggregate.excludedByQuality.dust).toBe(1);
+        expect(aggregate.excludedFromSupplyCount).toBe(0);
     });
 
     test('the Solana worker rollup overrides liquidity / volume for parity with v1', () => {
@@ -337,8 +368,12 @@ describe('mappers', () => {
         expect(out.lastFetchedAt).toBe(5);
         expect('symbol' in out).toBe(false);
         expect('decimals' in out).toBe(false);
-        expect(Object.keys(out).length).toBe(20);
+        expect(Object.keys(out).length).toBe(21);
         expect(toV2Market(null)).toBeNull();
+        expect(out.quality).toEqual({ included: true, reasons: [] });
+        expect(
+            toV2Market({ mint: 'x', source: 'birdeye', lastFetchedAt: 5 }, { included: false, reasons: ['stale'] })?.quality,
+        ).toEqual({ included: false, reasons: ['stale'] });
     });
 
     test('toV2Chain exposes caip2, explorer template and capabilities', () => {

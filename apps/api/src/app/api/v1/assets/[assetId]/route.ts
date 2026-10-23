@@ -33,6 +33,7 @@ import { prestocksGetLatestByMints } from '@/lib/cloudrun/prestocksReads';
 import {
     resolveAssetImageUrl,
     aggregateTokenStats,
+    assessTokenMarkets,
     buildCuratedMintRank,
     listSymbols,
     matchRegistryAssetForDbAsset,
@@ -417,7 +418,10 @@ export const GET = route(
             const token = primaryVariant ? tokenByMint.get(primaryVariant.mint) : undefined;
             const marketMeta = primaryVariant ? marketMetaByMint.get(primaryVariant.mint) : undefined;
             const symbols = listSymbols(asset, tokenByMint);
-            const stats = mergeAssetStatsWithAggregates(aggregateTokenStats(asset, tokenByMint, token), aggregates);
+            const stats = mergeAssetStatsWithAggregates(
+                aggregateTokenStats(asset, tokenByMint, token, assessTokenMarkets(asset, tokenByMint, null, Date.now())),
+                aggregates,
+            );
             const imageUrl = resolveAssetImageUrl(request, {
                 assetId: asset.assetId,
                 symbol: asset.symbol ?? assetDoc?.symbol ?? null,

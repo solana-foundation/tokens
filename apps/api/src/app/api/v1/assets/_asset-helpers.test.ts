@@ -5,6 +5,7 @@ import { __setAdvisoriesForTests } from '@/lib/advisories';
 
 import {
     aggregateTokenStats,
+    assessTokenMarkets,
     computeCompanyMarketCapUsd,
     computePreStocksDerived,
     isCanonicalPublicEquityAsset,
@@ -249,6 +250,24 @@ describe('aggregate token stats', () => {
 
         expect(stats?.price).toBe(100);
         expect(stats?.priceChange24hPercent).toBe(5);
+    });
+
+    it('a row the quality guard excludes contributes neither price nor market cap, even as primary', () => {
+        const NOW = 1_800_000_000_000;
+        const good = makeToken('good', { price: 386, liquidity: 4_000_000, volume24hUSD: 2_000_000, marketCap: 90_000_000, lastFetchedAt: NOW });
+        const junk = makeToken('junk', { price: 15_192, liquidity: 11, volume24hUSD: 40, marketCap: 739_000_000, lastFetchedAt: NOW });
+        const asset = makeAsset(['good', 'junk']);
+        const tokens = new Map([
+            ['good', good],
+            ['junk', junk],
+        ]);
+        const quality = assessTokenMarkets(asset, tokens, { priceUsd: 386 }, NOW);
+        expect(quality.get('junk')?.included).toBe(false);
+        const stats = aggregateTokenStats(asset, tokens, junk, quality);
+        expect(stats?.price).toBe(386);
+        expect(stats?.marketCap).toBe(90_000_000);
+        // Without the guard the junk row owns the headline.
+        expect(aggregateTokenStats(asset, tokens, junk)?.marketCap).toBe(829_000_000);
     });
 
     it('falls back to volume-weighted price when no variants have liquidity', () => {

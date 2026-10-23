@@ -747,6 +747,21 @@ describe('refresh-v2-evm-variant-markets', () => {
         expect(birdeyeOverviewToV2Upsert('base', '0xabc', { symbol: '', name: 'x' }, NOW)).toBeNull();
     });
 
+    test('empty rows get the slower cutoff; both cutoffs derive from the run start', async () => {
+        const calls: Array<{ beforeOverviewFetchedAt: number; beforeEmptyFetchedAt?: number }> = [];
+        const repo = fakeRepo({
+            async listStaleActiveVariantsByChains(_chains, cutoffs) {
+                calls.push(cutoffs);
+                return [];
+            },
+        });
+        await refreshEvmVariantMarkets(deps(repo), { chains: ['base'], minAgeMs: 900_000, emptyMinAgeMs: 3_600_000 });
+        expect(calls[0]).toEqual({ beforeOverviewFetchedAt: NOW - 900_000, beforeEmptyFetchedAt: NOW - 3_600_000 });
+        // emptyMinAgeMs never undercuts minAgeMs.
+        await refreshEvmVariantMarkets(deps(repo), { chains: ['base'], minAgeMs: 900_000, emptyMinAgeMs: 60_000 });
+        expect(calls[1]).toEqual({ beforeOverviewFetchedAt: NOW - 900_000, beforeEmptyFetchedAt: NOW - 900_000 });
+    });
+
     test('refreshes per chain, touches misses, and reports byChain', async () => {
         const repo = fakeRepo({
             async listStaleActiveVariantsByChains(chains) {

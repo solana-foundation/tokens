@@ -125,6 +125,8 @@ export function v1MarketToV2Market(market: Record<string, unknown>): V2Market {
         lastTradeAt: finiteOrNull(market.lastTradeAt),
         asOf: finiteOrNull(market.asOf),
         lastFetchedAt: finiteOrNull(market.lastFetchedAt),
+        // v1 rows are not assessed; the page treats them as included.
+        quality: { included: true, reasons: [] },
     };
 }
 

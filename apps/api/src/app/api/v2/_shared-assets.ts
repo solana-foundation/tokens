@@ -15,6 +15,15 @@
  * through a key adapter: the registry's mint-keyed ranking / aggregation is fed
  * variants whose `mint` is the variant key, so nothing in the package changes.
  */
+import {
+    INCLUDED_MARKET_QUALITY,
+    assessMarkets,
+    countExcludedReasons,
+    emptyExcludedByQuality,
+    type ExcludedByQuality,
+    type MarketQuality,
+    type MarketQualityInput,
+} from '../v1/assets/_market-quality';
 import { Effect } from 'effect';
 
 import {
@@ -151,6 +160,8 @@ export type V2Market = {
     asOf: number | null;
     /** Our fetch. */
     lastFetchedAt: number | null;
+    /** Whether this row entered the asset's sums and averages, and why not (stale / dust / price_outlier). */
+    quality: MarketQuality;
 };
 
 export type V2Advisory = {
@@ -249,6 +260,9 @@ export type V2ChainStats = {
     issuedVariantCount: number;
     /** Variants left out of supply / market cap on this chain, by issuance class. */
     excludedByIssuance: V2ExcludedByIssuance;
+    /** Variants whose market row failed the quality guard and left every sum on this chain. */
+    excludedCount: number;
+    excludedByQuality: ExcludedByQuality;
 };
 
 export type V2Aggregate = V2ChainStats & {
@@ -664,7 +678,10 @@ export function variantIssuanceByKey(
     return out;
 }
 
-export function toV2Market(snapshot: VariantMarketSnapshotResult | null | undefined): V2Market | null {
+export function toV2Market(
+    snapshot: VariantMarketSnapshotResult | null | undefined,
+    quality: MarketQuality = INCLUDED_MARKET_QUALITY,
+): V2Market | null {
     if (!snapshot) return null;
     const metricsSource = snapshot.metricsSource ?? null;
     return {
@@ -688,7 +705,34 @@ export function toV2Market(snapshot: VariantMarketSnapshotResult | null | undefi
         lastTradeAt: toFiniteNumberOrNull(snapshot.lastTradeAt),
         asOf: toFiniteNumberOrNull(snapshot.asOf),
         lastFetchedAt: toFiniteNumberOrNull(snapshot.lastFetchedAt),
+        quality: { included: quality.included, reasons: [...quality.reasons] },
     };
+}
+
+/** Quality verdict per variant key for an asset's market rows (see `_market-quality.ts`). */
+export function assessVariantMarkets(
+    variants: ReadonlyArray<Pick<V2VariantResult, 'key' | 'chain'>>,
+    marketByKey: ReadonlyMap<VariantKey, VariantMarketSnapshotResult>,
+    reference: { priceUsd: number | null | undefined } | null,
+    nowMs: number,
+): Map<VariantKey, MarketQuality> {
+    const rows: MarketQualityInput[] = [];
+    const seen = new Set<VariantKey>();
+    for (const variant of variants) {
+        if (seen.has(variant.key)) continue;
+        seen.add(variant.key);
+        const market = marketByKey.get(variant.key);
+        if (!market) continue;
+        rows.push({
+            key: variant.key,
+            chain: variant.chain,
+            price: market.price,
+            liquidity: market.liquidity,
+            volume24hUSD: market.volume24hUSD,
+            lastFetchedAt: market.lastFetchedAt,
+        });
+    }
+    return assessMarkets(rows, reference, nowMs) as Map<VariantKey, MarketQuality>;
 }
 
 export function toV2Advisory(advisory: VariantAdvisory | null | undefined): V2Advisory | null {
@@ -769,6 +813,8 @@ export function computeChainStats(
     variants: ReadonlyArray<Pick<V2VariantResult, 'chain' | 'address' | 'key' | 'kind' | 'tags'>>,
     marketByKey: ReadonlyMap<VariantKey, VariantMarketSnapshotResult>,
     rollupByChain: ReadonlyMap<ChainId, V2ChainRollupResult> | null,
+    /** From `assessVariantMarkets`; excluded rows leave every sum (they still count in `variantCount`). */
+    qualityByKey?: ReadonlyMap<VariantKey, MarketQuality>,
     /** From `variantIssuanceByKey(variants, asset.category)`; computed category-blind when absent. */
     issuanceByKey?: ReadonlyMap<VariantKey, VariantIssuance>,
 ): Partial<Record<ChainId, V2ChainStats>> {
@@ -788,8 +834,17 @@ export function computeChainStats(
             variantCount: 0,
             issuedVariantCount: 0,
             excludedByIssuance: { bridged: 0, wrapped: 0, derivative: 0 },
+            excludedCount: 0,
+            excludedByQuality: emptyExcludedByQuality(),
         };
         entry.variantCount += 1;
+        byChain.set(variant.chain, entry);
+        const quality = qualityByKey?.get(variant.key);
+        if (quality && !quality.included) {
+            entry.excludedCount += 1;
+            countExcludedReasons(entry.excludedByQuality, quality);
+            continue;
+        }
         const market = marketByKey.get(variant.key);
         entry.liquidity = addFinite(entry.liquidity, market?.liquidity);
         entry.volume24hUSD = addFinite(entry.volume24hUSD, market?.volume24hUSD);
@@ -803,7 +858,6 @@ export function computeChainStats(
         } else {
             entry.excludedByIssuance[variantIssuanceClass] += 1;
         }
-        byChain.set(variant.chain, entry);
     }
     const out: Partial<Record<ChainId, V2ChainStats>> = {};
     for (const chain of CHAIN_KINDS) {
@@ -830,6 +884,8 @@ export function aggregateChainStats(chainStats: Partial<Record<ChainId, V2ChainS
         variantCount: 0,
         issuedVariantCount: 0,
         excludedByIssuance: { bridged: 0, wrapped: 0, derivative: 0 },
+        excludedCount: 0,
+        excludedByQuality: emptyExcludedByQuality(),
         chainCount: 0,
         excludedFromSupplyCount: 0,
     };
@@ -838,10 +894,16 @@ export function aggregateChainStats(chainStats: Partial<Record<ChainId, V2ChainS
         out.chainCount += 1;
         out.variantCount += entry.variantCount;
         out.issuedVariantCount += entry.issuedVariantCount;
-        out.excludedFromSupplyCount += entry.variantCount - entry.issuedVariantCount;
+        // Issuance only: rows the quality guard dropped are in excludedCount, not here.
+        out.excludedFromSupplyCount +=
+            entry.excludedByIssuance.bridged + entry.excludedByIssuance.wrapped + entry.excludedByIssuance.derivative;
         out.excludedByIssuance.bridged += entry.excludedByIssuance.bridged;
         out.excludedByIssuance.wrapped += entry.excludedByIssuance.wrapped;
         out.excludedByIssuance.derivative += entry.excludedByIssuance.derivative;
+        out.excludedCount += entry.excludedCount;
+        out.excludedByQuality.stale += entry.excludedByQuality.stale;
+        out.excludedByQuality.dust += entry.excludedByQuality.dust;
+        out.excludedByQuality.priceOutlier += entry.excludedByQuality.priceOutlier;
         out.liquidity = addFinite(out.liquidity, entry.liquidity);
         out.volume24hUSD = addFinite(out.volume24hUSD, entry.volume24hUSD);
         out.trade24h = addFinite(out.trade24h, entry.trade24h);
@@ -909,6 +971,8 @@ export interface V2AssetBuildContext {
     rank: number | null;
     /** Requested `include=` enrichments; absent = no enrichment keys on the variants. */
     enrichments?: V2EnrichmentInputs;
+    /** Clock for the freshness guard; absent = Date.now(). */
+    nowMs?: number;
 }
 
 /** Inputs for the `include=` enrichments (mint-keyed: these pipelines are Solana-only today). */
@@ -1143,19 +1207,7 @@ export function buildV2Asset(ctx: V2AssetBuildContext): V2Asset | null {
         if (winner) primaryByChain[chain] = winner;
     }
 
-    // Stats: v1's aggregation over every chain, liquidity / volume from the chain stats
-    // (worker rollup for Solana), then the v1 headline selection against the reference.
     const issuanceByKey = variantIssuanceByKey(visible, asset.category);
-    const chainStats = computeChainStats(visible, ctx.marketByKey, ctx.rollupByChain, issuanceByKey);
-    const aggregate = aggregateChainStats(chainStats);
-    const primaryToken = primary ? tokenByKey.get(primary.mint) : undefined;
-    const solanaRollup = ctx.rollupByChain?.get('solana') ?? null;
-    const onChainStats = headlineOnChainStats(
-        aggregateTokenStats(canonical, tokenByKey, primaryToken),
-        aggregate,
-        solanaRollup?.volume30dUSD ?? null,
-    );
-
     const preStocksMints = selectPreStocksMints(visible.filter(v => v.chain === 'solana').map(v => v.address));
     const preStocksMarket =
         preStocksMints.length > 0
@@ -1168,6 +1220,30 @@ export function buildV2Asset(ctx: V2AssetBuildContext): V2Asset | null {
     const usesStockMarket = stockInstrument !== null || (isCanonicalPublicEquityAsset(canonical) && !preStocksMarket);
     const coinId = normalizeCoinGeckoCoinIdForAsset({ assetId: asset.assetId, coinId: asset.coingeckoId }) ?? '';
     const stockSnapshot = ctx.stockPrice;
+
+    // Quality guard: which rows may enter the sums and averages. The anchor is the
+    // reference price when it is in the token's units (CoinGecko for crypto, the
+    // stock price for a share-per-token equity), else the rows' weighted median.
+    const qualityReference = usesStockMarket
+        ? isCanonicalPublicEquityAsset(canonical)
+            ? { priceUsd: stockSnapshot?.priceUsd ?? null }
+            : null
+        : coinId
+          ? { priceUsd: ctx.coingeckoPrice?.priceUsd ?? null }
+          : null;
+    const qualityByKey = assessVariantMarkets(visible, ctx.marketByKey, qualityReference, ctx.nowMs ?? Date.now());
+
+    // Stats: v1's aggregation over every chain, liquidity / volume from the chain stats
+    // (worker rollup for Solana), then the v1 headline selection against the reference.
+    const chainStats = computeChainStats(visible, ctx.marketByKey, ctx.rollupByChain, qualityByKey, issuanceByKey);
+    const aggregate = aggregateChainStats(chainStats);
+    const primaryToken = primary ? tokenByKey.get(primary.mint) : undefined;
+    const solanaRollup = ctx.rollupByChain?.get('solana') ?? null;
+    const onChainStats = headlineOnChainStats(
+        aggregateTokenStats(canonical, tokenByKey, primaryToken, qualityByKey),
+        aggregate,
+        solanaRollup?.volume30dUSD ?? null,
+    );
     const stats = selectCanonicalAssetStats({
         coingecko: usesStockMarket ? null : coinId ? ctx.coingeckoPrice : null,
         stock: stockSnapshot
@@ -1251,7 +1327,7 @@ export function buildV2Asset(ctx: V2AssetBuildContext): V2Asset | null {
             advisory: toV2Advisory(advisoryForVariant(variant, ctx.advisoriesByMint)),
             rank: rankByKey.get(variant.key) ?? 0,
             explorerUrl: explorerTokenUrl(variant.chain, variant.address),
-            market: toV2Market(market),
+            market: toV2Market(market, qualityByKey.get(variant.key)),
             coingeckoId: variant.coingeckoId,
             reference: variantReference(variant),
             ...variantEnrichments(variant, ctx.enrichments, ctx.preStocksByMint, market?.price),

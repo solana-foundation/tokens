@@ -57,7 +57,8 @@ interface V2Market {
     priceChange24hPercent: number | null;
     lastTradeAt: number | null;
     asOf: number | null;          // provider timestamp
-    lastFetchedAt: number | null; // our fetch
+    lastFetchedAt: number | null; // our fetch (last successful provider write)
+    quality: { included: boolean; reasons: Array<'stale' | 'dust' | 'price_outlier'> }; // did this row enter the sums
 }
 
 interface V2Advisory {
@@ -161,6 +162,8 @@ interface V2ChainStats {
     variantCount: number;
     issuedVariantCount: number;       // variants counted toward supply / market cap
     excludedByIssuance: { bridged: number; wrapped: number; derivative: number };
+    excludedCount: number;            // rows that failed the quality guard and left every sum
+    excludedByQuality: { stale: number; dust: number; priceOutlier: number };
 }
 
 interface V2Aggregate extends V2ChainStats {
@@ -269,7 +272,14 @@ Reading the numbers:
   the asset has some other deployment: when every variant of an asset is a yield / ETF /
   leveraged / basket token (a standalone treasury fund, a leveraged ETF registered on its own)
   those variants are the asset and count as `native`; a commodity is the exception, since an ETF
-  share is never the metal. `chainStats.solana` is the number
+  share is never the metal.
+  Before any of that, a market row has to pass the quality guard:
+  not stale (last successful provider write within 2 h on Solana / 3 h on EVM), not dust (liquidity
+  and 24h volume both under $1k, unless nothing else survives), and priced within 25% of the
+  reference price (CoinGecko, or the stock price for one-share-per-token equities) or, without one,
+  of the surviving rows' liquidity-weighted median. A failing row leaves every sum and average
+  (market cap and supply included) and says so in `variants[].market.quality`; `excludedCount` and
+  `excludedByQuality` count them per chain and in aggregate. `chainStats.solana` is the number
   v1 reported.
 - `aggregate` is the sum of `chainStats` across chains. `stats` is the headline view: price, market
   cap and supply come from `referenceMarket` when there is one (CoinGecko for crypto, the stock

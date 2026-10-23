@@ -185,12 +185,13 @@ export interface V2AssetsJobsRepo {
 
     /**
      * Distinct (chain, address) of active variants on active, non-tombstoned
-     * assets whose v2 market snapshot is missing or older than the cutoff,
+     * assets whose v2 market snapshot is missing or older than the cutoff
+     * (`beforeEmptyFetchedAt` for rows whose last Birdeye answer was empty),
      * stalest first. Excludes the EIP-7528 native address.
      */
     listStaleActiveVariantsByChains(
         chains: readonly ChainKind[],
-        beforeOverviewFetchedAt: number,
+        cutoffs: { beforeOverviewFetchedAt: number; beforeEmptyFetchedAt?: number },
         limit: number,
     ): Promise<V2VariantKeyRef[]>;
     upsertVariantMarketFromBirdeye(args: V2VariantMarketUpsert): Promise<void>;
@@ -826,6 +827,8 @@ export async function syncEvmVariants(deps: V2AssetsCronDeps, rawArgs: unknown):
 const EVM_MARKETS_ARG_SPECS = {
     maxVariants: { kind: 'int', fallback: 250, min: 1, max: 1_000 },
     minAgeMs: { kind: 'int', fallback: 10 * 60_000, min: 0, max: 24 * 60 * 60_000 },
+    /** Minimum age for rows whose last Birdeye answer was empty (dead deployments); defaults to 1h. */
+    emptyMinAgeMs: { kind: 'int', fallback: 60 * 60_000, min: 0, max: 24 * 60 * 60_000 },
     concurrency: { kind: 'int', fallback: 2, min: 1, max: 5 },
     delayMs: { kind: 'int', fallback: 150, min: 0, max: 5_000 },
     budgetMs: { kind: 'int', fallback: 500_000, min: 0, max: 3_600_000 },
@@ -895,7 +898,11 @@ export async function refreshEvmVariantMarkets(deps: V2AssetsCronDeps, rawArgs: 
     const args = await Effect.runPromise(decodeJobArgs(EVM_MARKETS_ARG_SPECS, rawArgs ?? {}));
     const start = deps.now();
 
-    const refs = await deps.repo.listStaleActiveVariantsByChains(chains, start - args.minAgeMs, args.maxVariants);
+    const refs = await deps.repo.listStaleActiveVariantsByChains(
+        chains,
+        { beforeOverviewFetchedAt: start - args.minAgeMs, beforeEmptyFetchedAt: start - Math.max(args.minAgeMs, args.emptyMinAgeMs) },
+        args.maxVariants,
+    );
     let refreshed = 0;
     let softFailed = 0;
     let noClient = 0;

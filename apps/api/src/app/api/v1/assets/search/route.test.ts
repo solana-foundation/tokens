@@ -68,7 +68,7 @@ function marketFor(mint: string, price: number) {
         marketCap: 10_000_000,
         priceChange24hPercent: 1.5,
         priceChange1hPercent: null,
-        lastFetchedAt: NOW,
+        lastFetchedAt: Date.now(),
     };
 }
 

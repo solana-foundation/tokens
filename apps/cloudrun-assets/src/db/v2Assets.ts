@@ -536,12 +536,17 @@ export function makePostgresV2AssetsJobsRepo(sql: Sql): V2AssetsJobsRepo {
             return rows.length;
         },
 
-        async listStaleActiveVariantsByChains(chains, beforeOverviewFetchedAt, limit) {
+        async listStaleActiveVariantsByChains(chains, cutoffs, limit) {
             if (chains.length === 0) return [];
             // One row per (chain, address) — the same address can back several
             // assets — whose market snapshot is missing or older than the cutoff.
+            // Rows whose last answer from Birdeye was empty (last_empty_at at or
+            // after the last successful write) use the slower `empty` cutoff so
+            // dead deployments stop crowding out rows with data.
             // Stalest first so a capped batch always makes progress through the
             // tail; curated rank only breaks ties (e.g. between never-fetched rows).
+            const beforeOverviewFetchedAt = cutoffs.beforeOverviewFetchedAt;
+            const beforeEmptyFetchedAt = cutoffs.beforeEmptyFetchedAt ?? cutoffs.beforeOverviewFetchedAt;
             const rows = await sql<{ chain: string; address: string }[]>`
                 WITH candidates AS (
                     SELECT v.chain, v.address,
@@ -572,7 +577,11 @@ export function makePostgresV2AssetsJobsRepo(sql: Sql): V2AssetsJobsRepo {
                 FROM candidates c
                 LEFT JOIN v2_variant_markets_latest m ON m.chain = c.chain AND m.address = c.address
                 WHERE m.overview_last_fetched_at IS NULL
-                   OR m.overview_last_fetched_at < ${beforeOverviewFetchedAt}
+                   OR m.overview_last_fetched_at < CASE
+                        WHEN m.last_empty_at IS NOT NULL AND m.last_empty_at >= coalesce(m.last_fetched_at, 0)
+                        THEN ${beforeEmptyFetchedAt}
+                        ELSE ${beforeOverviewFetchedAt}
+                      END
                 ORDER BY m.overview_last_fetched_at ASC NULLS FIRST,
                          c.slug_rank ASC NULLS LAST,
                          c.rank ASC NULLS LAST,
@@ -680,12 +689,19 @@ export function makePostgresV2AssetsJobsRepo(sql: Sql): V2AssetsJobsRepo {
         },
 
         async touchVariantMarket(chain, address, lastFetchedAt) {
+            // A touch records the attempt (overview_last_fetched_at) and that it came
+            // back empty (last_empty_at); last_fetched_at stays where the last successful
+            // write left it so "last successful write" remains readable from the row.
             await sql`
-                INSERT INTO v2_variant_markets_latest (chain, address, source, last_fetched_at, overview_last_fetched_at, origin)
-                VALUES (${chain}, ${address}, 'touch', ${lastFetchedAt}, ${lastFetchedAt}, 'birdeye')
+                INSERT INTO v2_variant_markets_latest (chain, address, source, last_fetched_at, overview_last_fetched_at, last_empty_at, origin)
+                VALUES (${chain}, ${address}, 'touch', ${lastFetchedAt}, ${lastFetchedAt}, ${lastFetchedAt}, 'birdeye')
                 ON CONFLICT (chain, address) DO UPDATE SET
-                    last_fetched_at = EXCLUDED.last_fetched_at,
                     overview_last_fetched_at = EXCLUDED.overview_last_fetched_at,
+                    last_empty_at = EXCLUDED.last_empty_at,
+                    last_fetched_at = CASE
+                        WHEN v2_variant_markets_latest.source = 'touch' THEN EXCLUDED.last_fetched_at
+                        ELSE v2_variant_markets_latest.last_fetched_at
+                    END,
                     updated_at = now()
                 WHERE v2_variant_markets_latest.origin = 'birdeye'
             `;

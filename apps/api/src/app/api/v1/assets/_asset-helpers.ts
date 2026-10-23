@@ -1,4 +1,10 @@
 import {
+    assessMarkets,
+    type MarketQuality,
+    type MarketQualityInput,
+    type MarketQualityReference,
+} from './_market-quality';
+import {
     STOCK_VARIANT_TIERS,
     classifyLiquidityTier,
     pickPrimaryVariantWithRanking,
@@ -65,6 +71,8 @@ export interface TokenMarketSnapshot {
     circulatingSupply: number | null;
     lastTradeAt?: number | null;
     asOf?: number | null;
+    /** ms epoch of the last successful provider write (the quality guard's staleness input). */
+    lastFetchedAt?: number | null;
 }
 
 export interface VariantExecutionQualitySnapshot {
@@ -389,7 +397,35 @@ export function tokenMarketSnapshotFromConvexMarket(address: string, market: obj
         circulatingSupply: toFiniteNumberOrNull(fields.circulatingSupply),
         lastTradeAt: toFiniteNumberOrNull(fields.lastTradeAt),
         asOf: toFiniteNumberOrNull(fields.asOf),
+        lastFetchedAt: toFiniteNumberOrNull(fields.lastFetchedAt),
     };
+}
+
+/**
+ * Quality verdict per Solana mint of a v1 asset (see `_market-quality.ts`).
+ * `reference` is the asset's off-chain price in the token's units when the
+ * caller has one (CoinGecko, or the stock price for a share-per-token equity).
+ */
+export function assessTokenMarkets(
+    asset: Pick<CanonicalAsset, 'variants'>,
+    tokenByMint: ReadonlyMap<string, TokenMarketSnapshot>,
+    reference: MarketQualityReference | null,
+    nowMs: number,
+): Map<string, MarketQuality> {
+    const rows: MarketQualityInput[] = [];
+    for (const variant of asset.variants) {
+        const token = tokenByMint.get(variant.mint);
+        if (!token) continue;
+        rows.push({
+            key: variant.mint,
+            chain: 'solana',
+            price: token.price,
+            liquidity: token.liquidity,
+            volume24hUSD: token.volume24hUSD,
+            lastFetchedAt: token.lastFetchedAt ?? null,
+        });
+    }
+    return assessMarkets(rows, reference, nowMs);
 }
 
 export function executionQualitySnapshotFromConvexFillQuality(
@@ -706,11 +742,14 @@ export function aggregateTokenStats(
     asset: CanonicalAsset,
     tokenByMint: ReadonlyMap<string, TokenMarketSnapshot>,
     primaryToken: TokenMarketSnapshot | undefined,
+    /** From `assessTokenMarkets`; rows marked excluded leave every sum and average. Absent = everything counts. */
+    qualityByMint?: ReadonlyMap<string, MarketQuality>,
 ): AssetStats | null {
     const spotLikeVariants = asset.variants.filter(v => isSpotLikeKind(v.kind));
     const variants = spotLikeVariants.length > 0 ? spotLikeVariants : asset.variants;
+    const included = (mint: string) => qualityByMint?.get(mint)?.included !== false;
 
-    const base = tokenToStats(primaryToken) ?? {
+    const base = tokenToStats(primaryToken && included(primaryToken.address) ? primaryToken : undefined) ?? {
         price: null,
         liquidity: null,
         volume24hUSD: null,
@@ -739,7 +778,7 @@ export function aggregateTokenStats(
 
     for (const variant of variants) {
         const token = tokenByMint.get(variant.mint);
-        if (!token) continue;
+        if (!token || !included(variant.mint)) continue;
         tokensForWeightedStats.push(token);
 
         for (const key of Object.keys(totals) as Array<keyof typeof totals>) {

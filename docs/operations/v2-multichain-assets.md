@@ -202,13 +202,22 @@ chain's outage cannot hide behind a healthy one.
 | `chains`      | markets-capable | EVM ids    | subset of chain ids; `solana` is rejected            |
 | `maxVariants` | 250             | 1–1000     | (chain, address) pairs per run                       |
 | `minAgeMs`    | 600000          | 0–86400000 | skip rows fetched more recently than this            |
+| `emptyMinAgeMs` | 3600000       | 0–86400000 | same, for rows whose last Birdeye answer was empty (never below `minAgeMs`) |
 | `concurrency` | 2               | 1–5        | pool lanes (the Birdeye key is shared with v1 crons) |
 | `delayMs`     | 150             | 0–5000     | pacing between items                                 |
 | `budgetMs`    | 500000          | 0–3600000  | whole-run deadline; 0 = none                         |
 
-Schedule: prd `7-59/15 * * * *` with `minAgeMs 900000` and `maxVariants 400`
-(every row with data about once per tick), stg `20 3 * * *`; deadline 540 s,
-no retry.
+Schedule: prd `7-59/15 * * * *` with `minAgeMs 900000`, `emptyMinAgeMs
+3600000` and `maxVariants 400` (every row with data about once per tick; the
+~200 deployments Birdeye has nothing for, mostly xStock on Arbitrum, once an
+hour), stg `20 3 * * *`; deadline 540 s, no retry.
+
+A touch (migration 0036) records the empty answer in `last_empty_at` and
+bumps `overview_last_fetched_at`, but leaves `last_fetched_at` at the last
+successful write; the selector applies `emptyMinAgeMs` to rows whose
+`last_empty_at` is at or after `last_fetched_at`. The API's quality guard
+(`market.quality`, see the v2 docs) reads the blob's `lastFetchedAt` for
+staleness: 2 h on Solana, 3 h on EVM.
 
 Every row written in one run is stamped with the run's start time, not the
 time of its own fetch, so all rows refreshed together share one
@@ -310,6 +319,10 @@ SELECT count(*) FROM v2_variant_markets_latest WHERE address LIKE '0x%' AND addr
    empty; re-run the per-chain shape SQL.
 6. Only then enable `GET /api/v2/*` consumers; the endpoints are live as soon
    as the image is, serving whatever the tables hold.
+
+Market quality + daily volume (migration 0036, `db/migrations/0036_v2_market_quality.sql`):
+apply (stg, then prd) before deploying the worker image that writes
+`last_empty_at` and the daily volume samples; the API's guard needs no DDL.
 
 Per-variant coin ids (migration 0035, `db/migrations/0035_v2_variant_coingecko_id.sql`):
 
