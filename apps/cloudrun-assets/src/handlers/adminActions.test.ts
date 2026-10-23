@@ -426,7 +426,10 @@ function makeV2JobsRepo(state: FakeState): V2AssetsJobsRepo {
         async mirrorSolanaRollups() {
             return 1;
         },
-        async listAssetsWithCoinPlatforms() {
+        async resolveVariantCoinIds() {
+            return {};
+        },
+        async listAssetCoinSources() {
             return [];
         },
         async listActiveAssets() {
@@ -467,6 +470,12 @@ function makeV2JobsRepo(state: FakeState): V2AssetsJobsRepo {
         },
         async setVariantDecimalsIfNull(chain, address, decimals) {
             state.v2DecimalsSets.push({ chain, address, decimals });
+        },
+        async rollupChainVolume30d() {
+            return { assetsWritten: 0, rowsWritten: 0 };
+        },
+        async pruneVolumeDaily() {
+            return 0;
         },
     };
 }

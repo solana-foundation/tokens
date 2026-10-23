@@ -66,6 +66,8 @@ import { getEffectiveCuratedAddresses } from '../../../_curated-addresses';
 import {
     resolveAssetImageUrl,
     aggregateTokenStats,
+    assessTokenMarkets,
+    hasExcludedMarkets,
     buildCuratedMintRank,
     buildSnapshotFromTokenMarketsDoc,
     matchRegistryAssetForDbAsset,
@@ -820,6 +822,8 @@ export const GET = route(
 
                     const merged: TokenMarketSnapshot = {
                         address: mint,
+                        // Keep the row's fetch time (else the document's) so the quality guard can still find it stale.
+                        lastFetchedAt: existing.lastFetchedAt ?? snapshot.lastFetchedAt ?? null,
                         symbol: existing.symbol && existing.symbol.trim() ? existing.symbol : snapshot.symbol,
                         name: existing.name && existing.name.trim() ? existing.name : snapshot.name,
                         decimals:
@@ -989,6 +993,14 @@ export const GET = route(
                 });
             }
 
+            /** Reference price for the quality guard: CoinGecko, or the stock price when one token is one share. */
+            function qualityReferenceForAsset(asset: CanonicalAsset): { priceUsd: number | null } | null {
+                const market = canonicalMarketForAsset(asset);
+                if (!market) return null;
+                if (market.source === 'coingecko') return { priceUsd: market.price };
+                if (market.source === 'clickhouse_stock' && isCanonicalPublicEquityAsset(asset)) return { priceUsd: market.price };
+                return null;
+            }
             function canonicalMarketForAsset(asset: CanonicalAsset) {
                 const stockInstrument = stockInstrumentByAssetId.get(asset.assetId) ?? null;
                 if (usesStockCanonicalMarket(asset)) {
@@ -1175,9 +1187,11 @@ export const GET = route(
                               const primaryTokenForStats = primaryVariantForStats
                                   ? tokenByMint.get(primaryVariantForStats.mint)
                                   : undefined;
+                              const quality = assessTokenMarkets(asset, tokenByMint, qualityReferenceForAsset(asset), Date.now());
                               const stats = mergeAssetStatsWithAggregates(
-                                  aggregateTokenStats(asset, tokenByMint, primaryTokenForStats),
+                                  aggregateTokenStats(asset, tokenByMint, primaryTokenForStats, quality),
                                   aggregates,
+                                  { keepGuardedTotals: hasExcludedMarkets(quality) },
                               );
                               const effectiveStats = applyCanonicalStats(asset, stats);
                               const canonicalMarket = canonicalMarketForAsset(asset);
@@ -1243,9 +1257,11 @@ export const GET = route(
                               const token = primaryVariant ? tokenByMint.get(primaryVariant.mint) : undefined;
                               const aggregates = aggregatesByAssetId.get(asset.assetId) ?? null;
 
+                              const quality = assessTokenMarkets(asset, tokenByMint, qualityReferenceForAsset(asset), Date.now());
                               const stats = mergeAssetStatsWithAggregates(
-                                  aggregateTokenStats(asset, tokenByMint, token),
+                                  aggregateTokenStats(asset, tokenByMint, token, quality),
                                   aggregates,
+                                  { keepGuardedTotals: hasExcludedMarkets(quality) },
                               );
                               const effectiveStats = applyCanonicalStats(asset, stats);
                               const canonicalMarket = canonicalMarketForAsset(asset);

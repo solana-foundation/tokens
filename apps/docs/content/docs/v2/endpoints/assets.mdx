@@ -57,7 +57,8 @@ interface V2Market {
     priceChange24hPercent: number | null;
     lastTradeAt: number | null;
     asOf: number | null;          // provider timestamp
-    lastFetchedAt: number | null; // our fetch
+    lastFetchedAt: number | null; // our fetch (last successful provider write)
+    quality: { included: boolean; reasons: Array<'stale' | 'dust' | 'price_outlier'> }; // did this row enter the sums
 }
 
 interface V2Advisory {
@@ -131,7 +132,7 @@ interface V2Variant extends V2VariantEnrichments {
     assetId: string;
     variantId: string;
     kind: VariantKind;
-    issuance: 'native' | 'bridged' | 'wrapped'; // drives supply / market-cap counting
+    issuance: 'native' | 'bridged' | 'wrapped' | 'derivative'; // drives supply / market-cap counting
     symbol: string | null;
     name: string | null;
     label: string | null;
@@ -147,22 +148,31 @@ interface V2Variant extends V2VariantEnrichments {
     rank: number | null;      // 0-based liquidity rank within the asset across chains; null in batch lookups
     explorerUrl: string;
     market: V2Market | null;
+    coingeckoId: string | null;        // the CoinGecko coin this deployment is (issuer / LST / wrapper); null when unlinked
+    reference: V2ReferenceMarket | null; // that coin's CoinGecko figures (source 'coingecko'); detail surfaces only
 }
 
 interface V2ChainStats {
+    price: number | null;             // liquidity-weighted average over the chain's included rows
+    priceChange24hPercent: number | null;
+    priceChange1hPercent: number | null;
     liquidity: number | null;         // summed over every variant on the chain
     volume24hUSD: number | null;      // summed over every variant on the chain
     trade24h: number | null;          // 24h trade count, summed over every variant on the chain
     marketCap: number | null;         // summed over issued (native) variants only
     fdv: number | null;
     circulatingSupply: number | null; // issued variants only
+    totalSupply: number | null;       // issued variants only
     variantCount: number;
     issuedVariantCount: number;       // variants counted toward supply / market cap
+    excludedByIssuance: { bridged: number; wrapped: number; derivative: number };
+    excludedCount: number;            // rows that failed the quality guard and left every sum
+    excludedByQuality: { stale: number; dust: number; priceOutlier: number };
 }
 
 interface V2Aggregate extends V2ChainStats {
     chainCount: number;
-    excludedFromSupplyCount: number; // bridged / wrapped variants left out of supply and market cap
+    excludedFromSupplyCount: number; // bridged / wrapped / derivative variants left out of supply and market cap
 }
 
 type V2ReferenceMarket =
@@ -209,13 +219,15 @@ interface V2AssetStats {
     price: number | null;
     liquidity: number | null;      // = aggregate.liquidity
     volume24hUSD: number | null;
-    volume30dUSD: number | null;   // Solana rolling 30d, null elsewhere
+    volume30dUSD: number | null;   // sum over the chains in the window once each has a complete one, else null
     marketCap: number | null;
     fdv: number | null;
     priceChange24hPercent: number | null;
     priceChange1hPercent: number | null;
     totalSupply: number | null;
     circulatingSupply: number | null;
+    source: Partial<Record<string, 'coingecko' | 'stock' | 'onchain'>>; // provenance per figure above
+    volume30dScope: 'all' | 'solana' | null; // what volume30dUSD covers; null while an EVM window is still accruing
 }
 
 interface V2AssetAdvisory extends V2Advisory {
@@ -257,14 +269,42 @@ interface V2Asset {
 Reading the numbers:
 
 - `chainStats.<chain>` is that chain's on-chain view. Liquidity and 24h volume are summed over
-  every variant (pools are distinct); market cap, FDV and circulating supply only over variants
-  whose `issuance` is `native` — a bridged or wrapped token is a claim on supply issued elsewhere,
-  and `excludedFromSupplyCount` tells you how many were left out. `chainStats.solana` is the number
-  v1 reported.
-- `aggregate` is the sum of `chainStats` across chains. `stats` is the headline view: price, market
-  cap and supply come from `referenceMarket` when there is one (CoinGecko for crypto, the stock
-  benchmark for mapped equities, the PreStocks mark for pre-IPO equities), with on-chain liquidity
-  and volume from `aggregate`.
+  every variant; market cap, FDV and circulating supply only over variants whose `issuance` is
+  `native` — a bridged or wrapped token is a claim on supply issued elsewhere, and a derivative
+  (liquid staking token, ETF share, leveraged or basket product) is exposure to the asset rather
+  than its supply. `excludedFromSupplyCount` tells you how many were left out and
+  `excludedByIssuance` why. Issuance is an explicit `issuance:` tag, else a curated per-deployment
+  override, else the variant kind. A derivative kind only means "derivative of this asset" when
+  the asset has some other deployment: when every variant of an asset is a yield / ETF /
+  leveraged / basket token (a standalone treasury fund, a leveraged ETF registered on its own)
+  those variants are the asset and count as `native`; a commodity is the exception, since an ETF
+  share is never the metal.
+  Before any of that, a market row has to pass the quality guard:
+  not stale (last successful provider write within 2 h on Solana / 3 h on EVM), not dust (liquidity
+  and 24h volume both under $1k, unless nothing else survives), and priced within 25% of the
+  reference price (CoinGecko, or the stock price for one-share-per-token equities) or, without one,
+  of the surviving rows' liquidity-weighted median (a derivative, such as an LST or an ETF share, is
+  not priced in the asset's units and skips that last check). A failing row leaves every sum and average
+  (market cap and supply included) and says so in `variants[].market.quality`; `excludedCount` and
+  `excludedByQuality` count them per chain and in aggregate. Liquidity and volume are the same
+  guarded variant sums on every chain (v1's Solana rollup is no longer consulted here).
+- `aggregate` is the sum of `chainStats` across chains (its averages weighted by chain liquidity):
+  the one on-chain figure, guarded and issuance-aware. `stats` is the reference-first headline:
+  price, market cap, FDV, 24h change and supply come from `referenceMarket` when there is one
+  (CoinGecko for crypto, the stock feed for one-share-per-token equities and ETFs), liquidity, DEX
+  volume, trades and the 1h change from `aggregate`, and anything the reference lacks falls through
+  to `aggregate`. For an equity the market cap is the company's and `fdv` is null (the tokenized
+  float is `aggregate.marketCap`); supply is the tokenized issued supply. `stats.source` says where
+  each figure came from (`coingecko` | `stock` | `onchain`). A native coin's home-chain row (ETH on
+  Ethereum) has no pool; it carries the reference's supply so `chainStats.ethereum` is not empty.
+  `volume30dUSD` sums each chain's 30-day DEX volume (Solana from candles, EVM from daily
+  Birdeye samples over the 30 completed UTC days) over the chains in the window (traded in the
+  last 24h, or with accepted volume in the window: a pool quiet today still counts its month) and
+  is null until every such chain has at least 28 sampled days for each variant that matters to
+  its total, refreshed within 48 h; rows the
+  quality guard rejects are left out of it, as they are of the 24h figure (Solana keeps v1's candle
+  figure until its own per-mint samples cover the window);
+  `volume30dScope` says whether it covers every chain or Solana alone.
 - `referenceMarket` is the off-chain reference v1 called `canonicalMarket`; `source: "stock"`
   replaces v1's `clickhouse_stock`. Consumers with an exhaustive `switch (source)` should keep a
   default branch.
@@ -279,7 +319,8 @@ Reading the numbers:
   chain, so treat cross-chain comparisons as approximate. `primaryVariantSelection` reports the pool
   and the deciding rule. A variant with no market data never outranks one that trades.
   `primaryVariantByChain` runs the same ranking inside each chain. `compromised` and `blocked`
-  variants are never chosen.
+  variants are skipped while a safe sibling exists; when every candidate is flagged the least-bad
+  flagged variant is returned rather than none.
 - Advisories are keyed by Solana mint today; EVM variants always carry `advisory: null`. See
   [Asset by ID → Advisories](/docs/v1/endpoints/asset-by-id#advisories) for semantics.
 - `symbol` / `name` / `issuer` are always present (`null` when unknown) rather than optional keys as
@@ -326,8 +367,9 @@ names them); an asset whose variants are all blocked is dropped from the list. T
 serves them.
 
 If the data layer is unavailable the endpoint returns the last healthy payload for the same
-params (up to 15 minutes old) with a `200`; use `market.lastFetchedAt` / `referenceMarket.asOf`
-as the freshness signal.
+params (up to 15 minutes old) with a `200`; use `market.lastFetchedAt` (our last successful
+provider write; `market.asOf` is only set for ClickHouse-sourced Solana rows) and
+`referenceMarket.asOf` as the freshness signal.
 
 ### Example
 

@@ -157,23 +157,13 @@ const UNLISTED_STOCK_MINTS: string[] = [
     ...ONDO_STOCK_MINTS_20260618,
 ];
 
-function mapXstockGroupToCoinGeckoId(group: {
-    id: string;
-    addresses: Array<{ label?: string | null }>;
-}): string | null {
-    if (!group.id.startsWith('xstock-')) return null;
-    const slug = group.id.slice('xstock-'.length).trim();
-    if (!slug) return null;
-
-    const labels = group.addresses.map(a => (a.label ?? '').trim().toLowerCase());
-    const hasXstock = labels.includes('xstock');
-
-    // Only emit a CoinGecko ID when the group includes an xStock variant.
-    // Ondo-only groups have inconsistent CoinGecko IDs (and some aren't listed),
-    // so they should be resolved at runtime when needed.
-    return hasXstock ? `${slug}-xstock` : null;
-}
-
+/**
+ * xStock groups carry no CoinGecko id in the registry. The old `${slug}-xstock`
+ * convention produced ids that do not exist for a third of the catalog (and
+ * for ~45 names CoinGecko has no xStock coin at all, only Ondo / Backpack /
+ * bStocks issues). `assets.coingecko_id` is resolved against CoinGecko by the
+ * worker's `validate-coingecko-ids` job (by Solana mint) and by admin edits.
+ */
 function mapXstockGroupIdToAssetId(groupId: string): string | null {
     if (!groupId.startsWith('xstock-')) return null;
     // Avoid collisions with real CoinGecko crypto IDs (e.g. `sui`).
@@ -229,7 +219,6 @@ function buildXstockGroupAssets(): CanonicalAsset[] {
         if (SUPPRESSED_XSTOCK_GROUP_IDS.has(group.id)) continue;
         const assetId = mapXstockGroupIdToAssetId(group.id) ?? group.id;
         const name = group.label.replace(/\s+variants$/i, '').trim();
-        const coingeckoId = mapXstockGroupToCoinGeckoId(group) ?? undefined;
         const symbol = EQUITY_TICKER_BY_SLUG[assetId] ?? undefined;
 
         const variantsByMint = new Map<string, AssetVariant>();
@@ -255,7 +244,6 @@ function buildXstockGroupAssets(): CanonicalAsset[] {
             group.id,
             name,
             ...(symbol ? [symbol] : []),
-            ...(coingeckoId ? [coingeckoId] : []),
             ...variants.flatMap(v => [v.mint]),
         ]);
 
@@ -265,7 +253,6 @@ function buildXstockGroupAssets(): CanonicalAsset[] {
             ...(symbol ? { symbol } : {}),
             category: 'equity',
             aliases,
-            coingeckoId,
             variants,
         });
     }

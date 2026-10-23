@@ -127,6 +127,9 @@ export function buildAssetFromDetail(params: {
         rollupByChain: rollupsByAssetFrom(detail.chainRollups).get(detail.asset.assetId) ?? null,
         advisoriesByMint: params.advisoriesByMint,
         coingeckoPrice: detail.coingeckoPrice?.snapshot ?? null,
+        variantCoingeckoPriceByCoinId: new Map(
+            (detail.variantCoingeckoPrices ?? []).map(entry => [entry.coinId, entry.snapshot] as const),
+        ),
         stockInstrument: detail.stockInstrument?.instrument ?? null,
         stockPrice: detail.stockPrice?.snapshot ?? null,
         preStocksByMint: params.preStocksByMint,

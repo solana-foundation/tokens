@@ -5,7 +5,7 @@ import { ArrowUpRight } from 'lucide-react';
 import { connection } from 'next/server';
 
 import type { AssetCategory, CanonicalAsset, VariantHub } from '@tokens/asset-registry';
-import { getVariantHubById } from '@tokens/asset-registry';
+import { getVariantHubById, issuanceFromKind } from '@tokens/asset-registry';
 import { CHAINS, CHAIN_KINDS, explorerTokenUrl, type ChainKind } from '@tokens/asset-registry/chains';
 import { Skeleton } from '@tokens/ui/skeleton';
 
@@ -142,7 +142,7 @@ function registryVariantToPageVariant(
         assetId: asset.assetId,
         variantId: variant.variantId,
         kind: variant.kind,
-        issuance: variant.kind === 'bridged' ? 'bridged' : variant.kind === 'wrapped' ? 'wrapped' : 'native',
+        issuance: issuanceFromKind(variant.kind),
         symbol: variant.symbol ?? null,
         name: variant.name ?? null,
         label: variant.label ?? null,
@@ -159,6 +159,8 @@ function registryVariantToPageVariant(
         rank: null,
         explorerUrl: explorerTokenUrl('solana', variant.mint),
         market: null,
+        coingeckoId: null,
+        reference: null,
     };
     return toAssetPageVariant(v2, { symbol: asset.symbol, name: asset.name });
 }
@@ -398,6 +400,7 @@ function buildCanonicalStatsMarket(
             totalSupply: pickFiniteNumber(stats?.totalSupply, null),
             circulatingSupply: pickFiniteNumber(stats?.circulatingSupply, null),
             priceChange24hPercent: pickFiniteNumber(stats?.priceChange24hPercent, null),
+            ...(stats?.source ? { statsSource: stats.source } : {}),
         };
     }
 
@@ -440,78 +443,24 @@ function buildCanonicalStatsMarket(
         totalSupply: pickFiniteNumber(stats?.totalSupply, null),
         circulatingSupply: pickFiniteNumber(stats?.circulatingSupply, null),
         priceChange24hPercent: pickFiniteNumber(stats?.priceChange24hPercent, referenceMarket?.priceChange24hPercent),
+        ...(stats?.source ? { statsSource: stats.source } : {}),
     };
 }
 
-function AssetStatsSectionWithData({
-    assetId,
-    coingeckoId,
-    enableCoinGeckoFallback,
-    market,
-    mode,
-    chainLabel,
-    chainList,
-}: {
-    assetId: string;
-    coingeckoId: string | null;
-    enableCoinGeckoFallback: boolean;
-    market: ComponentProps<typeof AssetStatsSection>['market'];
-    mode: ComponentProps<typeof AssetStatsSection>['mode'];
-    chainLabel: string;
-    chainList: string;
-}) {
-    return (
-        <Suspense
-            fallback={
-                <AssetStatsSection
-                    market={market}
-                    globalStats={null}
-                    mode={mode}
-                    chainLabel={chainLabel}
-                    chainList={chainList}
-                />
-            }
-        >
-            <AssetStatsSectionWithDataLoader
-                assetId={assetId}
-                coingeckoId={coingeckoId}
-                enableCoinGeckoFallback={enableCoinGeckoFallback}
-                market={market}
-                mode={mode}
-                chainLabel={chainLabel}
-                chainList={chainList}
-            />
-        </Suspense>
-    );
-}
-
-async function AssetStatsSectionWithDataLoader({
-    assetId,
-    coingeckoId,
-    enableCoinGeckoFallback,
-    market,
-    mode,
-    chainLabel,
-    chainList,
-}: {
-    assetId: string;
-    coingeckoId: string | null;
-    enableCoinGeckoFallback: boolean;
-    market: ComponentProps<typeof AssetStatsSection>['market'];
-    mode: ComponentProps<typeof AssetStatsSection>['mode'];
-    chainLabel: string;
-    chainList: string;
-}) {
-    const globalStats = await loadGlobalStats(assetId, coingeckoId, enableCoinGeckoFallback);
-    return (
-        <AssetStatsSection
-            market={market}
-            globalStats={globalStats}
-            mode={mode}
-            chainLabel={chainLabel}
-            chainList={chainList}
-        />
-    );
+/** A variant's own CoinGecko figures as the stats fallback for a variant with no market row at all. */
+function variantReferenceFallback(
+    reference: AssetPageVariant['reference'] | null | undefined,
+): ComponentProps<typeof AssetStatsSection>['globalStats'] {
+    if (!reference) return null;
+    return {
+        price: reference.price,
+        marketCap: reference.marketCap,
+        fdv: null,
+        circulatingSupply: reference.circulatingSupply,
+        totalSupply: reference.totalSupply,
+        priceChange24h: reference.priceChange24hPercent,
+        volume24h: reference.volume24hUSD,
+    };
 }
 
 export function AssetPage(props: AssetPageProps) {
@@ -575,8 +524,10 @@ function AssetPageShellFallback({ assetId, requestedName, requested, shell }: As
         : [];
     const primary = pickFallbackPrimary(variants, shell.category);
     const requestedVariant = requested ? (variants.find(v => v.key === requested.key) ?? null) : null;
-    const isVariantView = Boolean(requestedVariant);
-    const active = requestedVariant ?? primary;
+    const isVariantView = Boolean(requested);
+    // A requested variant the compiled registry does not know (EVM, DB-only)
+    // must not be stood in for by the Solana primary while v2 streams in.
+    const active = requestedVariant ?? (requested ? null : primary);
     const activeChain: ChainKind | null = active?.chain ?? requested?.chain ?? null;
 
     const displayNameRaw =
@@ -610,7 +561,7 @@ function AssetPageShellFallback({ assetId, requestedName, requested, shell }: As
     const caps = resolveAssetPageCapabilities({
         activeChain,
         isVariantView,
-        assetChains: variants.length > 0 ? ['solana'] : [],
+        assetChains: [...new Set([...(variants.length > 0 ? ['solana' as const] : []), ...(requested ? [requested.chain] : [])])],
         isStablecoin: isStablecoinCategory(shell.category),
         variantCount: variants.length,
     });
@@ -624,7 +575,9 @@ function AssetPageShellFallback({ assetId, requestedName, requested, shell }: As
             buyAddress={null}
             header={
                 <TokenHeader
-                    address={active?.address ?? assetId}
+                    // A requested EVM variant the compiled registry lacks still names its own address, so the
+                    // explorer link is the contract's, never <chain explorer>/token/<assetId>.
+                    address={active?.address ?? requested?.address ?? assetId}
                     chain={activeChain}
                     symbol={displaySymbol}
                     displayName={displayName}
@@ -643,6 +596,7 @@ function AssetPageShellFallback({ assetId, requestedName, requested, shell }: As
                     variantGroup={variantGroup}
                     showSingletonVariantBadge={showSingletonVariantBadge}
                     variantCurrentKey={active?.key}
+                    showRisk={caps.risk}
                 />
             }
             sidebar={<AssetPageSidebarSkeleton showBuyButton={Boolean(active) && caps.swap} />}
@@ -1057,6 +1011,7 @@ async function AssetPageContent(props: AssetPageProps) {
                         variantCurrentKey: activeKey ?? undefined,
                         advisory: viewedAdvisory,
                         pegHealth: headerPegHealth,
+                        showRisk: caps.risk,
                     }}
                 />
             }
@@ -1082,7 +1037,12 @@ async function AssetPageContent(props: AssetPageProps) {
                     coingeckoId={coingeckoId ?? undefined}
                     mint={caps.chart === 'variant' ? activeSolanaMint : undefined}
                     mode={caps.chart}
-                    symbol={caps.chart === 'variant' ? (active.displaySymbol ?? displaySymbol) : displaySymbol}
+                    symbol={
+                        caps.chart === 'variant'
+                            ? (active.displaySymbol ?? displaySymbol)
+                            : // The canonical series is the asset's, not this token's: title it as such on a variant view.
+                              canonicalSymbolForRealtime.trim() || displaySymbol
+                    }
                     realtimeSymbol={(() => {
                         const canonicalUpper = canonicalSymbolForRealtime.trim().toUpperCase();
                         if (!canonicalUpper) return undefined;
@@ -1134,17 +1094,20 @@ async function AssetPageContent(props: AssetPageProps) {
                 />
             )}
 
-            <AssetStatsSectionWithData
-                assetId={canonicalAssetId}
-                coingeckoId={coingeckoId ?? null}
-                enableCoinGeckoFallback={!isVariantView}
+            <AssetStatsSection
                 mode={isVariantView ? 'variant' : 'canonical'}
                 market={isVariantView ? variantStatsMarket : canonicalStatsMarket}
+                globalStats={isVariantView ? variantReferenceFallback(active?.reference) : null}
                 chainLabel={activeChainLabel}
                 chainList={isVariantView ? activeChainLabel : formatChainList(assetChains)}
             />
 
-            {caps.marketsOverview && <AssetMarketsOverviewSection assetId={canonicalAssetId} />}
+            {caps.marketsOverview && (
+                <AssetMarketsOverviewSection
+                    assetId={canonicalAssetId}
+                    title={assetChains.length > 1 ? 'Solana markets' : 'Markets'}
+                />
+            )}
 
             {!isVariantView && <AssetLaunchesSection assetId={canonicalAssetId} displaySymbol={displaySymbol} />}
 

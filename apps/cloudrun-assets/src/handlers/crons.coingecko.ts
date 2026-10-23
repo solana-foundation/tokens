@@ -1,6 +1,7 @@
 import { Effect } from 'effect';
 import { isShuttingDown } from '@tokens/cloudrun-shutdown';
 import { runJobPool } from '@tokens/effect/job-runner';
+import { normalizeCoinGeckoCoinIdForAsset } from '@tokens/asset-registry/coingecko-id';
 import type { CronResult } from './crons';
 import { InvalidArgsError, parseExplicitTargets } from './crons';
 
@@ -143,6 +144,19 @@ export interface CoingeckoRepo {
     filterKnownCoinIds(coinIds: readonly string[], syncedSinceMs: number): Promise<string[]>;
     hasFreshCoinListRows(syncedSinceMs: number): Promise<boolean>;
 
+    /** Active, non-tombstoned assets (with or without a coin id) and their active Solana mints. */
+    listAssetsForCoinIdValidation(limit: number): Promise<AssetCoinIdValidationRow[]>;
+    /** Coin rows for the given ids: the coin's Solana contract when it lists one. */
+    findKnownCoins(coinIds: readonly string[]): Promise<Map<string, { solanaMint: string | null }>>;
+    /** Every coin whose `platforms.solana` is one of the mints (several coins may share a mint). */
+    findCoinsBySolanaMints(mints: readonly string[]): Promise<Array<{ mint: string; coinId: string; lastSyncedAt: number | null }>>;
+    /**
+     * Set `assets.coingecko_id` and replace the asset's `coingeckoId` alias, only
+     * while the asset has never been admin-edited. Returns false when skipped.
+     */
+    repairAssetCoinId(args: { assetId: string; coinId: string; nowMs: number }): Promise<boolean>;
+    upsertCoinIdAudit(rows: readonly CoinIdAuditRow[]): Promise<void>;
+
     getOhlcvBounds(coinId: string, interval: CoingeckoOhlcvInterval): Promise<{ minTime: number | null; maxTime: number | null }>;
     upsertOhlcvCandles(
         coinId: string,
@@ -187,7 +201,36 @@ async function dropUnknownCoinIds(
 }
 
 export interface CoingeckoCuratedSource {
+    /** Reference coin ids of curated assets, curated order. Drives metadata / tickers / OHLCV. */
     getCuratedCoinIdsInOrder(): string[];
+    /**
+     * Every coin id a price is served under: curated ids first, then the
+     * reference id of every other active asset, then the coin ids active
+     * variants link to (issuers, LSTs, wrappers). Drives the price refresh only.
+     */
+    getPriceCoinIdsInOrder(): string[];
+}
+
+/** One active asset as seen by validate-coingecko-ids. */
+export interface AssetCoinIdValidationRow {
+    assetId: string;
+    category: string;
+    coingeckoId: string | null;
+    adminEditedAt: number | null;
+    /** Active Solana mints with their latest liquidity (tie-break between issuers). */
+    solanaMints: Array<{ mint: string; liquidity: number | null }>;
+}
+
+export type CoinIdAuditStatus = 'ok' | 'suspect' | 'repaired' | 'assigned' | 'needsAdmin' | 'unresolved';
+
+export interface CoinIdAuditRow {
+    assetId: string;
+    status: CoinIdAuditStatus;
+    currentId: string | null;
+    suggestedId: string | null;
+    candidates: Array<{ coinId: string; mint: string; liquidity: number | null }>;
+    note: string | null;
+    checkedAt: number;
 }
 
 export interface CoingeckoMarketChartPoint {
@@ -892,7 +935,7 @@ export async function refreshCuratedCoingeckoPrices(
         : await dropUnknownCoinIds(
               deps.coingeckoRepo,
               uniqueStrings(
-                  pickDeterministicBatch(deps.coingeckoCurated.getCuratedCoinIdsInOrder(), maxCoins, selectionWindowMs, start),
+                  pickDeterministicBatch(deps.coingeckoCurated.getPriceCoinIdsInOrder(), maxCoins, selectionWindowMs, start),
               ),
               'refreshCuratedCoingeckoPrices',
               start,
@@ -1123,6 +1166,192 @@ export async function refreshCuratedCoingeckoOhlcv(
     };
 }
 
+// ---------------------------------------------------------------------------
+// validate-coingecko-ids
+// ---------------------------------------------------------------------------
+
+export const VALIDATE_COINGECKO_IDS_JOB = 'validate-coingecko-ids';
+export const COINGECKO_ID_VALIDATION_EVENT = 'coingecko_id_validation';
+
+/**
+ * Which issuer's coin an asset links to when its mints map to several: the
+ * owner's choice is xStock first, then Ondo, Backpack, bStocks, anything else.
+ * Lower is better.
+ */
+export function rankCoinIdCandidate(coinId: string): number {
+    if (/-xstock$/.test(coinId)) return 0;
+    if (/-ondo-tokenized-stock$/.test(coinId)) return 1;
+    if (/-backpack-securities$/.test(coinId)) return 2;
+    if (/-bstock/.test(coinId)) return 3;
+    return 4;
+}
+
+export function pickCoinIdCandidate(
+    candidates: ReadonlyArray<{ coinId: string; mint: string; liquidity: number | null }>,
+): { coinId: string; mint: string; liquidity: number | null } | null {
+    if (candidates.length === 0) return null;
+    const sorted = [...candidates].sort((a, b) => {
+        const rank = rankCoinIdCandidate(a.coinId) - rankCoinIdCandidate(b.coinId);
+        if (rank !== 0) return rank;
+        const liquidity = (b.liquidity ?? -1) - (a.liquidity ?? -1);
+        if (liquidity !== 0) return liquidity;
+        return a.coinId.localeCompare(b.coinId);
+    });
+    return sorted[0] ?? null;
+}
+
+const SUSPECT_CATEGORIES: ReadonlySet<string> = new Set(['equity', 'etf']);
+
+/**
+ * `assets.coingecko_id` was never validated against CoinGecko: the registry
+ * used to generate `${slug}-xstock` by convention and a third of those ids do
+ * not exist. Weekly, after the coin-list sync: check every active asset's id
+ * against `coingecko_coins`; for a missing or unknown id, resolve a coin by the
+ * asset's Solana mints (`platforms.solana`), preferring xStock > Ondo >
+ * Backpack > bStocks, tie-broken by liquidity; write it (and the coingeckoId
+ * alias) unless the asset was ever admin-edited; never null an id; flag an
+ * equity whose coin's Solana contract is not one of its mints as `suspect`
+ * (a `chewy` meme coin under the Chewy equity). Everything lands in
+ * `asset_coingecko_id_audit` for the admin app.
+ */
+export async function validateCoingeckoIds(rawDeps: import('./crons').CronDeps, rawArgs: unknown): Promise<CronResult> {
+    const deps = resolveCoingeckoDeps(rawDeps);
+    const args = asObject(rawArgs);
+    const write = readOptionalBoolean(args.write, true);
+    const maxAssets = clampInt(args.maxAssets, 5_000, 1, 50_000);
+    const start = deps.now();
+
+    const assets = await deps.coingeckoRepo.listAssetsForCoinIdValidation(maxAssets);
+    const normalizedById = new Map<string, string | null>();
+    for (const asset of assets) {
+        normalizedById.set(asset.assetId, normalizeCoinGeckoCoinIdForAsset({ assetId: asset.assetId, coinId: asset.coingeckoId }));
+    }
+    const known = await deps.coingeckoRepo.findKnownCoins(
+        uniqueStrings(Array.from(normalizedById.values()).flatMap(id => (id ? [id] : []))),
+    );
+    const mints = uniqueStrings(assets.flatMap(a => a.solanaMints.map(m => m.mint)));
+    const coinsByMint = new Map<string, Array<{ coinId: string; lastSyncedAt: number | null }>>();
+    for (const row of mints.length > 0 ? await deps.coingeckoRepo.findCoinsBySolanaMints(mints) : []) {
+        const list = coinsByMint.get(row.mint) ?? [];
+        list.push({ coinId: row.coinId, lastSyncedAt: row.lastSyncedAt });
+        coinsByMint.set(row.mint, list);
+    }
+
+    const counts: Record<CoinIdAuditStatus, number> = { ok: 0, suspect: 0, repaired: 0, assigned: 0, needsAdmin: 0, unresolved: 0 };
+    const audit: CoinIdAuditRow[] = [];
+    let writeFailed = 0;
+    for (const asset of assets) {
+        const raw = (asset.coingeckoId ?? '').trim();
+        const normalized = normalizedById.get(asset.assetId) ?? null;
+        const mintSet = new Set(asset.solanaMints.map(m => m.mint));
+        const candidates = asset.solanaMints.flatMap(m =>
+            (coinsByMint.get(m.mint) ?? []).map(c => ({ coinId: c.coinId, mint: m.mint, liquidity: m.liquidity })),
+        );
+        const record = (status: CoinIdAuditStatus, suggestedId: string | null, note: string | null) => {
+            counts[status] += 1;
+            audit.push({ assetId: asset.assetId, status, currentId: raw || null, suggestedId, candidates, note, checkedAt: start });
+        };
+
+        if (raw && normalized === null) {
+            // The remap deliberately suppresses this id (spacex ← PreStocks listing).
+            record('ok', null, 'suppressed by normalizeCoinGeckoCoinIdForAsset');
+            continue;
+        }
+        const coin = normalized ? known.get(normalized) : undefined;
+        if (normalized && coin) {
+            if (
+                SUSPECT_CATEGORIES.has(asset.category) &&
+                coin.solanaMint !== null &&
+                mintSet.size > 0 &&
+                !mintSet.has(coin.solanaMint)
+            ) {
+                const alt = pickCoinIdCandidate(candidates);
+                record('suspect', alt?.coinId ?? null, `coin lists Solana contract ${coin.solanaMint}, not one of the asset's mints`);
+                continue;
+            }
+            if (normalized !== raw && asset.adminEditedAt === null && write) {
+                // The stored value needs the remap (bnb → binancecoin): persist the real id.
+                try {
+                    const ok = await deps.coingeckoRepo.repairAssetCoinId({ assetId: asset.assetId, coinId: normalized, nowMs: start });
+                    record(ok ? 'repaired' : 'needsAdmin', normalized, 'normalized id persisted');
+                } catch (err) {
+                    writeFailed += 1;
+                    record('needsAdmin', normalized, `write failed: ${err instanceof Error ? err.message : String(err)}`);
+                }
+                continue;
+            }
+            record('ok', null, null);
+            continue;
+        }
+
+        // Missing or unknown id: resolve by mint.
+        const best = pickCoinIdCandidate(candidates);
+        if (!best) {
+            record('unresolved', null, raw ? 'id unknown to CoinGecko and no mint maps to a coin' : 'no id and no mint maps to a coin');
+            continue;
+        }
+        if (asset.adminEditedAt !== null) {
+            record('needsAdmin', best.coinId, 'asset was admin-edited; not written automatically');
+            continue;
+        }
+        if (!write) {
+            record('needsAdmin', best.coinId, 'write disabled');
+            continue;
+        }
+        try {
+            const ok = await deps.coingeckoRepo.repairAssetCoinId({ assetId: asset.assetId, coinId: best.coinId, nowMs: start });
+            if (!ok) record('needsAdmin', best.coinId, 'asset was admin-edited concurrently');
+            else record(raw ? 'repaired' : 'assigned', best.coinId, `resolved by mint ${best.mint}`);
+        } catch (err) {
+            writeFailed += 1;
+            record('needsAdmin', best.coinId, `write failed: ${err instanceof Error ? err.message : String(err)}`);
+        }
+    }
+
+    // The audit table is the report operators are told to read (it is the whole
+    // output of a write:false run), so a failed audit write is a failed run.
+    let auditWritten = 0;
+    let auditFailed = 0;
+    for (const chunk of chunkArr(audit, 200)) {
+        try {
+            await deps.coingeckoRepo.upsertCoinIdAudit(chunk);
+            auditWritten += chunk.length;
+        } catch (err) {
+            auditFailed += chunk.length;
+            console.error('[validate-coingecko-ids] audit upsert failed', err instanceof Error ? err.message : String(err));
+        }
+    }
+
+    const ok = writeFailed === 0 && auditFailed === 0;
+    const reason = writeFailed > 0 ? 'writes_failed' : auditFailed > 0 ? 'audit_write_failed' : null;
+    const durationMs = deps.now() - start;
+    console.log(
+        JSON.stringify({
+            job: VALIDATE_COINGECKO_IDS_JOB,
+            event: COINGECKO_ID_VALIDATION_EVENT,
+            ok,
+            write,
+            assets: assets.length,
+            statuses: counts,
+            writeFailed,
+            auditWritten,
+            auditFailed,
+            duration_ms: durationMs,
+        }),
+    );
+    return {
+        ok,
+        processed: assets.length,
+        durationMs,
+        write,
+        statuses: counts,
+        writeFailed,
+        auditWritten,
+        auditFailed,
+        ...(reason ? { partial: true, reason } : {}),
+    };
+}
+
 type CoingeckoJobHandler = (rawDeps: import('./crons').CronDeps, args: unknown) => Promise<CronResult>;
 
 export const coingeckoJobs: Record<string, CoingeckoJobHandler> = {
@@ -1130,6 +1359,7 @@ export const coingeckoJobs: Record<string, CoingeckoJobHandler> = {
     'refresh-curated-coingecko-metadata': refreshCuratedCoingeckoMetadata,
     'refresh-curated-coingecko-tickers': refreshCuratedCoingeckoTickers,
     'refresh-curated-coingecko-prices': refreshCuratedCoingeckoPrices,
+    'validate-coingecko-ids': validateCoingeckoIds,
     'refresh-curated-coingecko-ohlcv-15m': refreshCuratedCoingeckoOhlcv,
     'refresh-curated-coingecko-ohlcv-1h': refreshCuratedCoingeckoOhlcv,
     'refresh-curated-coingecko-ohlcv-4h': refreshCuratedCoingeckoOhlcv,

@@ -3,11 +3,11 @@ import { Suspense } from 'react';
 import { fetchApiAppJsonOrNull } from '@/lib/api-app';
 import { AssetMarketsOverviewTable, type VariantTopMarketsResponse } from './asset-markets-overview-table';
 
-export function AssetMarketsOverviewSection({ assetId }: { assetId: string }) {
+export function AssetMarketsOverviewSection({ assetId, title = 'Markets' }: { assetId: string; title?: string }) {
     return (
         <section>
             <div className="flex items-baseline justify-between gap-4 mb-6 mt-12">
-                <h3 className="text-title-md text-text-extra-high text-balance">Markets</h3>
+                <h3 className="text-title-md text-text-extra-high text-balance">{title}</h3>
             </div>
 
             <Suspense fallback={<AssetMarketsOverviewSkeleton />}>

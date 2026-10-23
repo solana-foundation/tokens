@@ -29,6 +29,8 @@ function v2(overrides: Partial<V2Variant> = {}): V2Variant {
         rank: 0,
         explorerUrl: `https://basescan.org/token/${USDC_BASE}`,
         market: null,
+        coingeckoId: null,
+        reference: null,
         ...overrides,
     };
 }

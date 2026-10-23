@@ -1,3 +1,4 @@
+import { normalizeCoinGeckoCoinIdForAsset } from '@tokens/asset-registry/coingecko-id';
 import { CURATED_LIST_ORDER, normalizeCuratedListSlug } from '@tokens/asset-registry/curated-lists';
 import {
     CHAIN_KINDS,
@@ -62,6 +63,8 @@ export interface V2VariantDbRow {
     origin: string;
     source: string | null;
     is_active: boolean;
+    coingecko_id?: string | null;
+    coingecko_id_source?: string | null;
 }
 
 /** One `v2_variant_markets_latest` row, selected with `address AS mint` so the v1 snapshot builder applies. */
@@ -78,9 +81,12 @@ export interface V2ChainRollupDbRow {
     liquidity: number | null;
     volume_24h_usd: number | null;
     volume_30d_usd: number | null;
+    volume_30d_days?: number | null;
+    volume_30d_by_address?: unknown;
     primary_address: string | null;
     variant_count: number | null;
     last_computed_at: number | string | bigint | null;
+    origin?: string | null;
 }
 
 export interface V2ChainSummaryDbRow {
@@ -136,6 +142,8 @@ export interface V2VariantResult {
     origin: string;
     isActive: boolean;
     explorerUrl: string;
+    /** The CoinGecko coin this deployment is (an issuer's, an LST's, a wrapper's); null when unlinked. */
+    coingeckoId: string | null;
 }
 
 export interface V2MarketResult {
@@ -151,9 +159,17 @@ export interface V2ChainRollupResult {
     liquidity: number;
     volume24hUSD: number;
     volume30dUSD: number | null;
+    /** Distinct days behind `volume30dUSD`: 30 for the Solana candle rollup, the sample count for computed EVM rows. */
+    volume30dDays: number | null;
+    /** Each contributing address's share of the window and its sampled days (null before the first rollup after 0037; on `solana_v1` rows only once Solana samples exist, and `volume30dUSD` there is still v1's candle figure). */
+    volume30dByAddress?: Record<string, { volume: number; days: number }> | null;
+    /** ms epoch of the rollup run that wrote `volume30dByAddress` (the mirrored Solana row's `lastComputedAt` is v1's, not the rollup's). */
+    volume30dSharesComputedAt?: number | null;
     primaryAddress: string | null;
     variantCount: number;
     lastComputedAt: number | null;
+    /** `solana_v1` (mirrored from v1's candle rollup) or `computed` (daily EVM samples). */
+    origin: 'solana_v1' | 'computed';
 }
 
 export interface V2ChainSummaryResult {
@@ -192,6 +208,8 @@ export interface V2AssetDetailResult {
     stockInstrument: GetInstrumentsByAssetIdsEntry | null;
     stockPrice: GetPricesByAssetIdsEntry | null;
     coingeckoPrice: CoingeckoPriceBatchEntry | null;
+    /** Prices of the coins the asset's variants link to (other than the reference coin). */
+    variantCoingeckoPrices: CoingeckoPriceBatchEntry[];
 }
 
 export interface V2VariantsByAssetIdsEntry {
@@ -204,6 +222,8 @@ export interface V2VariantLookupResult {
     variants: V2VariantResult[];
     assets: AssetResult[];
     market: VariantMarketSnapshotResult | null;
+    /** Price of the coin the owning variant links to, when it has one. */
+    coingeckoPrice: CoingeckoPriceBatchEntry | null;
 }
 
 export interface V2MarketsByKeysEntry {
@@ -337,6 +357,7 @@ export function rowToVariantResult(row: V2VariantDbRow): V2VariantResult | null 
         origin: row.origin,
         isActive: row.is_active,
         explorerUrl: explorerTokenUrl(row.chain, row.address),
+        coingeckoId: typeof row.coingecko_id === 'string' && row.coingecko_id.trim() ? row.coingecko_id.trim() : null,
     };
 }
 
@@ -359,10 +380,58 @@ export function rowToRollupResult(row: V2ChainRollupDbRow): V2ChainRollupResult 
             typeof row.volume_24h_usd === 'number' && Number.isFinite(row.volume_24h_usd) ? row.volume_24h_usd : 0,
         volume30dUSD:
             typeof row.volume_30d_usd === 'number' && Number.isFinite(row.volume_30d_usd) ? row.volume_30d_usd : null,
+        volume30dDays:
+            row.origin === 'computed'
+                ? typeof row.volume_30d_days === 'number' && Number.isFinite(row.volume_30d_days)
+                    ? row.volume_30d_days
+                    : 0
+                : 30,
+        // Computed rows always carry shares after 0037; the mirrored Solana row gains them once its per-mint samples exist.
+        volume30dByAddress: toVolumeByAddress(row.volume_30d_by_address),
+        volume30dSharesComputedAt: toSharesComputedAt(row.volume_30d_by_address),
         primaryAddress: row.primary_address,
         variantCount: toCount(row.variant_count),
         lastComputedAt: toEpochMs(row.last_computed_at),
+        origin: row.origin === 'computed' ? 'computed' : 'solana_v1',
     };
+}
+
+/** The column is `{ computedAt, shares: { <address>: { volume, days } } }`. */
+function sharesEnvelope(value: unknown): { computedAt: unknown; shares: unknown } | null {
+    const raw = typeof value === 'string' ? safeJsonParse(value) : value;
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+    const envelope = raw as { computedAt?: unknown; shares?: unknown };
+    return 'shares' in envelope ? { computedAt: envelope.computedAt, shares: envelope.shares } : null;
+}
+
+function toSharesComputedAt(value: unknown): number | null {
+    return toFinite(sharesEnvelope(value)?.computedAt);
+}
+
+function toVolumeByAddress(value: unknown): Record<string, { volume: number; days: number }> | null {
+    const raw = sharesEnvelope(value)?.shares;
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+    const out: Record<string, { volume: number; days: number }> = {};
+    for (const [address, entry] of Object.entries(raw as Record<string, unknown>)) {
+        if (!entry || typeof entry !== 'object') continue;
+        const volume = toFinite((entry as { volume?: unknown }).volume);
+        const days = toFinite((entry as { days?: unknown }).days);
+        if (volume !== null && days !== null) out[address] = { volume, days: Math.max(0, Math.floor(days)) };
+    }
+    return out;
+}
+
+function toFinite(value: unknown): number | null {
+    const number = typeof value === 'string' ? Number(value) : value;
+    return typeof number === 'number' && Number.isFinite(number) ? number : null;
+}
+
+function safeJsonParse(value: string): unknown {
+    try {
+        return JSON.parse(value);
+    } catch {
+        return null;
+    }
 }
 
 function variantResults(rows: readonly V2VariantDbRow[]): V2VariantResult[] {
@@ -408,19 +477,6 @@ async function loadMarketsForKeys(
     return marketResults(rows.flat());
 }
 
-/** CoinGecko coin ids an asset set needs prices for (the API applies the same normalization on its side). */
-function normalizeCoinGeckoCoinIdForAsset(params: {
-    assetId: string;
-    coinId: string | null | undefined;
-}): string | null {
-    const rawCoinId = (params.coinId ?? '').trim();
-    if (!rawCoinId) return null;
-    const assetId = params.assetId.trim();
-    if (assetId === 'bnb' && rawCoinId === 'bnb') return 'binancecoin';
-    if (assetId === 'tron' && rawCoinId === 'tron-xstock') return 'tron';
-    if (assetId === 'spacex' && rawCoinId === 'spacex-prestocks-2') return null;
-    return rawCoinId;
-}
 
 // ---------------------------------------------------------------------------
 // RPCs
@@ -583,7 +639,19 @@ export async function v2AssetsGetDetail(deps: V2AssetsReadsDeps, args: unknown):
             : Promise.resolve<CoingeckoPriceBatchEntry[]>([]),
     ]);
     const variants = variantResults(variantRows);
-    const markets = await loadMarketsForKeys(deps.v2, keysOf(variants), runDb);
+    const variantCoinIds = uniqueStrings(
+        variants.flatMap(v => (v.coingeckoId && v.coingeckoId !== coinId ? [v.coingeckoId] : [])),
+    );
+    const [markets, variantCoingeckoPricesChunks] = await Promise.all([
+        loadMarketsForKeys(deps.v2, keysOf(variants), runDb),
+        Promise.all(
+            chunkArray(variantCoinIds, COINGECKO_PRICE_CHUNK).map(chunk =>
+                runDb(() => coingeckoGetPriceLatestByCoinIds(deps.coingeckoReadsRepo, { coinIds: chunk })).catch(
+                    recoverOptional<CoingeckoPriceBatchEntry[]>([]),
+                ),
+            ),
+        ),
+    ]);
 
     return {
         asset,
@@ -594,6 +662,7 @@ export async function v2AssetsGetDetail(deps: V2AssetsReadsDeps, args: unknown):
         stockInstrument: stockInstruments[0] ?? null,
         stockPrice: stockPrices[0] ?? null,
         coingeckoPrice: coingeckoPrices[0] ?? null,
+        variantCoingeckoPrices: variantCoingeckoPricesChunks.flat(),
     };
 }
 
@@ -642,6 +711,12 @@ export async function v2AssetsGetVariant(
     const liveVariants = variants.filter(v => assetById.has(v.assetId));
     if (liveVariants.length === 0) return null;
     const market = marketResults(marketRows)[0]?.market ?? null;
+    const ownerCoinId = liveVariants[0]?.coingeckoId ?? null;
+    const coingeckoPrices = ownerCoinId
+        ? await coingeckoGetPriceLatestByCoinIds(deps.coingeckoReadsRepo, { coinIds: [ownerCoinId] }).catch(
+              recoverOptional<CoingeckoPriceBatchEntry[]>([]),
+          )
+        : [];
     return {
         variants: liveVariants,
         assets: liveVariants.flatMap(v => {
@@ -649,6 +724,7 @@ export async function v2AssetsGetVariant(
             return asset ? [asset] : [];
         }),
         market,
+        coingeckoPrice: coingeckoPrices[0] ?? null,
     };
 }
 

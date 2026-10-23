@@ -182,6 +182,19 @@ function makeCoingeckoRepo(state: FakeState): CoingeckoRepo {
         async hasFreshCoinListRows() {
             return true;
         },
+        async listAssetsForCoinIdValidation() {
+            return [];
+        },
+        async findKnownCoins() {
+            return new Map();
+        },
+        async findCoinsBySolanaMints() {
+            return [];
+        },
+        async repairAssetCoinId() {
+            return false;
+        },
+        async upsertCoinIdAudit() {},
         async upsertCoinListBatch(coins) {
             return { inserted: coins.length, updated: 0, skipped: 0 };
         },
@@ -252,7 +265,7 @@ function makeCronDeps(state: FakeState): CronDeps {
             },
         },
         coingeckoRepo: makeCoingeckoRepo(state),
-        coingeckoCurated: { getCuratedCoinIdsInOrder: () => [] },
+        coingeckoCurated: { getCuratedCoinIdsInOrder: () => [], getPriceCoinIdsInOrder: () => [] },
         coingecko: {
             async fetchCoinList() {
                 return [];

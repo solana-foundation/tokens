@@ -48,6 +48,8 @@ export interface V2Market {
     lastTradeAt: number | null;
     asOf: number | null;
     lastFetchedAt: number | null;
+    /** Whether this row entered the asset's sums / averages, and why not. */
+    quality: { included: boolean; reasons: Array<'stale' | 'dust' | 'price_outlier'> };
 }
 
 export interface V2Advisory {
@@ -58,7 +60,7 @@ export interface V2Advisory {
     source: AdvisorySource;
 }
 
-export type VariantIssuance = 'native' | 'bridged' | 'wrapped';
+export type VariantIssuance = 'native' | 'bridged' | 'wrapped' | 'derivative';
 
 export interface V2ExecutionQuality {
     source: 'clickhouse_fill_quality';
@@ -125,7 +127,13 @@ export interface V2Variant extends V2VariantEnrichments {
     rank: number | null;
     explorerUrl: string;
     market: V2Market | null;
+    /** The CoinGecko coin this deployment is; null when unlinked. */
+    coingeckoId: string | null;
+    /** CoinGecko's figures for that coin; null when unlinked or not loaded (batch lookups). */
+    reference: Extract<V2ReferenceMarket, { source: 'coingecko' }> | null;
 }
+
+export type V2StatsSourceKind = 'coingecko' | 'stock' | 'onchain';
 
 export interface V2AssetStats {
     price: number | null;
@@ -138,9 +146,17 @@ export interface V2AssetStats {
     priceChange1hPercent: number | null;
     totalSupply: number | null;
     circulatingSupply: number | null;
+    /** Provenance per figure (reference-first headline); a key is absent when the figure is null. */
+    source: Partial<Record<Exclude<keyof V2AssetStats, 'source' | 'volume30dScope'>, V2StatsSourceKind>>;
+    /** What `volume30dUSD` covers: every traded chain, Solana only, or null while an EVM window is incomplete. */
+    volume30dScope: 'all' | 'solana' | null;
 }
 
 export interface V2ChainStats {
+    price: number | null;
+    priceChange24hPercent: number | null;
+    priceChange1hPercent: number | null;
+    totalSupply: number | null;
     liquidity: number | null;
     volume24hUSD: number | null;
     trade24h: number | null;
@@ -149,6 +165,9 @@ export interface V2ChainStats {
     circulatingSupply: number | null;
     variantCount: number;
     issuedVariantCount: number;
+    excludedByIssuance: { bridged: number; wrapped: number; derivative: number };
+    excludedCount: number;
+    excludedByQuality: { stale: number; dust: number; priceOutlier: number };
 }
 
 /** `executable` (default): chains we can swap on rank first; `global`: every chain. */

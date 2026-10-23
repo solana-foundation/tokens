@@ -125,6 +125,8 @@ export function v1MarketToV2Market(market: Record<string, unknown>): V2Market {
         lastTradeAt: finiteOrNull(market.lastTradeAt),
         asOf: finiteOrNull(market.asOf),
         lastFetchedAt: finiteOrNull(market.lastFetchedAt),
+        // v1 rows are not assessed; the page treats them as included.
+        quality: { included: true, reasons: [] },
     };
 }
 
@@ -141,6 +143,9 @@ export function v1StatsToV2Stats(stats: V1DetailStats | undefined): V2AssetStats
         priceChange1hPercent: finiteOrNull(stats.priceChange1hPercent),
         totalSupply: finiteOrNull(stats.totalSupply),
         circulatingSupply: finiteOrNull(stats.circulatingSupply),
+        // v1 does not say where a figure came from; its 30d volume is Solana's.
+        source: {},
+        volume30dScope: finiteOrNull(stats.volume30dUSD) === null ? null : 'solana',
     };
 }
 
