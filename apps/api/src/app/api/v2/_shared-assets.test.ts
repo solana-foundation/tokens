@@ -1166,6 +1166,9 @@ describe('selectVolume30d', () => {
         // A dust newcomer under 1% of the accepted total does not block the window.
         const dustNew = [eth[0], { ...eth[1], volume30dByAddress: { [good]: { volume: 600, days: 30 }, '0x02': { volume: 1, days: 2 } } }] as const;
         expect(selectVolume30d(chainStats({ solana: 100, ethereum: 50 }), new Map([rollup('solana', 3_000, 30, 'solana_v1'), dustNew]), NOW, new Map())).toEqual({ volume30dUSD: 3_601, scope: 'all' });
+        // A share saved for an address that has since been deactivated (absent from the current variants) is dropped.
+        const current = [{ chain: 'ethereum' as const, address: good }];
+        expect(selectVolume30d(chainStats({ solana: 100, ethereum: 50 }), rollups, NOW, new Map(), current)).toEqual({ volume30dUSD: 3_600, scope: 'all' });
         // Rows written before 0037 carry no shares and are served as stored.
         expect(selectVolume30d(chainStats({ solana: 100, ethereum: 50 }), new Map([rollup('solana', 3_000, 30, 'solana_v1'), rollup('ethereum', 900, 30, 'computed')]), NOW, quality)).toEqual({ volume30dUSD: 3_900, scope: 'all' });
     });

@@ -266,6 +266,8 @@ export function selectVolume30d(
     nowMs: number = Date.now(),
     /** From `assessVariantMarkets`: a computed chain is read over the accepted rows only (`volume30dByAddress`). */
     qualityByKey?: ReadonlyMap<VariantKey, MarketQuality>,
+    /** The asset's current variants; shares of addresses deactivated since the rollup are dropped. */
+    variants?: ReadonlyArray<Pick<V2VariantResult, 'chain' | 'address'>>,
 ): { volume30dUSD: number | null; scope: V2Volume30dScope } {
     const tradedChains = CHAIN_KINDS.filter(chain => (chainStats[chain]?.volume24hUSD ?? 0) > 0);
     if (tradedChains.length === 0) return { volume30dUSD: null, scope: null };
@@ -274,7 +276,7 @@ export function selectVolume30d(
     for (const chain of tradedChains) {
         const rollup = rollupByChain?.get(chain);
         if (!rollup) return { volume30dUSD: null, scope: null };
-        const read = acceptedVolume30d(chain, rollup, qualityByKey);
+        const read = acceptedVolume30d(chain, rollup, qualityByKey, variants);
         if (read.volume30dUSD === null) return { volume30dUSD: null, scope: null };
         const fresh =
             rollup.origin === 'solana_v1' ||
@@ -302,16 +304,21 @@ function acceptedVolume30d(
     chain: ChainId,
     rollup: V2ChainRollupResult,
     qualityByKey: ReadonlyMap<VariantKey, MarketQuality> | undefined,
+    /** The asset's current variants; a share saved for an address no longer among them (deactivated since the rollup) is dropped. */
+    variants: ReadonlyArray<Pick<V2VariantResult, 'chain' | 'address'>> | undefined,
 ): { volume30dUSD: number | null; days: number | null } {
     const byAddress = rollup.origin === 'computed' ? rollup.volume30dByAddress : null;
     if (!byAddress) return { volume30dUSD: rollup.volume30dUSD, days: rollup.volume30dDays };
+    const present = variants ? new Set(variants.filter(v => v.chain === chain).map(v => v.address)) : null;
     const rejected = new Set<string>();
     for (const [key, quality] of qualityByKey ?? []) {
         if (quality.included) continue;
         const separator = key.indexOf(':');
         if (separator > 0 && key.slice(0, separator) === chain) rejected.add(key.slice(separator + 1));
     }
-    const accepted = Object.entries(byAddress).filter(([address]) => !rejected.has(address));
+    const accepted = Object.entries(byAddress).filter(
+        ([address]) => !rejected.has(address) && (present === null || present.has(address)),
+    );
     const total = accepted.reduce((sum, [, share]) => sum + share.volume, 0);
     let days: number | null = null;
     for (const [, share] of accepted) {
@@ -1574,7 +1581,7 @@ export function buildV2Asset(ctx: V2AssetBuildContext): V2Asset | null {
         issuanceByKey,
     );
     const aggregate = aggregateChainStats(chainStats, accumulatorsByChain);
-    const volume30d = selectVolume30d(chainStats, ctx.rollupByChain, ctx.nowMs ?? Date.now(), qualityByKey);
+    const volume30d = selectVolume30d(chainStats, ctx.rollupByChain, ctx.nowMs ?? Date.now(), qualityByKey, ctx.variants);
     const stats = selectV2HeadlineStats({
         reference: {
             coingecko: coingeckoSnapshot,
