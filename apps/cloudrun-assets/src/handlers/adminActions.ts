@@ -1214,10 +1214,24 @@ async function checkEvmVariantForCanonical(
         birdeyeDecimals !== null ? 'birdeye' : coingeckoDecimals !== null ? 'coingecko' : null;
 
     const category = asset.category as AssetCategory;
+    // Adopting keeps the row's kind: the derivation knew the coin's home chain
+    // when it wrote it, and `variantIssuance` drops a `bridged` row from v2
+    // supply and market cap, so re-deriving here could demote a `native` row.
+    // A fresh add derives with the coin's `asset_platform_id` for the same reason.
     const derivedKind = coinRow
-        ? deriveVariantKindForChain({ category, assetPlatformId: null, chain, platforms: coinRow.platforms })
+        ? deriveVariantKindForChain({
+              category,
+              assetPlatformId: coinRow.assetPlatformId,
+              chain,
+              platforms: coinRow.platforms,
+          })
         : null;
-    const kind: VariantKind = derivedKind && isVariantKind(derivedKind) ? derivedKind : kindForCategory(category);
+    const kind: VariantKind =
+        own && isVariantKind(own.kind)
+            ? own.kind
+            : derivedKind && isVariantKind(derivedKind)
+              ? derivedKind
+              : kindForCategory(category);
     const tags = await curatedTagsForAsset(deps, assetId, category);
     const checkedAt = deps.now();
     const label =

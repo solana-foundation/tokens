@@ -348,10 +348,14 @@ export function makePostgresV2AssetsJobsRepo(sql: Sql): V2AssetsJobsRepo {
                     symbol: string | null;
                     platforms: unknown;
                     detail_platforms: unknown;
+                    asset_platform_id: string | null;
                     last_synced_at: number | string | bigint | null;
                 }[]
             >`
-                SELECT coin_id, symbol, platforms, coin->'detail_platforms' AS detail_platforms, last_synced_at
+                SELECT coin_id, symbol, platforms,
+                       coin->'detail_platforms' AS detail_platforms,
+                       coin->>'asset_platform_id' AS asset_platform_id,
+                       last_synced_at
                 FROM coingecko_coins
                 WHERE coin_id IN ${sql([...coinIds])}
             `;
@@ -360,6 +364,7 @@ export function makePostgresV2AssetsJobsRepo(sql: Sql): V2AssetsJobsRepo {
                 symbol: row.symbol ?? null,
                 platforms: toStringRecord(row.platforms),
                 decimalsByPlatform: toDecimalsRecord(row.detail_platforms),
+                assetPlatformId: row.asset_platform_id ?? null,
                 coinLastSyncedAt: toEpochMsOrNull(row.last_synced_at),
             }));
         },

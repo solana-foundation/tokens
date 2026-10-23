@@ -18,12 +18,17 @@ type Responder = (query: RecordedQuery) => unknown[];
 
 function makeFakeTx(respond: Responder = () => []): { tx: TransactionSql; queries: RecordedQuery[] } {
     const queries: RecordedQuery[] = [];
-    const tx = (async (strings: TemplateStringsArray, ...values: unknown[]) => {
+    const run = async (strings: TemplateStringsArray, ...values: unknown[]) => {
         const query = { text: strings.join('$'), params: values };
         queries.push(query);
         return respond(query);
-    }) as unknown as TransactionSql;
-    return { tx, queries };
+    };
+    // The v2 mirror helpers splice column lists with tx.unsafe.
+    const tx = Object.assign(run, {
+        unsafe: (text: string) => ({ unsafe: text }),
+        array: (value: unknown) => ({ array: value }),
+    });
+    return { tx: tx as unknown as TransactionSql, queries };
 }
 
 const NOW = 1_750_000_000_000;
@@ -32,12 +37,14 @@ const MINT = 'SiLVFMgD3eD2rgK628NbTBq9MnuJF5FW2CRaVyTB35L';
 const ACTOR = { clerkUserId: 'admin_1', email: 'admin@example.com' };
 
 function variantResponder(opts: {
-    variant: { id: string; is_active: boolean } | null;
+    variant: { id: string; asset_id?: string; is_active: boolean } | null;
     existing?: { status: string; set_at: string | number } | null;
 }): Responder {
     return q => {
-        if (q.text.includes('FROM asset_variants')) return opts.variant ? [opts.variant] : [];
+        // The locking SELECT only; the v2 mirror's INSERT … SELECT reads asset_variants too.
+        if (q.text.includes('FROM asset_variants') && q.text.includes('FOR UPDATE')) return opts.variant ? [opts.variant] : [];
         if (q.text.includes('SELECT status, set_at')) return opts.existing ? [opts.existing] : [];
+        if (q.text.includes('INSERT INTO v2_asset_variants')) return [{ address: MINT }];
         return [];
     };
 }
@@ -139,12 +146,14 @@ describe('setAdvisoryInTx', () => {
         expect(upsert.params[6]).toBe(NOW);
     });
 
-    it('activateVariant on an inactive variant: UPDATE asset_variants between upsert and event; reactivated=true', async () => {
-        const { tx, queries } = makeFakeTx(variantResponder({ variant: { id: 'avr_silv', is_active: false } }));
+    it('activateVariant on an inactive variant: UPDATE asset_variants + v2 mirror between upsert and event; reactivated=true', async () => {
+        const { tx, queries } = makeFakeTx(
+            variantResponder({ variant: { id: 'avr_silv', asset_id: 'silver', is_active: false } }),
+        );
         const result = await setAdvisoryInTx(tx, { ...baseSetArgs, activateVariant: true });
         expect(result).toEqual({ outcome: 'set', reactivated: true });
 
-        expect(queries).toHaveLength(5);
+        expect(queries).toHaveLength(9);
         const update = queries[3]!;
         expect(update.text).toContain('UPDATE asset_variants');
         expect(update.text).toContain('is_active = true');
@@ -152,17 +161,28 @@ describe('setAdvisoryInTx', () => {
         expect((update.params[0] as Date).getTime()).toBe(NOW);
         expect(update.params[1]).toBe('avr_silv');
 
-        const event = queries[4]!;
+        // The asset page reads v2 only: the flip is mirrored in this
+        // transaction (lock, replaced-row DELETE, variant upsert, market copy)
+        // instead of waiting for the sync-v2-solana-variants tick.
+        expect(queries[4]!.text).toContain('pg_advisory_xact_lock');
+        expect(queries[5]!.text).toContain('DELETE FROM v2_asset_variants v');
+        const mirror = queries[6]!;
+        expect(mirror.text).toContain('INSERT INTO v2_asset_variants');
+        expect(mirror.params).toEqual(['silver', MINT, NOW]);
+        expect(queries[7]!.text).toContain('INSERT INTO v2_variant_markets_latest');
+
+        const event = queries[8]!;
         expect(event.text).toContain('asset_variant_advisory_events');
         expect(event.params[5]).toBe(true); // reactivated_variant
     });
 
     it('activateVariant on an already-active variant is a no-op (no UPDATE, reactivated=false)', async () => {
-        const { tx, queries } = makeFakeTx(variantResponder({ variant: { id: 'avr_1', is_active: true } }));
+        const { tx, queries } = makeFakeTx(variantResponder({ variant: { id: 'avr_1', asset_id: 'silver', is_active: true } }));
         const result = await setAdvisoryInTx(tx, { ...baseSetArgs, activateVariant: true });
         expect(result).toEqual({ outcome: 'set', reactivated: false });
         expect(queries).toHaveLength(4);
         expect(queries.some(q => q.text.includes('UPDATE asset_variants'))).toBe(false);
+        expect(queries.some(q => q.text.includes('v2_asset_variants'))).toBe(false);
         expect(queries[3]!.params[5]).toBe(false);
     });
 

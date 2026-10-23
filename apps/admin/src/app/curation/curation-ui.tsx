@@ -40,7 +40,7 @@ import type {
     VariantsByAssetIdRow,
 } from '@/lib/admin-types';
 import { variantRefArgs } from '@/lib/admin-types';
-import { chainLabel, isDerivedOrigin, originLabel, rowChain, rowRef, variantKey } from '@/lib/variant-ref';
+import { chainLabel, isDerivedOrigin, originLabel, rowRef, variantKey } from '@/lib/variant-ref';
 import {
     SYSTEM_ADVISORY_CLEAR_WARNING,
     advisoryBadgeVariant,
@@ -358,13 +358,17 @@ function VariantRows({
                                             ) : null}
                                         </>
                                     ) : null}
-                                    <DropdownMenuSeparator />
-                                    <DropdownMenuItem
-                                        onClick={() => onDeleteVariant(variant)}
-                                        className="text-destructive focus:text-destructive"
-                                    >
-                                        Delete variant
-                                    </DropdownMenuItem>
+                                    {isSolana ? (
+                                        <>
+                                            <DropdownMenuSeparator />
+                                            <DropdownMenuItem
+                                                onClick={() => onDeleteVariant(variant)}
+                                                className="text-destructive focus:text-destructive"
+                                            >
+                                                Delete variant
+                                            </DropdownMenuItem>
+                                        </>
+                                    ) : null}
                                 </DropdownMenuContent>
                             </DropdownMenu>
                         </div>
@@ -402,7 +406,6 @@ export function CurationUi(): React.JSX.Element {
     const [editingCanonicalId, setEditingCanonicalId] = useState<string | null>(null);
     const [editingVariant, setEditingVariant] = useState<VariantRef | null>(null);
     const [movingVariant, setMovingVariant] = useState<VariantRef | null>(null);
-    const [deletingVariant, setDeletingVariant] = useState<VariantRow | null>(null);
     const [advisoryVariant, setAdvisoryVariant] = useState<VariantRow | null>(null);
     const [clearingAdvisoryVariant, setClearingAdvisoryVariant] = useState<VariantRow | null>(null);
     const [addVariantCanonical, setAddVariantCanonical] = useState<CanonicalRow | null>(null);
@@ -711,12 +714,12 @@ export function CurationUi(): React.JSX.Element {
         }
     }
 
-    /** Derived EVM rows come back on the next daily sync, so confirm and steer to Deactivate first. */
+    /**
+     * Solana rows only. A v2-native (EVM) row has no Delete: the server would
+     * leave an inactive admin row anyway (so the daily derivation cannot bring
+     * the contract back), which is exactly what Deactivate does.
+     */
     async function onDeleteVariant(variant: VariantRow) {
-        if (isDerivedOrigin(variant.origin)) {
-            setDeletingVariant(variant);
-            return;
-        }
         await deleteVariantNow(rowRef(variant));
     }
 
@@ -1130,26 +1133,6 @@ export function CurationUi(): React.JSX.Element {
                 open={movingVariant !== null}
                 onOpenChange={open => {
                     if (!open) setMovingVariant(null);
-                }}
-            />
-            <RemoveConfirmDialog
-                open={deletingVariant !== null}
-                onOpenChange={open => {
-                    if (!open) setDeletingVariant(null);
-                }}
-                assetSymbol={deletingVariant ? variantDisplaySymbol(deletingVariant) : ''}
-                assetId={deletingVariant?.address ?? deletingVariant?.mint ?? ''}
-                title={`Delete derived ${deletingVariant ? chainLabel(rowChain(deletingVariant)) : ''} variant?`}
-                description={
-                    <>
-                        This row was derived from CoinGecko by the daily EVM sync. Deleting it only lasts until the next
-                        sync re-derives it; use <span className="font-inter-medium">Deactivate</span> instead to hide it
-                        for good (admin takes the row over so the sync leaves it alone).
-                    </>
-                }
-                confirmLabel="Delete anyway"
-                onConfirm={() => {
-                    if (deletingVariant) void deleteVariantNow(rowRef(deletingVariant));
                 }}
             />
             <SetAdvisoryDialog

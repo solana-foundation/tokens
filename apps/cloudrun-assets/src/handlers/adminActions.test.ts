@@ -1145,6 +1145,7 @@ describe('adminCheckVariantMintForCanonical (EVM)', () => {
                     symbol: 'usdc',
                     platforms: { ethereum: USDC_ETH, solana: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v' },
                     decimalsByPlatform: { ethereum: 6 },
+                    assetPlatformId: null,
                     coinLastSyncedAt: FIXED_NOW,
                 },
             },
@@ -1168,6 +1169,7 @@ describe('adminCheckVariantMintForCanonical (EVM)', () => {
                     symbol: 'wbtc',
                     platforms: { ethereum: USDC_ETH, base: USDC_ETH },
                     decimalsByPlatform: {},
+                    assetPlatformId: null,
                     coinLastSyncedAt: FIXED_NOW,
                 },
             },
@@ -1199,6 +1201,7 @@ describe('adminCheckVariantMintForCanonical (EVM)', () => {
                     symbol: 'usdc',
                     platforms: { ethereum: USDC_ETH },
                     decimalsByPlatform: { ethereum: 6 },
+                    assetPlatformId: null,
                     coinLastSyncedAt: FIXED_NOW,
                 },
             },
@@ -1232,6 +1235,58 @@ describe('adminCheckVariantMintForCanonical (EVM)', () => {
             origin: 'coingecko',
         });
         expect(preview.variantWrite.variantId).toBe('usdc:eth-custom');
+    });
+
+    it('adopting keeps the derived row\'s kind instead of re-deriving it', async () => {
+        // Without asset_platform_id the platforms map (coin listed on Solana)
+        // would say `bridged`; the derivation knew the coin is native here, and a
+        // `bridged` kind drops the row from v2 supply and market cap.
+        const state = makeState({
+            assetsById: { wbtc: { assetId: 'wbtc', category: 'crypto', coingeckoId: 'wrapped-bitcoin' } },
+            evmOverviewByChain: { ethereum: USDC_OVERVIEW },
+            coinPlatformsById: {
+                'wrapped-bitcoin': {
+                    coinId: 'wrapped-bitcoin',
+                    symbol: 'wbtc',
+                    platforms: { ethereum: USDC_ETH, solana: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v' },
+                    decimalsByPlatform: { ethereum: 8 },
+                    assetPlatformId: null,
+                    coinLastSyncedAt: FIXED_NOW,
+                },
+            },
+            v2RowsByKey: { [`ethereum:${USDC_ETH}`]: [v2Row({ asset_id: 'wbtc', kind: 'native' })] },
+        });
+        const preview = await adminCheckVariantMintForCanonical(
+            makeDeps(state),
+            { assetId: 'wbtc', chain: 'ethereum', address: USDC_ETH },
+            ADMIN,
+        );
+        expect(preview.conflict?.type).toBe('same_canonical');
+        expect(preview.variantWrite.kind).toBe('native');
+    });
+
+    it('a fresh add derives the kind with the coin\'s asset_platform_id (home chain → native)', async () => {
+        const state = makeState({
+            assetsById: { wbtc: { assetId: 'wbtc', category: 'crypto', coingeckoId: 'wrapped-bitcoin' } },
+            evmOverviewByChain: { ethereum: USDC_OVERVIEW },
+            coinPlatformsById: {
+                'wrapped-bitcoin': {
+                    coinId: 'wrapped-bitcoin',
+                    symbol: 'wbtc',
+                    platforms: { ethereum: USDC_ETH, solana: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v' },
+                    decimalsByPlatform: { ethereum: 8 },
+                    assetPlatformId: 'ethereum',
+                    coinLastSyncedAt: FIXED_NOW,
+                },
+            },
+        });
+        const preview = await adminCheckVariantMintForCanonical(
+            makeDeps(state),
+            { assetId: 'wbtc', chain: 'ethereum', address: USDC_ETH },
+            ADMIN,
+        );
+        expect(preview.conflict).toBeNull();
+        expect(preview.variantWrite.kind).toBe('native');
     });
 
     it('reports other owners as a non-blocking shared_with', async () => {

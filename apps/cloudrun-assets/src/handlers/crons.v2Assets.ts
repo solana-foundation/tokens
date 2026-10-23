@@ -83,6 +83,8 @@ export interface V2CoinPlatformsRow {
     symbol: string | null;
     platforms: Record<string, string>;
     decimalsByPlatform: Record<string, number>;
+    /** CoinGecko `asset_platform_id` (the coin's home chain), when the per-coin metadata was fetched. */
+    assetPlatformId: string | null;
     coinLastSyncedAt: number | null;
 }
 

@@ -336,12 +336,21 @@ export async function updateV2Variant(
     return 'updated';
 }
 
+/**
+ * "Delete" a v2-native row. The row is NOT removed: it becomes an inactive
+ * `origin='admin'` row (the same tombstone a move leaves behind). The coin
+ * usually still lists the contract on this chain (an adopted derived row, a
+ * move tombstone, or an admin add for a listed contract), and a hard DELETE
+ * would let the next `sync-v2-evm-variants` re-insert an active derived row,
+ * so a delete only stuck until the daily sync. The derivation skips
+ * non-derived rows, so the tombstone is what makes the removal permanent.
+ * The market row stays (keyed by address; another asset may share it).
+ */
 export async function deleteV2Variant(tx: Tx, ref: VariantWriteRef): Promise<'deleted' | 'not_found'> {
     if (!ref.assetId) return 'not_found';
-    // The market row stays (keyed by address; another asset may share it and
-    // the next EVM refresh would recreate it anyway).
     const rows = await tx<Array<{ address: string }>>`
-        DELETE FROM v2_asset_variants
+        UPDATE v2_asset_variants
+        SET is_active = false, origin = 'admin', source = 'admin', updated_at = now()
         WHERE chain = ${ref.chain} AND address = ${ref.address} AND asset_id = ${ref.assetId}
         RETURNING address
     `;

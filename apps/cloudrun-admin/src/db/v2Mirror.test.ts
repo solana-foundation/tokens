@@ -69,11 +69,19 @@ describe('mirrorSolanaVariantRow', () => {
         const { tx, queries } = makeFakeTx(text => (text.startsWith('INSERT INTO v2_asset_variants') ? [{ address: MINT }] : []));
         expect(await mirrorSolanaVariantRow(tx, { assetId: 'amazon', mint: MINT, nowMs: NOW })).toBe('mirrored');
 
-        expect(queries).toHaveLength(3);
-        const [lock, variants, markets] = queries;
+        expect(queries).toHaveLength(4);
+        const [lock, replaced, variants, markets] = queries;
         // Serialized with the worker's set-based mirror (same advisory key).
         expect(lock!.text).toBe('SELECT pg_advisory_xact_lock($)');
         expect(lock!.params).toEqual([830_033]);
+        // Port of the worker mirror's replaced-row DELETE: a stale solana_v1 row
+        // still holding this variant's id on another mint (pre-mirror delete)
+        // would otherwise trip the (asset_id, variant_id) unique index.
+        expect(replaced!.text).toContain('DELETE FROM v2_asset_variants v');
+        expect(replaced!.text).toContain("WHERE v.origin = 'solana_v1' AND v.chain = 'solana' AND v.asset_id = $ AND v.address <> $");
+        expect(replaced!.text).toContain('AND av.variant_id = v.variant_id');
+        expect(replaced!.text).toContain('AND NOT EXISTS');
+        expect(replaced!.params).toEqual(['amazon', MINT, MINT]);
         expect(variants!.text).toContain('INSERT INTO v2_asset_variants');
         expect(variants!.text).toContain("SELECT 'solana', av.mint, av.asset_id, av.variant_id");
         expect(variants!.text).toContain("'solana_v1', av.source, av.is_active");
@@ -97,8 +105,10 @@ describe('mirrorSolanaVariantRow', () => {
     it('skips the market copy when v1 has no such variant', async () => {
         const { tx, queries } = makeFakeTx(() => []);
         expect(await mirrorSolanaVariantRow(tx, { assetId: 'amazon', mint: MINT, nowMs: NOW })).toBe('skipped');
-        expect(queries).toHaveLength(2);
+        expect(queries).toHaveLength(3);
         expect(queries[0]!.text).toContain('pg_advisory_xact_lock');
+        expect(queries[1]!.text).toContain('DELETE FROM v2_asset_variants v');
+        expect(queries.some(q => q.text.includes('v2_variant_markets_latest'))).toBe(false);
     });
 });
 
@@ -138,15 +148,16 @@ describe('deleteSolanaVariantRow / moveSolanaVariantRow', () => {
     it('move = delete under the old asset, then mirror under the new one', async () => {
         const { tx, queries } = makeFakeTx(text => (text.startsWith('INSERT INTO v2_asset_variants') ? [{ address: MINT }] : []));
         await moveSolanaVariantRow(tx, { mint: MINT, fromAssetId: 'amazon', toAssetId: 'amazon-xstock', nowMs: NOW });
-        expect(queries.map(q => q.text.split(' ').slice(0, 3).join(' '))).toEqual([
+        expect(queries.map(q => q.text.split(' ').slice(0, 4).join(' '))).toEqual([
             'SELECT pg_advisory_xact_lock($)',
-            'DELETE FROM v2_asset_variants',
+            'DELETE FROM v2_asset_variants WHERE',
             'SELECT pg_advisory_xact_lock($)',
-            'INSERT INTO v2_asset_variants',
-            'INSERT INTO v2_variant_markets_latest',
+            'DELETE FROM v2_asset_variants v',
+            'INSERT INTO v2_asset_variants (',
+            'INSERT INTO v2_variant_markets_latest (chain,',
         ]);
         expect(queries[1]!.params).toEqual([MINT, 'amazon']);
-        expect(queries[3]!.params).toEqual(['amazon-xstock', MINT, NOW]);
+        expect(queries[4]!.params).toEqual(['amazon-xstock', MINT, NOW]);
     });
 });
 

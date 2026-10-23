@@ -73,8 +73,9 @@ cron tick:
   best effort: the RPC result carries `v2Synced: false` when it failed and the
   next cron tick repairs it. `adminSyncV2SolanaVariants` runs the mirror on
   demand. cloudrun-admin's variant mutations (edit / deactivate / delete /
-  move / rename / hard delete) write the matching per-row v2 statements inside
-  their own transactions. Both mirrors take the advisory lock
+  move / rename / hard delete, and an advisory that re-activates the variant)
+  write the matching per-row v2 statements inside their own transactions. Both
+  mirrors take the advisory lock
   `pg_advisory_xact_lock(830033)` (`V2_SOLANA_MIRROR_LOCK_KEY` in
   `apps/cloudrun-assets/src/db/v2Assets.ts` and
   `apps/cloudrun-admin/src/db/v2Mirror.ts`; keep the literals equal) so a cron
@@ -97,7 +98,14 @@ cron tick:
   can be undone; the source's `is_active` travels with it) and leaves an
   inactive `origin='admin'` row at the old key: the source asset still lists
   the contract on CoinGecko, and the derivation skips non-derived rows, so the
-  tombstone is what stops it from re-inserting there. Soft-deleting an asset is refused while it has active v2 rows.
+  tombstone is what stops it from re-inserting there. **Deleting** an EVM row
+  through `deleteVariant` leaves the same inactive `origin='admin'` row (a
+  hard DELETE of an adopted row or a move tombstone would not stick: the coin
+  still lists the contract, so the next derivation would re-insert it active),
+  which is why the admin app offers only Deactivate for EVM rows. Adopting a
+  derived row keeps its `kind` (the derivation knew the coin's home chain, and
+  `bridged` rows are excluded from v2 supply). Soft-deleting an asset is
+  refused while it has active v2 rows.
 
 Invariant: admin never writes Solana rows to v2 directly, so
 `SELECT count(*) FROM v2_asset_variants WHERE origin = 'admin' AND chain = 'solana'`

@@ -267,6 +267,7 @@ describe('makePostgresAdminMutationsRepo v2 mirror (Solana refs)', () => {
             'SELECT id, asset_id',
             'UPDATE asset_variants SET',
             'SELECT pg_advisory_xact_lock($)',
+            'DELETE FROM v2_asset_variants',
             'INSERT INTO v2_asset_variants',
             'INSERT INTO v2_variant_markets_latest',
         ]);
@@ -390,13 +391,24 @@ describe('makePostgresAdminMutationsRepo v2-native (EVM refs)', () => {
         expect(queries[0]!.params).toEqual([false, new Date(NOW), 'ethereum', EVM_ADDRESS, 'usdc']);
     });
 
-    it('deleteVariant deletes the v2 row by key and leaves the market row', async () => {
-        const { sql, queries } = makeFakeSql(text => (text.startsWith('DELETE FROM v2_asset_variants') ? [{ address: EVM_ADDRESS }] : []));
+    it('deleteVariant leaves an inactive admin row (tombstone) instead of removing the v2 row', async () => {
+        // A hard DELETE of an adopted row or a move tombstone would not stick:
+        // the coin still lists the contract, so the next sync-v2-evm-variants
+        // would re-insert an active derived row.
+        const { sql, queries } = makeFakeSql(text => (text.startsWith('UPDATE v2_asset_variants') ? [{ address: EVM_ADDRESS }] : []));
         const repo = makePostgresAdminMutationsRepo(sql);
         expect(await repo.deleteVariant(EVM_REF)).toBe('deleted');
         expect(queries).toHaveLength(1);
+        expect(queries[0]!.text).toContain("SET is_active = false, origin = 'admin', source = 'admin'");
+        expect(queries[0]!.text).toContain('WHERE chain = $ AND address = $ AND asset_id = $');
         expect(queries[0]!.params).toEqual(['ethereum', EVM_ADDRESS, 'usdc']);
-        expect(queries[0]!.text).not.toContain('origin');
+        expect(queries.some(q => q.text.startsWith('DELETE'))).toBe(false);
+    });
+
+    it('deleteVariant reports not_found when no v2 row matches the key', async () => {
+        const { sql } = makeFakeSql(() => []);
+        const repo = makePostgresAdminMutationsRepo(sql);
+        expect(await repo.deleteVariant(EVM_REF)).toBe('not_found');
     });
 
     it('moveVariantToCanonical copies the row under the destination and leaves an inactive admin row behind', async () => {

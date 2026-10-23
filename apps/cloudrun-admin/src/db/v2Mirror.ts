@@ -95,6 +95,28 @@ export async function mirrorSolanaVariantRow(
     args: { assetId: string; mint: string; nowMs: number },
 ): Promise<'mirrored' | 'skipped'> {
     await lockSolanaMirror(tx);
+    // A v1 variant whose mint was replaced keeps its variant_id, so a stale
+    // mirror row still holding that id on another address (left by a delete
+    // that predates this mirror; the cron only deactivates unseen rows, it
+    // never removes them) would trip the (asset_id, variant_id) unique index
+    // and roll back the v1 edit. Single-row port of the worker mirror's
+    // `replaced` DELETE: drop such rows when v1 no longer has them.
+    await tx`
+        DELETE FROM v2_asset_variants v
+        WHERE v.origin = 'solana_v1'
+          AND v.chain = 'solana'
+          AND v.asset_id = ${args.assetId}
+          AND v.address <> ${args.mint}
+          AND EXISTS (
+              SELECT 1 FROM asset_variants av
+              WHERE av.chain = 'solana' AND av.asset_id = v.asset_id AND av.mint = ${args.mint}
+                AND av.variant_id = v.variant_id
+          )
+          AND NOT EXISTS (
+              SELECT 1 FROM asset_variants av
+              WHERE av.chain = 'solana' AND av.asset_id = v.asset_id AND av.mint = v.address
+          )
+    `;
     const rows = await tx<Array<{ address: string }>>`
         INSERT INTO v2_asset_variants (
             chain, address, asset_id, variant_id, kind, trust_tier, stock_variant_tier, tags,
