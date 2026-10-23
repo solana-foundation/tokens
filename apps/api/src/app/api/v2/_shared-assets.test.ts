@@ -1201,13 +1201,37 @@ describe('selectVolume30d', () => {
         expect(selectVolume30d(chainStats({ solana: 100 }), new Map([rollup('solana', 3_000, 30, 'solana_v1', 1)]), NOW)).toEqual({ volume30dUSD: 3_000, scope: 'solana' });
     });
 
-    test('complete windows on every traded chain sum with scope all; untraded chains are ignored', () => {
-        const rollups = new Map([
-            rollup('solana', 3_000, 30, 'solana_v1'),
-            rollup('ethereum', 900, 29, 'computed'),
-            rollup('base', 50, 3, 'computed'),
-        ]);
-        expect(selectVolume30d(chainStats({ solana: 100, ethereum: 50, base: 0 }), rollups, NOW)).toEqual({ volume30dUSD: 3_900, scope: 'all' });
+    test('complete windows on every chain in the window sum with scope all', () => {
+        const rollups = new Map([rollup('solana', 3_000, 30, 'solana_v1'), rollup('ethereum', 900, 29, 'computed')]);
+        expect(selectVolume30d(chainStats({ solana: 100, ethereum: 50 }), rollups, NOW)).toEqual({ volume30dUSD: 3_900, scope: 'all' });
+        // Rollup rows for chains the asset has no variants on are not revived.
         expect(selectVolume30d(chainStats({}), rollups, NOW)).toEqual({ volume30dUSD: null, scope: null });
+    });
+
+    test('a chain quiet today still counts its month: window volume is summed, an incomplete window blocks, no window volume is ignored', () => {
+        const solana = rollup('solana', 3_000, 30, 'solana_v1');
+        const ethereum = rollup('ethereum', 900, 29, 'computed');
+        // Base traded this month but not in the last 24h: its 30d volume is part of the figure.
+        expect(selectVolume30d(chainStats({ solana: 100, ethereum: 50, base: 0 }), new Map([solana, ethereum, rollup('base', 50, 30, 'computed')]), NOW)).toEqual({
+            volume30dUSD: 3_950,
+            scope: 'all',
+        });
+        // Its window still has to be complete and fresh; otherwise the figure is not served as `all`.
+        expect(selectVolume30d(chainStats({ solana: 100, ethereum: 50, base: 0 }), new Map([solana, ethereum, rollup('base', 50, 3, 'computed')]), NOW)).toEqual({ volume30dUSD: null, scope: null });
+        expect(selectVolume30d(chainStats({ solana: 100, ethereum: 50, base: 0 }), new Map([solana, ethereum, rollup('base', 50, 30, 'computed', NOW - 3 * 24 * 60 * 60 * 1000)]), NOW)).toEqual({ volume30dUSD: null, scope: null });
+        // A chain with nothing in the window (no row, or a zero / empty rollup) is ignored.
+        expect(selectVolume30d(chainStats({ solana: 100, ethereum: 50, base: 0 }), new Map([solana, ethereum]), NOW)).toEqual({ volume30dUSD: 3_900, scope: 'all' });
+        expect(selectVolume30d(chainStats({ solana: 100, ethereum: 50, base: 0 }), new Map([solana, ethereum, rollup('base', 0, 30, 'computed')]), NOW)).toEqual({ volume30dUSD: 3_900, scope: 'all' });
+        expect(selectVolume30d(chainStats({ solana: 100, ethereum: 50, base: 0 }), new Map([solana, ethereum, rollup('base', null, 0, 'computed')]), NOW)).toEqual({ volume30dUSD: 3_900, scope: 'all' });
+        // Quiet on every chain today but with a month of history on two: still served as `all`.
+        expect(selectVolume30d(chainStats({ solana: 0, ethereum: 0 }), new Map([solana, ethereum]), NOW)).toEqual({ volume30dUSD: 3_900, scope: 'all' });
+        // Only Solana's window has volume: scope stays `solana` even with a quiet EVM chain present.
+        expect(selectVolume30d(chainStats({ solana: 0, ethereum: 0 }), new Map([solana, rollup('ethereum', 0, 30, 'computed')]), NOW)).toEqual({ volume30dUSD: 3_000, scope: 'solana' });
+        // A quiet chain whose only window volume was on a rejected pool contributes nothing and does not block.
+        const junk = '0x00000000000000000000000000000000000000ff';
+        const base = rollup('base', 40, 30, 'computed');
+        const rejectedOnly = [base[0], { ...base[1], volume30dByAddress: { [junk]: { volume: 40, days: 30 } } }] as const;
+        const quality = new Map([[`base:${junk}`, { included: false, reasons: ['price_outlier' as const] }]]);
+        expect(selectVolume30d(chainStats({ solana: 100, ethereum: 50, base: 0 }), new Map([solana, ethereum, rejectedOnly]), NOW, quality)).toEqual({ volume30dUSD: 3_900, scope: 'all' });
     });
 });

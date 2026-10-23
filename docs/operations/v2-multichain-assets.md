@@ -212,10 +212,12 @@ matter to the total (≥ 1% of it): a variant added last week keeps the chain
 "partial" until its own history is in, a dust pool cannot. Solana's 30d
 stays v1's candle rollup, mirrored as `solana_v1`.
 
-The API serves `stats.volume30dUSD` only when every chain with 24h volume has
-a complete window (`solana_v1`, or `computed` with ≥ 28 days and
-`last_computed_at` within 48 h, so a stalled job is not served as current)
-and labels it with `stats.volume30dScope` (`all` | `solana` | null); after
+The API serves `stats.volume30dUSD` only when every chain in the window (24h
+volume, or accepted volume in its rollup: a chain quiet today still counts its
+month rather than dropping out of a figure labelled `all`) has a complete one
+(`solana_v1`, or `computed` with ≥ 28 days and `last_computed_at` within 48 h,
+so a stalled job is not served as current) and labels it with
+`stats.volume30dScope` (`all` | `solana` | null); after
 this ships, EVM assets show null for ~4 weeks while the samples accrue.
 
 Args: `chains` (EVM ids, default all), `retentionDays` (31–365, default

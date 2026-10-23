@@ -219,7 +219,7 @@ interface V2AssetStats {
     price: number | null;
     liquidity: number | null;      // = aggregate.liquidity
     volume24hUSD: number | null;
-    volume30dUSD: number | null;   // sum over traded chains once every chain's 30d window is complete, else null
+    volume30dUSD: number | null;   // sum over the chains in the window once each has a complete one, else null
     marketCap: number | null;
     fdv: number | null;
     priceChange24hPercent: number | null;
@@ -297,9 +297,11 @@ Reading the numbers:
   float is `aggregate.marketCap`); supply is the tokenized issued supply. `stats.source` says where
   each figure came from (`coingecko` | `stock` | `onchain`). A native coin's home-chain row (ETH on
   Ethereum) has no pool; it carries the reference's supply so `chainStats.ethereum` is not empty.
-  `volume30dUSD` sums each traded chain's 30-day DEX volume (Solana from candles, EVM from daily
-  Birdeye samples over the 30 completed UTC days) and is null until every traded chain has at
-  least 28 sampled days for each variant that matters to its total, refreshed within 48 h; rows the
+  `volume30dUSD` sums each chain's 30-day DEX volume (Solana from candles, EVM from daily
+  Birdeye samples over the 30 completed UTC days) over the chains in the window (traded in the
+  last 24h, or with accepted volume in the window: a pool quiet today still counts its month) and
+  is null until every such chain has at least 28 sampled days for each variant that matters to
+  its total, refreshed within 48 h; rows the
   quality guard rejects are left out of it, as they are of the 24h figure (Solana keeps v1's candle
   figure until its own per-mint samples cover the window);
   `volume30dScope` says whether it covers every chain or Solana alone.

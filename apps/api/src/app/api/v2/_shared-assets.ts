@@ -254,10 +254,13 @@ export const VOLUME_30D_MAX_AGE_MS = 48 * 60 * 60 * 1000;
 
 /**
  * 30d volume across chains: the sum of each chain's rollup when every chain
- * that traded in the last 24h has a complete window (`solana_v1` rows come
- * from a 30-day candle series; `computed` EVM rows need ≥ 28 sampled days),
- * else null. `scope` says what the number covers so an asset whose only
- * volume is on Solana is still served as `solana`.
+ * in the window has a complete one (`solana_v1` rows come from a 30-day
+ * candle series; `computed` EVM rows need ≥ 28 sampled days), else null. A
+ * chain is in the window when it traded in the last 24h or its accepted
+ * rollup carries volume: a pool quiet today still has its month counted, and
+ * is not quietly left out of a figure labelled `all`. `scope` says what the
+ * number covers so an asset whose only volume is on Solana is still served
+ * as `solana`.
  */
 export function selectVolume30d(
     chainStats: Partial<Record<ChainId, V2ChainStats>>,
@@ -271,25 +274,32 @@ export function selectVolume30d(
     /** Current markets; a current accepted variant trading without a saved share makes its chain incomplete. */
     marketByKey?: ReadonlyMap<VariantKey, VariantMarketSnapshotResult>,
 ): { volume30dUSD: number | null; scope: V2Volume30dScope } {
-    const tradedChains = CHAIN_KINDS.filter(chain => (chainStats[chain]?.volume24hUSD ?? 0) > 0);
-    if (tradedChains.length === 0) return { volume30dUSD: null, scope: null };
+    const none = { volume30dUSD: null, scope: null } as const;
     let sum = 0;
-    let any = false;
-    for (const chain of tradedChains) {
+    const covered: ChainId[] = [];
+    // Only chains the asset currently has variants on; a rollup row left by a
+    // chain whose variants were all deactivated is not revived here.
+    for (const chain of CHAIN_KINDS.filter(chain => chainStats[chain] !== undefined)) {
+        const tradedToday = (chainStats[chain]?.volume24hUSD ?? 0) > 0;
         const rollup = rollupByChain?.get(chain);
-        if (!rollup) return { volume30dUSD: null, scope: null };
+        if (!rollup) {
+            if (tradedToday) return none;
+            continue;
+        }
         const read = acceptedVolume30d(chain, rollup, qualityByKey, variants, marketByKey, nowMs);
-        if (read.volume30dUSD === null) return { volume30dUSD: null, scope: null };
+        const inWindow = tradedToday || (read.volume30dUSD !== null && read.volume30dUSD > 0);
+        if (!inWindow) continue;
+        if (read.volume30dUSD === null) return none;
         const fresh =
             rollup.origin === 'solana_v1' ||
             (rollup.lastComputedAt !== null && nowMs - rollup.lastComputedAt <= VOLUME_30D_MAX_AGE_MS);
         const complete = rollup.origin === 'solana_v1' || (read.days ?? 0) >= VOLUME_30D_MIN_DAYS;
-        if (!fresh || !complete) return { volume30dUSD: null, scope: null };
+        if (!fresh || !complete) return none;
         sum += read.volume30dUSD;
-        any = true;
+        covered.push(chain);
     }
-    if (!any) return { volume30dUSD: null, scope: null };
-    return { volume30dUSD: sum, scope: tradedChains.length === 1 && tradedChains[0] === 'solana' ? 'solana' : 'all' };
+    if (covered.length === 0) return none;
+    return { volume30dUSD: sum, scope: covered.length === 1 && covered[0] === 'solana' ? 'solana' : 'all' };
 }
 
 /** Share of a chain's variants that counts toward the window's completeness. */
