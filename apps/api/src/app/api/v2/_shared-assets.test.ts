@@ -683,6 +683,24 @@ describe('chain stats', () => {
         expect(stats.solana?.excludedCount).toBe(1);
     });
 
+    test("an ETF share's price stays out of gold's average but stands in when a chain has only derivatives", () => {
+        const spot = variant('solana', 'PaxGold11111111111111111111111111111111111', 'spot');
+        const share = variant('solana', 'GldxShare111111111111111111111111111111111', 'etf');
+        const byKey = new Map([
+            [spot.key, { ...market(100_000, 1000), price: 4000, volume24hUSD: 50_000 }],
+            [share.key, { ...market(900_000, 9000), price: 300, volume24hUSD: 90_000 }],
+        ]);
+        const { chainStats, accumulatorsByChain } = computeChainStatsDetailed([spot, share], byKey, null);
+        expect(chainStats.solana?.price).toBe(4000);
+        expect(chainStats.solana?.liquidity).toBe(1_000_000);
+        expect(chainStats.solana?.excludedByIssuance.derivative).toBe(1);
+        expect(aggregateChainStats(chainStats, accumulatorsByChain).price).toBe(4000);
+        // Silver-like: a commodity whose only token is the fund share still has a price.
+        const only = computeChainStats([share], byKey, null, undefined, undefined, variantIssuanceByKey([share], 'commodity'));
+        expect(only.solana?.price).toBe(300);
+        expect(only.solana?.marketCap).toBeNull();
+    });
+
     test('a row missing a field lends no weight to that field: +10% on $10K, -10% on $10K and $90K unreported is 0%', () => {
         const a1 = variant('base', '0x00000000000000000000000000000000000000a1', 'stablecoin');
         const a2 = variant('base', '0x00000000000000000000000000000000000000a2', 'stablecoin');

@@ -252,9 +252,11 @@ export type V2ExcludedByIssuance = {
 
 export type V2ChainStats = {
     /**
-     * Average over the chain's included, priced rows, each weighted by its
-     * liquidity (else 24h volume); when no included row has either, the plain
-     * mean, so a lone fresh pool with no activity yet still reports its price.
+     * Average over the chain's included rows priced in the asset's units
+     * (derivatives such as ETF shares or LSTs only stand in when there is no
+     * other priced row), each weighted by its liquidity (else 24h volume);
+     * when no such row has either, the plain mean, so a lone fresh pool with
+     * no activity yet still reports its price.
      */
     price: number | null;
     priceChange24hPercent: number | null;
@@ -929,6 +931,11 @@ export function computeChainStatsDetailed(
     const byChain = new Map<ChainId, V2ChainStats>();
     const issuance = issuanceByKey ?? variantIssuanceByKey(variants);
     const accByChain = new Map<ChainId, WeightedAccumulator>();
+    // Derivative rows (an ETF share next to spot gold, an LST next to SOL) are
+    // priced in other units; their liquidity and volume count, their prices
+    // only stand in when a chain has no other priced row (a commodity whose
+    // only token is a fund share).
+    const derivativeAccByChain = new Map<ChainId, WeightedAccumulator>();
     const seen = new Set<VariantKey>();
     for (const variant of variants) {
         if (seen.has(variant.key)) continue;
@@ -977,9 +984,13 @@ export function computeChainStatsDetailed(
         entry.trade24h = addFinite(entry.trade24h, market?.trade24h);
         const weight = activityWeight(market);
         const price = market?.price;
-        if (typeof price === 'number' && Number.isFinite(price) && price > 0) accumulate(acc.price, price, weight);
-        accumulate(acc.change24h, market?.priceChange24hPercent, weight);
-        accumulate(acc.change1h, market?.priceChange1hPercent, weight);
+        const priceAcc =
+            variantIssuanceClass === 'derivative'
+                ? (derivativeAccByChain.get(variant.chain) ?? (derivativeAccByChain.set(variant.chain, emptyAccumulator()), derivativeAccByChain.get(variant.chain)!))
+                : acc;
+        if (typeof price === 'number' && Number.isFinite(price) && price > 0) accumulate(priceAcc.price, price, weight);
+        accumulate(priceAcc.change24h, market?.priceChange24hPercent, weight);
+        accumulate(priceAcc.change1h, market?.priceChange1hPercent, weight);
         if (variantIssuanceClass === 'native') {
             entry.issuedVariantCount += 1;
             entry.marketCap = addFinite(entry.marketCap, market?.marketCap);
@@ -994,7 +1005,10 @@ export function computeChainStatsDetailed(
     for (const chain of CHAIN_KINDS) {
         const entry = byChain.get(chain);
         if (!entry) continue;
-        const acc = accByChain.get(chain) ?? emptyAccumulator();
+        const own = accByChain.get(chain) ?? emptyAccumulator();
+        // Derivative prices only when nothing on the chain is priced in the asset's units.
+        const acc = own.price.count > 0 ? own : (derivativeAccByChain.get(chain) ?? own);
+        accByChain.set(chain, acc);
         entry.price = weighted(acc.price);
         entry.priceChange24hPercent = weighted(acc.change24h);
         entry.priceChange1hPercent = weighted(acc.change1h);
