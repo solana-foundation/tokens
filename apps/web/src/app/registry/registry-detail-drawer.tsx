@@ -10,12 +10,10 @@ import type { RegistryRow } from './lib/types';
 import { AddressLink, displayNameOf, tokenHref } from './registry-cells';
 import { RegistryTokenLogo } from './registry-token-logo';
 
-const PROVIDER_LABELS = { allium: 'Allium', rwa: 'RWA.xyz' } as const;
-
 /**
- * The drawer a registry phone row opens: headline value with its source, the
- * taxonomy badge, the mint address, the three numbers, and "View more" only
- * when the asset has a tokens.xyz page.
+ * The drawer a registry phone row opens: the taxonomy badge, the mint
+ * address, the three numbers, and "View more" only when the asset has a
+ * tokens.xyz page.
  */
 export function RegistryDetailDrawer({
     row,
@@ -32,15 +30,6 @@ export function RegistryDetailDrawer({
     const shown = row ?? lastRow.current;
     if (!shown) return null;
 
-    const headline =
-        shown.providerValueUsd != null && shown.providerValueSource
-            ? {
-                  value: shown.providerValueUsd,
-                  caption: `on-chain value · ${PROVIDER_LABELS[shown.providerValueSource]}`,
-              }
-            : shown.marketCapUsd != null
-              ? { value: shown.marketCapUsd, caption: 'market cap' }
-              : null;
     const taxonomy = [shown.group, shown.category, shown.assetClass].filter((value): value is string => !!value);
 
     return (
@@ -64,13 +53,7 @@ export function RegistryDetailDrawer({
                 },
             }}
         >
-            <div className="flex flex-col gap-1">
-                <span className="text-[32px] font-semibold leading-none tracking-tight tabular-nums text-text-extra-high">
-                    {headline ? formatLargeNumber(headline.value) : '—'}
-                </span>
-                <span className="text-[14px] text-text-low">{headline ? headline.caption : 'no value reported'}</span>
-            </div>
-            <div className="mt-4 flex flex-col gap-3">
+            <div className="flex flex-col gap-3 pt-1">
                 {taxonomy.length > 0 ? (
                     <div className="flex">
                         <SplitBadge segments={taxonomy} title={taxonomy.join(' · ')} />
