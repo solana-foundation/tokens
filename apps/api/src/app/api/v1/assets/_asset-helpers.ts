@@ -866,12 +866,27 @@ export function mergeAssetStatsWithAggregates(
     } = {},
 ): AssetStats | null {
     if (!aggregates) return stats;
-    if (options.keepGuardedTotals && stats) {
+    if (options.keepGuardedTotals) {
         const volume30dUSD =
             typeof aggregates.volume30dUSD === 'number' && Number.isFinite(aggregates.volume30dUSD)
                 ? aggregates.volume30dUSD
-                : stats.volume30dUSD;
-        return { ...stats, volume30dUSD };
+                : (stats?.volume30dUSD ?? null);
+        if (stats) return { ...stats, volume30dUSD };
+        // Every market failed the guard: the rollup's liquidity / volume are
+        // exactly the rejected rows' activity and must not come back here.
+        if (volume30dUSD === null) return null;
+        return {
+            price: null,
+            liquidity: null,
+            volume24hUSD: null,
+            volume30dUSD,
+            marketCap: null,
+            fdv: null,
+            priceChange24hPercent: null,
+            priceChange1hPercent: null,
+            totalSupply: null,
+            circulatingSupply: null,
+        };
     }
 
     const liquidity =

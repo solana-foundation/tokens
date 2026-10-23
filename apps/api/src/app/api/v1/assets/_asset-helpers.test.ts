@@ -333,6 +333,23 @@ describe('aggregate token stats', () => {
         expect(mergeAssetStatsWithAggregates(stats, rollup, { keepGuardedTotals: false })?.liquidity).toBe(5_000_011);
     });
 
+    it('when every market fails the guard the rollup totals do not come back through the merge', () => {
+        const NOW = 1_800_000_000_000;
+        const junk = makeToken('junk', { price: 15_192, liquidity: 11, volume24hUSD: 40, marketCap: 739_000_000, lastFetchedAt: NOW });
+        const asset = makeAsset(['junk']);
+        const tokens = new Map([['junk', junk]]);
+        const quality = assessTokenMarkets(asset, tokens, { priceUsd: 386 }, NOW);
+        expect(quality.get('junk')?.included).toBe(false);
+        const stats = aggregateTokenStats(asset, tokens, junk, quality);
+        expect(stats).toBeNull();
+        const rollup = { liquidity: 11, volume24hUSD: 40, volume30dUSD: 1_200 };
+        const merged = mergeAssetStatsWithAggregates(stats, rollup, { keepGuardedTotals: hasExcludedMarkets(quality) });
+        expect(merged?.liquidity).toBeNull();
+        expect(merged?.volume24hUSD).toBeNull();
+        expect(merged?.volume30dUSD).toBe(1_200);
+        expect(mergeAssetStatsWithAggregates(stats, { liquidity: 11, volume24hUSD: 40, volume30dUSD: null }, { keepGuardedTotals: true })).toBeNull();
+    });
+
     it('liquidity and volume sum over every accepted variant; price and supply stay on the spot-like ones', () => {
         const NOW = 1_800_000_000_000;
         // gold: a spot token, a healthy ETF-share variant, and a stale spot row the guard rejects.
