@@ -172,11 +172,13 @@ function TokenMobileRow({
             onFocus={() => handlers.onFocus(token)}
         >
             {spec.showChart ? (
-                // The 24h sparkline as a quiet backdrop behind the numbers: right half only,
-                // masked in from the left so it never collides with the name.
+                // The 24h sparkline as a quiet backdrop in the row's middle band: a soft filled
+                // area that fades in after the stats and fades out again under the price, so it
+                // reads as texture and never competes with the numbers (the end dot sits in the
+                // faded-out zone).
                 <div
                     aria-hidden
-                    className="pointer-events-none absolute inset-y-0 right-0 w-1/2 opacity-30 [mask-image:linear-gradient(to_right,transparent,black_55%)]"
+                    className="pointer-events-none absolute inset-y-2 right-0 w-[64%] opacity-25 [mask-image:linear-gradient(to_right,transparent_0%,black_30%,black_58%,transparent_90%)]"
                 >
                     <InlinePriceChart
                         assetId={token.assetId}
@@ -186,8 +188,11 @@ function TokenMobileRow({
                         percentChange24h={token.priceChange24hPercent}
                         symbol={token.symbol}
                         emptyText=""
-                        chartHeight={MOBILE_ROW_HEIGHT}
+                        chartHeight={MOBILE_ROW_HEIGHT - 16}
                         fallbackDays={INLINE_CHART_FALLBACK_DAYS}
+                        fill
+                        exaggerate={false}
+                        lineWidth={1.25}
                         className="relative h-full w-full overflow-hidden bg-transparent"
                     />
                 </div>
