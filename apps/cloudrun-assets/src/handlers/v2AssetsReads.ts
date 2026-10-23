@@ -82,6 +82,7 @@ export interface V2ChainRollupDbRow {
     volume_24h_usd: number | null;
     volume_30d_usd: number | null;
     volume_30d_days?: number | null;
+    volume_30d_by_address?: unknown;
     primary_address: string | null;
     variant_count: number | null;
     last_computed_at: number | string | bigint | null;
@@ -160,6 +161,8 @@ export interface V2ChainRollupResult {
     volume30dUSD: number | null;
     /** Distinct days behind `volume30dUSD`: 30 for the Solana candle rollup, the sample count for computed EVM rows. */
     volume30dDays: number | null;
+    /** Computed rows: each contributing address's share of `volume30dUSD` (null before the first rollup after 0036, and for `solana_v1`). */
+    volume30dByAddress?: Record<string, number> | null;
     primaryAddress: string | null;
     variantCount: number;
     lastComputedAt: number | null;
@@ -381,11 +384,22 @@ export function rowToRollupResult(row: V2ChainRollupDbRow): V2ChainRollupResult 
                     ? row.volume_30d_days
                     : 0
                 : 30,
+        volume30dByAddress: row.origin === 'computed' ? toVolumeByAddress(row.volume_30d_by_address) : null,
         primaryAddress: row.primary_address,
         variantCount: toCount(row.variant_count),
         lastComputedAt: toEpochMs(row.last_computed_at),
         origin: row.origin === 'computed' ? 'computed' : 'solana_v1',
     };
+}
+
+function toVolumeByAddress(value: unknown): Record<string, number> | null {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+    const out: Record<string, number> = {};
+    for (const [address, volume] of Object.entries(value as Record<string, unknown>)) {
+        const number = typeof volume === 'string' ? Number(volume) : volume;
+        if (typeof number === 'number' && Number.isFinite(number)) out[address] = number;
+    }
+    return out;
 }
 
 function variantResults(rows: readonly V2VariantDbRow[]): V2VariantResult[] {

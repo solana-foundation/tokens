@@ -193,6 +193,8 @@ day's tail). Daily at `25 0 * * *` this job sums the 30 completed UTC days
 before today per (asset, chain) over the asset's active EVM variants into
 `v2_asset_chain_markets_latest` with `origin='computed'` and
 `volume_30d_days`, then prunes samples older than `retentionDays` (45).
+`volume_30d_by_address` keeps each variant's share so the API can leave out a
+row its quality guard rejects (the rollup itself sums every active variant).
 `volume_30d_days` is the smallest distinct-day count among the variants that
 matter to the total (≥ 1% of it): a variant added last week keeps the chain
 "partial" until its own history is in, a dust pool cannot. Solana's 30d

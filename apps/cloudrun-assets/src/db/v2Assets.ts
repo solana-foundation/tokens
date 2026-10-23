@@ -740,19 +740,22 @@ export function makePostgresV2AssetsJobsRepo(sql: Sql): V2AssetsJobsRepo {
                     SELECT asset_id, chain,
                            max(chain_volume_usd) AS volume_30d_usd,
                            min(days) FILTER (WHERE chain_volume_usd <= 0 OR volume_usd >= 0.01 * chain_volume_usd)::int AS days,
-                           count(*)::int AS variant_count
+                           count(*)::int AS variant_count,
+                           -- Per-variant shares, so the API can leave out a row its quality guard rejects.
+                           jsonb_object_agg(address, volume_usd) AS by_address
                     FROM shares
                     GROUP BY asset_id, chain
                 )
                 INSERT INTO v2_asset_chain_markets_latest (
-                    asset_id, chain, liquidity, volume_24h_usd, volume_30d_usd, volume_30d_days,
+                    asset_id, chain, liquidity, volume_24h_usd, volume_30d_usd, volume_30d_days, volume_30d_by_address,
                     primary_address, variant_count, last_computed_at, origin
                 )
-                SELECT t.asset_id, t.chain, 0, 0, t.volume_30d_usd, t.days, NULL, t.variant_count, ${nowMs}, 'computed'
+                SELECT t.asset_id, t.chain, 0, 0, t.volume_30d_usd, t.days, t.by_address, NULL, t.variant_count, ${nowMs}, 'computed'
                 FROM totals t
                 ON CONFLICT (asset_id, chain) DO UPDATE SET
                     volume_30d_usd = EXCLUDED.volume_30d_usd,
                     volume_30d_days = EXCLUDED.volume_30d_days,
+                    volume_30d_by_address = EXCLUDED.volume_30d_by_address,
                     variant_count = EXCLUDED.variant_count,
                     last_computed_at = EXCLUDED.last_computed_at,
                     updated_at = now()
@@ -871,7 +874,7 @@ export function makePostgresV2AssetsReadsRepo(sql: Sql): V2AssetsReadsRepo {
         async findRollupsByAssetIds(assetIds) {
             if (assetIds.length === 0) return [];
             return sql<V2ChainRollupDbRow[]>`
-                SELECT asset_id, chain, liquidity, volume_24h_usd, volume_30d_usd, volume_30d_days, primary_address,
+                SELECT asset_id, chain, liquidity, volume_24h_usd, volume_30d_usd, volume_30d_days, volume_30d_by_address, primary_address,
                        variant_count, last_computed_at, origin
                 FROM v2_asset_chain_markets_latest
                 WHERE asset_id IN ${sql([...assetIds])}

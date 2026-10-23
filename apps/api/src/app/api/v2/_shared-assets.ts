@@ -264,6 +264,8 @@ export function selectVolume30d(
     rollupByChain: ReadonlyMap<ChainId, V2ChainRollupResult> | null,
     /** A computed row whose `lastComputedAt` is more than `VOLUME_30D_MAX_AGE_MS` before this is treated as missing. */
     nowMs: number = Date.now(),
+    /** From `assessVariantMarkets`: a rejected row's share (`volume30dByAddress`) leaves a computed chain total. */
+    qualityByKey?: ReadonlyMap<VariantKey, MarketQuality>,
 ): { volume30dUSD: number | null; scope: V2Volume30dScope } {
     const tradedChains = CHAIN_KINDS.filter(chain => (chainStats[chain]?.volume24hUSD ?? 0) > 0);
     if (tradedChains.length === 0) return { volume30dUSD: null, scope: null };
@@ -277,11 +279,30 @@ export function selectVolume30d(
             (rollup.lastComputedAt !== null && nowMs - rollup.lastComputedAt <= VOLUME_30D_MAX_AGE_MS);
         const complete = rollup.origin === 'solana_v1' || (rollup.volume30dDays ?? 0) >= VOLUME_30D_MIN_DAYS;
         if (!fresh || !complete) return { volume30dUSD: null, scope: null };
-        sum += rollup.volume30dUSD;
+        sum += rollup.volume30dUSD - excludedVolume30d(chain, rollup, qualityByKey);
         any = true;
     }
     if (!any) return { volume30dUSD: null, scope: null };
     return { volume30dUSD: sum, scope: tradedChains.length === 1 && tradedChains[0] === 'solana' ? 'solana' : 'all' };
+}
+
+/** The 30d volume of this chain's rows the quality guard rejected (computed rows only; the rollup sums every row). */
+function excludedVolume30d(
+    chain: ChainId,
+    rollup: V2ChainRollupResult,
+    qualityByKey: ReadonlyMap<VariantKey, MarketQuality> | undefined,
+): number {
+    const byAddress = rollup.origin === 'computed' ? rollup.volume30dByAddress : null;
+    if (!byAddress || !qualityByKey) return 0;
+    let excluded = 0;
+    for (const [key, quality] of qualityByKey) {
+        if (quality.included) continue;
+        const separator = key.indexOf(':');
+        if (separator <= 0 || key.slice(0, separator) !== chain) continue;
+        const share = byAddress[key.slice(separator + 1)];
+        if (typeof share === 'number' && Number.isFinite(share)) excluded += share;
+    }
+    return Math.min(excluded, rollup.volume30dUSD ?? 0);
 }
 
 /** Variants left out of supply / market cap, by why. */
@@ -1537,7 +1558,7 @@ export function buildV2Asset(ctx: V2AssetBuildContext): V2Asset | null {
         issuanceByKey,
     );
     const aggregate = aggregateChainStats(chainStats, accumulatorsByChain);
-    const volume30d = selectVolume30d(chainStats, ctx.rollupByChain, ctx.nowMs ?? Date.now());
+    const volume30d = selectVolume30d(chainStats, ctx.rollupByChain, ctx.nowMs ?? Date.now(), qualityByKey);
     const stats = selectV2HeadlineStats({
         reference: {
             coingecko: coingeckoSnapshot,

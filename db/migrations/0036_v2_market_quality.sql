@@ -35,5 +35,8 @@ CREATE TABLE IF NOT EXISTS v2_variant_volume_daily (
 CREATE INDEX IF NOT EXISTS v2_variant_volume_daily_by_day ON v2_variant_volume_daily (day);
 
 ALTER TABLE v2_asset_chain_markets_latest ADD COLUMN IF NOT EXISTS volume_30d_days integer;
+-- address -> 30d volume for the variants behind a computed row, so the API can
+-- leave out the share of any row its quality guard rejects.
+ALTER TABLE v2_asset_chain_markets_latest ADD COLUMN IF NOT EXISTS volume_30d_by_address jsonb;
 
 INSERT INTO schema_migrations (version) VALUES ('0036_v2_market_quality') ON CONFLICT DO NOTHING;
