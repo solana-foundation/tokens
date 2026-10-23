@@ -3,6 +3,7 @@
 import { useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { domAnimation, LazyMotion, m, useReducedMotion } from 'motion/react';
 import { trackEvent } from '@/lib/posthog-client';
+import { useScrollEdges } from '@/hooks/use-scroll-edges';
 import { TokenTable } from './token-table';
 import { TRENDING_MODE_IDS, TRENDING_WINDOW_IDS } from './home-tokens-constants';
 import { useHomeTokens } from './home-tokens-provider';
@@ -250,11 +251,29 @@ function CategoryTabsInner() {
         [activeCategoryId, categories],
     );
 
+    const tabStripRef = useRef<HTMLDivElement>(null);
+    const tabStripEdges = useScrollEdges(tabStripRef);
+
     return (
         <div>
             <div className="mx-auto max-w-7xl px-4 md:px-6">
                 <div className="mb-4 flex items-center justify-between gap-3">
-                    <div className="min-w-0 flex-1 overflow-x-auto pb-2 -mb-2 scrollbar-hide">
+                    <div
+                        ref={tabStripRef}
+                        className={cn(
+                            'min-w-0 flex-1 overflow-x-auto pb-2 -mb-2 scrollbar-hide',
+                            // Fade whichever edge is clipping tabs instead of cutting them off.
+                            tabStripEdges.left &&
+                                tabStripEdges.right &&
+                                '[mask-image:linear-gradient(to_right,transparent,black_40px,black_calc(100%-40px),transparent)]',
+                            tabStripEdges.left &&
+                                !tabStripEdges.right &&
+                                '[mask-image:linear-gradient(to_right,transparent,black_40px)]',
+                            !tabStripEdges.left &&
+                                tabStripEdges.right &&
+                                '[mask-image:linear-gradient(to_right,black_calc(100%-40px),transparent)]',
+                        )}
+                    >
                         <SegmentedControl
                             className={cn(
                                 'w-max min-w-0 [&_button]:!text-[22px]',
