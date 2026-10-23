@@ -419,10 +419,6 @@ export const GET = route(
             const token = primaryVariant ? tokenByMint.get(primaryVariant.mint) : undefined;
             const marketMeta = primaryVariant ? marketMetaByMint.get(primaryVariant.mint) : undefined;
             const symbols = listSymbols(asset, tokenByMint);
-            const quality = assessTokenMarkets(asset, tokenByMint, null, Date.now());
-            const stats = mergeAssetStatsWithAggregates(aggregateTokenStats(asset, tokenByMint, token, quality), aggregates, {
-                keepGuardedTotals: hasExcludedMarkets(quality),
-            });
             const imageUrl = resolveAssetImageUrl(request, {
                 assetId: asset.assetId,
                 symbol: asset.symbol ?? assetDoc?.symbol ?? null,
@@ -448,6 +444,43 @@ export const GET = route(
                 const isStale = lastFetchedAt === null || Date.now() - lastFetchedAt > 10 * 60_000;
                 if (isStale) yield* scheduleStockPriceWarm({ assetId: asset.assetId });
             }
+
+            let coinSnapshot: {
+                priceUsd?: number | null;
+                marketCapUsd?: number | null;
+                volume24hUsd?: number | null;
+                priceChange24hPercent?: number | null;
+                lastFetchedAt?: number | null;
+                providerLastUpdatedAt?: number | null;
+                circulatingSupply?: number | null;
+                totalSupply?: number | null;
+                maxSupply?: number | null;
+            } | null = null;
+            if (!shouldUseStockCanonicalMarket && !preStocksCanonicalMarket && coinId) {
+                coinSnapshot = yield* coingeckoGetPriceLatestByCoinId({ coinId }).pipe(tapErrorAndDefault('assets.detail.coinPrice', null, { assetId: asset.assetId, coinId }));
+                const lastFetchedAt = coinSnapshot?.lastFetchedAt ?? null;
+                const isStale = lastFetchedAt === null || Date.now() - lastFetchedAt > 10 * 60_000;
+                if (isStale) yield* scheduleCoinPriceWarm({ coinId });
+            }
+
+            // The quality guard anchors on the same reference curated / search
+            // use: the CoinGecko price, or the stock price when one token is one
+            // share. Loaded above so a lone liquid pool priced far off the
+            // reference cannot pass as the only row.
+            const qualityReference =
+                shouldUseStockCanonicalMarket
+                    ? isCanonicalPublicEquityAsset(asset)
+                        ? { priceUsd: stockSnapshot?.priceUsd ?? null }
+                        : null
+                    : preStocksCanonicalMarket
+                      ? null
+                      : coinSnapshot
+                        ? { priceUsd: coinSnapshot.priceUsd ?? null }
+                        : null;
+            const quality = assessTokenMarkets(asset, tokenByMint, qualityReference, Date.now());
+            const stats = mergeAssetStatsWithAggregates(aggregateTokenStats(asset, tokenByMint, token, quality), aggregates, {
+                keepGuardedTotals: hasExcludedMarkets(quality),
+            });
 
             let canonicalMarket:
                 | {
@@ -491,17 +524,6 @@ export const GET = route(
                       asOf: number | null;
                   }
                 | undefined = undefined;
-            let coinSnapshot: {
-                priceUsd?: number | null;
-                marketCapUsd?: number | null;
-                volume24hUsd?: number | null;
-                priceChange24hPercent?: number | null;
-                lastFetchedAt?: number | null;
-                providerLastUpdatedAt?: number | null;
-                circulatingSupply?: number | null;
-                totalSupply?: number | null;
-                maxSupply?: number | null;
-            } | null = null;
 
             const companyMarketCap = computeCompanyMarketCapUsd(asset, stockSnapshot);
 
@@ -520,12 +542,6 @@ export const GET = route(
             } else if (preStocksCanonicalMarket) {
                 canonicalMarket = preStocksCanonicalMarket;
             } else if (coinId) {
-                coinSnapshot = yield* coingeckoGetPriceLatestByCoinId({ coinId }).pipe(tapErrorAndDefault('assets.detail.coinPrice', null, { assetId: asset.assetId, coinId }));
-
-                const lastFetchedAt = coinSnapshot?.lastFetchedAt ?? null;
-                const isStale = lastFetchedAt === null || Date.now() - lastFetchedAt > 10 * 60_000;
-                if (isStale) yield* scheduleCoinPriceWarm({ coinId });
-
                 canonicalMarket = {
                     source: 'coingecko',
                     coinId,
@@ -533,7 +549,7 @@ export const GET = route(
                     marketCap: coinSnapshot?.marketCapUsd ?? null,
                     volume24hUSD: coinSnapshot?.volume24hUsd ?? null,
                     priceChange24hPercent: coinSnapshot?.priceChange24hPercent ?? null,
-                    lastFetchedAt,
+                    lastFetchedAt: coinSnapshot?.lastFetchedAt ?? null,
                     providerLastUpdatedAt: coinSnapshot?.providerLastUpdatedAt ?? null,
                     circulatingSupply: coinSnapshot?.circulatingSupply ?? null,
                     totalSupply: coinSnapshot?.totalSupply ?? null,

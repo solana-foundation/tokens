@@ -333,6 +333,39 @@ describe('aggregate token stats', () => {
         expect(mergeAssetStatsWithAggregates(stats, rollup, { keepGuardedTotals: false })?.liquidity).toBe(5_000_011);
     });
 
+    it('liquidity and volume sum over every accepted variant; price and supply stay on the spot-like ones', () => {
+        const NOW = 1_800_000_000_000;
+        // gold: a spot token, a healthy ETF-share variant, and a stale spot row the guard rejects.
+        const asset = {
+            assetId: 'gold',
+            category: 'commodity',
+            variants: [
+                { mint: 'spot', kind: 'spot' as const, tags: [] },
+                { mint: 'etf', kind: 'etf' as const, tags: [] },
+                { mint: 'stale', kind: 'spot' as const, tags: [] },
+            ],
+        } as unknown as CanonicalAsset;
+        const spot = makeToken('spot', { price: 2_400, liquidity: 3_000_000, volume24hUSD: 900_000, marketCap: 50_000_000, totalSupply: 20_000, lastFetchedAt: NOW });
+        const etf = makeToken('etf', { price: 240, liquidity: 2_000_000, volume24hUSD: 400_000, marketCap: 30_000_000, totalSupply: 125_000, lastFetchedAt: NOW });
+        const stale = makeToken('stale', { price: 2_410, liquidity: 500_000, volume24hUSD: 100_000, marketCap: 5_000_000, lastFetchedAt: NOW - 30 * 24 * 60 * 60 * 1000 });
+        const tokens = new Map([
+            ['spot', spot],
+            ['etf', etf],
+            ['stale', stale],
+        ]);
+        const quality = assessTokenMarkets(asset, tokens, { priceUsd: 2_400 }, NOW);
+        expect(quality.get('stale')?.included).toBe(false);
+        expect(quality.get('etf')?.included).toBe(true);
+        const stats = aggregateTokenStats(asset, tokens, spot, quality)!;
+        // The healthy ETF pool keeps its activity in the guarded totals that replace the rollup.
+        expect(stats.liquidity).toBe(5_000_000);
+        expect(stats.volume24hUSD).toBe(1_300_000);
+        // Its share price and supply do not mix into the per-ounce figures.
+        expect(stats.price).toBe(2_400);
+        expect(stats.marketCap).toBe(50_000_000);
+        expect(stats.totalSupply).toBe(20_000);
+    });
+
     it('falls back to volume-weighted price when no variants have liquidity', () => {
         const primary = makeToken('primary', {
             price: 100,

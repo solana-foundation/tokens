@@ -754,8 +754,13 @@ export function aggregateTokenStats(
     /** From `assessTokenMarkets`; rows marked excluded leave every sum and average. Absent = everything counts. */
     qualityByMint?: ReadonlyMap<string, MarketQuality>,
 ): AssetStats | null {
+    // Price, supply and market cap come from the spot-like variants (an ETF
+    // share or a leveraged token is not priced in the asset's units); liquidity
+    // and 24h volume are activity and sum over every accepted variant, the way
+    // the worker rollup these totals stand in for does.
     const spotLikeVariants = asset.variants.filter(v => isSpotLikeKind(v.kind));
     const variants = spotLikeVariants.length > 0 ? spotLikeVariants : asset.variants;
+    const pricedMints = new Set(variants.map(v => v.mint));
     const included = (mint: string) => qualityByMint?.get(mint)?.included !== false;
     // The primary's verdict is keyed like `tokenByMint` (a mint on v1, `chain:address`
     // on v2), not necessarily like the snapshot's own `address`, so find its key by identity.
@@ -794,12 +799,18 @@ export function aggregateTokenStats(
     };
     const tokensForWeightedStats: TokenMarketSnapshot[] = [];
 
-    for (const variant of variants) {
+    const activityKeys = new Set<keyof typeof totals>(['liquidity', 'volume24hUSD']);
+    const seenMints = new Set<string>();
+    for (const variant of asset.variants) {
+        if (seenMints.has(variant.mint)) continue;
+        seenMints.add(variant.mint);
         const token = tokenByMint.get(variant.mint);
         if (!token || !included(variant.mint)) continue;
-        tokensForWeightedStats.push(token);
+        const priced = pricedMints.has(variant.mint);
+        if (priced) tokensForWeightedStats.push(token);
 
         for (const key of Object.keys(totals) as Array<keyof typeof totals>) {
+            if (!priced && !activityKeys.has(key)) continue;
             const value = token[key];
             if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) continue;
             totals[key] += value;
