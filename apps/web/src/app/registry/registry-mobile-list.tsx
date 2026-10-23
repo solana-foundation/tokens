@@ -6,7 +6,7 @@ import { ChevronDown, ChevronUp, ChevronsUpDown } from 'lucide-react';
 import { cn } from '@tokens/ui/cn';
 import { formatLargeNumber } from '@/lib/format';
 import type { RegistryRow } from './lib/types';
-import { AddressLink, ProviderValues, RegistryEmptyState, TokenLink } from './registry-cells';
+import { AddressLink, RegistryEmptyState, TokenLink } from './registry-cells';
 import { RegistryTokenLogo } from './registry-token-logo';
 
 /**
@@ -97,23 +97,41 @@ function TaxonomyBadge({ category, assetClass }: { category: string | null; asse
                     {index > 0 ? (
                         <span
                             aria-hidden
-                            className="w-3 shrink-0 border-x border-border-medium bg-[repeating-linear-gradient(135deg,var(--color-border-medium)_0_1px,transparent_1px_4px)]"
+                            className="w-2.5 shrink-0 border-x border-border-medium bg-[repeating-linear-gradient(135deg,var(--color-border-medium)_0_1px,transparent_1px_4px)]"
                         />
                     ) : null}
-                    <span className="min-w-0 truncate px-2 py-1">{segment}</span>
+                    <span className="min-w-0 truncate px-1.5 py-1">{segment}</span>
                 </span>
             ))}
         </span>
     );
 }
 
+/** One stat line of the phone row's right column: label left, number right. */
+function StatRow({ label, value, muted = false }: { label: string; value: number | null; muted?: boolean }) {
+    return (
+        <div className="flex items-baseline justify-between gap-2 py-1 first:pt-0 last:pb-0">
+            <dt className="text-[11px] font-medium text-text-extra-low">{label}</dt>
+            <dd
+                className={cn(
+                    'text-[13px] font-medium tabular-nums',
+                    value == null ? 'text-text-extra-low' : muted ? 'text-text-medium' : 'text-[#2D2D2D]',
+                )}
+            >
+                {formatLargeNumber(value)}
+            </dd>
+        </div>
+    );
+}
+
 function RegistryMobileRow({ row }: { row: RegistryRow }) {
     return (
-        <li className="flex flex-col gap-2 px-4 py-3.5">
-            <div className="flex items-start justify-between gap-3">
-                {/* The symbol links to the asset page and the address to the explorer: two
-                    separate anchors side by side rather than one nested in the other. */}
-                <div className="flex min-w-0 items-start gap-2.5">
+        <li className="flex items-stretch gap-2.5 px-4 py-3">
+            {/* Main area: identity, then the taxonomy badge right under the address. The symbol
+                links to the asset page and the address to the explorer: two separate anchors
+                side by side rather than one nested in the other. */}
+            <div className="flex min-w-0 flex-1 flex-col justify-center gap-2">
+                <div className="flex min-w-0 items-center gap-2.5">
                     <TokenLink row={row} className="-m-1 shrink-0 p-1">
                         <RegistryTokenLogo row={row} size={32} />
                     </TokenLink>
@@ -126,25 +144,16 @@ function RegistryMobileRow({ row }: { row: RegistryRow }) {
                         <AddressLink address={row.mintAddress} className="-my-1 py-1 text-[12px]" />
                     </div>
                 </div>
-                {/* All the numbers stack in one right column: both provider values, then
-                    the market cap as a quieter third line. */}
-                <div className="flex shrink-0 flex-col items-end gap-0.5">
-                    <ProviderValues row={row} align="right" />
-                    {row.marketCapUsd != null ? (
-                        <div className="grid grid-cols-[auto_auto] justify-end gap-x-2 text-right leading-tight tabular-nums">
-                            <span className="min-w-[52px] self-center text-left text-[11px] font-medium text-text-extra-low">
-                                Mcap
-                            </span>
-                            <span className="text-[12px] font-medium text-text-low">
-                                {formatLargeNumber(row.marketCapUsd)}
-                            </span>
-                        </div>
-                    ) : null}
+                <div className="flex min-w-0">
+                    <TaxonomyBadge category={row.category} assetClass={row.assetClass} />
                 </div>
             </div>
-            <div className="flex min-w-0 pl-[42px] text-[12px] text-text-low">
-                <TaxonomyBadge category={row.category} assetClass={row.assetClass} />
-            </div>
+            {/* Stats column: the three numbers as a hairline-separated list, split from the main area. */}
+            <dl className="flex w-[120px] shrink-0 flex-col justify-center divide-y divide-border-extra-light border-l border-border-light pl-2.5">
+                <StatRow label="Allium" value={row.alliumValueUsd} />
+                <StatRow label="RWA.xyz" value={row.rwaValueUsd} />
+                <StatRow label="Mcap" value={row.marketCapUsd} muted />
+            </dl>
         </li>
     );
 }
