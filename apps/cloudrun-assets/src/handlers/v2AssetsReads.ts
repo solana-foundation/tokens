@@ -161,7 +161,7 @@ export interface V2ChainRollupResult {
     volume30dUSD: number | null;
     /** Distinct days behind `volume30dUSD`: 30 for the Solana candle rollup, the sample count for computed EVM rows. */
     volume30dDays: number | null;
-    /** Computed rows: each contributing address's share of `volume30dUSD` and its sampled days (null before the first rollup after 0037, and for `solana_v1`). */
+    /** Each contributing address's share of the window and its sampled days (null before the first rollup after 0037; on `solana_v1` rows only once Solana samples exist, and `volume30dUSD` there is still v1's candle figure). */
     volume30dByAddress?: Record<string, { volume: number; days: number }> | null;
     primaryAddress: string | null;
     variantCount: number;
@@ -384,7 +384,8 @@ export function rowToRollupResult(row: V2ChainRollupDbRow): V2ChainRollupResult 
                     ? row.volume_30d_days
                     : 0
                 : 30,
-        volume30dByAddress: row.origin === 'computed' ? toVolumeByAddress(row.volume_30d_by_address) : null,
+        // Computed rows always carry shares after 0037; the mirrored Solana row gains them once its per-mint samples exist.
+        volume30dByAddress: toVolumeByAddress(row.volume_30d_by_address),
         primaryAddress: row.primary_address,
         variantCount: toCount(row.variant_count),
         lastComputedAt: toEpochMs(row.last_computed_at),

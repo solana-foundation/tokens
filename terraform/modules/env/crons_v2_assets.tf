@@ -41,7 +41,9 @@ locals {
     },
     {
       name      = "refresh-v2-evm-variant-markets"
-      schedule  = var.env == "stg" ? "20 3 * * *" : "7-59/15 * * * *"
+      # stg hourly, not daily: the API's quality guard treats an EVM row older than
+      # 3 h as stale, and a daily refresh would leave every stg row out of the sums.
+      schedule  = var.env == "stg" ? "7 * * * *" : "7-59/15 * * * *"
       http_path = "/jobs/refresh-v2-evm-variant-markets"
       body_json = jsonencode({
         maxVariants   = 400

@@ -196,7 +196,16 @@ before today per (asset, chain) over the asset's active EVM variants into
 `volume_30d_by_address` (migration 0037) keeps each variant's share and
 sampled-day count so the API can read the chain over the rows its quality
 guard accepts: a rejected row's share leaves the total and the completeness
-check (the rollup itself sums every active variant).
+check, a share whose variant is gone is dropped, and a current variant that
+trades today without a saved share keeps the chain partial until the next
+rollup (the rollup itself sums every active variant). Solana: the mirror
+also records a daily sample per mirrored row, and the rollup attaches the
+per-mint shares to the mirrored `solana_v1` row without touching v1's
+candle figure; the API serves v1's figure until the samples cover the window
+(28 days), then reads the Solana row like a computed one so rejected mints
+leave it too. v1's own curated / search / detail routes keep their guarded
+liquidity and volume sums whenever the guard rejected a row and take only
+the 30d figure from `asset_markets_latest`.
 `volume_30d_days` is the smallest distinct-day count among the variants that
 matter to the total (≥ 1% of it): a variant added last week keeps the chain
 "partial" until its own history is in, a dust pool cannot. Solana's 30d

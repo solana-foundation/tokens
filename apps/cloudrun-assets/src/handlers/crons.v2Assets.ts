@@ -1042,7 +1042,9 @@ const VOLUME_30D_ARG_SPECS = {
  */
 export async function rollupChainVolume30d(deps: V2AssetsCronDeps, rawArgs: unknown): Promise<CronResult> {
     const raw = asObject(rawArgs ?? {});
-    const chains = parseEvmChainsArg(raw.chains);
+    // EVM chains from the arg (default all), plus Solana: its samples come from the
+    // v1 mirror, and only the per-mint shares are attached to the mirrored row.
+    const chains: ChainKind[] = [...parseEvmChainsArg(raw.chains), 'solana'];
     const args = await Effect.runPromise(decodeJobArgs(VOLUME_30D_ARG_SPECS, rawArgs ?? {}));
     const start = deps.now();
     const written = await deps.repo.rollupChainVolume30d(chains, start);

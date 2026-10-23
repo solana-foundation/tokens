@@ -67,6 +67,7 @@ import {
     resolveAssetImageUrl,
     aggregateTokenStats,
     assessTokenMarkets,
+    hasExcludedMarkets,
     buildCuratedMintRank,
     buildSnapshotFromTokenMarketsDoc,
     matchRegistryAssetForDbAsset,
@@ -1186,9 +1187,11 @@ export const GET = route(
                               const primaryTokenForStats = primaryVariantForStats
                                   ? tokenByMint.get(primaryVariantForStats.mint)
                                   : undefined;
+                              const quality = assessTokenMarkets(asset, tokenByMint, qualityReferenceForAsset(asset), Date.now());
                               const stats = mergeAssetStatsWithAggregates(
-                                  aggregateTokenStats(asset, tokenByMint, primaryTokenForStats, assessTokenMarkets(asset, tokenByMint, qualityReferenceForAsset(asset), Date.now())),
+                                  aggregateTokenStats(asset, tokenByMint, primaryTokenForStats, quality),
                                   aggregates,
+                                  { keepGuardedTotals: hasExcludedMarkets(quality) },
                               );
                               const effectiveStats = applyCanonicalStats(asset, stats);
                               const canonicalMarket = canonicalMarketForAsset(asset);
@@ -1254,9 +1257,11 @@ export const GET = route(
                               const token = primaryVariant ? tokenByMint.get(primaryVariant.mint) : undefined;
                               const aggregates = aggregatesByAssetId.get(asset.assetId) ?? null;
 
+                              const quality = assessTokenMarkets(asset, tokenByMint, qualityReferenceForAsset(asset), Date.now());
                               const stats = mergeAssetStatsWithAggregates(
-                                  aggregateTokenStats(asset, tokenByMint, token, assessTokenMarkets(asset, tokenByMint, qualityReferenceForAsset(asset), Date.now())),
+                                  aggregateTokenStats(asset, tokenByMint, token, quality),
                                   aggregates,
+                                  { keepGuardedTotals: hasExcludedMarkets(quality) },
                               );
                               const effectiveStats = applyCanonicalStats(asset, stats);
                               const canonicalMarket = canonicalMarketForAsset(asset);

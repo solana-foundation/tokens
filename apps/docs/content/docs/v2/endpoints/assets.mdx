@@ -300,7 +300,8 @@ Reading the numbers:
   `volume30dUSD` sums each traded chain's 30-day DEX volume (Solana from candles, EVM from daily
   Birdeye samples over the 30 completed UTC days) and is null until every traded chain has at
   least 28 sampled days for each variant that matters to its total, refreshed within 48 h; rows the
-  quality guard rejects are left out of it, as they are of the 24h figure;
+  quality guard rejects are left out of it, as they are of the 24h figure (Solana keeps v1's candle
+  figure until its own per-mint samples cover the window);
   `volume30dScope` says whether it covers every chain or Solana alone.
 - `referenceMarket` is the off-chain reference v1 called `canonicalMarket`; `source: "stock"`
   replaces v1's `clickhouse_stock`. Consumers with an exhaustive `switch (source)` should keep a

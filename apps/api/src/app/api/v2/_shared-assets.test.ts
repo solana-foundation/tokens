@@ -1167,10 +1167,24 @@ describe('selectVolume30d', () => {
         const dustNew = [eth[0], { ...eth[1], volume30dByAddress: { [good]: { volume: 600, days: 30 }, '0x02': { volume: 1, days: 2 } } }] as const;
         expect(selectVolume30d(chainStats({ solana: 100, ethereum: 50 }), new Map([rollup('solana', 3_000, 30, 'solana_v1'), dustNew]), NOW, new Map())).toEqual({ volume30dUSD: 3_601, scope: 'all' });
         // A share saved for an address that has since been deactivated (absent from the current variants) is dropped.
-        const current = [{ chain: 'ethereum' as const, address: good }];
+        const current = [{ chain: 'ethereum' as const, address: good, key: `ethereum:${good}` }];
         expect(selectVolume30d(chainStats({ solana: 100, ethereum: 50 }), rollups, NOW, new Map(), current)).toEqual({ volume30dUSD: 3_600, scope: 'all' });
+        // A current accepted variant that trades today but has no saved share (listed after the rollup) makes the chain incomplete.
+        const newcomer = '0x0000000000000000000000000000000000000077';
+        const currentWithNew = [...current, { chain: 'ethereum' as const, address: newcomer, key: `ethereum:${newcomer}` }];
+        const markets = new Map([[`ethereum:${newcomer}`, { mint: 'x', source: 'birdeye' as const, lastFetchedAt: NOW, volume24hUSD: 5_000 }]]);
+        expect(selectVolume30d(chainStats({ solana: 100, ethereum: 50 }), rollups, NOW, new Map(), currentWithNew, markets)).toEqual({ volume30dUSD: null, scope: null });
         // Rows written before 0037 carry no shares and are served as stored.
         expect(selectVolume30d(chainStats({ solana: 100, ethereum: 50 }), new Map([rollup('solana', 3_000, 30, 'solana_v1'), rollup('ethereum', 900, 30, 'computed')]), NOW, quality)).toEqual({ volume30dUSD: 3_900, scope: 'all' });
+    });
+
+    test("the mirrored Solana row keeps v1's candle figure until its per-mint samples cover the window, then leaves rejected mints out", () => {
+        const sol = rollup('solana', 3_000, 30, 'solana_v1');
+        const early = [sol[0], { ...sol[1], volume30dByAddress: { GoodMint: { volume: 2_000, days: 10 }, JunkMint: { volume: 900, days: 10 } } }] as const;
+        const quality = new Map([['solana:JunkMint', { included: false, reasons: ['dust' as const] }]]);
+        expect(selectVolume30d(chainStats({ solana: 100 }), new Map([early]), NOW, quality)).toEqual({ volume30dUSD: 3_000, scope: 'solana' });
+        const covered = [sol[0], { ...sol[1], volume30dByAddress: { GoodMint: { volume: 2_000, days: 30 }, JunkMint: { volume: 900, days: 30 } } }] as const;
+        expect(selectVolume30d(chainStats({ solana: 100 }), new Map([covered]), NOW, quality)).toEqual({ volume30dUSD: 2_000, scope: 'solana' });
     });
 
     test('a computed rollup the daily job stopped refreshing is not served, however many days it had', () => {

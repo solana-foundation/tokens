@@ -267,7 +267,9 @@ export function selectVolume30d(
     /** From `assessVariantMarkets`: a computed chain is read over the accepted rows only (`volume30dByAddress`). */
     qualityByKey?: ReadonlyMap<VariantKey, MarketQuality>,
     /** The asset's current variants; shares of addresses deactivated since the rollup are dropped. */
-    variants?: ReadonlyArray<Pick<V2VariantResult, 'chain' | 'address'>>,
+    variants?: ReadonlyArray<Pick<V2VariantResult, 'chain' | 'address' | 'key'>>,
+    /** Current markets; a current accepted variant trading without a saved share makes its chain incomplete. */
+    marketByKey?: ReadonlyMap<VariantKey, VariantMarketSnapshotResult>,
 ): { volume30dUSD: number | null; scope: V2Volume30dScope } {
     const tradedChains = CHAIN_KINDS.filter(chain => (chainStats[chain]?.volume24hUSD ?? 0) > 0);
     if (tradedChains.length === 0) return { volume30dUSD: null, scope: null };
@@ -276,7 +278,7 @@ export function selectVolume30d(
     for (const chain of tradedChains) {
         const rollup = rollupByChain?.get(chain);
         if (!rollup) return { volume30dUSD: null, scope: null };
-        const read = acceptedVolume30d(chain, rollup, qualityByKey, variants);
+        const read = acceptedVolume30d(chain, rollup, qualityByKey, variants, marketByKey);
         if (read.volume30dUSD === null) return { volume30dUSD: null, scope: null };
         const fresh =
             rollup.origin === 'solana_v1' ||
@@ -294,22 +296,31 @@ export function selectVolume30d(
 const VOLUME_30D_COVERAGE_MIN_SHARE = 0.01;
 
 /**
- * A computed rollup read over the rows the quality guard accepted: the
- * rejected rows' shares leave the total, and the sampled-day count is the
- * smallest among the accepted variants that make up at least 1% of what is
- * left (the rollup's own `volume30dDays` was computed over every row). Rows
- * written before migration 0037 carry no shares and are served as stored.
+ * A rollup read over the rows the quality guard accepted: the rejected rows'
+ * shares leave the total, a share saved for a variant that is gone is dropped,
+ * and the sampled-day count is the smallest among the accepted variants that
+ * make up at least 1% of what is left (the rollup's own `volume30dDays` was
+ * computed over every row). A current, accepted variant that trades today but
+ * has no saved share yet (listed after the last rollup) makes the window
+ * incomplete. Rows written before migration 0037 carry no shares and are
+ * served as stored. The mirrored Solana row (`solana_v1`) keeps v1's candle
+ * figure until its own per-mint samples cover the window, then reads like a
+ * computed row.
  */
 function acceptedVolume30d(
     chain: ChainId,
     rollup: V2ChainRollupResult,
     qualityByKey: ReadonlyMap<VariantKey, MarketQuality> | undefined,
     /** The asset's current variants; a share saved for an address no longer among them (deactivated since the rollup) is dropped. */
-    variants: ReadonlyArray<Pick<V2VariantResult, 'chain' | 'address'>> | undefined,
+    variants: ReadonlyArray<Pick<V2VariantResult, 'chain' | 'address' | 'key'>> | undefined,
+    /** Current markets: a current accepted variant with 24h volume and no saved share is missing history. */
+    marketByKey: ReadonlyMap<VariantKey, VariantMarketSnapshotResult> | undefined,
 ): { volume30dUSD: number | null; days: number | null } {
-    const byAddress = rollup.origin === 'computed' ? rollup.volume30dByAddress : null;
-    if (!byAddress) return { volume30dUSD: rollup.volume30dUSD, days: rollup.volume30dDays };
-    const present = variants ? new Set(variants.filter(v => v.chain === chain).map(v => v.address)) : null;
+    const stored = { volume30dUSD: rollup.volume30dUSD, days: rollup.volume30dDays };
+    const byAddress = rollup.volume30dByAddress;
+    if (!byAddress) return stored;
+    const current = variants?.filter(v => v.chain === chain) ?? null;
+    const present = current ? new Set(current.map(v => v.address)) : null;
     const rejected = new Set<string>();
     for (const [key, quality] of qualityByKey ?? []) {
         if (quality.included) continue;
@@ -325,7 +336,19 @@ function acceptedVolume30d(
         if (total > 0 && share.volume < VOLUME_30D_COVERAGE_MIN_SHARE * total) continue;
         days = days === null ? share.days : Math.min(days, share.days);
     }
-    return { volume30dUSD: accepted.length > 0 ? total : null, days };
+    const tradingWithoutHistory = (current ?? []).some(
+        v =>
+            !rejected.has(v.address) &&
+            !(v.address in byAddress) &&
+            (marketByKey?.get(v.key)?.volume24hUSD ?? 0) > 0,
+    );
+    if (tradingWithoutHistory) days = 0;
+    const read = { volume30dUSD: accepted.length > 0 ? total : null, days };
+    if (rollup.origin === 'solana_v1') {
+        // v1's candle figure stands until the per-mint samples cover the window.
+        return (read.days ?? 0) >= VOLUME_30D_MIN_DAYS && read.volume30dUSD !== null ? read : stored;
+    }
+    return read;
 }
 
 /** Variants left out of supply / market cap, by why. */
@@ -1581,7 +1604,7 @@ export function buildV2Asset(ctx: V2AssetBuildContext): V2Asset | null {
         issuanceByKey,
     );
     const aggregate = aggregateChainStats(chainStats, accumulatorsByChain);
-    const volume30d = selectVolume30d(chainStats, ctx.rollupByChain, ctx.nowMs ?? Date.now(), qualityByKey, ctx.variants);
+    const volume30d = selectVolume30d(chainStats, ctx.rollupByChain, ctx.nowMs ?? Date.now(), qualityByKey, ctx.variants, ctx.marketByKey);
     const stats = selectV2HeadlineStats({
         reference: {
             coingecko: coingeckoSnapshot,

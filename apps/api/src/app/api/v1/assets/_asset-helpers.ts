@@ -4,6 +4,7 @@ import {
     type MarketQualityInput,
     type MarketQualityReference,
 } from './_market-quality';
+export { hasExcludedMarkets } from './_market-quality';
 import {
     STOCK_VARIANT_TIERS,
     classifyLiquidityTier,
@@ -780,12 +781,16 @@ export function aggregateTokenStats(
         fdv: 0,
         totalSupply: 0,
         circulatingSupply: 0,
+        liquidity: 0,
+        volume24hUSD: 0,
     };
     const hasTotals = {
         marketCap: false,
         fdv: false,
         totalSupply: false,
         circulatingSupply: false,
+        liquidity: false,
+        volume24hUSD: false,
     };
     const tokensForWeightedStats: TokenMarketSnapshot[] = [];
 
@@ -824,6 +829,10 @@ export function aggregateTokenStats(
     return {
         ...base,
         price: weightedPrice ?? base.price,
+        // Guarded sums over the included rows (pools are distinct), so a caller
+        // that keeps them over the worker rollup still has cross-variant totals.
+        liquidity: hasTotals.liquidity ? totals.liquidity : base.liquidity,
+        volume24hUSD: hasTotals.volume24hUSD ? totals.volume24hUSD : base.volume24hUSD,
         marketCap: hasTotals.marketCap ? totals.marketCap : base.marketCap,
         fdv: hasTotals.fdv ? totals.fdv : base.fdv,
         priceChange24hPercent: weightedPriceChange24hPercent ?? base.priceChange24hPercent,
@@ -836,8 +845,23 @@ export function aggregateTokenStats(
 export function mergeAssetStatsWithAggregates(
     stats: AssetStats | null,
     aggregates: { liquidity: number; volume24hUSD: number; volume30dUSD?: number | null } | null,
+    options: {
+        /**
+         * The worker rollup sums every variant without the quality guard. When the
+         * guard rejected a row, keep the guarded liquidity / volume from `stats`
+         * and take only the 30d figure (v1 keeps no per-mint 30d history) from it.
+         */
+        keepGuardedTotals?: boolean;
+    } = {},
 ): AssetStats | null {
     if (!aggregates) return stats;
+    if (options.keepGuardedTotals && stats) {
+        const volume30dUSD =
+            typeof aggregates.volume30dUSD === 'number' && Number.isFinite(aggregates.volume30dUSD)
+                ? aggregates.volume30dUSD
+                : stats.volume30dUSD;
+        return { ...stats, volume30dUSD };
+    }
 
     const liquidity =
         typeof aggregates.liquidity === 'number' && Number.isFinite(aggregates.liquidity) ? aggregates.liquidity : 0;

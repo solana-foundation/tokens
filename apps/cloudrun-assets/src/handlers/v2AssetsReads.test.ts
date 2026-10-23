@@ -189,7 +189,8 @@ describe('row mappers', () => {
         );
         expect(rowToRollupResult({ ...base, chain: 'base', origin: 'computed', volume_30d_days: null })?.volume30dDays).toBe(0);
         expect(rowToRollupResult({ ...base, chain: 'base', origin: 'computed', volume_30d_days: 12, volume_30d_by_address: { '0xabc': { volume: 7, days: 12 }, '0xdef': { volume: '5', days: '3' }, bad: 1 } })?.volume30dByAddress).toEqual({ '0xabc': { volume: 7, days: 12 }, '0xdef': { volume: 5, days: 3 } });
-        expect(rowToRollupResult({ ...base, origin: 'solana_v1', volume_30d_by_address: { x: 1 } })?.volume30dByAddress).toBeNull();
+        expect(rowToRollupResult({ ...base, origin: 'solana_v1', volume_30d_by_address: { x: { volume: 1, days: 2 } } })?.volume30dByAddress).toEqual({ x: { volume: 1, days: 2 } });
+        expect(rowToRollupResult({ ...base, origin: 'solana_v1', volume_30d_by_address: null })?.volume30dByAddress).toBeNull();
     });
 
     test('variant rows carry the key and explorer url; unknown chains are dropped', () => {

@@ -55,6 +55,7 @@ import {
     resolveAssetImageUrl,
     aggregateTokenStats,
     assessTokenMarkets,
+    hasExcludedMarkets,
     buildCuratedMintRank,
     buildSnapshotFromTokenMarketsDoc,
     matchRegistryAssetForDbAsset,
@@ -1133,7 +1134,10 @@ export const GET = route(
                     strategy: primaryVariantStrategy,
                 });
                 const token = primaryVariant ? tokenByMint.get(primaryVariant.mint) : undefined;
-                const stats = mergeAssetStatsWithAggregates(aggregateTokenStats(asset, tokenByMint, token, assessTokenMarkets(asset, tokenByMint, qualityReferenceForAsset(asset), Date.now())), aggregates);
+                const quality = assessTokenMarkets(asset, tokenByMint, qualityReferenceForAsset(asset), Date.now());
+                const stats = mergeAssetStatsWithAggregates(aggregateTokenStats(asset, tokenByMint, token, quality), aggregates, {
+                    keepGuardedTotals: hasExcludedMarkets(quality),
+                });
                 const effectiveStats = applyCanonicalStats(asset, stats);
                 const canonicalMarket = canonicalMarketForAsset(asset);
                 const responseSymbol = stockInstrumentByAssetId.get(asset.assetId)?.symbol ?? asset.symbol;

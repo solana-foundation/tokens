@@ -845,7 +845,7 @@ describe('refresh-v2-evm-variant-markets', () => {
 });
 
 describe('rollup-v2-chain-volume-30d', () => {
-    test('rolls every EVM chain up by default, prunes, and reports counts', async () => {
+    test('rolls every EVM chain plus Solana up by default, prunes, and reports counts', async () => {
         const calls: Array<{ chains: readonly ChainKind[]; nowMs: number }> = [];
         const pruneCalls: number[] = [];
         const repo = fakeRepo({
@@ -863,7 +863,8 @@ describe('rollup-v2-chain-volume-30d', () => {
         expect(result.rowsWritten).toBe(20);
         expect(result.assetsWritten).toBe(12);
         expect(result.pruned).toBe(7);
-        expect(calls[0]?.chains).toEqual(['ethereum', 'base', 'arbitrum', 'polygon', 'bnb']);
+        // Every EVM chain by default, plus Solana (its samples come from the v1 mirror).
+        expect(calls[0]?.chains).toEqual(['ethereum', 'base', 'arbitrum', 'polygon', 'bnb', 'solana']);
         expect(calls[0]?.nowMs).toBe(NOW);
         expect(pruneCalls).toEqual([45]);
     });

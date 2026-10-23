@@ -135,6 +135,12 @@ export function assessMarkets(
     return out;
 }
 
+/** True when the guard rejected at least one row (callers then keep guarded sums over unguarded rollups). */
+export function hasExcludedMarkets(quality: ReadonlyMap<string, MarketQuality>): boolean {
+    for (const verdict of quality.values()) if (!verdict.included) return true;
+    return false;
+}
+
 /** Counts of excluded rows by reason, for `chainStats` / `aggregate`. */
 export interface ExcludedByQuality {
     stale: number;

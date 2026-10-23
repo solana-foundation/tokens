@@ -5,6 +5,8 @@ import { __setAdvisoriesForTests } from '@/lib/advisories';
 
 import {
     aggregateTokenStats,
+    mergeAssetStatsWithAggregates,
+    hasExcludedMarkets,
     buildSnapshotFromTokenMarketsDoc,
     assessTokenMarkets,
     computeCompanyMarketCapUsd,
@@ -304,6 +306,31 @@ describe('aggregate token stats', () => {
         ]);
         const quality = assessTokenMarkets(asset, tokens, { priceUsd: 100 }, NOW);
         expect(quality.get('msol')).toEqual({ included: true, reasons: [] });
+    });
+
+    it('sums liquidity and volume over included rows, and keeps them over the unguarded rollup when a row was rejected', () => {
+        const NOW = 1_800_000_000_000;
+        const good = makeToken('good', { price: 386, liquidity: 4_000_000, volume24hUSD: 2_000_000, lastFetchedAt: NOW });
+        const also = makeToken('also', { price: 390, liquidity: 1_000_000, volume24hUSD: 500_000, lastFetchedAt: NOW });
+        const junk = makeToken('junk', { price: 15_192, liquidity: 11, volume24hUSD: 40, lastFetchedAt: NOW });
+        const asset = makeAsset(['good', 'also', 'junk']);
+        const tokens = new Map([
+            ['good', good],
+            ['also', also],
+            ['junk', junk],
+        ]);
+        const quality = assessTokenMarkets(asset, tokens, { priceUsd: 386 }, NOW);
+        expect(hasExcludedMarkets(quality)).toBe(true);
+        const stats = aggregateTokenStats(asset, tokens, good, quality)!;
+        expect(stats.liquidity).toBe(5_000_000);
+        expect(stats.volume24hUSD).toBe(2_500_000);
+        const rollup = { liquidity: 5_000_011, volume24hUSD: 2_500_040, volume30dUSD: 70_000_000 };
+        const kept = mergeAssetStatsWithAggregates(stats, rollup, { keepGuardedTotals: true })!;
+        expect(kept.liquidity).toBe(5_000_000);
+        expect(kept.volume24hUSD).toBe(2_500_000);
+        expect(kept.volume30dUSD).toBe(70_000_000);
+        // With nothing rejected the rollup stands, as before.
+        expect(mergeAssetStatsWithAggregates(stats, rollup, { keepGuardedTotals: false })?.liquidity).toBe(5_000_011);
     });
 
     it('falls back to volume-weighted price when no variants have liquidity', () => {

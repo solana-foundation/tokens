@@ -245,6 +245,28 @@ export function makePostgresV2AssetsJobsRepo(sql: Sql): V2AssetsJobsRepo {
                   )
                 RETURNING address
             `;
+            // The UTC day's sample per mirrored Solana row (last sample of the day
+            // wins, as for Birdeye EVM rows), so the 30d rollup can keep per-mint
+            // shares for Solana too and the API can leave rejected mints out.
+            await sql`
+                INSERT INTO v2_variant_volume_daily (chain, address, day, volume_24h_usd, sampled_at)
+                SELECT 'solana', vml.mint,
+                       (to_timestamp(vml.last_fetched_at / 1000.0) AT TIME ZONE 'UTC')::date,
+                       vml.volume_24h_usd, vml.last_fetched_at
+                FROM variant_markets_latest vml
+                WHERE vml.mint NOT LIKE '0x%'
+                  AND vml.last_fetched_at > 0
+                  AND vml.volume_24h_usd IS NOT NULL
+                  AND vml.volume_24h_usd >= 0
+                  AND EXISTS (
+                      SELECT 1 FROM v2_asset_variants v
+                      WHERE v.chain = 'solana' AND v.address = vml.mint AND v.is_active = true
+                  )
+                ON CONFLICT (chain, address, day) DO UPDATE SET
+                    volume_24h_usd = EXCLUDED.volume_24h_usd,
+                    sampled_at = EXCLUDED.sampled_at
+                WHERE EXCLUDED.sampled_at > v2_variant_volume_daily.sampled_at
+            `;
             return rows.length;
         },
 
@@ -367,6 +389,10 @@ export function makePostgresV2AssetsJobsRepo(sql: Sql): V2AssetsJobsRepo {
                         WHERE v.is_active = true
                           AND v.coingecko_id IS NOT NULL
                           AND v.coingecko_id IS DISTINCT FROM trim(a.coingecko_id)
+                          -- Rows this derivation wrote are never sources: a derived row whose
+                          -- coin is no longer linked by anything else would otherwise keep
+                          -- regenerating itself from that coin's platforms.
+                          AND v.origin <> 'coingecko'
                         ORDER BY v.asset_id, v.coingecko_id, (v.chain = 'solana') DESC, v.address ASC
                     )
                 ),
@@ -746,22 +772,40 @@ export function makePostgresV2AssetsJobsRepo(sql: Sql): V2AssetsJobsRepo {
                            jsonb_object_agg(address, jsonb_build_object('volume', volume_usd, 'days', days)) AS by_address
                     FROM shares
                     GROUP BY asset_id, chain
+                ),
+                -- EVM chains: the computed row is the 30d figure.
+                upserted AS (
+                    INSERT INTO v2_asset_chain_markets_latest (
+                        asset_id, chain, liquidity, volume_24h_usd, volume_30d_usd, volume_30d_days, volume_30d_by_address,
+                        primary_address, variant_count, last_computed_at, origin
+                    )
+                    SELECT t.asset_id, t.chain, 0, 0, t.volume_30d_usd, t.days, t.by_address, NULL, t.variant_count, ${nowMs}, 'computed'
+                    FROM totals t
+                    WHERE t.chain <> 'solana'
+                    ON CONFLICT (asset_id, chain) DO UPDATE SET
+                        volume_30d_usd = EXCLUDED.volume_30d_usd,
+                        volume_30d_days = EXCLUDED.volume_30d_days,
+                        volume_30d_by_address = EXCLUDED.volume_30d_by_address,
+                        variant_count = EXCLUDED.variant_count,
+                        last_computed_at = EXCLUDED.last_computed_at,
+                        updated_at = now()
+                    WHERE v2_asset_chain_markets_latest.origin = 'computed'
+                    RETURNING asset_id, chain
+                ),
+                -- Solana: the mirrored v1 row keeps its candle figure; only the per-mint
+                -- shares are attached so the API can leave rejected mints out once
+                -- the samples cover the window.
+                mirrored AS (
+                    UPDATE v2_asset_chain_markets_latest r
+                    SET volume_30d_by_address = t.by_address, updated_at = now()
+                    FROM totals t
+                    WHERE r.asset_id = t.asset_id AND r.chain = t.chain
+                      AND t.chain = 'solana' AND r.origin = 'solana_v1'
+                    RETURNING r.asset_id, r.chain
                 )
-                INSERT INTO v2_asset_chain_markets_latest (
-                    asset_id, chain, liquidity, volume_24h_usd, volume_30d_usd, volume_30d_days, volume_30d_by_address,
-                    primary_address, variant_count, last_computed_at, origin
-                )
-                SELECT t.asset_id, t.chain, 0, 0, t.volume_30d_usd, t.days, t.by_address, NULL, t.variant_count, ${nowMs}, 'computed'
-                FROM totals t
-                ON CONFLICT (asset_id, chain) DO UPDATE SET
-                    volume_30d_usd = EXCLUDED.volume_30d_usd,
-                    volume_30d_days = EXCLUDED.volume_30d_days,
-                    volume_30d_by_address = EXCLUDED.volume_30d_by_address,
-                    variant_count = EXCLUDED.variant_count,
-                    last_computed_at = EXCLUDED.last_computed_at,
-                    updated_at = now()
-                WHERE v2_asset_chain_markets_latest.origin = 'computed'
-                RETURNING asset_id, chain
+                SELECT asset_id, chain FROM upserted
+                UNION ALL
+                SELECT asset_id, chain FROM mirrored
             `;
             return { assetsWritten: new Set(rows.map(r => r.asset_id)).size, rowsWritten: rows.length };
         },

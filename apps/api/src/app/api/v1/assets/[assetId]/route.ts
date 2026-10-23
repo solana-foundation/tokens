@@ -34,6 +34,7 @@ import {
     resolveAssetImageUrl,
     aggregateTokenStats,
     assessTokenMarkets,
+    hasExcludedMarkets,
     buildCuratedMintRank,
     listSymbols,
     matchRegistryAssetForDbAsset,
@@ -418,10 +419,10 @@ export const GET = route(
             const token = primaryVariant ? tokenByMint.get(primaryVariant.mint) : undefined;
             const marketMeta = primaryVariant ? marketMetaByMint.get(primaryVariant.mint) : undefined;
             const symbols = listSymbols(asset, tokenByMint);
-            const stats = mergeAssetStatsWithAggregates(
-                aggregateTokenStats(asset, tokenByMint, token, assessTokenMarkets(asset, tokenByMint, null, Date.now())),
-                aggregates,
-            );
+            const quality = assessTokenMarkets(asset, tokenByMint, null, Date.now());
+            const stats = mergeAssetStatsWithAggregates(aggregateTokenStats(asset, tokenByMint, token, quality), aggregates, {
+                keepGuardedTotals: hasExcludedMarkets(quality),
+            });
             const imageUrl = resolveAssetImageUrl(request, {
                 assetId: asset.assetId,
                 symbol: asset.symbol ?? assetDoc?.symbol ?? null,
