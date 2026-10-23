@@ -2,21 +2,18 @@
 
 import { useState } from 'react';
 import type { Column, Row, Table } from '@tanstack/react-table';
-import { ChevronDown, ChevronUp, ChevronsUpDown } from 'lucide-react';
+import { ChevronDown, ChevronRight, ChevronUp, ChevronsUpDown } from 'lucide-react';
 
 import { cn, truncateAddress } from '@tokens/ui/cn';
-import { formatLargeNumber } from '@/lib/format';
 import type { RegistryRow } from './lib/types';
 import { RegistryEmptyState, displayNameOf } from './registry-cells';
 import { RegistryDetailDrawer } from './registry-detail-drawer';
 import { RegistryTokenLogo } from './registry-token-logo';
 
-const SOURCE_LABELS = { allium: 'Allium', rwa: 'RWA.xyz' } as const;
-
 /**
  * Phone layout (below md): the same filtered/sorted/paginated rows as the
- * table, one quiet row per asset — logo, symbol over name (or address), the
- * headline value over its source — and a tap opens a detail drawer with the
+ * table, one quiet row per asset — logo, symbol over name (or address), a
+ * chevron — and a tap opens a detail drawer with the headline value, the
  * taxonomy badge, the address, all three numbers and "View more" when the
  * asset has a tokens.xyz page.
  */
@@ -94,13 +91,6 @@ function SortButton({
 }
 
 function RegistryMobileRow({ row, onOpen }: { row: RegistryRow; onOpen: (row: RegistryRow) => void }) {
-    // Headline number: the coalesced provider value, else market cap, else a dash.
-    const headline =
-        row.providerValueUsd != null && row.providerValueSource
-            ? { value: row.providerValueUsd, source: SOURCE_LABELS[row.providerValueSource] }
-            : row.marketCapUsd != null
-              ? { value: row.marketCapUsd, source: 'Market cap' }
-              : null;
     const secondary = row.name ? displayNameOf(row) : truncateAddress(row.mintAddress);
 
     return (
@@ -123,17 +113,7 @@ function RegistryMobileRow({ row, onOpen }: { row: RegistryRow; onOpen: (row: Re
                     {secondary}
                 </span>
             </div>
-            <div className="flex shrink-0 flex-col items-end leading-tight">
-                <span
-                    className={cn(
-                        'text-[14px] font-medium tabular-nums',
-                        headline ? 'text-[#2D2D2D]' : 'text-text-extra-low',
-                    )}
-                >
-                    {headline ? formatLargeNumber(headline.value) : '—'}
-                </span>
-                <span className="text-[11px] font-medium text-text-extra-low">{headline ? headline.source : ''}</span>
-            </div>
+            <ChevronRight className="size-4 shrink-0 text-text-extra-low" aria-hidden />
         </li>
     );
 }

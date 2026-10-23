@@ -123,10 +123,7 @@ export function RegistryTableSkeleton() {
                                         <Skeleton className={cn('h-4', BAR, row % 3 === 0 ? 'w-24' : 'w-16')} />
                                         <Skeleton className={cn('h-3 w-28', BAR)} />
                                     </div>
-                                    <div className="flex flex-col items-end gap-1.5">
-                                        <Skeleton className={cn('h-4 w-16', BAR)} />
-                                        <Skeleton className={cn('h-3 w-10', BAR)} />
-                                    </div>
+                                    <Skeleton className={cn('size-4', BAR)} />
                                 </li>
                             ))}
                         </ul>

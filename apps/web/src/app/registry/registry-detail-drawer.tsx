@@ -1,5 +1,7 @@
 'use client';
 
+import { useRef } from 'react';
+
 import { CopyButton } from '@/components/copy-button';
 import { MobileDetailDrawer } from '@/components/mobile-detail-drawer';
 import { SplitBadge } from '@/components/split-badge';
@@ -24,34 +26,41 @@ export function RegistryDetailDrawer({
     onOpenChange: (open: boolean) => void;
     onOpenResponse: (row: RegistryRow) => void;
 }) {
-    if (!row) return null;
+    // Keep the last row mounted while the drawer animates closed (same as the home drawer).
+    const lastRow = useRef<RegistryRow | null>(null);
+    if (row) lastRow.current = row;
+    const shown = row ?? lastRow.current;
+    if (!shown) return null;
 
     const headline =
-        row.providerValueUsd != null && row.providerValueSource
-            ? { value: row.providerValueUsd, caption: `on-chain value · ${PROVIDER_LABELS[row.providerValueSource]}` }
-            : row.marketCapUsd != null
-              ? { value: row.marketCapUsd, caption: 'market cap' }
+        shown.providerValueUsd != null && shown.providerValueSource
+            ? {
+                  value: shown.providerValueUsd,
+                  caption: `on-chain value · ${PROVIDER_LABELS[shown.providerValueSource]}`,
+              }
+            : shown.marketCapUsd != null
+              ? { value: shown.marketCapUsd, caption: 'market cap' }
               : null;
-    const taxonomy = [row.group, row.category, row.assetClass].filter((value): value is string => !!value);
+    const taxonomy = [shown.group, shown.category, shown.assetClass].filter((value): value is string => !!value);
 
     return (
         <MobileDetailDrawer
-            open
+            open={row !== null}
             onOpenChange={onOpenChange}
-            logo={<RegistryTokenLogo row={row} size={40} />}
-            title={displayNameOf(row)}
-            subtitle={row.name ? row.symbol : undefined}
+            logo={<RegistryTokenLogo row={shown} size={40} />}
+            title={displayNameOf(shown)}
+            subtitle={shown.name ? shown.symbol : undefined}
             stats={[
-                { label: 'Allium', value: formatLargeNumber(row.alliumValueUsd) },
-                { label: 'RWA.xyz', value: formatLargeNumber(row.rwaValueUsd) },
-                { label: 'Market cap', value: formatLargeNumber(row.marketCapUsd) },
+                { label: 'Allium', value: formatLargeNumber(shown.alliumValueUsd) },
+                { label: 'RWA.xyz', value: formatLargeNumber(shown.rwaValueUsd) },
+                { label: 'Market cap', value: formatLargeNumber(shown.marketCapUsd) },
             ]}
-            action={row.hasTokenPage ? { label: 'View more', href: tokenHref(row) } : undefined}
+            action={shown.hasTokenPage ? { label: 'View more', href: tokenHref(shown) } : undefined}
             secondary={{
                 label: 'View API response',
                 onClick: () => {
                     onOpenChange(false);
-                    onOpenResponse(row);
+                    onOpenResponse(shown);
                 },
             }}
         >
@@ -68,9 +77,9 @@ export function RegistryDetailDrawer({
                     </div>
                 ) : null}
                 <div className="flex items-center gap-2">
-                    <AddressLink address={row.mintAddress} />
+                    <AddressLink address={shown.mintAddress} />
                     <CopyButton
-                        textToCopy={row.mintAddress}
+                        textToCopy={shown.mintAddress}
                         showText={false}
                         ariaLabel="Copy mint address"
                         className="size-6 rounded-md text-text-extra-low hover:text-text-medium"
