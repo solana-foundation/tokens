@@ -52,6 +52,8 @@ export const V2_EVM_MARKETS_CHAIN_DOWN_EVENT = 'v2_evm_markets_chain_down';
 
 export const DERIVED_VARIANT_TAG = 'coingecko-derived';
 export const NATIVE_COIN_TAG = 'native-coin';
+/** The native coin's row on its issuing chain: issued supply, served from the asset's reference since the row has no market. */
+export const NATIVE_HOME_TAG = 'native-home';
 
 /**
  * Coin-list rows not re-synced within this window are treated as unknown:
@@ -643,14 +645,17 @@ export async function syncEvmVariants(deps: V2AssetsCronDeps, rawArgs: unknown):
         if (!activeById.has(assetId)) continue;
         for (const native of deployments) {
             if (!chains.includes(native.chain)) continue;
+            // ETH on Base or Arbitrum is a bridged claim on Ethereum's ETH; only the
+            // home chain's native row is issued supply.
+            const kind = native.kind === 'native' && !native.home ? 'bridged' : native.kind;
             add({
                 assetId,
                 chain: native.chain,
                 address: native.address,
                 variantId: chainAddressKey(native.chain, native.address),
-                kind: native.kind,
+                kind,
                 trustTier: 'tier3',
-                tags: [NATIVE_COIN_TAG],
+                tags: native.home ? [NATIVE_COIN_TAG, NATIVE_HOME_TAG] : [NATIVE_COIN_TAG],
                 label: native.label,
                 decimals: 18,
                 origin: 'config',

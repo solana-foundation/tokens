@@ -240,6 +240,28 @@ Log: `event:"v2_evm_markets_refresh"` per run (same fields plus `ok`,
 `duration_ms`); `event:"v2_evm_markets_chain_down"` with `chains` and
 `byChain` whenever `downChains` is non-empty.
 
+## How the API reads the tables
+
+`GET /api/v2/assets/{id}` builds every figure from the full variant set
+(blocked variants are hidden from `variants[]` on list surfaces but still
+counted), after the quality guard (`apps/api/src/app/api/v1/assets/_market-quality.ts`):
+
+- `chainStats.<chain>` / `aggregate`: guarded, issuance-aware on-chain sums
+  (liquidity, DEX volume, trades over every included row; market cap, FDV and
+  supply over `issuance: native` rows only; liquidity-weighted price and
+  changes). The Solana rollup row is read for `volume30dUSD` only. A native
+  coin's home-chain `0xeeee…` row (tag `native-home`) has no market and takes
+  the asset's CoinGecko supply.
+- `stats`: reference-first. CoinGecko (crypto) or the stock feed (public
+  equities and ETFs, never commodities) supplies price, market cap, FDV, 24h
+  change and supply; `aggregate` supplies liquidity, volume, trades, 1h change
+  and whatever the reference lacks; `stats.source` names the origin per
+  figure. Equities: company market cap, `fdv` null, tokenized supply.
+- `referenceMarket`: only when the reference row exists (no all-null objects).
+
+Commodities therefore need a CoinGecko id for a per-ounce reference
+(`gold` → `pax-gold`, set in admin); their ETF mapping (GLD) is not used.
+
 ## Alerts
 
 - `alert-rules/assets-v2-solana-sync-stale.json`: no `v2_solana_sync` with

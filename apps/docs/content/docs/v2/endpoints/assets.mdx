@@ -153,12 +153,16 @@ interface V2Variant extends V2VariantEnrichments {
 }
 
 interface V2ChainStats {
+    price: number | null;             // liquidity-weighted average over the chain's included rows
+    priceChange24hPercent: number | null;
+    priceChange1hPercent: number | null;
     liquidity: number | null;         // summed over every variant on the chain
     volume24hUSD: number | null;      // summed over every variant on the chain
     trade24h: number | null;          // 24h trade count, summed over every variant on the chain
     marketCap: number | null;         // summed over issued (native) variants only
     fdv: number | null;
     circulatingSupply: number | null; // issued variants only
+    totalSupply: number | null;       // issued variants only
     variantCount: number;
     issuedVariantCount: number;       // variants counted toward supply / market cap
     excludedByIssuance: { bridged: number; wrapped: number; derivative: number };
@@ -222,6 +226,7 @@ interface V2AssetStats {
     priceChange1hPercent: number | null;
     totalSupply: number | null;
     circulatingSupply: number | null;
+    source: Partial<Record<string, 'coingecko' | 'stock' | 'onchain'>>; // provenance per figure above
 }
 
 interface V2AssetAdvisory extends V2Advisory {
@@ -280,12 +285,18 @@ Reading the numbers:
   of the surviving rows' liquidity-weighted median (a derivative, such as an LST or an ETF share, is
   not priced in the asset's units and skips that last check). A failing row leaves every sum and average
   (market cap and supply included) and says so in `variants[].market.quality`; `excludedCount` and
-  `excludedByQuality` count them per chain and in aggregate. `chainStats.solana` is the number
-  v1 reported.
-- `aggregate` is the sum of `chainStats` across chains. `stats` is the headline view: price, market
-  cap and supply come from `referenceMarket` when there is one (CoinGecko for crypto, the stock
-  benchmark for mapped equities, the PreStocks mark for pre-IPO equities), with on-chain liquidity
-  and volume from `aggregate`.
+  `excludedByQuality` count them per chain and in aggregate. Liquidity and volume are the same
+  guarded variant sums on every chain (v1's Solana rollup is no longer consulted here).
+- `aggregate` is the sum of `chainStats` across chains (its averages weighted by chain liquidity):
+  the one on-chain figure, guarded and issuance-aware. `stats` is the reference-first headline:
+  price, market cap, FDV, 24h change and supply come from `referenceMarket` when there is one
+  (CoinGecko for crypto, the stock feed for one-share-per-token equities and ETFs), liquidity, DEX
+  volume, trades and the 1h change from `aggregate`, and anything the reference lacks falls through
+  to `aggregate`. For an equity the market cap is the company's and `fdv` is null (the tokenized
+  float is `aggregate.marketCap`); supply is the tokenized issued supply. `stats.source` says where
+  each figure came from (`coingecko` | `stock` | `onchain`). A native coin's home-chain row (ETH on
+  Ethereum) has no pool; it carries the reference's supply so `chainStats.ethereum` is not empty.
+  `volume30dUSD` is Solana-only until the cross-chain roll-up lands.
 - `referenceMarket` is the off-chain reference v1 called `canonicalMarket`; `source: "stock"`
   replaces v1's `clickhouse_stock`. Consumers with an exhaustive `switch (source)` should keep a
   default branch.
@@ -300,7 +311,8 @@ Reading the numbers:
   chain, so treat cross-chain comparisons as approximate. `primaryVariantSelection` reports the pool
   and the deciding rule. A variant with no market data never outranks one that trades.
   `primaryVariantByChain` runs the same ranking inside each chain. `compromised` and `blocked`
-  variants are never chosen.
+  variants are skipped while a safe sibling exists; when every candidate is flagged the least-bad
+  flagged variant is returned rather than none.
 - Advisories are keyed by Solana mint today; EVM variants always carry `advisory: null`. See
   [Asset by ID → Advisories](/docs/v1/endpoints/asset-by-id#advisories) for semantics.
 - `symbol` / `name` / `issuer` are always present (`null` when unknown) rather than optional keys as
@@ -347,8 +359,9 @@ names them); an asset whose variants are all blocked is dropped from the list. T
 serves them.
 
 If the data layer is unavailable the endpoint returns the last healthy payload for the same
-params (up to 15 minutes old) with a `200`; use `market.lastFetchedAt` / `referenceMarket.asOf`
-as the freshness signal.
+params (up to 15 minutes old) with a `200`; use `market.lastFetchedAt` (our last successful
+provider write; `market.asOf` is only set for ClickHouse-sourced Solana rows) and
+`referenceMarket.asOf` as the freshness signal.
 
 ### Example
 

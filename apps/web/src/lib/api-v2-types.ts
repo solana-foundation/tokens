@@ -133,6 +133,8 @@ export interface V2Variant extends V2VariantEnrichments {
     reference: Extract<V2ReferenceMarket, { source: 'coingecko' }> | null;
 }
 
+export type V2StatsSourceKind = 'coingecko' | 'stock' | 'onchain';
+
 export interface V2AssetStats {
     price: number | null;
     liquidity: number | null;
@@ -144,9 +146,15 @@ export interface V2AssetStats {
     priceChange1hPercent: number | null;
     totalSupply: number | null;
     circulatingSupply: number | null;
+    /** Provenance per figure (reference-first headline); a key is absent when the figure is null. */
+    source: Partial<Record<Exclude<keyof V2AssetStats, 'source'>, V2StatsSourceKind>>;
 }
 
 export interface V2ChainStats {
+    price: number | null;
+    priceChange24hPercent: number | null;
+    priceChange1hPercent: number | null;
+    totalSupply: number | null;
     liquidity: number | null;
     volume24hUSD: number | null;
     trade24h: number | null;

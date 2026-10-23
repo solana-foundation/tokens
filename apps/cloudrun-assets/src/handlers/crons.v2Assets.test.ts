@@ -430,6 +430,22 @@ describe('sync-v2-evm-variants', () => {
         expect(result.byChain).toEqual({ ethereum: { desired: 2 } });
     });
 
+    test('the native coin is issued on its home chain only; elsewhere it is a bridged claim', async () => {
+        const repo = fakeRepo({
+            async listActiveAssets() {
+                return [{ assetId: 'ethereum', category: 'crypto' }];
+            },
+        });
+        await syncEvmVariants(deps(repo), { chains: ['ethereum', 'base', 'arbitrum'] });
+        const native = repo.upserts.filter(u => u.address === EVM_NATIVE_ASSET_ADDRESS);
+        expect(native.find(u => u.chain === 'ethereum')?.kind).toBe('native');
+        expect(native.find(u => u.chain === 'ethereum')?.tags).toEqual(['native-coin', 'native-home']);
+        expect(native.find(u => u.chain === 'base')?.kind).toBe('bridged');
+        expect(native.find(u => u.chain === 'base')?.tags).toEqual(['native-coin']);
+        expect(native.find(u => u.chain === 'arbitrum')?.kind).toBe('bridged');
+        expect(repo.upserts.filter(u => u.kind === 'wrapped')).toHaveLength(3);
+    });
+
     test('dry run computes but writes nothing', async () => {
         const repo = fakeRepo({
             async listAssetCoinSources() {

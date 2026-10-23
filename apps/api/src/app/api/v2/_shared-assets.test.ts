@@ -17,13 +17,14 @@ import {
     decodeListParam,
     decodePrimaryScopeParam,
     hasVisibleVariantOnChain,
-    headlineOnChainStats,
+    selectV2HeadlineStats,
     assessVariantMarkets,
     toV2Chain,
     toV2Market,
     toV2PegHealth,
     variantIssuance,
     variantIssuanceByKey,
+    type V2Aggregate,
 } from './_shared-assets';
 
 const USDC_SOLANA = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
@@ -77,61 +78,328 @@ describe('hasVisibleVariantOnChain', () => {
     });
 });
 
-describe('headlineOnChainStats', () => {
-    const v1 = {
-        price: 1,
-        liquidity: 1,
-        volume24hUSD: 1,
-        volume30dUSD: null,
-        marketCap: 1560,
-        fdv: 1600,
-        priceChange24hPercent: null,
-        priceChange1hPercent: null,
-        totalSupply: 1600,
-        circulatingSupply: 1560,
-    };
-    const aggregate = (excludedFromSupplyCount: number) => ({
+describe('selectV2HeadlineStats', () => {
+    const onChain = (overrides: Partial<V2Aggregate> = {}): V2Aggregate => ({
+        price: 81_000,
+        priceChange24hPercent: 1.5,
+        priceChange1hPercent: 0.2,
         liquidity: 156,
         volume24hUSD: 40,
         trade24h: 9,
-        marketCap: 1500,
-        fdv: 1500,
-        circulatingSupply: 1500,
-        variantCount: 4,
-        issuedVariantCount: 4 - excludedFromSupplyCount,
-        excludedByIssuance: { bridged: excludedFromSupplyCount, wrapped: 0, derivative: 0 },
+        marketCap: 9_400_000_000,
+        fdv: 9_500_000_000,
+        circulatingSupply: 116_000,
+        totalSupply: 218_000,
+        variantCount: 6,
+        issuedVariantCount: 0,
+        excludedByIssuance: { bridged: 0, wrapped: 6, derivative: 0 },
         excludedCount: 0,
         excludedByQuality: { stale: 0, dust: 0, priceOutlier: 0 },
-        chainCount: 3,
-        excludedFromSupplyCount,
+        chainCount: 6,
+        excludedFromSupplyCount: 6,
+        ...overrides,
+    });
+    const coingecko = {
+        coinId: 'bitcoin',
+        priceUsd: 81_600,
+        marketCapUsd: 1_640_000_000_000,
+        volume24hUsd: 30_000_000_000,
+        priceChange24hPercent: -0.4,
+        providerLastUpdatedAt: 1,
+        lastFetchedAt: 2,
+        circulatingSupply: 19_900_000,
+        totalSupply: 20_100_000,
+        maxSupply: 21_000_000,
+        fdvUsd: 1_710_000_000_000,
+    };
+    const stock = {
+        assetId: 'tesla',
+        symbol: 'TSLA',
+        normalizedSymbol: 'TSLA',
+        priceUsd: 378,
+        volume24hUsd: 5_000_000_000,
+        priceChange24hPercent: 2.1,
+        sharesOutstanding: 3_200_000_000,
+        sharesAsOf: 1,
+        sharesLastFetchedAt: 1,
+        asOf: 1,
+        lastFetchedAt: 2,
+        source: 'clickhouse_stock' as const,
+        marketCapUsd: 1_210_000_000_000,
+    };
+
+    test("with a CoinGecko reference the valuation and supply are the coin's; liquidity, volume, 1h are on-chain", () => {
+        const out = selectV2HeadlineStats({ reference: { coingecko, stock: null }, onChain: onChain(), volume30dUSD: 7 })!;
+        expect(out.price).toBe(81_600);
+        expect(out.marketCap).toBe(1_640_000_000_000);
+        expect(out.fdv).toBe(1_710_000_000_000);
+        expect(out.totalSupply).toBe(20_100_000);
+        expect(out.circulatingSupply).toBe(19_900_000);
+        expect(out.priceChange24hPercent).toBe(-0.4);
+        expect(out.liquidity).toBe(156);
+        expect(out.volume24hUSD).toBe(40);
+        expect(out.volume30dUSD).toBe(7);
+        expect(out.priceChange1hPercent).toBe(0.2);
+        expect(out.source).toEqual({
+            price: 'coingecko',
+            marketCap: 'coingecko',
+            fdv: 'coingecko',
+            totalSupply: 'coingecko',
+            circulatingSupply: 'coingecko',
+            priceChange24hPercent: 'coingecko',
+            liquidity: 'onchain',
+            volume24hUSD: 'onchain',
+            volume30dUSD: 'onchain',
+            priceChange1hPercent: 'onchain',
+        });
     });
 
-    test('with wrapped or bridged claims present, supply figures come from the issuance-aware aggregate', () => {
-        const out = headlineOnChainStats(v1, aggregate(2), 7);
-        expect(out?.liquidity).toBe(156);
-        expect(out?.volume24hUSD).toBe(40);
-        expect(out?.volume30dUSD).toBe(7);
-        expect(out?.marketCap).toBe(1500);
-        expect(out?.fdv).toBe(1500);
-        expect(out?.circulatingSupply).toBe(1500);
-        expect(out?.totalSupply).toBe(1600);
+    test('a null reference figure falls through to on-chain and says so', () => {
+        const out = selectV2HeadlineStats({
+            reference: { coingecko: { ...coingecko, totalSupply: null, fdvUsd: null }, stock: null },
+            onChain: onChain(),
+            volume30dUSD: null,
+        })!;
+        expect(out.totalSupply).toBe(218_000);
+        expect(out.source.totalSupply).toBe('onchain');
+        expect(out.fdv).toBe(9_500_000_000);
+        expect(out.source.fdv).toBe('onchain');
+        expect(out.volume30dUSD).toBeNull();
+        expect('volume30dUSD' in out.source).toBe(false);
     });
 
-    test('with only native variants, v1 supply figures stand', () => {
-        const out = headlineOnChainStats(v1, aggregate(0), null);
-        expect(out?.marketCap).toBe(1560);
-        expect(out?.circulatingSupply).toBe(1560);
-        expect(out?.liquidity).toBe(156);
+    test("with a stock reference the price and company cap are the stock's, fdv is null, supply is the tokenized issued supply", () => {
+        const out = selectV2HeadlineStats({
+            reference: { coingecko: null, stock },
+            onChain: onChain({ price: 8_826, marketCap: 90_000_000, circulatingSupply: 240_000, totalSupply: 289_000 }),
+            volume30dUSD: null,
+        })!;
+        expect(out.price).toBe(378);
+        expect(out.marketCap).toBe(1_210_000_000_000);
+        expect(out.fdv).toBeNull();
+        expect(out.circulatingSupply).toBe(240_000);
+        expect(out.totalSupply).toBe(289_000);
+        expect(out.priceChange24hPercent).toBe(2.1);
+        expect(out.source.price).toBe('stock');
+        expect(out.source.marketCap).toBe('stock');
+        expect(out.source.circulatingSupply).toBe('onchain');
+        expect('fdv' in out.source).toBe(false);
     });
 
-    test('a null aggregate figure replaces a double-counted v1 one rather than keeping it', () => {
-        const out = headlineOnChainStats(
-            v1,
-            { ...aggregate(1), marketCap: null, fdv: null, circulatingSupply: null },
-            null,
-        );
-        expect(out?.marketCap).toBeNull();
-        expect(out?.circulatingSupply).toBeNull();
+    test('without any reference every figure is on-chain; with nothing at all the stats are null', () => {
+        const out = selectV2HeadlineStats({ reference: { coingecko: null, stock: null }, onChain: onChain(), volume30dUSD: null })!;
+        expect(out.price).toBe(81_000);
+        expect(out.marketCap).toBe(9_400_000_000);
+        expect(Object.values(out.source).every(v => v === 'onchain')).toBe(true);
+        expect(
+            selectV2HeadlineStats({
+                reference: { coingecko: null, stock: null },
+                onChain: onChain({
+                    price: null,
+                    priceChange24hPercent: null,
+                    priceChange1hPercent: null,
+                    liquidity: null,
+                    volume24hUSD: null,
+                    trade24h: null,
+                    marketCap: null,
+                    fdv: null,
+                    circulatingSupply: null,
+                    totalSupply: null,
+                }),
+                volume30dUSD: null,
+            }),
+        ).toBeNull();
+    });
+});
+
+describe('buildV2Asset headline', () => {
+    const request = new Request('https://api.example.test/api/v2/assets/x');
+    const NOW = 1_800_000_000_000;
+    const WBTC = '0x2260fac5e5542a773aa44fbcfedf7c193bc2c599';
+    const CBBTC = '0xcbb7c0000ab88b473b1f5afd9ef808440eed33bf';
+    const row = (price: number, liquidity: number, marketCap: number, supply: number, totalSupply = supply) => ({
+        mint: 'x',
+        source: 'birdeye' as const,
+        lastFetchedAt: NOW - 60_000,
+        price,
+        liquidity,
+        volume24hUSD: liquidity / 10,
+        marketCap,
+        circulatingSupply: supply,
+        totalSupply,
+    });
+    const asset = (overrides: Partial<Parameters<typeof buildV2Asset>[0]['asset']> = {}) => ({
+        assetId: 'bitcoin',
+        category: 'crypto' as const,
+        aliases: [],
+        isActive: true,
+        createdAt: 0,
+        updatedAt: 0,
+        region: null,
+        industry: null,
+        name: 'Bitcoin',
+        symbol: 'BTC',
+        coingeckoId: 'bitcoin',
+        ...overrides,
+    });
+    const coingecko = {
+        coinId: 'bitcoin',
+        priceUsd: 81_600,
+        marketCapUsd: 1_640_000_000_000,
+        volume24hUsd: 30_000_000_000,
+        priceChange24hPercent: -0.4,
+        providerLastUpdatedAt: 1,
+        lastFetchedAt: 2,
+        circulatingSupply: 19_900_000,
+        totalSupply: 20_100_000,
+        maxSupply: 21_000_000,
+        fdvUsd: 1_710_000_000_000,
+    };
+    const build = (params: {
+        asset?: ReturnType<typeof asset>;
+        variants: V2VariantResult[];
+        markets: Array<[string, ReturnType<typeof row>]>;
+        coingeckoPrice?: typeof coingecko | null;
+        stockPrice?: Parameters<typeof buildV2Asset>[0]['stockPrice'];
+        stockInstrument?: Parameters<typeof buildV2Asset>[0]['stockInstrument'];
+        hideBlocked?: boolean;
+        advisories?: Parameters<typeof buildV2Asset>[0]['advisoriesByMint'];
+    }) =>
+        buildV2Asset({
+            request,
+            asset: params.asset ?? asset(),
+            variants: params.variants,
+            marketByKey: new Map(params.markets),
+            rollupByChain: null,
+            advisoriesByMint: params.advisories ?? new Map(),
+            coingeckoPrice: params.coingeckoPrice ?? null,
+            stockInstrument: params.stockInstrument ?? null,
+            stockPrice: params.stockPrice ?? null,
+            preStocksByMint: new Map(),
+            requestedStrategy: null,
+            hideBlocked: params.hideBlocked ?? false,
+            listChain: null,
+            includeVariants: true,
+            rank: null,
+            nowMs: NOW,
+        })!;
+
+    test("bitcoin: headline supply is CoinGecko's, wrapped claims stay out of aggregate supply, referenceMarket is present", () => {
+        const wbtc = { ...variant('ethereum', WBTC, 'wrapped'), assetId: 'bitcoin' };
+        const cbbtc = { ...variant('base', CBBTC, 'wrapped'), assetId: 'bitcoin' };
+        const out = build({
+            variants: [wbtc, cbbtc],
+            markets: [
+                [`ethereum:${WBTC}`, row(81_600, 9_000_000, 9_480_000_000, 116_000)],
+                [`base:${CBBTC}`, row(81_400, 4_000_000, 7_790_000_000, 95_700)],
+            ],
+            coingeckoPrice: coingecko,
+        });
+        expect(out.stats?.totalSupply).toBe(20_100_000);
+        expect(out.stats?.marketCap).toBe(1_640_000_000_000);
+        expect(out.stats?.source.totalSupply).toBe('coingecko');
+        expect(out.stats?.liquidity).toBe(13_000_000);
+        expect(out.stats?.source.liquidity).toBe('onchain');
+        expect(out.aggregate.totalSupply).toBeNull();
+        expect(out.aggregate.excludedByIssuance.wrapped).toBe(2);
+        expect(out.aggregate.price).toBeCloseTo((81_600 * 9_000_000 + 81_400 * 4_000_000) / 13_000_000, 3);
+        expect(out.referenceMarket?.source).toBe('coingecko');
+    });
+
+    test('a CoinGecko id without a synced price row yields referenceMarket null and an on-chain headline', () => {
+        const wbtc = { ...variant('ethereum', WBTC, 'native'), assetId: 'bitcoin' };
+        const out = build({ variants: [wbtc], markets: [[`ethereum:${WBTC}`, row(81_600, 9_000_000, 9_480_000_000, 116_000)]] });
+        expect(out.referenceMarket).toBeNull();
+        expect(out.stats?.price).toBe(81_600);
+        expect(out.stats?.source.price).toBe('onchain');
+        expect(out.stats?.marketCap).toBe(9_480_000_000);
+    });
+
+    test('tesla: the stock price is the headline even with a liquid pool; fdv null; supply is the tokenized float', () => {
+        const SOL = 'XsDoVfqeBukxuZHWhdvWHBhgnNfS3zAXPj1F4FR9eYd';
+        const ARB = '0x8ad3c73f0c8a5fe6c2a6b7f4e4ad6f34e8ea4ab1';
+        const sol = { ...variant('solana', SOL, 'tokenized_equity'), assetId: 'tesla' };
+        const arb = { ...variant('arbitrum', ARB, 'tokenized_equity'), assetId: 'tesla' };
+        const out = build({
+            asset: asset({ assetId: 'tesla', category: 'equity', name: 'Tesla', symbol: 'TSLA', coingeckoId: 'tesla-xstock' }),
+            variants: [sol, arb],
+            markets: [
+                [`solana:${SOL}`, row(379, 4_200_000, 90_000_000, 237_000)],
+                [`arbitrum:${ARB}`, { ...row(15_192, 11, 739_000_000, 48_000), volume24hUSD: 40 }],
+            ],
+            stockInstrument: { assetId: 'tesla', symbol: 'TSLA', normalizedSymbol: 'TSLA', exchange: null, name: 'Tesla' } as never,
+            stockPrice: {
+                assetId: 'tesla',
+                symbol: 'TSLA',
+                normalizedSymbol: 'TSLA',
+                priceUsd: 378,
+                volume24hUsd: 5_000_000_000,
+                priceChange24hPercent: 2.1,
+                sharesOutstanding: 3_200_000_000,
+                sharesAsOf: NOW,
+                sharesLastFetchedAt: NOW,
+                asOf: NOW,
+                lastFetchedAt: NOW,
+                source: 'clickhouse_stock',
+            },
+        });
+        expect(out.stats?.price).toBe(378);
+        expect(out.stats?.source.price).toBe('stock');
+        expect(out.stats?.fdv).toBeNull();
+        expect(out.stats?.circulatingSupply).toBe(237_000);
+        expect(out.stats?.source.circulatingSupply).toBe('onchain');
+        expect(out.aggregate.marketCap).toBe(90_000_000);
+        expect(out.aggregate.excludedCount).toBe(1);
+        expect(out.variants?.find(v => v.chain === 'arbitrum')?.market?.quality.included).toBe(false);
+        expect(out.referenceMarket?.source).toBe('stock');
+    });
+
+    test("ethereum: the native coin's home-chain row carries the reference supply; Base ETH is bridged", () => {
+        const NATIVE = '0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee';
+        const WETH = '0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2';
+        const home = { ...variant('ethereum', NATIVE, 'native', ['native-coin', 'native-home']), assetId: 'ethereum' };
+        const weth = { ...variant('ethereum', WETH, 'wrapped', ['native-coin']), assetId: 'ethereum' };
+        const baseEth = { ...variant('base', NATIVE, 'bridged', ['native-coin']), assetId: 'ethereum' };
+        const eth = {
+            ...coingecko,
+            coinId: 'ethereum',
+            priceUsd: 3_000,
+            marketCapUsd: 366_000_000_000,
+            circulatingSupply: 122_000_000,
+            totalSupply: 122_000_000,
+            fdvUsd: 366_000_000_000,
+        };
+        const out = build({
+            asset: asset({ assetId: 'ethereum', name: 'Ethereum', symbol: 'ETH', coingeckoId: 'ethereum' }),
+            variants: [home, weth, baseEth],
+            markets: [[`ethereum:${WETH}`, row(3_000, 50_000_000, 7_800_000_000, 2_600_000)]],
+            coingeckoPrice: eth,
+        });
+        expect(out.chainStats.ethereum?.marketCap).toBe(366_000_000_000);
+        expect(out.chainStats.ethereum?.circulatingSupply).toBe(122_000_000);
+        expect(out.chainStats.ethereum?.issuedVariantCount).toBe(1);
+        expect(out.chainStats.ethereum?.liquidity).toBe(50_000_000);
+        expect(out.chainStats.base?.issuedVariantCount).toBe(0);
+        expect(out.chainStats.base?.excludedByIssuance.bridged).toBe(1);
+        expect(out.aggregate.marketCap).toBe(366_000_000_000);
+    });
+
+    test('a list (hideBlocked) and the detail of one asset share stats and aggregate', () => {
+        const wbtc = { ...variant('ethereum', WBTC, 'native'), assetId: 'bitcoin' };
+        const blockedSol = { ...variant('solana', 'B1ockedMint11111111111111111111111111111111', 'native'), assetId: 'bitcoin' };
+        const markets: Array<[string, ReturnType<typeof row>]> = [
+            [`ethereum:${WBTC}`, row(81_600, 9_000_000, 9_480_000_000, 116_000)],
+            [`solana:${blockedSol.address}`, row(81_500, 2_000_000, 500_000_000, 6_000)],
+        ];
+        const advisories = new Map([
+            [blockedSol.address, { status: 'blocked' as const, reason: 'x', url: null, since: 1, source: 'admin' as const }],
+        ]);
+        const detail = build({ variants: [wbtc, blockedSol], markets, advisories, hideBlocked: false });
+        const list = build({ variants: [wbtc, blockedSol], markets, advisories, hideBlocked: true });
+        expect(list.aggregate).toEqual(detail.aggregate);
+        expect(list.stats).toEqual(detail.stats);
+        expect(list.variants?.map(v => v.key)).toEqual([`ethereum:${WBTC}`]);
+        expect(detail.variants?.length).toBe(2);
     });
 });
 
@@ -260,7 +528,7 @@ describe('chain stats', () => {
         expect(computeChainStats([tagged], byKey, null).solana?.marketCap).toBeNull();
         // A commodity's lone ETF-share token is not the metal's supply.
         const slv = variant('solana', '4MmJVdwYN8LwvbGeCowYjSx7KoEi6BJWg8XXnW4fDDp6', 'etf');
-        const commodity = computeChainStats([slv], byKey, null, undefined, variantIssuanceByKey([slv], 'commodity'));
+        const commodity = computeChainStats([slv], byKey, null, undefined, undefined, variantIssuanceByKey([slv], 'commodity'));
         expect(commodity.solana?.marketCap).toBeNull();
         expect(commodity.solana?.liquidity).toBe(300);
         expect(commodity.solana?.excludedByIssuance.derivative).toBe(1);
@@ -270,12 +538,16 @@ describe('chain stats', () => {
         const stats = computeChainStats(variants, marketByKey, null);
         expect(Object.keys(stats)).toEqual(['solana', 'ethereum', 'base']);
         expect(stats.base).toEqual({
+            price: null,
+            priceChange24hPercent: null,
+            priceChange1hPercent: null,
             liquidity: 55,
             volume24hUSD: 20,
             trade24h: null,
             marketCap: 500,
             fdv: null,
             circulatingSupply: 5,
+            totalSupply: null,
             variantCount: 2,
             issuedVariantCount: 1,
             excludedByIssuance: { bridged: 1, wrapped: 0, derivative: 0 },
@@ -368,7 +640,7 @@ describe('chain stats', () => {
         expect(build(NOW - 3 * 24 * 60 * 60 * 1000).market?.quality).toEqual({ included: false, reasons: ['stale'] });
     });
 
-    test('the Solana worker rollup overrides liquidity / volume for parity with v1', () => {
+    test('the Solana worker rollup no longer overrides liquidity / volume: every chain is the guarded variant sum', () => {
         const rollup: V2ChainRollupResult = {
             assetId: 'usd',
             chain: 'solana',
@@ -380,12 +652,12 @@ describe('chain stats', () => {
             lastComputedAt: 1,
         };
         const stats = computeChainStats(variants, marketByKey, new Map([['solana', rollup]]));
-        expect(stats.solana?.liquidity).toBe(999);
-        expect(stats.solana?.volume24hUSD).toBe(42);
+        expect(stats.solana?.liquidity).toBe(100);
+        expect(stats.solana?.volume24hUSD).toBe(10);
         expect(stats.solana?.marketCap).toBe(1000);
     });
 
-    test('the rollup is not used on a chain where the guard excluded a row (it sums rows unguarded)', () => {
+    test('a row the guard excludes leaves the chain sums even when a worker rollup is present', () => {
         const NOW = 1_800_000_000_000;
         const junk = variant('solana', 'JunkMint11111111111111111111111111111111111', 'spot');
         const byKey = new Map([
@@ -408,6 +680,21 @@ describe('chain stats', () => {
         expect(stats.solana?.liquidity).toBe(100_000);
         expect(stats.solana?.volume24hUSD).toBe(50_000);
         expect(stats.solana?.excludedCount).toBe(1);
+    });
+
+    test('chain price is the liquidity-weighted average of included priced rows; aggregate weights chains by liquidity', () => {
+        const byKey = new Map([
+            [`solana:${USDC_SOLANA}`, { ...market(300, 1000), price: 1.0 }],
+            [`base:${USDC_BASE}`, { ...market(100, 500), price: 1.02 }],
+            ['base:0x0000000000000000000000000000000000000001', { ...market(100, 50), price: 0.98 }],
+            ['ethereum:0x0000000000000000000000000000000000000002', { ...market(1, 10), price: 1.5, totalSupply: 7 }],
+        ]);
+        const stats = computeChainStats(variants, byKey, null);
+        expect(stats.base?.price).toBeCloseTo(1.0, 6);
+        expect(stats.ethereum?.price).toBe(1.5);
+        expect(stats.ethereum?.totalSupply).toBeNull();
+        const aggregate = aggregateChainStats(stats);
+        expect(aggregate.price).toBeCloseTo((300 * 1.0 + 200 * 1.0 + 1 * 1.5) / 501, 6);
     });
 });
 
