@@ -193,8 +193,8 @@ day's tail). Daily at `25 0 * * *` this job sums the 30 completed UTC days
 before today per (asset, chain) over the asset's active EVM variants into
 `v2_asset_chain_markets_latest` with `origin='computed'` and
 `volume_30d_days`, then prunes samples older than `retentionDays` (45).
-`volume_30d_by_address` (migration 0037) keeps each variant's share and
-sampled-day count so the API can read the chain over the rows its quality
+`volume_30d_by_address` (migration 0037; `{ computedAt, shares: { <address>: { volume, days } } }`)
+keeps each variant's share and sampled-day count so the API can read the chain over the rows its quality
 guard accepts: a rejected row's share leaves the total and the completeness
 check, a share whose variant is gone is dropped, and a current variant that
 trades today without a saved share keeps the chain partial until the next
@@ -202,8 +202,9 @@ rollup (the rollup itself sums every active variant). Solana: the mirror
 also records a daily sample per mirrored row, and the rollup attaches the
 per-mint shares to the mirrored `solana_v1` row without touching v1's
 candle figure; the API serves v1's figure until the samples cover the window
-(28 days), then reads the Solana row like a computed one so rejected mints
-leave it too. v1's own curated / search / detail routes keep their guarded
+(28 days) and the shares were written within 48 h (`computedAt`; a stopped
+job must not freeze Solana's figure), then reads the Solana row like a
+computed one so rejected mints leave it too. v1's own curated / search / detail routes keep their guarded
 liquidity and volume sums whenever the guard rejected a row and take only
 the 30d figure from `asset_markets_latest`.
 `volume_30d_days` is the smallest distinct-day count among the variants that

@@ -278,7 +278,7 @@ export function selectVolume30d(
     for (const chain of tradedChains) {
         const rollup = rollupByChain?.get(chain);
         if (!rollup) return { volume30dUSD: null, scope: null };
-        const read = acceptedVolume30d(chain, rollup, qualityByKey, variants, marketByKey);
+        const read = acceptedVolume30d(chain, rollup, qualityByKey, variants, marketByKey, nowMs);
         if (read.volume30dUSD === null) return { volume30dUSD: null, scope: null };
         const fresh =
             rollup.origin === 'solana_v1' ||
@@ -315,6 +315,8 @@ function acceptedVolume30d(
     variants: ReadonlyArray<Pick<V2VariantResult, 'chain' | 'address' | 'key'>> | undefined,
     /** Current markets: a current accepted variant with 24h volume and no saved share is missing history. */
     marketByKey: ReadonlyMap<VariantKey, VariantMarketSnapshotResult> | undefined,
+    /** Clock for the Solana shares' freshness check. */
+    nowMs: number,
 ): { volume30dUSD: number | null; days: number | null } {
     const stored = { volume30dUSD: rollup.volume30dUSD, days: rollup.volume30dDays };
     const byAddress = rollup.volume30dByAddress;
@@ -345,8 +347,12 @@ function acceptedVolume30d(
     if (tradingWithoutHistory) days = 0;
     const read = { volume30dUSD: accepted.length > 0 ? total : null, days };
     if (rollup.origin === 'solana_v1') {
-        // v1's candle figure stands until the per-mint samples cover the window.
-        return (read.days ?? 0) >= VOLUME_30D_MIN_DAYS && read.volume30dUSD !== null ? read : stored;
+        // v1's candle figure stands until the per-mint samples cover the window,
+        // and again whenever the shares are older than the rollup's freshness
+        // limit (the mirror keeps them while a stopped job would leave them frozen).
+        const sharesFresh =
+            rollup.volume30dSharesComputedAt != null && nowMs - rollup.volume30dSharesComputedAt <= VOLUME_30D_MAX_AGE_MS;
+        return sharesFresh && (read.days ?? 0) >= VOLUME_30D_MIN_DAYS && read.volume30dUSD !== null ? read : stored;
     }
     return read;
 }

@@ -12,7 +12,10 @@ locals {
   #                                  registry's native-coin table. Daily.
   #   refresh-v2-evm-variant-markets per-chain Birdeye token-overview snapshots
   #                                  for the stalest EVM variants. Every 15 min
-  #                                  in prd (minAgeMs keeps a row to ~1 fetch/h).
+  #                                  in prd, hourly in stg: the API's quality
+  #                                  guard treats an EVM row older than 3 h as
+  #                                  stale, so a daily stg refresh would leave
+  #                                  every stg row out of the sums.
   #
   # Minute offsets stagger the two frequent jobs from the `*/10`
   # refresh-asset-variant-markets tick (whose output the Solana mirror copies),
@@ -41,8 +44,6 @@ locals {
     },
     {
       name      = "refresh-v2-evm-variant-markets"
-      # stg hourly, not daily: the API's quality guard treats an EVM row older than
-      # 3 h as stale, and a daily refresh would leave every stg row out of the sums.
       schedule  = var.env == "stg" ? "7 * * * *" : "7-59/15 * * * *"
       http_path = "/jobs/refresh-v2-evm-variant-markets"
       body_json = jsonencode({

@@ -163,6 +163,8 @@ export interface V2ChainRollupResult {
     volume30dDays: number | null;
     /** Each contributing address's share of the window and its sampled days (null before the first rollup after 0037; on `solana_v1` rows only once Solana samples exist, and `volume30dUSD` there is still v1's candle figure). */
     volume30dByAddress?: Record<string, { volume: number; days: number }> | null;
+    /** ms epoch of the rollup run that wrote `volume30dByAddress` (the mirrored Solana row's `lastComputedAt` is v1's, not the rollup's). */
+    volume30dSharesComputedAt?: number | null;
     primaryAddress: string | null;
     variantCount: number;
     lastComputedAt: number | null;
@@ -386,6 +388,7 @@ export function rowToRollupResult(row: V2ChainRollupDbRow): V2ChainRollupResult 
                 : 30,
         // Computed rows always carry shares after 0037; the mirrored Solana row gains them once its per-mint samples exist.
         volume30dByAddress: toVolumeByAddress(row.volume_30d_by_address),
+        volume30dSharesComputedAt: toSharesComputedAt(row.volume_30d_by_address),
         primaryAddress: row.primary_address,
         variantCount: toCount(row.variant_count),
         lastComputedAt: toEpochMs(row.last_computed_at),
@@ -393,8 +396,20 @@ export function rowToRollupResult(row: V2ChainRollupDbRow): V2ChainRollupResult 
     };
 }
 
-function toVolumeByAddress(value: unknown): Record<string, { volume: number; days: number }> | null {
+/** The column is `{ computedAt, shares: { <address>: { volume, days } } }`. */
+function sharesEnvelope(value: unknown): { computedAt: unknown; shares: unknown } | null {
     const raw = typeof value === 'string' ? safeJsonParse(value) : value;
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+    const envelope = raw as { computedAt?: unknown; shares?: unknown };
+    return 'shares' in envelope ? { computedAt: envelope.computedAt, shares: envelope.shares } : null;
+}
+
+function toSharesComputedAt(value: unknown): number | null {
+    return toFinite(sharesEnvelope(value)?.computedAt);
+}
+
+function toVolumeByAddress(value: unknown): Record<string, { volume: number; days: number }> | null {
+    const raw = sharesEnvelope(value)?.shares;
     if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
     const out: Record<string, { volume: number; days: number }> = {};
     for (const [address, entry] of Object.entries(raw as Record<string, unknown>)) {

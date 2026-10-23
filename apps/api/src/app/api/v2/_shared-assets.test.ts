@@ -1183,8 +1183,13 @@ describe('selectVolume30d', () => {
         const early = [sol[0], { ...sol[1], volume30dByAddress: { GoodMint: { volume: 2_000, days: 10 }, JunkMint: { volume: 900, days: 10 } } }] as const;
         const quality = new Map([['solana:JunkMint', { included: false, reasons: ['dust' as const] }]]);
         expect(selectVolume30d(chainStats({ solana: 100 }), new Map([early]), NOW, quality)).toEqual({ volume30dUSD: 3_000, scope: 'solana' });
-        const covered = [sol[0], { ...sol[1], volume30dByAddress: { GoodMint: { volume: 2_000, days: 30 }, JunkMint: { volume: 900, days: 30 } } }] as const;
+        const shares = { GoodMint: { volume: 2_000, days: 30 }, JunkMint: { volume: 900, days: 30 } };
+        const covered = [sol[0], { ...sol[1], volume30dByAddress: shares, volume30dSharesComputedAt: NOW - 60_000 }] as const;
         expect(selectVolume30d(chainStats({ solana: 100 }), new Map([covered]), NOW, quality)).toEqual({ volume30dUSD: 2_000, scope: 'solana' });
+        // Shares a stopped rollup left behind (older than 48 h) are not served; v1's figure stands again.
+        const frozen = [sol[0], { ...sol[1], volume30dByAddress: shares, volume30dSharesComputedAt: NOW - 3 * 24 * 60 * 60 * 1000 }] as const;
+        expect(selectVolume30d(chainStats({ solana: 100 }), new Map([frozen]), NOW, quality)).toEqual({ volume30dUSD: 3_000, scope: 'solana' });
+        expect(selectVolume30d(chainStats({ solana: 100 }), new Map([[sol[0], { ...sol[1], volume30dByAddress: shares }]]), NOW, quality)).toEqual({ volume30dUSD: 3_000, scope: 'solana' });
     });
 
     test('a computed rollup the daily job stopped refreshing is not served, however many days it had', () => {
