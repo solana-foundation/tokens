@@ -56,8 +56,9 @@ export function MobileDetailDrawer({
 }) {
     return (
         <Drawer open={open} onOpenChange={onOpenChange} shouldScaleBackground={false}>
-            <DrawerContent className="border-border-light">
-                <DrawerHeader className="px-6 pb-3 pt-4 text-left">
+            {/* Inset from the screen edges as a floating card rather than an edge-to-edge sheet. */}
+            <DrawerContent className="inset-x-3 bottom-3 rounded-[32px] border-border-light pb-[calc(env(safe-area-inset-bottom)+8px)]">
+                <DrawerHeader className="px-5 pb-2 pt-1 text-left">
                     <div className="flex items-center gap-3">
                         <span className="shrink-0">{logo}</span>
                         <div className="min-w-0 flex-1">
@@ -81,7 +82,7 @@ export function MobileDetailDrawer({
                     </div>
                 </DrawerHeader>
 
-                <div className="min-h-0 overflow-y-auto px-6 pb-2">
+                <div className="min-h-0 overflow-y-auto px-5 pb-2">
                     {children}
                     {stats.length > 0 ? (
                         <dl className="mt-4 divide-y divide-border-extra-light border-t border-border-extra-light">
@@ -98,7 +99,7 @@ export function MobileDetailDrawer({
                 </div>
 
                 {action || secondary ? (
-                    <DrawerFooter className="gap-3 px-6 pb-2 pt-2">
+                    <DrawerFooter className="gap-3 px-5 pb-2 pt-2">
                         {action ? <ActionButton action={action} /> : null}
                         {secondary ? (
                             <button
