@@ -193,8 +193,10 @@ day's tail). Daily at `25 0 * * *` this job sums the 30 completed UTC days
 before today per (asset, chain) over the asset's active EVM variants into
 `v2_asset_chain_markets_latest` with `origin='computed'` and
 `volume_30d_days`, then prunes samples older than `retentionDays` (45).
-`volume_30d_by_address` keeps each variant's share so the API can leave out a
-row its quality guard rejects (the rollup itself sums every active variant).
+`volume_30d_by_address` (migration 0037) keeps each variant's share and
+sampled-day count so the API can read the chain over the rows its quality
+guard accepts: a rejected row's share leaves the total and the completeness
+check (the rollup itself sums every active variant).
 `volume_30d_days` is the smallest distinct-day count among the variants that
 matter to the total (≥ 1% of it): a variant added last week keeps the chain
 "partial" until its own history is in, a dust pool cannot. Solana's 30d
@@ -369,7 +371,7 @@ SELECT count(*) FROM v2_variant_markets_latest WHERE address LIKE '0x%' AND addr
 6. Only then enable `GET /api/v2/*` consumers; the endpoints are live as soon
    as the image is, serving whatever the tables hold.
 
-Market quality + daily volume (migration 0036, `db/migrations/0036_v2_market_quality.sql`):
+Market quality + daily volume (migration 0036, `db/migrations/0036_v2_market_quality.sql`; the per-variant shares column is 0037, `db/migrations/0037_v2_volume_30d_by_address.sql`, applied after it):
 apply (stg, then prd) before deploying the worker image that writes
 `last_empty_at` and the daily volume samples; the API's guard needs no DDL.
 

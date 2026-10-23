@@ -161,8 +161,8 @@ export interface V2ChainRollupResult {
     volume30dUSD: number | null;
     /** Distinct days behind `volume30dUSD`: 30 for the Solana candle rollup, the sample count for computed EVM rows. */
     volume30dDays: number | null;
-    /** Computed rows: each contributing address's share of `volume30dUSD` (null before the first rollup after 0036, and for `solana_v1`). */
-    volume30dByAddress?: Record<string, number> | null;
+    /** Computed rows: each contributing address's share of `volume30dUSD` and its sampled days (null before the first rollup after 0037, and for `solana_v1`). */
+    volume30dByAddress?: Record<string, { volume: number; days: number }> | null;
     primaryAddress: string | null;
     variantCount: number;
     lastComputedAt: number | null;
@@ -392,14 +392,30 @@ export function rowToRollupResult(row: V2ChainRollupDbRow): V2ChainRollupResult 
     };
 }
 
-function toVolumeByAddress(value: unknown): Record<string, number> | null {
-    if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
-    const out: Record<string, number> = {};
-    for (const [address, volume] of Object.entries(value as Record<string, unknown>)) {
-        const number = typeof volume === 'string' ? Number(volume) : volume;
-        if (typeof number === 'number' && Number.isFinite(number)) out[address] = number;
+function toVolumeByAddress(value: unknown): Record<string, { volume: number; days: number }> | null {
+    const raw = typeof value === 'string' ? safeJsonParse(value) : value;
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+    const out: Record<string, { volume: number; days: number }> = {};
+    for (const [address, entry] of Object.entries(raw as Record<string, unknown>)) {
+        if (!entry || typeof entry !== 'object') continue;
+        const volume = toFinite((entry as { volume?: unknown }).volume);
+        const days = toFinite((entry as { days?: unknown }).days);
+        if (volume !== null && days !== null) out[address] = { volume, days: Math.max(0, Math.floor(days)) };
     }
     return out;
+}
+
+function toFinite(value: unknown): number | null {
+    const number = typeof value === 'string' ? Number(value) : value;
+    return typeof number === 'number' && Number.isFinite(number) ? number : null;
+}
+
+function safeJsonParse(value: string): unknown {
+    try {
+        return JSON.parse(value);
+    } catch {
+        return null;
+    }
 }
 
 function variantResults(rows: readonly V2VariantDbRow[]): V2VariantResult[] {

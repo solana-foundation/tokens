@@ -741,8 +741,9 @@ export function makePostgresV2AssetsJobsRepo(sql: Sql): V2AssetsJobsRepo {
                            max(chain_volume_usd) AS volume_30d_usd,
                            min(days) FILTER (WHERE chain_volume_usd <= 0 OR volume_usd >= 0.01 * chain_volume_usd)::int AS days,
                            count(*)::int AS variant_count,
-                           -- Per-variant shares, so the API can leave out a row its quality guard rejects.
-                           jsonb_object_agg(address, volume_usd) AS by_address
+                           -- Per-variant shares and coverage, so the API can serve the figure over the
+                           -- rows its quality guard accepts (migration 0037).
+                           jsonb_object_agg(address, jsonb_build_object('volume', volume_usd, 'days', days)) AS by_address
                     FROM shares
                     GROUP BY asset_id, chain
                 )

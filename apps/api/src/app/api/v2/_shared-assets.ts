@@ -264,7 +264,7 @@ export function selectVolume30d(
     rollupByChain: ReadonlyMap<ChainId, V2ChainRollupResult> | null,
     /** A computed row whose `lastComputedAt` is more than `VOLUME_30D_MAX_AGE_MS` before this is treated as missing. */
     nowMs: number = Date.now(),
-    /** From `assessVariantMarkets`: a rejected row's share (`volume30dByAddress`) leaves a computed chain total. */
+    /** From `assessVariantMarkets`: a computed chain is read over the accepted rows only (`volume30dByAddress`). */
     qualityByKey?: ReadonlyMap<VariantKey, MarketQuality>,
 ): { volume30dUSD: number | null; scope: V2Volume30dScope } {
     const tradedChains = CHAIN_KINDS.filter(chain => (chainStats[chain]?.volume24hUSD ?? 0) > 0);
@@ -273,36 +273,52 @@ export function selectVolume30d(
     let any = false;
     for (const chain of tradedChains) {
         const rollup = rollupByChain?.get(chain);
-        if (!rollup || rollup.volume30dUSD === null) return { volume30dUSD: null, scope: null };
+        if (!rollup) return { volume30dUSD: null, scope: null };
+        const read = acceptedVolume30d(chain, rollup, qualityByKey);
+        if (read.volume30dUSD === null) return { volume30dUSD: null, scope: null };
         const fresh =
             rollup.origin === 'solana_v1' ||
             (rollup.lastComputedAt !== null && nowMs - rollup.lastComputedAt <= VOLUME_30D_MAX_AGE_MS);
-        const complete = rollup.origin === 'solana_v1' || (rollup.volume30dDays ?? 0) >= VOLUME_30D_MIN_DAYS;
+        const complete = rollup.origin === 'solana_v1' || (read.days ?? 0) >= VOLUME_30D_MIN_DAYS;
         if (!fresh || !complete) return { volume30dUSD: null, scope: null };
-        sum += rollup.volume30dUSD - excludedVolume30d(chain, rollup, qualityByKey);
+        sum += read.volume30dUSD;
         any = true;
     }
     if (!any) return { volume30dUSD: null, scope: null };
     return { volume30dUSD: sum, scope: tradedChains.length === 1 && tradedChains[0] === 'solana' ? 'solana' : 'all' };
 }
 
-/** The 30d volume of this chain's rows the quality guard rejected (computed rows only; the rollup sums every row). */
-function excludedVolume30d(
+/** Share of a chain's variants that counts toward the window's completeness. */
+const VOLUME_30D_COVERAGE_MIN_SHARE = 0.01;
+
+/**
+ * A computed rollup read over the rows the quality guard accepted: the
+ * rejected rows' shares leave the total, and the sampled-day count is the
+ * smallest among the accepted variants that make up at least 1% of what is
+ * left (the rollup's own `volume30dDays` was computed over every row). Rows
+ * written before migration 0037 carry no shares and are served as stored.
+ */
+function acceptedVolume30d(
     chain: ChainId,
     rollup: V2ChainRollupResult,
     qualityByKey: ReadonlyMap<VariantKey, MarketQuality> | undefined,
-): number {
+): { volume30dUSD: number | null; days: number | null } {
     const byAddress = rollup.origin === 'computed' ? rollup.volume30dByAddress : null;
-    if (!byAddress || !qualityByKey) return 0;
-    let excluded = 0;
-    for (const [key, quality] of qualityByKey) {
+    if (!byAddress) return { volume30dUSD: rollup.volume30dUSD, days: rollup.volume30dDays };
+    const rejected = new Set<string>();
+    for (const [key, quality] of qualityByKey ?? []) {
         if (quality.included) continue;
         const separator = key.indexOf(':');
-        if (separator <= 0 || key.slice(0, separator) !== chain) continue;
-        const share = byAddress[key.slice(separator + 1)];
-        if (typeof share === 'number' && Number.isFinite(share)) excluded += share;
+        if (separator > 0 && key.slice(0, separator) === chain) rejected.add(key.slice(separator + 1));
     }
-    return Math.min(excluded, rollup.volume30dUSD ?? 0);
+    const accepted = Object.entries(byAddress).filter(([address]) => !rejected.has(address));
+    const total = accepted.reduce((sum, [, share]) => sum + share.volume, 0);
+    let days: number | null = null;
+    for (const [, share] of accepted) {
+        if (total > 0 && share.volume < VOLUME_30D_COVERAGE_MIN_SHARE * total) continue;
+        days = days === null ? share.days : Math.min(days, share.days);
+    }
+    return { volume30dUSD: accepted.length > 0 ? total : null, days };
 }
 
 /** Variants left out of supply / market cap, by why. */

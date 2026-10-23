@@ -1152,15 +1152,22 @@ describe('selectVolume30d', () => {
         });
     });
 
-    test("a rejected row's share leaves a computed chain total; the mirrored Solana row is untouched", () => {
-        const junkKey = 'ethereum:0x00000000000000000000000000000000000000ff';
-        const eth = rollup('ethereum', 900, 30, 'computed');
-        const withShares = [eth[0], { ...eth[1], volume30dByAddress: { '0x00000000000000000000000000000000000000ff': 300, '0x0000000000000000000000000000000000000001': 600 } }] as const;
-        const quality = new Map([[junkKey, { included: false, reasons: ['price_outlier' as const] }]]);
+    test('a computed chain is read over the accepted rows: rejected shares leave the total and the coverage', () => {
+        const junk = '0x00000000000000000000000000000000000000ff';
+        const good = '0x0000000000000000000000000000000000000001';
+        const eth = rollup('ethereum', 900, 5, 'computed');
+        // The rollup's own day count (5) is dragged down by the rejected 5-day outlier pool.
+        const withShares = [eth[0], { ...eth[1], volume30dByAddress: { [junk]: { volume: 300, days: 5 }, [good]: { volume: 600, days: 30 } } }] as const;
+        const quality = new Map([[`ethereum:${junk}`, { included: false, reasons: ['price_outlier' as const] }]]);
         const rollups = new Map([rollup('solana', 3_000, 30, 'solana_v1'), withShares]);
         expect(selectVolume30d(chainStats({ solana: 100, ethereum: 50 }), rollups, NOW, quality)).toEqual({ volume30dUSD: 3_600, scope: 'all' });
-        // Without the shares (a row written before the column existed) nothing can be subtracted.
-        expect(selectVolume30d(chainStats({ solana: 100, ethereum: 50 }), new Map([rollup('solana', 3_000, 30, 'solana_v1'), eth]), NOW, quality)).toEqual({ volume30dUSD: 3_900, scope: 'all' });
+        // Accepted as well, the 5-day pool makes the window partial again.
+        expect(selectVolume30d(chainStats({ solana: 100, ethereum: 50 }), rollups, NOW, new Map())).toEqual({ volume30dUSD: null, scope: null });
+        // A dust newcomer under 1% of the accepted total does not block the window.
+        const dustNew = [eth[0], { ...eth[1], volume30dByAddress: { [good]: { volume: 600, days: 30 }, '0x02': { volume: 1, days: 2 } } }] as const;
+        expect(selectVolume30d(chainStats({ solana: 100, ethereum: 50 }), new Map([rollup('solana', 3_000, 30, 'solana_v1'), dustNew]), NOW, new Map())).toEqual({ volume30dUSD: 3_601, scope: 'all' });
+        // Rows written before 0037 carry no shares and are served as stored.
+        expect(selectVolume30d(chainStats({ solana: 100, ethereum: 50 }), new Map([rollup('solana', 3_000, 30, 'solana_v1'), rollup('ethereum', 900, 30, 'computed')]), NOW, quality)).toEqual({ volume30dUSD: 3_900, scope: 'all' });
     });
 
     test('a computed rollup the daily job stopped refreshing is not served, however many days it had', () => {
