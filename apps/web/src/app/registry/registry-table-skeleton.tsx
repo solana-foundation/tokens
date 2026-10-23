@@ -117,20 +117,15 @@ export function RegistryTableSkeleton() {
                         </div>
                         <ul className="divide-y divide-border-extra-light">
                             {Array.from({ length: ROWS }, (_, row) => (
-                                <li key={row} className="flex flex-col gap-2 px-4 py-3.5">
-                                    <div className="flex items-start justify-between gap-3">
-                                        <div className="flex items-start gap-2.5">
-                                            <Skeleton className="size-8 shrink-0 rounded-full bg-gray-100" />
-                                            <div className="flex flex-col gap-1.5 pt-0.5">
-                                                <Skeleton className={cn('h-4', BAR, row % 3 === 0 ? 'w-24' : 'w-16')} />
-                                                <Skeleton className={cn('h-3 w-24', BAR)} />
-                                            </div>
-                                        </div>
-                                        <ValueBars align="right" />
+                                <li key={row} className="flex items-center gap-3 px-4 py-3">
+                                    <Skeleton className="size-8 shrink-0 rounded-full bg-gray-100" />
+                                    <div className="flex flex-1 flex-col gap-1.5">
+                                        <Skeleton className={cn('h-4', BAR, row % 3 === 0 ? 'w-24' : 'w-16')} />
+                                        <Skeleton className={cn('h-3 w-28', BAR)} />
                                     </div>
-                                    <div className="flex items-center justify-between gap-3 pl-[42px]">
-                                        <Skeleton className={cn('h-3', BAR, row % 2 === 0 ? 'w-40' : 'w-32')} />
-                                        <Skeleton className={cn('h-3 w-16', BAR)} />
+                                    <div className="flex flex-col items-end gap-1.5">
+                                        <Skeleton className={cn('h-4 w-16', BAR)} />
+                                        <Skeleton className={cn('h-3 w-10', BAR)} />
                                     </div>
                                 </li>
                             ))}

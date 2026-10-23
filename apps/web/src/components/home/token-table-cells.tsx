@@ -32,7 +32,7 @@ export function formatPrice(price: number | null | undefined): string {
     return `$${price.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
 
-export function TokenTablePriceCell({ token }: { token: Token }) {
+export function TokenTablePriceCell({ token, className }: { token: Token; className?: string }) {
     const shouldUseCanonicalAssetChart = token.canonicalMarketSource === 'clickhouse_stock';
     const latestClose = useInlineLatestClose({
         assetId: token.assetId,
@@ -43,7 +43,7 @@ export function TokenTablePriceCell({ token }: { token: Token }) {
     const displayPrice = token.coingeckoId || shouldUseCanonicalAssetChart ? token.price : (latestClose ?? token.price);
 
     return (
-        <span className="block w-full text-right text-[14px] text-[#2D2D2D] font-medium tabular-nums">
+        <span className={cn('block w-full text-right text-[14px] text-[#2D2D2D] font-medium tabular-nums', className)}>
             {formatPrice(displayPrice)}
         </span>
     );

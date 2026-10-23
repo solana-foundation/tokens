@@ -308,7 +308,12 @@ function RegistryTableInner({ data }: { data: RegistryData }) {
                             </tbody>
                         </table>
                     </div>
-                    <RegistryMobileList rows={visibleRows} table={table} onClearFilters={clearAll} />
+                    <RegistryMobileList
+                        rows={visibleRows}
+                        table={table}
+                        onClearFilters={clearAll}
+                        onOpenResponse={row => setOpenMint(row.mintAddress)}
+                    />
                     <MarketsPagination
                         state={{
                             pageIndex: pagination.pageIndex,

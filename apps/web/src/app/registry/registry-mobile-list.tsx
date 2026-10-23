@@ -1,31 +1,37 @@
 'use client';
 
+import { useState } from 'react';
 import type { Column, Row, Table } from '@tanstack/react-table';
 import { ChevronDown, ChevronUp, ChevronsUpDown } from 'lucide-react';
 
-import { cn } from '@tokens/ui/cn';
-import { SplitBadge } from '@/components/split-badge';
+import { cn, truncateAddress } from '@tokens/ui/cn';
 import { formatLargeNumber } from '@/lib/format';
 import type { RegistryRow } from './lib/types';
-import { AddressLink, RegistryEmptyState, TokenLink } from './registry-cells';
+import { RegistryEmptyState, displayNameOf } from './registry-cells';
+import { RegistryDetailDrawer } from './registry-detail-drawer';
 import { RegistryTokenLogo } from './registry-token-logo';
+
+const SOURCE_LABELS = { allium: 'Allium', rwa: 'RWA.xyz' } as const;
 
 /**
  * Phone layout (below md): the same filtered/sorted/paginated rows as the
- * table, one stacked row per asset instead of a sideways-scrolling grid.
- * Tier 1 is logo + symbol over the mint address with both provider values on
- * the right; tier 2 is category · class with the market cap. The name and the
- * Response sheet stay desktop-only (both are on the asset page).
+ * table, one quiet row per asset — logo, symbol over name (or address), the
+ * headline value over its source — and a tap opens a detail drawer with the
+ * taxonomy badge, the address, all three numbers and "View more" when the
+ * asset has a tokens.xyz page.
  */
 export function RegistryMobileList({
     rows,
     table,
     onClearFilters,
+    onOpenResponse,
 }: {
     rows: Row<RegistryRow>[];
     table: Table<RegistryRow>;
     onClearFilters: () => void;
+    onOpenResponse: (row: RegistryRow) => void;
 }) {
+    const [detail, setDetail] = useState<RegistryRow | null>(null);
     return (
         <div className="md:hidden">
             <div className="flex items-center justify-between gap-3 border-b border-border-light bg-gray-50/80 px-4 py-2.5">
@@ -37,10 +43,17 @@ export function RegistryMobileList({
             ) : (
                 <ul role="list" aria-label="Registry assets" className="divide-y divide-border-extra-light">
                     {rows.map(row => (
-                        <RegistryMobileRow key={row.id} row={row.original} />
+                        <RegistryMobileRow key={row.id} row={row.original} onOpen={setDetail} />
                     ))}
                 </ul>
             )}
+            <RegistryDetailDrawer
+                row={detail}
+                onOpenChange={open => {
+                    if (!open) setDetail(null);
+                }}
+                onOpenResponse={onOpenResponse}
+            />
         </div>
     );
 }
@@ -80,63 +93,47 @@ function SortButton({
     );
 }
 
-/** Category and class as one split pill; either side may be missing, with neither it is a dash. */
-function TaxonomyBadge({ category, assetClass }: { category: string | null; assetClass: string | null }) {
-    const segments = [category, assetClass].filter((value): value is string => !!value);
-    if (segments.length === 0) return <span className="text-text-extra-low">—</span>;
-    return <SplitBadge segments={segments} title={segments.join(' · ')} />;
-}
+function RegistryMobileRow({ row, onOpen }: { row: RegistryRow; onOpen: (row: RegistryRow) => void }) {
+    // Headline number: the coalesced provider value, else market cap, else a dash.
+    const headline =
+        row.providerValueUsd != null && row.providerValueSource
+            ? { value: row.providerValueUsd, source: SOURCE_LABELS[row.providerValueSource] }
+            : row.marketCapUsd != null
+              ? { value: row.marketCapUsd, source: 'Market cap' }
+              : null;
+    const secondary = row.name ? displayNameOf(row) : truncateAddress(row.mintAddress);
 
-/** One stat line of the phone row's right column: label left, number right. */
-function StatRow({ label, value, muted = false }: { label: string; value: number | null; muted?: boolean }) {
     return (
-        <div className="flex flex-1 items-center justify-between gap-2 py-1 pl-2.5 pr-4">
-            <dt className="text-[11px] font-medium text-text-extra-low">{label}</dt>
-            <dd
-                className={cn(
-                    'text-[13px] font-medium tabular-nums',
-                    value == null ? 'text-text-extra-low' : muted ? 'text-text-medium' : 'text-[#2D2D2D]',
-                )}
-            >
-                {formatLargeNumber(value)}
-            </dd>
-        </div>
-    );
-}
-
-function RegistryMobileRow({ row }: { row: RegistryRow }) {
-    return (
-        <li className="flex items-stretch">
-            {/* Main area: identity, then the taxonomy badge right under the address. The symbol
-                links to the asset page and the address to the explorer: two separate anchors
-                side by side rather than one nested in the other. */}
-            <div className="flex min-w-0 flex-1 flex-col justify-center gap-2 py-3 pl-4 pr-2.5">
-                <div className="flex min-w-0 items-center gap-2.5">
-                    <TokenLink row={row} className="-m-1 shrink-0 p-1">
-                        <RegistryTokenLogo row={row} size={28} />
-                    </TokenLink>
-                    <div className="flex min-w-0 flex-col leading-tight">
-                        <TokenLink row={row} className="-my-1 py-1">
-                            <span className="block truncate text-[15px] font-medium text-text-extra-high">
-                                {row.symbol}
-                            </span>
-                        </TokenLink>
-                        <AddressLink address={row.mintAddress} className="-my-1 py-1 text-[12px]" />
-                    </div>
-                </div>
-                <div className="flex min-w-0">
-                    <TaxonomyBadge category={row.category} assetClass={row.assetClass} />
-                </div>
+        <li
+            role="button"
+            tabIndex={0}
+            aria-label={`${row.symbol} details`}
+            className="flex cursor-pointer items-center gap-3 px-4 py-3 transition-colors active:bg-gray-50/60"
+            onClick={() => onOpen(row)}
+            onKeyDown={event => {
+                if (event.key !== 'Enter' && event.key !== ' ') return;
+                event.preventDefault();
+                onOpen(row);
+            }}
+        >
+            <RegistryTokenLogo row={row} size={32} />
+            <div className="flex min-w-0 flex-1 flex-col leading-tight">
+                <span className="truncate text-[15px] font-semibold text-text-extra-high">{row.symbol}</span>
+                <span className={cn('truncate text-[12px] text-text-low', !row.name && 'font-mono')} title={secondary}>
+                    {secondary}
+                </span>
             </div>
-            {/* Stats column: the three numbers as a hairline-separated list, split from the main
-                area. It fills the row's height and runs to the card's edge, so its left rule meets
-                the row dividers and each hairline spans the column edge to edge (padding lives on
-                the stat lines, not here). */}
-            <dl className="flex w-[137px] shrink-0 flex-col divide-y divide-border-extra-light border-l border-border-light">
-                <StatRow label="Allium" value={row.alliumValueUsd} />
-                <StatRow label="RWA.xyz" value={row.rwaValueUsd} />
-                <StatRow label="Mcap" value={row.marketCapUsd} muted />
-            </dl>
+            <div className="flex shrink-0 flex-col items-end leading-tight">
+                <span
+                    className={cn(
+                        'text-[14px] font-medium tabular-nums',
+                        headline ? 'text-[#2D2D2D]' : 'text-text-extra-low',
+                    )}
+                >
+                    {headline ? formatLargeNumber(headline.value) : '—'}
+                </span>
+                <span className="text-[11px] font-medium text-text-extra-low">{headline ? headline.source : ''}</span>
+            </div>
         </li>
     );
 }

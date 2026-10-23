@@ -386,19 +386,18 @@ function TokenTableSkeleton() {
                     </div>
                     <ul className="divide-y divide-border-extra-light">
                         {Array.from({ length: 8 }, (_, rowIndex) => (
-                            <li key={rowIndex} className="flex h-[68px] items-center gap-2.5 px-4">
-                                <Skeleton className="size-[26px] shrink-0 rounded-full bg-gray-100" />
-                                <div className="flex flex-1 flex-col gap-2">
-                                    <div className="flex items-center justify-between">
-                                        <Skeleton
-                                            className={`h-4 rounded bg-gray-100 ${rowIndex % 3 === 0 ? 'w-36' : 'w-24'}`}
-                                        />
-                                        <Skeleton className="h-4 w-16 rounded bg-gray-100" />
-                                    </div>
-                                    <div className="flex items-center justify-between">
-                                        <Skeleton className="h-3 w-40 rounded bg-gray-100" />
-                                        <Skeleton className="h-3 w-12 rounded bg-gray-100" />
-                                    </div>
+                            <li key={rowIndex} className="flex h-16 items-center gap-3 px-4">
+                                <Skeleton className="size-8 shrink-0 rounded-full bg-gray-100" />
+                                <div className="flex flex-1 flex-col gap-1.5">
+                                    <Skeleton
+                                        className={`h-4 rounded bg-gray-100 ${rowIndex % 3 === 0 ? 'w-20' : 'w-14'}`}
+                                    />
+                                    <Skeleton className="h-3 w-28 rounded bg-gray-100" />
+                                </div>
+                                <Skeleton className="h-7 w-[72px] rounded bg-gray-100" />
+                                <div className="flex flex-col items-end gap-1.5">
+                                    <Skeleton className="h-4 w-16 rounded bg-gray-100" />
+                                    <Skeleton className="h-3 w-10 rounded bg-gray-100" />
                                 </div>
                             </li>
                         ))}

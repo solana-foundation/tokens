@@ -7,21 +7,24 @@ import { useWindowVirtualizer } from '@tanstack/react-virtual';
 import { ChevronDown, ChevronUp, ChevronsUpDown } from 'lucide-react';
 
 import { AssetAdvisoryBadge } from '@/components/asset-advisory-badge';
-import { SplitBadge } from '@/components/split-badge';
+import { MobileDetailDrawer } from '@/components/mobile-detail-drawer';
 import type { Token } from '@/lib/types';
-import { INLINE_CHART_FALLBACK_DAYS, PercentChangeCell, TokenLogo, TokenTablePriceCell } from './token-table-cells';
+import {
+    INLINE_CHART_FALLBACK_DAYS,
+    PercentChangeCell,
+    TokenLogo,
+    TokenTablePriceCell,
+    formatVolume,
+} from './token-table-cells';
 
-const MOBILE_ROW_HEIGHT = 68;
-// The logo sits inside the 20px name line, same height as the text, so it never outweighs the row.
-const MOBILE_LOGO_SIZE = 18;
+const MOBILE_ROW_HEIGHT = 64;
 
-// Backdrop sparkline: no loading placeholder, it fades in once the data is there.
 const InlinePriceChart = dynamic(() => import('@/components/inline-price-chart').then(m => m.InlinePriceChart), {
     ssr: false,
     loading: () => null,
 });
 
-/** One small stat in the phone row's second line, e.g. "24h Vol $1.20M". */
+/** One stat in the detail drawer, e.g. "24h Vol" → "$1.20M". */
 export interface TokenMobileStat {
     id: string;
     label: string;
@@ -34,7 +37,7 @@ export interface TokenMobileStat {
 export interface TokenMobileRowSpec {
     showRank: boolean;
     showPrice: boolean;
-    /** Paint the 24h sparkline as a faded backdrop on the row's right half. */
+    /** Inline 24h sparkline between the name and the price. */
     showChart: boolean;
     change: { key: 'priceChange1hPercent' | 'priceChange24hPercent'; label: string } | null;
     stats: TokenMobileStat[];
@@ -42,17 +45,18 @@ export interface TokenMobileRowSpec {
 }
 
 export interface TokenMobileRowHandlers {
+    /** Navigate to the token's page (fires the click analytics event). */
     onClick: (token: Token) => void;
     onPointerDown: (token: Token) => void;
     onFocus: (token: Token) => void;
 }
 
 /**
- * Phone layout (below md) for the home table: the same sorted rows, one
- * stacked row each instead of a 980px grid that only shows the name column.
- * Line 1 is logo + name + $symbol with the price on the right; line 2 is the
- * variant's two or three headline stats with the price change on the right.
- * Window-virtualized like the table, with its own fixed row height.
+ * Phone layout (below md) for the home table: the same sorted rows as the
+ * table, one quiet row each — logo, symbol over name, a small sparkline, price
+ * over change — and a tap opens a detail drawer with the chart, the variant's
+ * stats and a "View more" into the token page. Window-virtualized like the
+ * table, with its own fixed row height.
  */
 export function TokenTableMobileList({
     rows,
@@ -69,6 +73,7 @@ export function TokenTableMobileList({
 }) {
     const topRef = React.useRef<HTMLDivElement>(null);
     const [scrollMargin, setScrollMargin] = React.useState(0);
+    const [detail, setDetail] = React.useState<Token | null>(null);
 
     React.useLayoutEffect(() => {
         const el = topRef.current;
@@ -114,12 +119,24 @@ export function TokenTableMobileList({
                             token={row.original}
                             index={row.index}
                             spec={spec}
-                            handlers={handlers}
+                            onOpen={token => {
+                                handlers.onPointerDown(token);
+                                setDetail(token);
+                            }}
+                            onPrefetch={handlers.onFocus}
                         />
                     );
                 })}
                 {paddingBottom > 0 ? <li aria-hidden style={{ height: paddingBottom }} className="border-0" /> : null}
             </ul>
+            <TokenDetailDrawer
+                token={detail}
+                spec={spec}
+                onOpenChange={open => {
+                    if (!open) setDetail(null);
+                }}
+                onViewMore={handlers.onClick}
+            />
         </div>
     );
 }
@@ -148,107 +165,150 @@ function SortButton({ column, label }: { column: Column<Token> | undefined; labe
     );
 }
 
+function ChangeCell({ value, className }: { value: number | undefined; className?: string }) {
+    if (value == null) return <span className="text-text-extra-low">—</span>;
+    return (
+        <span className={className}>
+            <PercentChangeCell value={value} />
+        </span>
+    );
+}
+
 function TokenMobileRow({
     token,
     index,
     spec,
-    handlers,
+    onOpen,
+    onPrefetch,
 }: {
     token: Token;
     index: number;
     spec: TokenMobileRowSpec;
-    handlers: TokenMobileRowHandlers;
+    onOpen: (token: Token) => void;
+    onPrefetch: (token: Token) => void;
 }) {
     const change = spec.change ? token[spec.change.key] : undefined;
     return (
         <li
             style={{ height: MOBILE_ROW_HEIGHT }}
-            className="relative flex cursor-pointer flex-col justify-center px-4 transition-colors active:bg-gray-50/60"
+            role="button"
             tabIndex={0}
-            onClick={() => handlers.onClick(token)}
+            aria-label={`${spec.displayName(token)} details`}
+            className="flex cursor-pointer items-center gap-3 px-4 transition-colors active:bg-gray-50/60"
+            onClick={() => onOpen(token)}
             onKeyDown={event => {
                 if (event.key !== 'Enter' && event.key !== ' ') return;
                 event.preventDefault();
-                handlers.onClick(token);
+                onOpen(token);
             }}
-            onPointerDown={() => handlers.onPointerDown(token)}
-            onFocus={() => handlers.onFocus(token)}
+            onFocus={() => onPrefetch(token)}
         >
-            {spec.showChart ? (
-                // The 24h sparkline as a quiet backdrop in the row's middle band: a soft filled
-                // area that fades in after the stats and fades out again under the price, so it
-                // reads as texture and never competes with the numbers (the end dot sits in the
-                // faded-out zone).
-                <div
-                    aria-hidden
-                    className="pointer-events-none absolute inset-y-2 right-0 w-[58%] opacity-25 [mask-image:linear-gradient(to_right,transparent_0%,black_38%,black_62%,transparent_90%)]"
-                >
-                    <InlinePriceChart
-                        assetId={token.assetId}
-                        coingeckoId={token.coingeckoId}
-                        useCanonicalAssetChart={token.canonicalMarketSource === 'clickhouse_stock'}
-                        address={token.address}
-                        percentChange24h={token.priceChange24hPercent}
-                        symbol={token.symbol}
-                        emptyText=""
-                        chartHeight={MOBILE_ROW_HEIGHT - 16}
-                        fallbackDays={INLINE_CHART_FALLBACK_DAYS}
-                        fill
-                        exaggerate={false}
-                        lineWidth={1.25}
-                        className="relative h-full w-full overflow-hidden bg-transparent"
-                    />
-                </div>
+            {spec.showRank ? (
+                <span className="w-4 shrink-0 text-right text-[11px] font-medium tabular-nums text-text-low">
+                    {token.trendingRank ?? index + 1}
+                </span>
             ) : null}
-            <div className="relative flex min-w-0 flex-col gap-[3px]">
-                {/* Line 1: rank, a name-sized logo and the name, price on the right. */}
-                <div className="flex items-center justify-between gap-3 leading-5">
-                    <div className="flex min-w-0 items-center gap-2">
-                        {spec.showRank ? (
-                            <span className="w-4 shrink-0 text-right text-[12px] font-medium tabular-nums text-text-low">
-                                {token.trendingRank ?? index + 1}
-                            </span>
-                        ) : null}
-                        <TokenLogo token={token} size={MOBILE_LOGO_SIZE} />
-                        <span
-                            className="truncate text-[15px] font-medium text-text-extra-high"
-                            title={spec.displayName(token)}
-                        >
-                            {spec.displayName(token)}
-                        </span>
-                        <span className="shrink-0 text-[12px] font-medium text-text-extra-low">
-                            ${token.symbol || '???'}
-                        </span>
-                        <AssetAdvisoryBadge advisory={token.advisory} size="sm" />
-                    </div>
-                    {spec.showPrice ? (
-                        <span className="shrink-0">
-                            <TokenTablePriceCell token={token} />
-                        </span>
-                    ) : null}
-                </div>
-                {/* Line 2: the stats pill, price change on the right. */}
-                <div className="flex items-center justify-between gap-3 text-[12px] leading-none">
-                    <SplitBadge
-                        className="bg-white"
-                        segments={spec.stats.map(stat => (
-                            <React.Fragment key={stat.id}>
-                                <span className="font-normal text-text-extra-low">{stat.label} </span>
-                                {stat.format(token)}
-                            </React.Fragment>
-                        ))}
-                    />
-                    {spec.change ? (
-                        <span className="shrink-0 [&_span]:text-[12px]">
-                            {change == null ? (
-                                <span className="text-text-extra-low">—</span>
-                            ) : (
-                                <PercentChangeCell value={change} />
-                            )}
-                        </span>
-                    ) : null}
-                </div>
+            <TokenLogo token={token} size={32} />
+            <div className="flex min-w-0 flex-1 flex-col leading-tight">
+                <span className="flex min-w-0 items-center gap-1.5">
+                    <span className="truncate text-[15px] font-semibold text-text-extra-high">
+                        {token.symbol || '???'}
+                    </span>
+                    <AssetAdvisoryBadge advisory={token.advisory} size="sm" />
+                </span>
+                <span className="truncate text-[12px] text-text-low" title={spec.displayName(token)}>
+                    {spec.displayName(token)}
+                </span>
+            </div>
+            {spec.showChart ? (
+                <InlinePriceChart
+                    assetId={token.assetId}
+                    coingeckoId={token.coingeckoId}
+                    useCanonicalAssetChart={token.canonicalMarketSource === 'clickhouse_stock'}
+                    address={token.address}
+                    percentChange24h={token.priceChange24hPercent}
+                    symbol={token.symbol}
+                    emptyText=""
+                    chartHeight={28}
+                    lineWidth={1.5}
+                    fallbackDays={INLINE_CHART_FALLBACK_DAYS}
+                    className="relative h-7 w-[72px] shrink-0 overflow-hidden bg-transparent"
+                />
+            ) : null}
+            <div className="flex shrink-0 flex-col items-end gap-0.5 leading-tight">
+                {spec.showPrice ? <TokenTablePriceCell token={token} /> : null}
+                {spec.change ? <ChangeCell value={change} className="[&_span]:text-[12px]" /> : null}
             </div>
         </li>
+    );
+}
+
+/** The drawer a row opens: big price, change, chart, the variant's stats and "View more". */
+function TokenDetailDrawer({
+    token,
+    spec,
+    onOpenChange,
+    onViewMore,
+}: {
+    token: Token | null;
+    spec: TokenMobileRowSpec;
+    onOpenChange: (open: boolean) => void;
+    onViewMore: (token: Token) => void;
+}) {
+    // Keep the last token mounted while the drawer animates closed.
+    const lastToken = React.useRef<Token | null>(null);
+    if (token) lastToken.current = token;
+    const shown = token ?? lastToken.current;
+    if (!shown) return null;
+
+    const change = spec.change ? shown[spec.change.key] : undefined;
+    const changeCaption = spec.change?.key === 'priceChange1hPercent' ? 'past hour' : 'past day';
+    const stats = [
+        { label: 'Market cap', value: shown.marketCap > 0 ? formatVolume(shown.marketCap) : '—' },
+        ...spec.stats.map(stat => ({ label: stat.label, value: stat.format(shown) })),
+    ];
+
+    return (
+        <MobileDetailDrawer
+            open={token !== null}
+            onOpenChange={onOpenChange}
+            logo={<TokenLogo token={shown} size={40} />}
+            title={spec.displayName(shown)}
+            subtitle={shown.symbol}
+            stats={stats}
+            action={{ label: 'View more', onClick: () => onViewMore(shown) }}
+        >
+            <div className="flex flex-col gap-1">
+                {spec.showPrice ? (
+                    <TokenTablePriceCell
+                        token={shown}
+                        className="text-left text-[32px] font-semibold leading-none tracking-tight text-text-extra-high"
+                    />
+                ) : null}
+                {spec.change ? (
+                    <span className="flex items-center gap-1.5 text-[14px] text-text-low">
+                        <ChangeCell value={change} className="[&_span]:text-[14px]" />
+                        <span>· {changeCaption}</span>
+                    </span>
+                ) : null}
+            </div>
+            <div className="mt-4">
+                <InlinePriceChart
+                    key={shown.address}
+                    assetId={shown.assetId}
+                    coingeckoId={shown.coingeckoId}
+                    useCanonicalAssetChart={shown.canonicalMarketSource === 'clickhouse_stock'}
+                    address={shown.address}
+                    percentChange24h={shown.priceChange24hPercent}
+                    symbol={shown.symbol}
+                    emptyText="No chart data"
+                    chartHeight={120}
+                    lineWidth={2}
+                    fill
+                    fallbackDays={INLINE_CHART_FALLBACK_DAYS}
+                    className="relative h-[120px] w-full overflow-hidden rounded-lg bg-transparent"
+                />
+            </div>
+        </MobileDetailDrawer>
     );
 }
