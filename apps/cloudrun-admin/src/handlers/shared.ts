@@ -5,6 +5,13 @@
 
 import { ASSET_INDUSTRIES, ASSET_REGIONS, getCanonicalFallbackLogoPath } from '@tokens/asset-registry';
 import type { AssetCategory, AssetIndustry, AssetRegion, StockVariantTier, VariantKind } from '@tokens/asset-registry';
+import {
+    CHAINS,
+    EVM_CHAIN_KINDS,
+    isEvmChainKind,
+    normalizeAddressForChain,
+    type ChainKind,
+} from '@tokens/asset-registry/chains';
 import { ADMIN_ASSIGNABLE_CURATED_SLUGS, CURATED_LIST_SLUGS } from '@tokens/asset-registry/curated-lists';
 import type { AdminAssignableCuratedSlug } from '@tokens/asset-registry/curated-lists';
 
@@ -84,6 +91,54 @@ export const ASSET_ID_FORMAT_MESSAGE =
 
 export function looksLikeSolanaMintAddress(value: string): boolean {
     return /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(value);
+}
+
+/**
+ * Where a variant lives: `solana` rows are v1 `asset_variants` (keyed by
+ * mint alone, mirrored into v2); every other chain is a v2 row keyed by
+ * (chain, address, asset_id), so EVM refs must carry the owning asset.
+ */
+export interface VariantRef {
+    chain: ChainKind;
+    /** Normalized address: base58 mint on Solana, lowercase `0x…` on EVM. */
+    address: string;
+    assetId?: string;
+}
+
+/**
+ * Parse a variant reference from mutation/query args. Legacy `{ mint }` (no
+ * `chain`, or `chain: 'solana'`) keeps working unchanged; EVM refs take
+ * `{ chain, address | mint, assetId }`. Throws `InvalidArgsError` with the
+ * same Solana message the Convex handlers used.
+ */
+export function parseVariantRef(obj: Record<string, unknown>): VariantRef {
+    const rawChain = obj.chain;
+    if (rawChain !== undefined && typeof rawChain !== 'string') throw new InvalidArgsError('chain must be a string');
+    const chain = rawChain === undefined ? 'solana' : rawChain;
+    const rawAddress = obj.address !== undefined ? obj.address : obj.mint;
+    if (typeof rawAddress !== 'string') {
+        throw new InvalidArgsError(chain === 'solana' ? 'mint must be a string' : 'address must be a string');
+    }
+    const trimmed = rawAddress.trim();
+    const rawAssetId = obj.assetId;
+    if (rawAssetId !== undefined && typeof rawAssetId !== 'string') {
+        throw new InvalidArgsError('assetId must be a string');
+    }
+    const assetId = rawAssetId?.trim() || undefined;
+
+    if (chain === 'solana') {
+        if (!trimmed) throw new InvalidArgsError('mint is required');
+        if (!looksLikeSolanaMintAddress(trimmed)) throw new InvalidArgsError('Not a valid Solana mint address');
+        return { chain: 'solana', address: trimmed, ...(assetId ? { assetId } : {}) };
+    }
+    if (!isEvmChainKind(chain)) {
+        throw new InvalidArgsError(`chain must be one of: solana, ${EVM_CHAIN_KINDS.join(', ')}`);
+    }
+    if (!trimmed) throw new InvalidArgsError('address is required');
+    const address = normalizeAddressForChain(chain, trimmed);
+    if (!address) throw new InvalidArgsError(`Not a valid ${CHAINS[chain].label} contract address`);
+    if (!assetId) throw new InvalidArgsError('assetId is required for non-Solana variants');
+    return { chain, address, assetId };
 }
 
 export function normalizeOptionalText(value: string | null | undefined): string | null {

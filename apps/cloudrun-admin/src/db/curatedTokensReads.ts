@@ -17,15 +17,18 @@ import {
     isStructuralGrade,
 } from '@tokens/asset-registry';
 import type { StockVariantTier, VariantAdvisory, VariantKind } from '@tokens/asset-registry';
+import { isChainKind } from '@tokens/asset-registry/chains';
 
-import type {
-    AdminReadsRepo,
-    AssetRow,
-    SearchAssetRow,
-    VariantMarketRow,
-    VariantPegHealthRow,
-    VariantStructuralHealthRow,
-    VariantWithMarketRow,
+import {
+    VARIANT_ORIGINS,
+    type AdminReadsRepo,
+    type AssetRow,
+    type SearchAssetRow,
+    type VariantMarketRow,
+    type VariantOrigin,
+    type VariantPegHealthRow,
+    type VariantStructuralHealthRow,
+    type VariantWithMarketRow,
 } from '../handlers/curatedTokensReads';
 import type { CuratedCategorySlug, StoredTrustTier } from '../handlers/shared';
 import { toNullableNumber } from '../db';
@@ -98,6 +101,8 @@ export interface PgVariantWithMarketRow {
     market_logo_uri: string | null;
     market_liquidity: number | null;
     market_last_fetched_at: string | number | null;
+    /** Absent on SELECTs that predate the multichain admin list. */
+    market_decimals?: number | string | null;
     advisory_status: string | null;
     advisory_reason: string | null;
     advisory_url: string | null;
@@ -226,9 +231,14 @@ export function mapStructuralHealth(
 }
 
 export function mapVariantRow(row: PgVariantWithMarketRow, nowMs: number = Date.now()): VariantWithMarketRow {
+    const decimals = toNullableNumber(row.market_decimals ?? null);
     return {
         assetId: row.asset_id,
+        chain: 'solana',
+        address: row.mint,
         mint: row.mint,
+        origin: 'v1',
+        decimals: decimals !== null && Number.isInteger(decimals) ? decimals : null,
         variantId: row.variant_id,
         kind: row.kind as VariantKind,
         trustTier: row.trust_tier as StoredTrustTier,
@@ -262,6 +272,7 @@ const VARIANT_MARKET_SELECT = `
     m.logo_uri AS market_logo_uri,
     m.liquidity AS market_liquidity,
     m.last_fetched_at AS market_last_fetched_at,
+    m.decimals AS market_decimals,
     adv.status AS advisory_status,
     adv.reason AS advisory_reason,
     adv.url AS advisory_url,
@@ -297,6 +308,100 @@ const VARIANT_MARKET_JOINS = `
     LEFT JOIN peg_guard_latest g ON g.chain = 'solana' AND g.address = v.mint
     LEFT JOIN webacy_structural_health_latest s ON s.chain = 'solana' AND s.address = v.mint
 `;
+
+/**
+ * One non-Solana variant from `v2_asset_variants` LEFT JOINed to
+ * `v2_variant_markets_latest`. No advisory / peg / structural joins: those
+ * observers are mint-keyed and Solana-only today.
+ */
+export interface PgV2VariantRow {
+    chain: string;
+    address: string;
+    asset_id: string;
+    variant_id: string;
+    kind: string;
+    trust_tier: string;
+    stock_variant_tier: string | null;
+    tags: unknown;
+    label: string | null;
+    issuer: string | null;
+    issuer_url: string | null;
+    decimals: number | string | null;
+    origin: string;
+    is_active: boolean;
+    has_market: boolean | null;
+    /** `touch` rows are placeholders written when Birdeye had nothing; read as no market. */
+    market_source: string | null;
+    market_symbol: string | null;
+    market_name: string | null;
+    market_logo_uri: string | null;
+    market_liquidity: number | string | null;
+    market_last_fetched_at: string | number | bigint | null;
+}
+
+const V2_VARIANT_MARKET_SELECT = `
+    v.chain, v.address, v.asset_id, v.variant_id, v.kind, v.trust_tier, v.stock_variant_tier, v.tags,
+    v.label, v.issuer, v.issuer_url, v.decimals, v.origin, v.is_active,
+    (m.address IS NOT NULL) AS has_market,
+    m.source AS market_source,
+    m.symbol AS market_symbol,
+    m.name AS market_name,
+    m.logo_uri AS market_logo_uri,
+    m.liquidity AS market_liquidity,
+    m.last_fetched_at AS market_last_fetched_at
+`;
+const V2_VARIANT_MARKET_JOINS = `
+    LEFT JOIN v2_variant_markets_latest m ON m.chain = v.chain AND m.address = v.address
+`;
+
+function toVariantOrigin(value: string): VariantOrigin {
+    return (VARIANT_ORIGINS as readonly string[]).includes(value) ? (value as VariantOrigin) : 'admin';
+}
+
+/** Exported for tests. Rows whose chain is unknown to the registry are dropped by the caller. */
+export function mapV2VariantRow(row: PgV2VariantRow): VariantWithMarketRow | null {
+    if (!isChainKind(row.chain)) return null;
+    const decimals = toNullableNumber(row.decimals);
+    const hasMarket = !!row.has_market && row.market_source !== 'touch';
+    return {
+        assetId: row.asset_id,
+        chain: row.chain,
+        address: row.address,
+        mint: row.address,
+        origin: toVariantOrigin(row.origin),
+        decimals: decimals !== null && Number.isInteger(decimals) ? decimals : null,
+        variantId: row.variant_id,
+        kind: row.kind as VariantKind,
+        trustTier: row.trust_tier as StoredTrustTier,
+        tags: Array.isArray(row.tags) ? (row.tags as string[]) : [],
+        label: row.label,
+        issuer: row.issuer,
+        issuerUrl: row.issuer_url,
+        stockVariantTier: (row.stock_variant_tier as StockVariantTier | null) ?? null,
+        isActive: row.is_active,
+        market: hasMarket
+            ? {
+                  symbol: row.market_symbol,
+                  name: row.market_name,
+                  logoURI: row.market_logo_uri,
+                  liquidity: toNullableNumber(row.market_liquidity),
+                  lastFetchedAt: toEpochMs(row.market_last_fetched_at),
+              }
+            : null,
+        advisory: null,
+        pegHealth: null,
+        structuralHealth: null,
+    };
+}
+
+function mapV2VariantRows(rows: readonly PgV2VariantRow[]): VariantWithMarketRow[] {
+    const out: VariantWithMarketRow[] = [];
+    for (const row of rows) {
+        const mapped = mapV2VariantRow(row);
+        if (mapped) out.push(mapped);
+    }
+    return out;
+}
 
 interface PgMarketRow {
     symbol: string | null;
@@ -346,8 +451,21 @@ export function makePostgresAdminReadsRepo(sql: Sql): AdminReadsRepo {
                          COALESCE(m.liquidity, 0) DESC,
                          v.mint COLLATE "C" ASC
             `;
+            // Non-Solana variants live only in v2 (derived from CoinGecko or
+            // added here); the asset page lists them, so the admin list must too.
+            const v2Rows = await sql<PgV2VariantRow[]>`
+                SELECT ${sql.unsafe(V2_VARIANT_MARKET_SELECT)}
+                FROM v2_asset_variants v
+                ${sql.unsafe(V2_VARIANT_MARKET_JOINS)}
+                WHERE v.chain <> 'solana'
+                ORDER BY v.asset_id COLLATE "C" ASC,
+                         v.is_active DESC,
+                         v.chain ASC,
+                         COALESCE(m.liquidity, 0) DESC,
+                         v.address ASC
+            `;
             const nowMs = Date.now();
-            return rows.map(row => mapVariantRow(row, nowMs));
+            return [...rows.map(row => mapVariantRow(row, nowMs)), ...mapV2VariantRows(v2Rows)];
         },
 
         async listVariantsWithMarketsByAssetIds(assetIds) {
@@ -362,8 +480,20 @@ export function makePostgresAdminReadsRepo(sql: Sql): AdminReadsRepo {
                          COALESCE(m.liquidity, 0) DESC,
                          v.mint COLLATE "C" ASC
             `;
+            const v2Rows = await sql<PgV2VariantRow[]>`
+                SELECT ${sql.unsafe(V2_VARIANT_MARKET_SELECT)}
+                FROM v2_asset_variants v
+                ${sql.unsafe(V2_VARIANT_MARKET_JOINS)}
+                WHERE v.asset_id = ANY(${sql.array(assetIds as string[])}::text[])
+                  AND v.chain <> 'solana'
+                ORDER BY v.asset_id COLLATE "C" ASC,
+                         v.is_active DESC,
+                         v.chain ASC,
+                         COALESCE(m.liquidity, 0) DESC,
+                         v.address ASC
+            `;
             const nowMs = Date.now();
-            return rows.map(row => mapVariantRow(row, nowMs));
+            return [...rows.map(row => mapVariantRow(row, nowMs)), ...mapV2VariantRows(v2Rows)];
         },
 
         async listCustomAliases() {
@@ -428,6 +558,21 @@ export function makePostgresAdminReadsRepo(sql: Sql): AdminReadsRepo {
                 LIMIT 1
             `;
             return rows[0] ? mapVariantRow(rows[0]) : null;
+        },
+
+        async getVariantByRef(ref) {
+            if (ref.chain === 'solana') return await this.getVariantByMint(ref.address);
+            const assetFilter = ref.assetId ? sql`AND v.asset_id = ${ref.assetId}` : sql``;
+            const rows = await sql<PgV2VariantRow[]>`
+                SELECT ${sql.unsafe(V2_VARIANT_MARKET_SELECT)}
+                FROM v2_asset_variants v
+                ${sql.unsafe(V2_VARIANT_MARKET_JOINS)}
+                WHERE v.chain = ${ref.chain} AND v.address = ${ref.address}
+                ${assetFilter}
+                ORDER BY v.is_active DESC, v.created_at ASC, v.asset_id ASC
+                LIMIT 1
+            `;
+            return rows[0] ? mapV2VariantRow(rows[0]) : null;
         },
 
         async getMarketByMint(mint) {

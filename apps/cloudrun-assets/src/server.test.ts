@@ -4693,6 +4693,8 @@ describe('admin mutations dispatch', () => {
             seedRepo: {} as AdminActionsDeps['seedRepo'],
             cron: {} as AdminActionsDeps['cron'],
             misc: {} as AdminActionsDeps['misc'],
+            v2: {} as AdminActionsDeps['v2'],
+            v2Reads: {} as AdminActionsDeps['v2Reads'],
             now: () => Date.now(),
         };
     }
@@ -4702,6 +4704,8 @@ describe('admin mutations dispatch', () => {
         'adminAddCheckedVariant',
         'adminSeedAsset',
         'adminRefreshChartData',
+        'adminSyncV2SolanaVariants',
+        'adminRefreshV2VariantMarket',
     ];
 
     it('404s the admin mutations when adminActionsDeps is not wired', async () => {

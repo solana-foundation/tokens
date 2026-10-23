@@ -56,6 +56,10 @@ export const ADMIN_FNS: Record<string, AdminFnSpec> = {
     adminAddCheckedVariant: { service: 'assets', kind: 'mutation', timeoutMs: 60_000 },
     adminSeedAsset: { service: 'assets', kind: 'mutation', timeoutMs: 60_000 },
     adminRefreshChartData: { service: 'assets', kind: 'mutation', timeoutMs: 60_000 },
+    // v2 multichain: re-run the Solana → v2 mirror on demand, and take one
+    // Birdeye snapshot for an EVM variant (the cron refreshes them hourly).
+    adminSyncV2SolanaVariants: { service: 'assets', kind: 'mutation', timeoutMs: 30_000 },
+    adminRefreshV2VariantMarket: { service: 'assets', kind: 'mutation', timeoutMs: 30_000 },
     // stonk.fun lookups for the Launches page (read-only, but the client lives on assets).
     adminPreviewLaunchpadMint: { service: 'assets', kind: 'mutation', timeoutMs: 30_000 },
     adminListLaunchpadTokensForQuote: { service: 'assets', kind: 'mutation', timeoutMs: 60_000 },

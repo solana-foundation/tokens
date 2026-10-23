@@ -68,6 +68,9 @@ function fakeRepo(overrides: Partial<V2AssetsJobsRepo> = {}): V2AssetsJobsRepo &
             upserts.push(args);
             return 'inserted';
         },
+        async upsertAdminVariant() {
+            return 'inserted';
+        },
         async deactivateDerivedVariants(keys) {
             deactivated.push(...keys);
             return keys.length;

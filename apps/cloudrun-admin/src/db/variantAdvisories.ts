@@ -20,6 +20,7 @@ import type {
     VariantAdvisoryRow,
 } from '../handlers/variantAdvisories';
 import { randomId } from '../db';
+import { mirrorSolanaVariantRow } from './v2Mirror';
 
 type Tx = TransactionSql;
 
@@ -100,8 +101,8 @@ export async function setAdvisoryInTx(tx: Tx, args: SetAdvisoryTxArgs): Promise<
     // Lock the variant row so a concurrent deactivate/delete cannot interleave
     // with the re-activation below. Mint is not unique in asset_variants; the
     // lowest id is the canonical row (matches getVariantByMint).
-    const variants = await tx<Array<{ id: string; is_active: boolean }>>`
-        SELECT id, is_active
+    const variants = await tx<Array<{ id: string; asset_id: string; is_active: boolean }>>`
+        SELECT id, asset_id, is_active
         FROM asset_variants
         WHERE mint = ${args.mint}
         ORDER BY id ASC
@@ -152,6 +153,9 @@ export async function setAdvisoryInTx(tx: Tx, args: SetAdvisoryTxArgs): Promise<
             SET is_active = true, updated_at = ${new Date(args.nowMs)}
             WHERE id = ${variant.id}
         `;
+        // The asset page reads v2 only: mirror the flip in this transaction
+        // like every other admin variant write, instead of waiting for the tick.
+        await mirrorSolanaVariantRow(tx, { assetId: variant.asset_id, mint: args.mint, nowMs: args.nowMs });
         reactivated = true;
     }
 

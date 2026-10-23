@@ -18,6 +18,7 @@ import { EVM_NATIVE_ASSET_ADDRESS, isChainKind, type ChainKind } from '@tokens/a
 
 import { CURATED_COLLECTION_SLUGS, CURATED_COLLECTION_SLUGS_SQL_LITERAL } from '../db';
 import type {
+    V2AdminVariantUpsert,
     V2AssetsJobsRepo,
     V2CoinPlatformsRow,
     V2DerivationAssetRow,
@@ -99,6 +100,15 @@ const V2_VARIANT_COLUMNS = [
 const V2_VARIANT_COLUMNS_SQL = V2_VARIANT_COLUMNS.join(', ');
 const V2_VARIANT_COLUMNS_PREFIXED_SQL = V2_VARIANT_COLUMNS.map(c => `v.${c}`).join(', ');
 
+/**
+ * Advisory lock serializing the Solana → v2 mirror with cloudrun-admin's
+ * per-row mirror (apps/cloudrun-admin/src/db/v2Mirror.ts uses the same key).
+ * Without it a cron tick whose INSERT … SELECT snapshot predates an admin
+ * commit could stamp stale v1 values with a newer `last_seen_at` and the
+ * admin's own mirror row would then be rejected by the timestamp guard.
+ */
+export const V2_SOLANA_MIRROR_LOCK_KEY = 830_033;
+
 function parseJsonb(value: unknown): unknown {
     if (typeof value !== 'string') return value;
     try {
@@ -142,6 +152,9 @@ export function makePostgresV2AssetsJobsRepo(sql: Sql): V2AssetsJobsRepo {
     return {
         async mirrorSolanaVariants(nowMs) {
             return await sql.begin(async tx => {
+                // Serialize with cloudrun-admin's in-transaction mirror so the
+                // SELECT below never snapshots v1 mid-admin-write.
+                await tx`SELECT pg_advisory_xact_lock(${V2_SOLANA_MIRROR_LOCK_KEY})`;
                 // A v1 variant whose mint was replaced keeps its variant_id, so the
                 // fresh (asset, new mint) row would collide with the stale mirror
                 // row on the (asset_id, variant_id) unique index and fail the whole
@@ -335,10 +348,14 @@ export function makePostgresV2AssetsJobsRepo(sql: Sql): V2AssetsJobsRepo {
                     symbol: string | null;
                     platforms: unknown;
                     detail_platforms: unknown;
+                    asset_platform_id: string | null;
                     last_synced_at: number | string | bigint | null;
                 }[]
             >`
-                SELECT coin_id, symbol, platforms, coin->'detail_platforms' AS detail_platforms, last_synced_at
+                SELECT coin_id, symbol, platforms,
+                       coin->'detail_platforms' AS detail_platforms,
+                       coin->>'asset_platform_id' AS asset_platform_id,
+                       last_synced_at
                 FROM coingecko_coins
                 WHERE coin_id IN ${sql([...coinIds])}
             `;
@@ -347,6 +364,7 @@ export function makePostgresV2AssetsJobsRepo(sql: Sql): V2AssetsJobsRepo {
                 symbol: row.symbol ?? null,
                 platforms: toStringRecord(row.platforms),
                 decimalsByPlatform: toDecimalsRecord(row.detail_platforms),
+                assetPlatformId: row.asset_platform_id ?? null,
                 coinLastSyncedAt: toEpochMsOrNull(row.last_synced_at),
             }));
         },
@@ -407,6 +425,50 @@ export function makePostgresV2AssetsJobsRepo(sql: Sql): V2AssetsJobsRepo {
             const row = rows[0];
             if (!row) return 'skipped';
             return row.inserted ? 'inserted' : 'updated';
+        },
+
+        async upsertAdminVariant(args: V2AdminVariantUpsert) {
+            const now = new Date(args.nowMs);
+            // `prev` reads the pre-statement snapshot, so it still sees the
+            // row the INSERT is about to update: that is how "adopted" is told
+            // apart from a plain update of an admin row.
+            const rows = await sql<{ inserted: boolean; prev_origin: string | null }[]>`
+                WITH prev AS (
+                    SELECT origin FROM v2_asset_variants
+                    WHERE chain = ${args.chain} AND address = ${args.address} AND asset_id = ${args.assetId}
+                ), upserted AS (
+                    INSERT INTO v2_asset_variants (
+                        chain, address, asset_id, variant_id, kind, trust_tier, stock_variant_tier, tags,
+                        label, issuer, issuer_url, decimals, origin, source, is_active,
+                        first_seen_at, last_seen_at, created_at, updated_at
+                    )
+                    VALUES (
+                        ${args.chain}, ${args.address}, ${args.assetId}, ${args.variantId}, ${args.kind}, ${args.trustTier},
+                        ${args.stockVariantTier}, ${sql.json([...args.tags] as never)},
+                        ${args.label}, NULL, NULL, ${args.decimals}, 'admin', 'admin', true,
+                        ${args.nowMs}, ${args.nowMs}, ${now}, ${now}
+                    )
+                    ON CONFLICT (chain, address, asset_id) DO UPDATE SET
+                        kind = EXCLUDED.kind,
+                        trust_tier = EXCLUDED.trust_tier,
+                        stock_variant_tier = EXCLUDED.stock_variant_tier,
+                        tags = EXCLUDED.tags,
+                        label = coalesce(EXCLUDED.label, v2_asset_variants.label),
+                        decimals = coalesce(EXCLUDED.decimals, v2_asset_variants.decimals),
+                        origin = 'admin',
+                        source = 'admin',
+                        is_active = true,
+                        last_seen_at = EXCLUDED.last_seen_at,
+                        updated_at = EXCLUDED.updated_at
+                    WHERE v2_asset_variants.origin IN ('coingecko', 'config', 'admin')
+                    RETURNING (xmax = 0) AS inserted
+                )
+                SELECT u.inserted, (SELECT origin FROM prev) AS prev_origin FROM upserted u
+            `;
+            const row = rows[0];
+            if (!row) throw new Error(`v2 variant ${args.chain}:${args.address} on ${args.assetId} is owned by another origin`);
+            if (row.inserted) return 'inserted';
+            return row.prev_origin === 'admin' ? 'updated' : 'adopted';
         },
 
         async deactivateDerivedVariants(keys, nowMs) {
@@ -472,7 +534,10 @@ export function makePostgresV2AssetsJobsRepo(sql: Sql): V2AssetsJobsRepo {
             );
         },
 
-        async upsertVariantMarketFromBirdeye(args) {
+        async upsertVariantMarketFromBirdeye(args, options) {
+            // `onlyIfNewer`: an admin preview snapshot must not replace a fresher
+            // row the refresh cron wrote while the dialog was open.
+            const onlyIfNewer = options?.onlyIfNewer === true;
             const birdeyeJson = {
                 source: 'birdeye',
                 symbol: args.symbol,
@@ -564,6 +629,7 @@ export function makePostgresV2AssetsJobsRepo(sql: Sql): V2AssetsJobsRepo {
                     origin = EXCLUDED.origin,
                     updated_at = now()
                 WHERE v2_variant_markets_latest.origin = 'birdeye'
+                  AND (${!onlyIfNewer} OR v2_variant_markets_latest.last_fetched_at <= EXCLUDED.last_fetched_at)
             `;
         },
 

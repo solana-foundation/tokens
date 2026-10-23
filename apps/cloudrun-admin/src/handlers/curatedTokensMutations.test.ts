@@ -18,11 +18,16 @@ import {
     type MoveVariantOutcome,
 } from './curatedTokensMutations';
 import { IdentityRequiredError, InvalidArgsError, UnauthorizedError } from './errors';
+import { parseVariantRef } from './shared';
 
 const ADMIN = { clerkUserId: 'admin_1' };
 const ADMIN_IDS: ReadonlySet<string> = new Set(['admin_1']);
 const NOW = 1_750_000_000_000;
 const MINT = 'So11111111111111111111111111111111111111112';
+/** What every Solana variant mutation echoes back (legacy `mint` = `address`). */
+const SOL_REF = { chain: 'solana', address: MINT, mint: MINT } as const;
+const EVM_ADDRESS = '0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48';
+const EVM_ADDRESS_LC = EVM_ADDRESS.toLowerCase();
 
 interface RepoState {
     createAsset?: 'created' | 'exists';
@@ -401,19 +406,19 @@ describe('deleteVariant / deactivateVariant', () => {
         const notFound = makeDeps({ deleteVariant: 'not_found' });
         await expect(deleteVariant(notFound.deps, { mint: MINT }, ADMIN)).rejects.toThrow('Variant not found');
         const ok = makeDeps();
-        expect(await deleteVariant(ok.deps, { mint: ` ${MINT} ` }, ADMIN)).toEqual({ mint: MINT, deleted: true });
+        expect(await deleteVariant(ok.deps, { mint: ` ${MINT} ` }, ADMIN)).toEqual({ ...SOL_REF, deleted: true });
     });
 
     it('deactivateVariant defaults isActive to false', async () => {
         const { deps, calls } = makeDeps();
         expect(await deactivateVariant(deps, { mint: MINT }, ADMIN)).toEqual({
-            mint: MINT,
+            ...SOL_REF,
             isActive: false,
             updated: true,
         });
-        expect(calls.deactivateVariant?.[0]).toEqual({ mint: MINT, isActive: false, nowMs: NOW });
+        expect(calls.deactivateVariant?.[0]).toEqual({ ...SOL_REF, isActive: false, nowMs: NOW });
         expect(await deactivateVariant(deps, { mint: MINT, isActive: true }, ADMIN)).toEqual({
-            mint: MINT,
+            ...SOL_REF,
             isActive: true,
             updated: true,
         });
@@ -424,7 +429,7 @@ describe('moveVariantToCanonical', () => {
     it('maps outcomes to Convex messages and shapes', async () => {
         const moved = makeDeps({ moveVariant: { status: 'moved', fromAssetId: 'ethereum' } });
         expect(await moveVariantToCanonical(moved.deps, { mint: MINT, assetId: 'bitcoin' }, ADMIN)).toEqual({
-            mint: MINT,
+            ...SOL_REF,
             fromAssetId: 'ethereum',
             toAssetId: 'bitcoin',
             moved: true,
@@ -432,7 +437,7 @@ describe('moveVariantToCanonical', () => {
 
         const noop = makeDeps({ moveVariant: { status: 'noop', fromAssetId: 'bitcoin' } });
         expect(await moveVariantToCanonical(noop.deps, { mint: MINT, assetId: 'bitcoin' }, ADMIN)).toEqual({
-            mint: MINT,
+            ...SOL_REF,
             fromAssetId: 'bitcoin',
             toAssetId: 'bitcoin',
             moved: false,
@@ -533,5 +538,91 @@ describe('updateCollectionMeta', () => {
         const { deps, calls } = makeDeps();
         await expect(updateCollectionMeta(deps, { slug: 'majors' }, ADMIN)).rejects.toBeInstanceOf(InvalidArgsError);
         expect(calls.updateCollectionMeta).toBeUndefined();
+    });
+});
+
+/* ------------------------------------------------------------------------- *
+ * Multichain refs
+ * ------------------------------------------------------------------------- */
+
+describe('parseVariantRef', () => {
+    it('reads legacy { mint } as a Solana ref and validates the base58 shape', () => {
+        expect(parseVariantRef({ mint: ` ${MINT} ` })).toEqual({ chain: 'solana', address: MINT });
+        expect(parseVariantRef({ chain: 'solana', address: MINT, assetId: 'wsol' })).toEqual({
+            chain: 'solana',
+            address: MINT,
+            assetId: 'wsol',
+        });
+        expect(() => parseVariantRef({ mint: '  ' })).toThrow('mint is required');
+        expect(() => parseVariantRef({ mint: 'nope' })).toThrow('Not a valid Solana mint address');
+        expect(() => parseVariantRef({})).toThrow('mint must be a string');
+    });
+
+    it('lowercases EVM addresses and requires the owning asset id', () => {
+        expect(parseVariantRef({ chain: 'ethereum', address: EVM_ADDRESS, assetId: 'usdc' })).toEqual({
+            chain: 'ethereum',
+            address: EVM_ADDRESS_LC,
+            assetId: 'usdc',
+        });
+        // `mint` is accepted as the address key on every chain.
+        expect(parseVariantRef({ chain: 'base', mint: EVM_ADDRESS_LC, assetId: 'usdc' }).address).toBe(EVM_ADDRESS_LC);
+        expect(() => parseVariantRef({ chain: 'ethereum', address: EVM_ADDRESS })).toThrow(
+            'assetId is required for non-Solana variants',
+        );
+        expect(() => parseVariantRef({ chain: 'ethereum', address: MINT, assetId: 'usdc' })).toThrow(
+            'Not a valid Ethereum contract address',
+        );
+        expect(() => parseVariantRef({ chain: 'tron', address: EVM_ADDRESS, assetId: 'usdc' })).toThrow(
+            'chain must be one of',
+        );
+        expect(() => parseVariantRef({ chain: 7, address: EVM_ADDRESS })).toThrow('chain must be a string');
+    });
+});
+
+describe('variant mutations with EVM refs', () => {
+    const REF = { chain: 'ethereum', address: EVM_ADDRESS, assetId: 'usdc' };
+    const WRITE_REF = { chain: 'ethereum', address: EVM_ADDRESS_LC, mint: EVM_ADDRESS_LC, assetId: 'usdc' };
+    const RESULT_REF = { chain: 'ethereum' as const, address: EVM_ADDRESS_LC, mint: EVM_ADDRESS_LC };
+
+    it('updateVariant forwards the normalized ref and echoes it back', async () => {
+        const { deps, calls } = makeDeps();
+        expect(await updateVariant(deps, { ...REF, label: 'USDC (Circle)' }, ADMIN)).toEqual({ ...RESULT_REF, updated: true });
+        expect(calls.updateVariant?.[0]).toEqual({ ...WRITE_REF, label: 'USDC (Circle)', nowMs: NOW });
+    });
+
+    it('deleteVariant / deactivateVariant forward the ref', async () => {
+        const { deps, calls } = makeDeps();
+        expect(await deleteVariant(deps, REF, ADMIN)).toEqual({ ...RESULT_REF, deleted: true });
+        expect(calls.deleteVariant?.[0]).toEqual(WRITE_REF);
+        expect(await deactivateVariant(deps, { ...REF, isActive: false }, ADMIN)).toEqual({
+            ...RESULT_REF,
+            isActive: false,
+            updated: true,
+        });
+        expect(calls.deactivateVariant?.[0]).toEqual({ ...WRITE_REF, isActive: false, nowMs: NOW });
+    });
+
+    it('moveVariantToCanonical takes the owner as fromAssetId and the destination as toAssetId', async () => {
+        const { deps, calls } = makeDeps({ moveVariant: { status: 'moved', fromAssetId: 'usdc' } });
+        expect(
+            await moveVariantToCanonical(
+                deps,
+                { chain: 'ethereum', address: EVM_ADDRESS, fromAssetId: 'usdc', toAssetId: 'usd' },
+                ADMIN,
+            ),
+        ).toEqual({ ...RESULT_REF, fromAssetId: 'usdc', toAssetId: 'usd', moved: true });
+        expect(calls.moveVariantToCanonical?.[0]).toEqual({ ...WRITE_REF, toAssetId: 'usd', nowMs: NOW });
+        // Without the owner the v2 key is incomplete.
+        await expect(
+            moveVariantToCanonical(deps, { chain: 'ethereum', address: EVM_ADDRESS, toAssetId: 'usd' }, ADMIN),
+        ).rejects.toThrow('assetId is required for non-Solana variants');
+    });
+
+    it('moveVariantToCanonical keeps the legacy Solana shape (assetId = destination)', async () => {
+        const { deps, calls } = makeDeps({ moveVariant: { status: 'moved', fromAssetId: 'wsol' } });
+        await moveVariantToCanonical(deps, { mint: MINT, assetId: 'solana' }, ADMIN);
+        expect(calls.moveVariantToCanonical?.[0]).toEqual({ ...SOL_REF, toAssetId: 'solana', nowMs: NOW });
+        await moveVariantToCanonical(deps, { mint: MINT, toAssetId: 'solana' }, ADMIN);
+        expect(calls.moveVariantToCanonical?.[1]).toEqual({ ...SOL_REF, toAssetId: 'solana', nowMs: NOW });
     });
 });

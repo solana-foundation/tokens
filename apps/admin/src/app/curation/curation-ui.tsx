@@ -25,6 +25,7 @@ import {
 
 import { useAdminMutation, useAdminQuery, useIsAdmin } from '@/hooks/use-admin-api';
 import type {
+    AdminRefreshV2VariantMarketResult,
     AdminVariantRow,
     CanonicalRow,
     CategoryRow,
@@ -35,8 +36,11 @@ import type {
     DeleteVariantResult,
     RefreshChartDataResult,
     RemoveFromCategoryResult,
+    VariantRef,
     VariantsByAssetIdRow,
 } from '@/lib/admin-types';
+import { variantRefArgs } from '@/lib/admin-types';
+import { chainLabel, isDerivedOrigin, originLabel, rowRef, variantKey } from '@/lib/variant-ref';
 import {
     SYSTEM_ADVISORY_CLEAR_WARNING,
     advisoryBadgeVariant,
@@ -136,7 +140,7 @@ function VariantRows({
     variants,
     isPrefetching,
     isAdmin,
-    isRefreshingMint,
+    isRefreshingKey,
     onRefreshCharts,
     onEditVariant,
     onMoveVariant,
@@ -148,12 +152,13 @@ function VariantRows({
     variants: VariantRow[] | undefined;
     isPrefetching: boolean;
     isAdmin: boolean | undefined;
-    isRefreshingMint: string | null;
-    onRefreshCharts: (mint: string) => Promise<void>;
-    onEditVariant: (mint: string) => void;
-    onMoveVariant: (mint: string) => void;
-    onToggleVariant: (mint: string, isActive: boolean) => Promise<void>;
-    onDeleteVariant: (mint: string) => Promise<void>;
+    /** `chain:address` of the row whose market/chart refresh is in flight. */
+    isRefreshingKey: string | null;
+    onRefreshCharts: (variant: VariantRow) => Promise<void>;
+    onEditVariant: (ref: VariantRef) => void;
+    onMoveVariant: (ref: VariantRef) => void;
+    onToggleVariant: (ref: VariantRef, isActive: boolean) => Promise<void>;
+    onDeleteVariant: (variant: VariantRow) => Promise<void>;
     onSetAdvisory: (variant: VariantRow) => void;
     onClearAdvisory: (variant: VariantRow) => Promise<void>;
 }): React.JSX.Element {
@@ -177,9 +182,13 @@ function VariantRows({
                 const advisory = variant.advisory ?? null;
                 const pegHealth = variant.pegHealth ?? null;
                 const structuralHealth = variant.structuralHealth ?? null;
+                const ref = rowRef(variant);
+                const key = variantKey(ref);
+                const isSolana = ref.chain === 'solana';
+                const origin = originLabel(variant.origin);
                 return (
                     <div
-                        key={variant.mint}
+                        key={key}
                         className="grid grid-cols-[minmax(0,1.7fr)_minmax(0,1.2fr)_minmax(0,1fr)_auto] items-center gap-3 rounded-lg border border-border/60 bg-muted/20 px-4 py-3"
                     >
                         <div className="flex items-center gap-3 min-w-0">
@@ -196,6 +205,24 @@ function VariantRows({
                                     <span className="truncate font-inter-medium">
                                         {variant.symbol ?? variant.label ?? '—'}
                                     </span>
+                                    {!isSolana ? (
+                                        <Badge variant="info" className="align-middle" title={`${chainLabel(ref.chain)} variant (v2)`}>
+                                            {chainLabel(ref.chain)}
+                                        </Badge>
+                                    ) : null}
+                                    {origin ? (
+                                        <Badge
+                                            variant={isDerivedOrigin(variant.origin) ? 'default' : 'success'}
+                                            className="align-middle"
+                                            title={
+                                                isDerivedOrigin(variant.origin)
+                                                    ? 'Derived by the daily EVM sync; editing or deactivating takes it over for admin.'
+                                                    : 'Owned by the admin app; the derivation job never rewrites it.'
+                                            }
+                                        >
+                                            {origin}
+                                        </Badge>
+                                    ) : null}
                                     {!variant.isActive ? (
                                         <Badge variant="warning" className="align-middle">
                                             inactive
@@ -226,7 +253,20 @@ function VariantRows({
 
                         <div className="min-w-0 space-y-1">
                             <div className="truncate text-sm">
-                                <span className="font-inter-medium">Mint:</span> {variant.mint}
+                                <span className="font-inter-medium">{isSolana ? 'Mint:' : 'Address:'}</span>{' '}
+                                {variant.explorerUrl ? (
+                                    <a
+                                        href={variant.explorerUrl}
+                                        target="_blank"
+                                        rel="noreferrer"
+                                        className="underline decoration-border underline-offset-2 hover:decoration-foreground"
+                                        title={`Open on ${chainLabel(ref.chain)} explorer`}
+                                    >
+                                        {ref.address}
+                                    </a>
+                                ) : (
+                                    ref.address
+                                )}
                             </div>
                             <div className="truncate text-xs text-muted-foreground">
                                 {variant.variantId}
@@ -284,37 +324,51 @@ function VariantRows({
                                     </Button>
                                 </DropdownMenuTrigger>
                                 <DropdownMenuContent align="end" className="min-w-56 rounded-[12px]">
-                                    <DropdownMenuItem onClick={() => onEditVariant(variant.mint)}>
+                                    <DropdownMenuItem onClick={() => onEditVariant(ref)}>
                                         Edit variant
                                     </DropdownMenuItem>
                                     <DropdownMenuItem
-                                        onClick={() => onRefreshCharts(variant.mint)}
-                                        disabled={isRefreshingMint !== null}
+                                        onClick={() => onRefreshCharts(variant)}
+                                        disabled={isRefreshingKey !== null}
                                     >
-                                        {isRefreshingMint === variant.mint ? 'Refreshing charts…' : 'Refresh charts'}
+                                        {isSolana
+                                            ? isRefreshingKey === key
+                                                ? 'Refreshing charts…'
+                                                : 'Refresh charts'
+                                            : isRefreshingKey === key
+                                              ? 'Refreshing market…'
+                                              : 'Refresh market'}
                                     </DropdownMenuItem>
-                                    <DropdownMenuItem onClick={() => onMoveVariant(variant.mint)}>
+                                    <DropdownMenuItem onClick={() => onMoveVariant(ref)}>
                                         Move to canonical
                                     </DropdownMenuItem>
-                                    <DropdownMenuItem onClick={() => onToggleVariant(variant.mint, !variant.isActive)}>
+                                    <DropdownMenuItem onClick={() => onToggleVariant(ref, !variant.isActive)}>
                                         {variant.isActive ? 'Deactivate variant' : 'Activate variant'}
                                     </DropdownMenuItem>
-                                    <DropdownMenuSeparator />
-                                    <DropdownMenuItem onClick={() => onSetAdvisory(variant)}>
-                                        Set advisory…
-                                    </DropdownMenuItem>
-                                    {advisory ? (
-                                        <DropdownMenuItem onClick={() => onClearAdvisory(variant)}>
-                                            Clear advisory
-                                        </DropdownMenuItem>
+                                    {isSolana ? (
+                                        <>
+                                            <DropdownMenuSeparator />
+                                            <DropdownMenuItem onClick={() => onSetAdvisory(variant)}>
+                                                Set advisory…
+                                            </DropdownMenuItem>
+                                            {advisory ? (
+                                                <DropdownMenuItem onClick={() => onClearAdvisory(variant)}>
+                                                    Clear advisory
+                                                </DropdownMenuItem>
+                                            ) : null}
+                                        </>
                                     ) : null}
-                                    <DropdownMenuSeparator />
-                                    <DropdownMenuItem
-                                        onClick={() => onDeleteVariant(variant.mint)}
-                                        className="text-destructive focus:text-destructive"
-                                    >
-                                        Delete variant
-                                    </DropdownMenuItem>
+                                    {isSolana ? (
+                                        <>
+                                            <DropdownMenuSeparator />
+                                            <DropdownMenuItem
+                                                onClick={() => onDeleteVariant(variant)}
+                                                className="text-destructive focus:text-destructive"
+                                            >
+                                                Delete variant
+                                            </DropdownMenuItem>
+                                        </>
+                                    ) : null}
                                 </DropdownMenuContent>
                             </DropdownMenu>
                         </div>
@@ -334,6 +388,7 @@ export function CurationUi(): React.JSX.Element {
     const { data: categories } = useAdminQuery<CategoryRow[]>('listCategories', isAdmin ? {} : 'skip');
 
     const refreshChartData = useAdminMutation<RefreshChartDataResult>('adminRefreshChartData');
+    const refreshV2VariantMarket = useAdminMutation<AdminRefreshV2VariantMarketResult>('adminRefreshV2VariantMarket');
     const removeFromCategory = useAdminMutation<RemoveFromCategoryResult>('removeFromCategory');
     const deactivateVariant = useAdminMutation<DeactivateVariantResult>('deactivateVariant');
     const clearVariantAdvisory = useAdminMutation<ClearVariantAdvisoryResult>('clearVariantAdvisory');
@@ -349,8 +404,8 @@ export function CurationUi(): React.JSX.Element {
     const [editCategoriesOpen, setEditCategoriesOpen] = useState(false);
     const [importTagsOpen, setImportTagsOpen] = useState(false);
     const [editingCanonicalId, setEditingCanonicalId] = useState<string | null>(null);
-    const [editingVariantMint, setEditingVariantMint] = useState<string | null>(null);
-    const [moveVariantMint, setMoveVariantMint] = useState<string | null>(null);
+    const [editingVariant, setEditingVariant] = useState<VariantRef | null>(null);
+    const [movingVariant, setMovingVariant] = useState<VariantRef | null>(null);
     const [advisoryVariant, setAdvisoryVariant] = useState<VariantRow | null>(null);
     const [clearingAdvisoryVariant, setClearingAdvisoryVariant] = useState<VariantRow | null>(null);
     const [addVariantCanonical, setAddVariantCanonical] = useState<CanonicalRow | null>(null);
@@ -359,7 +414,7 @@ export function CurationUi(): React.JSX.Element {
         null,
     );
     const [expandedAssetIds, setExpandedAssetIds] = useState<Record<string, boolean>>({});
-    const [isRefreshingMint, setIsRefreshingMint] = useState<string | null>(null);
+    const [isRefreshingKey, setIsRefreshingKey] = useState<string | null>(null);
     const [sorting, setSorting] = useState<SortingState>([]);
     const [pagination, setPagination] = useState<PaginationState>({ pageIndex: 0, pageSize: 50 });
 
@@ -600,18 +655,30 @@ export function CurationUi(): React.JSX.Element {
     const isPrefetchingVariants =
         isAdmin === true && visiblePageAssetIds.length > 0 && visiblePageVariants === undefined;
 
-    async function onRefreshCharts(mint: string) {
-        const m = mint.trim();
-        if (!m) return;
-        setIsRefreshingMint(m);
-        const toastId = toast.loading(`Queueing chart refresh for ${m.slice(0, 8)}…`);
+    /** Solana rows warm charts + markets through v1; EVM rows take one Birdeye snapshot into v2. */
+    async function onRefreshCharts(variant: VariantRow) {
+        const ref = rowRef(variant);
+        const key = variantKey(ref);
+        const short = `${ref.address.slice(0, 8)}…`;
+        setIsRefreshingKey(key);
+        const toastId = toast.loading(
+            ref.chain === 'solana'
+                ? `Queueing chart refresh for ${short}`
+                : `Fetching ${chainLabel(ref.chain)} market for ${short}`,
+        );
         try {
-            const res = await refreshChartData({ mint: m });
-            toast.success(`Queued ${res.scheduled.join(', ')} for ${m.slice(0, 8)}…`, { id: toastId });
+            if (ref.chain === 'solana') {
+                const res = await refreshChartData({ mint: ref.address });
+                toast.success(`Queued ${res.scheduled.join(', ')} for ${short}`, { id: toastId });
+            } else {
+                const res = await refreshV2VariantMarket({ chain: ref.chain, address: ref.address });
+                if (res.refreshed) toast.success(`Refreshed ${chainLabel(ref.chain)} market for ${short}`, { id: toastId });
+                else toast.message(`Birdeye had no ${chainLabel(ref.chain)} data for ${short}`, { id: toastId });
+            }
         } catch (error) {
             toast.error(error instanceof Error ? error.message : String(error), { id: toastId });
         } finally {
-            setIsRefreshingMint(null);
+            setIsRefreshingKey(null);
         }
     }
 
@@ -629,22 +696,31 @@ export function CurationUi(): React.JSX.Element {
         }
     }
 
-    async function onToggleVariant(mint: string, isActive: boolean) {
+    async function onToggleVariant(ref: VariantRef, isActive: boolean) {
         try {
-            const result = await deactivateVariant({ mint, isActive });
+            const result = await deactivateVariant({ ...variantRefArgs(ref), isActive });
             toast.success(`${result.mint} ${result.isActive ? 'activated' : 'deactivated'}`);
         } catch (error) {
             toast.error(error instanceof Error ? error.message : String(error));
         }
     }
 
-    async function onDeleteVariant(mint: string) {
+    async function deleteVariantNow(ref: VariantRef) {
         try {
-            const result = await deleteVariant({ mint });
-            if (result.deleted) toast.success(`Deleted variant ${mint}`);
+            const result = await deleteVariant(variantRefArgs(ref));
+            if (result.deleted) toast.success(`Deleted variant ${ref.address}`);
         } catch (error) {
             toast.error(error instanceof Error ? error.message : String(error));
         }
+    }
+
+    /**
+     * Solana rows only. A v2-native (EVM) row has no Delete: the server would
+     * leave an inactive admin row anyway (so the daily derivation cannot bring
+     * the contract back), which is exactly what Deactivate does.
+     */
+    async function onDeleteVariant(variant: VariantRow) {
+        await deleteVariantNow(rowRef(variant));
     }
 
     async function clearAdvisoryNow(variant: VariantRow) {
@@ -969,10 +1045,10 @@ export function CurationUi(): React.JSX.Element {
                                                     variants={variantsByAssetId.get(asset.assetId)}
                                                     isPrefetching={isPrefetchingVariants}
                                                     isAdmin={isAdmin}
-                                                    isRefreshingMint={isRefreshingMint}
+                                                    isRefreshingKey={isRefreshingKey}
                                                     onRefreshCharts={onRefreshCharts}
-                                                    onEditVariant={setEditingVariantMint}
-                                                    onMoveVariant={setMoveVariantMint}
+                                                    onEditVariant={setEditingVariant}
+                                                    onMoveVariant={setMovingVariant}
                                                     onToggleVariant={onToggleVariant}
                                                     onDeleteVariant={onDeleteVariant}
                                                     onSetAdvisory={setAdvisoryVariant}
@@ -1046,17 +1122,17 @@ export function CurationUi(): React.JSX.Element {
                 }}
             />
             <EditVariantDialog
-                mint={editingVariantMint}
-                open={editingVariantMint !== null}
+                variantRef={editingVariant}
+                open={editingVariant !== null}
                 onOpenChange={open => {
-                    if (!open) setEditingVariantMint(null);
+                    if (!open) setEditingVariant(null);
                 }}
             />
             <MoveVariantDialog
-                mint={moveVariantMint}
-                open={moveVariantMint !== null}
+                variantRef={movingVariant}
+                open={movingVariant !== null}
                 onOpenChange={open => {
-                    if (!open) setMoveVariantMint(null);
+                    if (!open) setMovingVariant(null);
                 }}
             />
             <SetAdvisoryDialog
