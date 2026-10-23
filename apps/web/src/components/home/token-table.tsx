@@ -2,12 +2,9 @@
 
 import * as React from 'react';
 import dynamic from 'next/dynamic';
-import Image from 'next/image';
 import { useRouter } from 'next/navigation';
 import { trackEvent } from '@/lib/posthog-client';
-import { useInlineLatestClose } from '@/hooks/queries/use-inline-latest-close';
 import { buildCoinHref } from '@/lib/coin-href';
-import { formatSmallPriceDecimal } from '@/lib/format';
 import { useWindowVirtualizer } from '@tanstack/react-virtual';
 import {
     createColumnHelper,
@@ -20,21 +17,31 @@ import {
 } from '@tanstack/react-table';
 import { ChevronUp, ChevronDown, ChevronsUpDown, Info } from 'lucide-react';
 import type { Token, TrendingWindow } from '@/lib/types';
-import { cleanTokenName, getTokenLogoURLWithSecondarySymbol } from '@/lib/logo-overrides';
-import { normalizeLogoSrc } from '@/lib/normalize-logo-src';
+import { cleanTokenName } from '@/lib/logo-overrides';
 import { getWrapperGroupByAddress } from '@tokens/asset-registry/compat';
 import { getVariantByMint } from '@tokens/asset-registry';
 import { cn } from '@tokens/ui/cn';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@tokens/ui/tooltip';
-import { IconTriangleFill } from 'symbols-react';
 import { AssetAdvisoryBadge } from '@/components/asset-advisory-badge';
+import {
+    INLINE_CHART_FALLBACK_DAYS,
+    PercentChangeCell,
+    TRENDING_WINDOW_LABELS,
+    TokenLogo,
+    TokenTablePriceCell,
+    formatInteger,
+    formatOptionalVolume,
+    formatVolume,
+    getTradeForWindow,
+    getVolumeForWindow,
+} from './token-table-cells';
+import { TokenTableMobileList, type TokenMobileRowSpec, type TokenMobileStat } from './token-table-mobile-list';
 
 const InlinePriceChart = dynamic(() => import('@/components/inline-price-chart').then(m => m.InlinePriceChart), {
     ssr: false,
     loading: () => <div className="w-full h-8 rounded-sm bg-gray-50" />,
 });
 
-const INLINE_CHART_FALLBACK_DAYS = 7;
 const TOKEN_TABLE_ROW_HEIGHT = 64;
 const ROW_PREFETCH_HOVER_DELAY_MS = 75;
 const MIN_TABLE_VOLUME_24H_USD = 25;
@@ -268,53 +275,6 @@ function isTrendingWindowGroupEndColumn(columnId: string): boolean {
 }
 
 const columnHelper = createColumnHelper<Token>();
-const TRENDING_WINDOW_LABELS: Record<TrendingWindow, string> = {
-    '5m': '5m',
-    '15m': '15m',
-    '1h': '1h',
-    '6h': '6h',
-    '24h': '24h',
-};
-
-function formatPrice(price: number | null | undefined): string {
-    if (price == null || isNaN(price)) return '$0.00';
-    if (price === 0) return '$0.00';
-    if (price < 0.00001) return `$${formatSmallPriceDecimal(price)}`;
-    if (price < 0.01) return `$${price.toFixed(6)}`;
-    if (price < 1) return `$${price.toFixed(4)}`;
-    return `$${price.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-}
-
-function TokenTablePriceCell({ token }: { token: Token }) {
-    const shouldUseCanonicalAssetChart = token.canonicalMarketSource === 'clickhouse_stock';
-    const latestClose = useInlineLatestClose({
-        assetId: token.assetId,
-        address: token.address,
-        useCanonicalAssetChart: shouldUseCanonicalAssetChart,
-        fallbackDays: INLINE_CHART_FALLBACK_DAYS,
-    });
-    const displayPrice = token.coingeckoId || shouldUseCanonicalAssetChart ? token.price : (latestClose ?? token.price);
-
-    return (
-        <span className="block w-full text-right text-[14px] text-[#2D2D2D] font-medium tabular-nums">
-            {formatPrice(displayPrice)}
-        </span>
-    );
-}
-
-function formatVolume(volume: number | null | undefined): string {
-    if (volume == null || isNaN(volume)) return '$0.00';
-    if (volume >= 1_000_000_000) return `$${(volume / 1_000_000_000).toFixed(2)}B`;
-    if (volume >= 1_000_000) return `$${(volume / 1_000_000).toFixed(2)}M`;
-    if (volume >= 1_000) return `$${(volume / 1_000).toFixed(2)}K`;
-    return `$${volume.toFixed(2)}`;
-}
-
-function formatOptionalVolume(volume: number | null | undefined): string {
-    if (volume == null || isNaN(volume)) return '—';
-    return formatVolume(volume);
-}
-
 function shouldShowUnderlyingVolume(token: Token): boolean {
     if (token.canonicalMarketSource === 'clickhouse_stock') return false;
 
@@ -360,28 +320,8 @@ function Volume24hHeaderTooltipContent() {
     );
 }
 
-function formatInteger(value: number | null | undefined): string {
-    if (value == null || !Number.isFinite(value)) return '—';
-    return Math.round(value).toLocaleString();
-}
-
 function isTrendingVariant(variant: TokenTableVariantConfig): boolean {
     return variant.id === 'trending' || variant.id.startsWith('trending:');
-}
-
-function getVolumeForWindow(token: Token, window: TrendingWindow): number | undefined {
-    switch (window) {
-        case '5m':
-            return token.volume5mUSD;
-        case '15m':
-            return token.volume15mUSD;
-        case '1h':
-            return token.volume1hUSD;
-        case '6h':
-            return token.volume6hUSD;
-        case '24h':
-            return token.volume24hUSD;
-    }
 }
 
 function hasTableVolume(token: Token): boolean {
@@ -396,36 +336,6 @@ function shouldShowTokenInTable(token: Token, variant: TokenTableVariantConfig):
     return !variant.requiresMinimumVolume || hasTableVolume(token);
 }
 
-function getTradeForWindow(token: Token, window: TrendingWindow): number | undefined {
-    switch (window) {
-        case '5m':
-            return token.trade5m;
-        case '15m':
-            return token.trade15m;
-        case '1h':
-            return token.trade1h;
-        case '6h':
-            return token.trade6h;
-        case '24h':
-            return token.trade24h;
-    }
-}
-
-function PercentChangeCell({ value }: { value: number }) {
-    const isPositive = value >= 0;
-    return (
-        <span
-            className={cn(
-                'inline-flex w-full items-center justify-end gap-1 text-[14px] font-medium tabular-nums',
-                isPositive ? 'text-green-800' : 'text-red-800',
-            )}
-        >
-            <IconTriangleFill className={cn('size-2 shrink-0 fill-current', !isPositive && 'rotate-180')} aria-hidden />
-            {`${Math.abs(value).toFixed(2)}%`}
-        </span>
-    );
-}
-
 function resolveCoinGeckoIdForToken(token: Token): string | null {
     const wrapperGroup = getWrapperGroupByAddress(token.address);
     if (wrapperGroup?.coingeckoId) return wrapperGroup.coingeckoId;
@@ -434,40 +344,6 @@ function resolveCoinGeckoIdForToken(token: Token): string | null {
     if (match) return match.asset.coingeckoId ?? match.asset.assetId;
 
     return null;
-}
-
-function TokenLogo({ token }: { token: Token }) {
-    const [hasError, setHasError] = React.useState(false);
-
-    const symbol = token.symbol || token.name || '??';
-    const initials = symbol.slice(0, 2).toUpperCase();
-    const resolvedLogoURI = normalizeLogoSrc(
-        token.trendingRank != null && token.logoURI
-            ? token.logoURI
-            : getTokenLogoURLWithSecondarySymbol(token.symbol, token.name, token.logoURI),
-    );
-
-    if (!resolvedLogoURI || hasError) {
-        return (
-            <div className="size-[26px] rounded-full bg-gray-1400 flex items-center justify-center flex-shrink-0">
-                <span className="text-[10px] font-bold text-white">{initials}</span>
-            </div>
-        );
-    }
-
-    return (
-        <Image
-            src={resolvedLogoURI}
-            alt={symbol}
-            width={26}
-            height={26}
-            className="size-[26px] rounded-full bg-gray-50 object-cover flex-shrink-0"
-            loading="lazy"
-            decoding="async"
-            onError={() => setHasError(true)}
-            referrerPolicy="no-referrer"
-        />
-    );
 }
 
 function createColumns(variant: TokenTableVariantConfig, trendingWindow: TrendingWindow) {
@@ -629,6 +505,67 @@ function createColumns(variant: TokenTableVariantConfig, trendingWindow: Trendin
     return cols.filter((col): col is Exclude<(typeof cols)[number], null> => col !== null);
 }
 
+/** The phone row for a variant: which stats line 2 shows and which change column line 2 ends with. */
+function buildMobileRowSpec(variant: TokenTableVariantConfig, trendingWindow: TrendingWindow): TokenMobileRowSpec {
+    const isTrending = isTrendingVariant(variant);
+    const windowLabel = TRENDING_WINDOW_LABELS[trendingWindow];
+    const stats: TokenMobileStat[] = [];
+    if (isTrending) {
+        stats.push({
+            id: 'volume',
+            label: `${windowLabel} Vol`,
+            format: token => formatOptionalVolume(getVolumeForWindow(token, trendingWindow)),
+            sortColumnId: trendingWindow === '24h' ? 'volume24hUSD' : undefined,
+        });
+        if (variant.columns.showTrade1h) {
+            stats.push({
+                id: 'trades',
+                label: `${windowLabel} Trades`,
+                format: token => formatInteger(getTradeForWindow(token, trendingWindow)),
+            });
+        }
+    } else {
+        if (variant.columns.showVolume24hUSD) {
+            stats.push({
+                id: 'volume24h',
+                label: '24h Vol',
+                format: token => formatVolume(token.volume24hUSD),
+                sortColumnId: 'volume24hUSD',
+            });
+        }
+        if (variant.columns.showVolume1hUSD) {
+            stats.push({
+                id: 'volume1h',
+                label: '1h Vol',
+                format: token => formatVolume(token.volume1hUSD),
+                sortColumnId: 'volume1hUSD',
+            });
+        }
+        if (variant.columns.showLiquidityUSD) {
+            stats.push({
+                id: 'liquidity',
+                label: 'Liq',
+                format: token => formatVolume(token.liquidity),
+                sortColumnId: 'liquidity',
+            });
+        }
+        if (variant.columns.showTrade1h) {
+            stats.push({ id: 'trades', label: 'Trades', format: token => formatInteger(token.trade1h) });
+        }
+    }
+    return {
+        showRank: variant.columns.showRank,
+        showPrice: variant.columns.showPrice,
+        change: variant.columns.showPriceChange1h
+            ? { key: 'priceChange1hPercent', label: '1H' }
+            : variant.columns.showPriceChange24h
+              ? { key: 'priceChange24hPercent', label: '1D' }
+              : null,
+        stats: stats.slice(0, 3),
+        displayName: token => (isTrending ? token.name?.trim() || 'Unknown' : cleanTokenName(token.name)),
+    };
+}
+
 function useTokenRowNavigation(variant: TokenTableVariantConfig, categoryId: string | undefined) {
     const router = useRouter();
     const prefetchedHrefs = React.useRef<Set<string>>(new Set());
@@ -719,10 +656,7 @@ function TokenTableHeader({ table }: { table: Table<Token> }) {
                                     'py-3 text-[12px] md:text-[14px] font-medium text-text-high bg-gray-50/80 border-b border-border-light',
                                     isRank && 'pl-3 pr-1 md:pl-5 md:pr-1 text-right',
                                     isName && 'pl-3 pr-2 text-left md:pl-4 md:pr-4',
-                                    !isRank &&
-                                        !isName &&
-                                        isLast &&
-                                        'pl-3 md:pl-6 pr-4 md:pr-8 text-right',
+                                    !isRank && !isName && isLast && 'pl-3 md:pl-6 pr-4 md:pr-8 text-right',
                                     !isRank && !isName && !isLast && 'px-3 md:px-6 text-right',
                                     isTrendingGroupEnd && 'border-r border-border-light',
                                 )}
@@ -733,17 +667,13 @@ function TokenTableHeader({ table }: { table: Table<Token> }) {
                                             type="button"
                                             className={cn(
                                                 'inline-flex min-w-0 items-center justify-end gap-1 text-nowrap',
-                                                canSort &&
-                                                    'cursor-pointer hover:text-text-extra-high select-none',
+                                                canSort && 'cursor-pointer hover:text-text-extra-high select-none',
                                             )}
                                             onClick={header.column.getToggleSortingHandler()}
                                             disabled={!canSort}
                                         >
                                             <span>
-                                                {flexRender(
-                                                    header.column.columnDef.header,
-                                                    header.getContext(),
-                                                )}
+                                                {flexRender(header.column.columnDef.header, header.getContext())}
                                             </span>
                                             {canSort && (
                                                 <span className="text-text-extra-low">
@@ -782,18 +712,14 @@ function TokenTableHeader({ table }: { table: Table<Token> }) {
                                         type="button"
                                         className={cn(
                                             'inline-flex text-nowrap items-center gap-1',
-                                            canSort &&
-                                                'cursor-pointer hover:text-text-extra-high select-none',
+                                            canSort && 'cursor-pointer hover:text-text-extra-high select-none',
                                             !isName && 'w-full min-w-0 justify-end',
                                             isName && 'justify-start',
                                         )}
                                         onClick={header.column.getToggleSortingHandler()}
                                         disabled={!canSort}
                                     >
-                                        {flexRender(
-                                            header.column.columnDef.header,
-                                            header.getContext(),
-                                        )}
+                                        {flexRender(header.column.columnDef.header, header.getContext())}
                                         {canSort && (
                                             <span className="text-text-extra-low">
                                                 {sortDirection === 'asc' ? (
@@ -825,6 +751,7 @@ interface TokenTableProps {
 export function TokenTable({ tokens, categoryId, trendingWindow = '1h' }: TokenTableProps) {
     const variant = getTokenTableVariant(categoryId);
     const columns = React.useMemo(() => createColumns(variant, trendingWindow), [variant, trendingWindow]);
+    const mobileSpec = React.useMemo(() => buildMobileRowSpec(variant, trendingWindow), [variant, trendingWindow]);
     const visibleTokens = React.useMemo(
         () => tokens.filter(token => shouldShowTokenInTable(token, variant)),
         [tokens, variant],
@@ -858,10 +785,7 @@ export function TokenTable({ tokens, categoryId, trendingWindow = '1h' }: TokenT
             ),
         [columns],
     );
-    const activeSorting = React.useMemo(
-        () => sorting.filter(rule => columnIds.has(rule.id)),
-        [sorting, columnIds],
-    );
+    const activeSorting = React.useMemo(() => sorting.filter(rule => columnIds.has(rule.id)), [sorting, columnIds]);
 
     const table = useReactTable({
         data: visibleTokens,
@@ -914,78 +838,90 @@ export function TokenTable({ tokens, categoryId, trendingWindow = '1h' }: TokenT
         <TooltipProvider delayDuration={200}>
             <section className="mx-auto max-w-7xl px-4 md:px-6 pb-12 md:pb-24">
                 <div className="bg-white rounded-[24px] border border-border-medium shadow-[0_8px_40px_rgba(0,0,0,0.03)] overflow-hidden">
-                    <div className="overflow-x-auto">
+                    <TokenTableMobileList
+                        rows={rows}
+                        table={table}
+                        spec={mobileSpec}
+                        handlers={{ onClick: handleRowClick, onPointerDown: prefetchRow, onFocus: prefetchRow }}
+                        categoryId={categoryId}
+                    />
+                    <div className="hidden overflow-x-auto md:block">
                         <div ref={tableTopRef} />
                         <table className="w-full min-w-[980px] table-fixed text-left border-collapse">
-                        <colgroup>
-                            {table.getVisibleLeafColumns().map(column => (
-                                <col key={column.id} style={{ width: getColumnWidth(column.id) }} />
-                            ))}
-                        </colgroup>
-                        <TokenTableHeader table={table} />
-                        <tbody className="divide-y divide-border-extra-light">
-                            {paddingTop > 0 ? (
-                                <tr>
-                                    <td colSpan={colCount} style={{ height: paddingTop, padding: 0, border: 0 }} />
-                                </tr>
-                            ) : null}
-
-                            {virtualRows.map(virtualRow => {
-                                const row = rows[virtualRow.index];
-                                if (!row) return null;
-
-                                return (
-                                    <tr
-                                        key={row.id}
-                                        style={{ height: TOKEN_TABLE_ROW_HEIGHT }}
-                                        className="hover:bg-gray-50/50 transition-colors group cursor-pointer"
-                                        tabIndex={0}
-                                        onClick={() => handleRowClick(row.original)}
-                                        onKeyDown={event => {
-                                            if (event.key !== 'Enter' && event.key !== ' ') return;
-                                            event.preventDefault();
-                                            handleRowClick(row.original);
-                                        }}
-                                        onPointerEnter={() => handleRowPointerEnter(row.original)}
-                                        onPointerLeave={handleRowPointerLeave}
-                                        onPointerDown={() => prefetchRow(row.original)}
-                                        onFocus={() => prefetchRow(row.original)}
-                                    >
-                                        {row.getVisibleCells().map((cell, index) => {
-                                            const isRank = cell.column.id === 'rank';
-                                            const isName = isTokenNameColumn(cell.column.id);
-                                            const isTrendingGroupEnd = isTrendingWindowGroupEndColumn(cell.column.id);
-                                            const isLast = index === row.getVisibleCells().length - 1;
-
-                                            return (
-                                                <td
-                                                    key={cell.id}
-                                                    className={cn(
-                                                        'h-16 py-0 align-middle',
-                                                        isRank && 'pl-3 pr-1 md:pl-5 md:pr-1 text-right',
-                                                        isName && 'pl-3 pr-2 text-left md:pl-4 md:pr-4',
-                                                        !isRank &&
-                                                            !isName &&
-                                                            isLast &&
-                                                            'pl-3 md:pl-6 pr-4 md:pr-8 text-right',
-                                                        !isRank && !isName && !isLast && 'px-3 md:px-6 text-right',
-                                                        isTrendingGroupEnd && 'border-r border-border-light',
-                                                    )}
-                                                >
-                                                    {flexRender(cell.column.columnDef.cell, cell.getContext())}
-                                                </td>
-                                            );
-                                        })}
+                            <colgroup>
+                                {table.getVisibleLeafColumns().map(column => (
+                                    <col key={column.id} style={{ width: getColumnWidth(column.id) }} />
+                                ))}
+                            </colgroup>
+                            <TokenTableHeader table={table} />
+                            <tbody className="divide-y divide-border-extra-light">
+                                {paddingTop > 0 ? (
+                                    <tr>
+                                        <td colSpan={colCount} style={{ height: paddingTop, padding: 0, border: 0 }} />
                                     </tr>
-                                );
-                            })}
+                                ) : null}
 
-                            {paddingBottom > 0 ? (
-                                <tr>
-                                    <td colSpan={colCount} style={{ height: paddingBottom, padding: 0, border: 0 }} />
-                                </tr>
-                            ) : null}
-                        </tbody>
+                                {virtualRows.map(virtualRow => {
+                                    const row = rows[virtualRow.index];
+                                    if (!row) return null;
+
+                                    return (
+                                        <tr
+                                            key={row.id}
+                                            style={{ height: TOKEN_TABLE_ROW_HEIGHT }}
+                                            className="hover:bg-gray-50/50 transition-colors group cursor-pointer"
+                                            tabIndex={0}
+                                            onClick={() => handleRowClick(row.original)}
+                                            onKeyDown={event => {
+                                                if (event.key !== 'Enter' && event.key !== ' ') return;
+                                                event.preventDefault();
+                                                handleRowClick(row.original);
+                                            }}
+                                            onPointerEnter={() => handleRowPointerEnter(row.original)}
+                                            onPointerLeave={handleRowPointerLeave}
+                                            onPointerDown={() => prefetchRow(row.original)}
+                                            onFocus={() => prefetchRow(row.original)}
+                                        >
+                                            {row.getVisibleCells().map((cell, index) => {
+                                                const isRank = cell.column.id === 'rank';
+                                                const isName = isTokenNameColumn(cell.column.id);
+                                                const isTrendingGroupEnd = isTrendingWindowGroupEndColumn(
+                                                    cell.column.id,
+                                                );
+                                                const isLast = index === row.getVisibleCells().length - 1;
+
+                                                return (
+                                                    <td
+                                                        key={cell.id}
+                                                        className={cn(
+                                                            'h-16 py-0 align-middle',
+                                                            isRank && 'pl-3 pr-1 md:pl-5 md:pr-1 text-right',
+                                                            isName && 'pl-3 pr-2 text-left md:pl-4 md:pr-4',
+                                                            !isRank &&
+                                                                !isName &&
+                                                                isLast &&
+                                                                'pl-3 md:pl-6 pr-4 md:pr-8 text-right',
+                                                            !isRank && !isName && !isLast && 'px-3 md:px-6 text-right',
+                                                            isTrendingGroupEnd && 'border-r border-border-light',
+                                                        )}
+                                                    >
+                                                        {flexRender(cell.column.columnDef.cell, cell.getContext())}
+                                                    </td>
+                                                );
+                                            })}
+                                        </tr>
+                                    );
+                                })}
+
+                                {paddingBottom > 0 ? (
+                                    <tr>
+                                        <td
+                                            colSpan={colCount}
+                                            style={{ height: paddingBottom, padding: 0, border: 0 }}
+                                        />
+                                    </tr>
+                                ) : null}
+                            </tbody>
                         </table>
                     </div>
                 </div>

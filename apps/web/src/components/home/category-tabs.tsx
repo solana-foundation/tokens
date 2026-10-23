@@ -356,7 +356,36 @@ function TokenTableSkeleton() {
     return (
         <section className="mx-auto max-w-7xl px-4 md:px-6 pb-12 md:pb-24">
             <div className="bg-white rounded-[24px] md:rounded-[32px] border border-border-medium shadow-[0_8px_40px_rgba(0,0,0,0.03)] overflow-hidden">
-                <div className="overflow-x-auto">
+                {/* Phone list skeleton: the TokenTableMobileList shape (sort header, stacked rows). */}
+                <div className="md:hidden">
+                    <div className="flex items-center justify-between border-b border-border-light bg-gray-50/80 px-4 py-2.5">
+                        <Skeleton className="h-3.5 w-12 rounded bg-gray-100" />
+                        <div className="flex gap-4">
+                            <Skeleton className="h-3.5 w-14 rounded bg-gray-100" />
+                            <Skeleton className="h-3.5 w-10 rounded bg-gray-100" />
+                        </div>
+                    </div>
+                    <ul className="divide-y divide-border-extra-light">
+                        {Array.from({ length: 8 }, (_, rowIndex) => (
+                            <li key={rowIndex} className="flex h-[68px] items-center gap-2.5 px-4">
+                                <Skeleton className="size-[26px] shrink-0 rounded-full bg-gray-100" />
+                                <div className="flex flex-1 flex-col gap-2">
+                                    <div className="flex items-center justify-between">
+                                        <Skeleton
+                                            className={`h-4 rounded bg-gray-100 ${rowIndex % 3 === 0 ? 'w-36' : 'w-24'}`}
+                                        />
+                                        <Skeleton className="h-4 w-16 rounded bg-gray-100" />
+                                    </div>
+                                    <div className="flex items-center justify-between">
+                                        <Skeleton className="h-3 w-40 rounded bg-gray-100" />
+                                        <Skeleton className="h-3 w-12 rounded bg-gray-100" />
+                                    </div>
+                                </div>
+                            </li>
+                        ))}
+                    </ul>
+                </div>
+                <div className="hidden overflow-x-auto md:block">
                     <table className="w-full text-left border-collapse">
                         <thead>
                             <tr className="border-b border-border-extra-light bg-gray-50/80">
