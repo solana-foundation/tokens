@@ -594,6 +594,7 @@ function AssetPageShellFallback({ assetId, requestedName, requested, shell }: As
                     variantGroup={variantGroup}
                     showSingletonVariantBadge={showSingletonVariantBadge}
                     variantCurrentKey={active?.key}
+                    showRisk={caps.risk}
                 />
             }
             sidebar={<AssetPageSidebarSkeleton showBuyButton={Boolean(active) && caps.swap} />}
