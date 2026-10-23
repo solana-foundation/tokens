@@ -8,10 +8,12 @@
  * Rules (audit 2026-10-22 §1, §19; owner decision: CoinGecko's home platform
  * is NOT an input, it records where CoinGecko listed a coin, not who issues it):
  *
- * 1. A coin whose id or name says it is a bridge's or peg's copy
- *    (`bridged`, `-peg-`, `wormhole`, `portal`, `bridge`, `.e`) is `bridged`
- *    on every chain it is deployed on: Binance-Peg stables on BNB, USDC.e on
- *    Polygon, Wormhole wETH on Solana.
+ * 1. A coin whose id or name says it is a bridge's or peg's copy of something
+ *    (`bridged`, `-peg-`, `-wormhole` / `(Wormhole)`, `-portal` / `(Portal)`,
+ *    `(bridged)`, `.e`) is `bridged` on every chain it is deployed on:
+ *    Binance-Peg stables on BNB, USDC.e on Polygon, Wormhole wETH on Solana.
+ *    The asset's own reference coin is never a copy of itself (Wormhole's W,
+ *    Portal's token), so it is exempt, and a bare project name is not a match.
  * 2. For an equity, the registry- or admin-sourced Solana mint is the issuer's
  *    home; the same coin's deployments on other chains are `bridged` (TSLAx on
  *    Arbitrum / BNB / Ethereum are bridged copies of the Solana xStock).
@@ -33,6 +35,8 @@ export interface OverrideVariantInput {
     /** v1 `asset_variants.source` for mirrored Solana rows (registry | admin | …); origin for derived rows. */
     source: string | null;
     coinId: string | null;
+    /** The asset's own reference coin (`assets.coingecko_id`); its deployments are never a bridged copy of itself. */
+    assetCoinId?: string | null;
 }
 
 export interface OverrideCoinInput {
@@ -50,7 +54,7 @@ export interface IssuanceOverrideEntry {
     coinId?: string;
 }
 
-const BRIDGED_COIN_PATTERN = /bridged|-peg-|binance-peg|wormhole|portal|\bbridge\b|\.e$|\.e\b/i;
+const BRIDGED_COIN_PATTERN = /bridged|-peg-|binance-peg|-wormhole\b|\(wormhole\)|-portal\b|\(portal\)|\(bridged?\)|\.e$|\.e\b/i;
 const FUND_SHARE_PATTERN = /\b(etf|ishares|spdr|trust|fund)\b/i;
 const HOME_SOURCES: ReadonlySet<string> = new Set(['registry', 'admin', 'solana_v1']);
 
@@ -84,8 +88,9 @@ export function classifyIssuanceOverrides(
     for (const variant of variants) {
         const coin = variant.coinId ? coinById.get(variant.coinId) : undefined;
         if (!coin) continue;
-        // Rule 1: bridge / peg coins.
-        if (BRIDGED_COIN_PATTERN.test(coin.coinId) || BRIDGED_COIN_PATTERN.test(coin.name)) {
+        // Rule 1: bridge / peg coins. The asset's own reference coin is the asset, not a copy of it.
+        const ownCoin = variant.assetCoinId != null && variant.assetCoinId === coin.coinId;
+        if (!ownCoin && (BRIDGED_COIN_PATTERN.test(coin.coinId) || BRIDGED_COIN_PATTERN.test(coin.name))) {
             if (variant.kind !== 'bridged' && variant.kind !== 'wrapped') {
                 put(variant, 'bridged', `CoinGecko coin ${coin.coinId} (${coin.name}) is a bridge/peg copy`, coin.coinId);
             }

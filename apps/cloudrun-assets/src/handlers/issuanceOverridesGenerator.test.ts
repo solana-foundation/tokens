@@ -32,6 +32,8 @@ const coins: OverrideCoinInput[] = [
     { coinId: 'ethereum-wormhole', name: 'Ethereum (Wormhole)', symbol: 'eth', platforms: { solana: WETH_WORMHOLE_SOL } },
     { coinId: 'ishares-gold-trust', name: 'iShares Gold Trust', symbol: 'iau', platforms: { solana: 'IAUonMint' } },
     { coinId: 'usd-coin', name: 'USDC', symbol: 'usdc', platforms: { solana: 'EPjF', ethereum: '0xa0b8' } },
+    { coinId: 'wormhole', name: 'Wormhole', symbol: 'w', platforms: { solana: 'WMint', ethereum: '0xb0b0' } },
+    { coinId: 'binance-peg-wormhole', name: 'Binance-Peg Wormhole', symbol: 'w', platforms: { 'binance-smart-chain': '0xpeg' } },
 ];
 
 describe('classifyIssuanceOverrides', () => {
@@ -63,6 +65,19 @@ describe('classifyIssuanceOverrides', () => {
         );
         expect(out).toHaveLength(1);
         expect(out[0]?.key).toBe(`polygon:${USDC_E_POLYGON}`);
+        expect(out[0]?.issuance).toBe('bridged');
+    });
+
+    test("a project's own token is not a bridged copy of itself: Wormhole's W gets no entry, Binance-Peg W does", () => {
+        const out = classifyIssuanceOverrides(
+            [
+                variant({ chain: 'solana', address: 'WMint', assetId: 'wormhole', category: 'crypto', kind: 'native', coinId: 'wormhole', assetCoinId: 'wormhole' }),
+                variant({ chain: 'ethereum', address: '0xb0b0', assetId: 'wormhole', category: 'crypto', kind: 'spot', coinId: 'wormhole', assetCoinId: 'wormhole', source: 'coingecko' }),
+                variant({ chain: 'bnb', address: '0xpeg', assetId: 'wormhole', category: 'crypto', kind: 'spot', coinId: 'binance-peg-wormhole', assetCoinId: 'wormhole', source: 'coingecko' }),
+            ],
+            coins,
+        );
+        expect(out.map(e => e.key)).toEqual(['bnb:0xpeg']);
         expect(out[0]?.issuance).toBe('bridged');
     });
 

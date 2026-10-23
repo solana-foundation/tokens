@@ -36,9 +36,10 @@ const sql = postgres(databaseUrl, { max: 1 });
 
 try {
     const variantRows = await sql<
-        { chain: string; address: string; asset_id: string; category: string; kind: string; label: string | null; source: string | null; origin: string; coingecko_id: string | null }[]
+        { chain: string; address: string; asset_id: string; category: string; kind: string; label: string | null; source: string | null; origin: string; coingecko_id: string | null; asset_coingecko_id: string | null }[]
     >`
-        SELECT v.chain, v.address, v.asset_id, a.category, v.kind, v.label, v.source, v.origin, v.coingecko_id
+        SELECT v.chain, v.address, v.asset_id, a.category, v.kind, v.label, v.source, v.origin, v.coingecko_id,
+               nullif(trim(a.coingecko_id), '') AS asset_coingecko_id
         FROM v2_asset_variants v
         JOIN assets a ON a.asset_id = v.asset_id AND a.is_active = true
         WHERE v.is_active = true
@@ -57,6 +58,7 @@ try {
                       label: row.label,
                       source: row.origin === 'solana_v1' ? row.source : row.origin,
                       coinId: row.coingecko_id,
+                      assetCoinId: row.asset_coingecko_id,
                   },
               ]
             : [],
