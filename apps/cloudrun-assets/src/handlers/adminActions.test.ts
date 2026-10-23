@@ -1310,7 +1310,30 @@ describe('adminCheckVariantMintForCanonical (EVM)', () => {
             { assetId: 'wbtc', chain: 'ethereum', address: other },
             ADMIN,
         );
-        // Not the coin's deployment: the platforms heuristic applies (Solana listed → bridged).
+        // Not the coin's deployment on its home chain: a wrapper, left out of supply.
+        expect(preview.variantWrite.kind).toBe('wrapped');
+    });
+
+    it('a different contract off the home chain stays bridged (never spot)', async () => {
+        const other = '0x2222222222222222222222222222222222222222';
+        const state = makeState({
+            assetsById: { wbtc: { assetId: 'wbtc', category: 'crypto', coingeckoId: 'wrapped-bitcoin' } },
+            coinPlatformsById: {
+                'wrapped-bitcoin': {
+                    coinId: 'wrapped-bitcoin',
+                    symbol: 'wbtc',
+                    platforms: { ethereum: USDC_ETH, base: USDC_ETH },
+                    decimalsByPlatform: { ethereum: 8 },
+                    assetPlatformId: 'ethereum',
+                    coinLastSyncedAt: FIXED_NOW,
+                },
+            },
+        });
+        const preview = await adminCheckVariantMintForCanonical(
+            makeDeps(state),
+            { assetId: 'wbtc', chain: 'base', address: other },
+            ADMIN,
+        );
         expect(preview.variantWrite.kind).toBe('bridged');
     });
 

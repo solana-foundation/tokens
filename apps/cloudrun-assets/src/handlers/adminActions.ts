@@ -1218,17 +1218,25 @@ async function checkEvmVariantForCanonical(
     // when it wrote it, and `variantIssuance` drops a `bridged` row from v2
     // supply and market cap, so re-deriving here could demote a `native` row.
     // A fresh add derives with the coin's `asset_platform_id` for the same
-    // reason, but only when this address IS the coin's deployment here: a
-    // different wrapper on the home chain is not the native issuance and must
-    // not be counted as newly issued supply.
-    const derivedKind = coinRow
+    // reason. A contract that is NOT the coin's deployment on this chain is a
+    // claim on supply issued elsewhere: off the home chain the derivation
+    // already says `bridged`; on the home chain (or when the platforms map
+    // would call it `native` / `spot`) it becomes `wrapped`, which the API
+    // also leaves out of supply and market cap.
+    const derivedForDeployment = coinRow
         ? deriveVariantKindForChain({
               category,
-              assetPlatformId: coinMatchesAddress ? coinRow.assetPlatformId : null,
+              assetPlatformId: coinRow.assetPlatformId,
               chain,
               platforms: coinRow.platforms,
           })
         : null;
+    const derivedKind =
+        derivedForDeployment !== null &&
+        !coinMatchesAddress &&
+        (derivedForDeployment === 'native' || derivedForDeployment === 'spot')
+            ? 'wrapped'
+            : derivedForDeployment;
     const kind: VariantKind =
         own && isVariantKind(own.kind)
             ? own.kind
