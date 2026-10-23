@@ -414,6 +414,8 @@ interface EvmVariantsSyncSummary {
     keptStale: number;
     /** Active derived rows left alone because their asset fell outside a bounded (`maxAssets`) scan. */
     keptUnscanned: number;
+    /** Rows kept because their asset's coin set was cut at `MAX_COIN_SOURCES_PER_ASSET` this run. */
+    keptCapped: number;
     /** Rows due for deactivation but kept because a replacement row for the same asset was not written this run. */
     keptPendingWrite: number;
     failed: number;
@@ -512,6 +514,8 @@ export async function syncEvmVariants(deps: V2AssetsCronDeps, rawArgs: unknown):
     let coinSourcesSkipped = 0;
     let coinSourcesCapped = 0;
     let coinSourcesUnknown = 0;
+    /** Assets whose coin set was cut at the cap: their derived rows were not all re-examined, so none is deactivated. */
+    const cappedAssets = new Set<string>();
     for (const [assetId, list] of sourcesByAsset) {
         let freshest: number | null = null;
         let coinsUsed = 0;
@@ -540,6 +544,7 @@ export async function syncEvmVariants(deps: V2AssetsCronDeps, rawArgs: unknown):
             }
             if (coinsUsed >= MAX_COIN_SOURCES_PER_ASSET) {
                 capped = true;
+                cappedAssets.add(assetId);
                 continue;
             }
             coinsUsed += 1;
@@ -651,6 +656,7 @@ export async function syncEvmVariants(deps: V2AssetsCronDeps, rawArgs: unknown):
     const toDeactivate: Array<V2VariantKeyRef & { assetId: string }> = [];
     let keptStale = 0;
     let keptUnscanned = 0;
+    let keptCapped = 0;
     for (const row of existing) {
         if (!row.isActive) continue;
         if (desired.has(desiredKey(row.assetId, row.chain, row.address))) continue;
@@ -659,6 +665,12 @@ export async function syncEvmVariants(deps: V2AssetsCronDeps, rawArgs: unknown):
         if (!activeById.has(row.assetId)) {
             // No longer active / registered: `listActiveAssets` is unbounded, so this is a DB fact.
             toDeactivate.push({ chain: row.chain, address: row.address, assetId: row.assetId });
+            continue;
+        }
+        if (cappedAssets.has(row.assetId)) {
+            // A coin past the cap was never read this run; reaching the cap is not
+            // evidence that its deployments disappeared.
+            keptCapped += 1;
             continue;
         }
         if (scannedSyncedAt === undefined && aggregateSyncedAt === undefined) {
@@ -757,6 +769,7 @@ export async function syncEvmVariants(deps: V2AssetsCronDeps, rawArgs: unknown):
         deactivated: args.dryRun ? toDeactivate.length : deactivated,
         keptStale,
         keptUnscanned,
+        keptCapped,
         keptPendingWrite,
         failed,
         byChain,
@@ -786,6 +799,7 @@ export async function syncEvmVariants(deps: V2AssetsCronDeps, rawArgs: unknown):
         deactivated: summary.deactivated,
         keptStale,
         keptUnscanned,
+        keptCapped,
         keptPendingWrite,
         failed,
         byChain,

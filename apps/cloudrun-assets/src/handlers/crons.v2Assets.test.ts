@@ -537,6 +537,44 @@ describe('sync-v2-evm-variants', () => {
         expect(result.keptStale).toBe(1);
     });
 
+    test('a coin past the per-asset cap keeps its existing deployments active', async () => {
+        const coinSource = (i: number): V2AssetCoinSourceRow => ({
+            assetId: 'fanout',
+            category: 'crypto',
+            coinId: `coin-${String(i).padStart(2, '0')}`,
+            role: i === 0 ? 'reference' : 'variant',
+            source: i === 0 ? null : { chain: 'solana', address: `Mint${i}`, kind: 'spot', tags: [], label: null },
+            platforms: { ethereum: `0x${String(i).padStart(40, '0')}` },
+            decimalsByPlatform: {},
+            assetPlatformId: null,
+            coinSymbol: null,
+            coinLastSyncedAt: NOW,
+        });
+        const sources = Array.from({ length: 9 }, (_, i) => coinSource(i));
+        const cappedRow: V2DerivedVariantRow = {
+            chain: 'ethereum',
+            address: `0x${String(8).padStart(40, '0')}`,
+            assetId: 'fanout',
+            variantId: `ethereum:0x${String(8).padStart(40, '0')}`,
+            isActive: true,
+        };
+        const repo = fakeRepo({
+            async listAssetCoinSources() {
+                return sources;
+            },
+            async listActiveAssets() {
+                return [{ assetId: 'fanout', category: 'crypto' }];
+            },
+            async listDerivedVariants() {
+                return [cappedRow];
+            },
+        });
+        const result = await syncEvmVariants(deps(repo), { maxAssets: 10 });
+        expect(result.coinSourcesCapped).toBe(1);
+        expect(result.keptCapped).toBe(1);
+        expect(result.deactivated).toBe(0);
+    });
+
     test('a bounded scan leaves the derived rows of unscanned assets alone', async () => {
         const otherAssetRow: V2DerivedVariantRow = {
             chain: 'base',
