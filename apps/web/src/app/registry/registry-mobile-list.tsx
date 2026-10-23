@@ -4,6 +4,7 @@ import type { Column, Row, Table } from '@tanstack/react-table';
 import { ChevronDown, ChevronUp, ChevronsUpDown } from 'lucide-react';
 
 import { cn } from '@tokens/ui/cn';
+import { SplitBadge } from '@/components/split-badge';
 import { formatLargeNumber } from '@/lib/format';
 import type { RegistryRow } from './lib/types';
 import { AddressLink, RegistryEmptyState, TokenLink } from './registry-cells';
@@ -79,32 +80,11 @@ function SortButton({
     );
 }
 
-/**
- * Category and class as one split pill: two segments joined by a hatched
- * divider, so the two taxonomy tiers read as a pair instead of one dotted
- * string. Either side may be missing; with neither it is a plain dash.
- */
+/** Category and class as one split pill; either side may be missing, with neither it is a dash. */
 function TaxonomyBadge({ category, assetClass }: { category: string | null; assetClass: string | null }) {
     const segments = [category, assetClass].filter((value): value is string => !!value);
     if (segments.length === 0) return <span className="text-text-extra-low">—</span>;
-    return (
-        <span
-            className="inline-flex min-w-0 max-w-full items-stretch overflow-hidden rounded-md border border-border-medium text-[11px] font-medium leading-none text-text-medium"
-            title={segments.join(' · ')}
-        >
-            {segments.map((segment, index) => (
-                <span key={segment} className="contents">
-                    {index > 0 ? (
-                        <span
-                            aria-hidden
-                            className="w-2.5 shrink-0 border-x border-border-medium bg-[repeating-linear-gradient(135deg,var(--color-border-medium)_0_1px,transparent_1px_4px)]"
-                        />
-                    ) : null}
-                    <span className="min-w-0 truncate px-1.5 py-1">{segment}</span>
-                </span>
-            ))}
-        </span>
-    );
+    return <SplitBadge segments={segments} title={segments.join(' · ')} />;
 }
 
 /** One stat line of the phone row's right column: label left, number right. */

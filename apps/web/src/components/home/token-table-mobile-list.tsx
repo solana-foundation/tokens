@@ -7,6 +7,7 @@ import { useWindowVirtualizer } from '@tanstack/react-virtual';
 import { ChevronDown, ChevronUp, ChevronsUpDown } from 'lucide-react';
 
 import { AssetAdvisoryBadge } from '@/components/asset-advisory-badge';
+import { SplitBadge } from '@/components/split-badge';
 import type { Token } from '@/lib/types';
 import { INLINE_CHART_FALLBACK_DAYS, PercentChangeCell, TokenLogo, TokenTablePriceCell } from './token-table-cells';
 
@@ -224,14 +225,14 @@ function TokenMobileRow({
                     ) : null}
                 </div>
                 <div className="flex items-center justify-between gap-3 text-[12px] leading-none">
-                    <div className="flex min-w-0 items-center divide-x divide-border-light">
-                        {spec.stats.map(stat => (
-                            <span key={stat.id} className="shrink-0 px-2 first:pl-0 last:pr-0 tabular-nums">
-                                <span className="text-text-extra-low">{stat.label} </span>
-                                <span className="font-medium text-text-medium">{stat.format(token)}</span>
-                            </span>
+                    <SplitBadge
+                        segments={spec.stats.map(stat => (
+                            <React.Fragment key={stat.id}>
+                                <span className="font-normal text-text-extra-low">{stat.label} </span>
+                                {stat.format(token)}
+                            </React.Fragment>
                         ))}
-                    </div>
+                    />
                     {spec.change ? (
                         <span className="shrink-0 [&_span]:text-[12px]">
                             {change == null ? (
