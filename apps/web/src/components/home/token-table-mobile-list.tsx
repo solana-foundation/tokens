@@ -1,15 +1,22 @@
 'use client';
 
 import * as React from 'react';
+import dynamic from 'next/dynamic';
 import type { Column, Row, Table } from '@tanstack/react-table';
 import { useWindowVirtualizer } from '@tanstack/react-virtual';
 import { ChevronDown, ChevronUp, ChevronsUpDown } from 'lucide-react';
 
 import { AssetAdvisoryBadge } from '@/components/asset-advisory-badge';
 import type { Token } from '@/lib/types';
-import { PercentChangeCell, TokenLogo, TokenTablePriceCell } from './token-table-cells';
+import { INLINE_CHART_FALLBACK_DAYS, PercentChangeCell, TokenLogo, TokenTablePriceCell } from './token-table-cells';
 
 const MOBILE_ROW_HEIGHT = 68;
+
+// Backdrop sparkline: no loading placeholder, it fades in once the data is there.
+const InlinePriceChart = dynamic(() => import('@/components/inline-price-chart').then(m => m.InlinePriceChart), {
+    ssr: false,
+    loading: () => null,
+});
 
 /** One small stat in the phone row's second line, e.g. "24h Vol $1.20M". */
 export interface TokenMobileStat {
@@ -24,6 +31,8 @@ export interface TokenMobileStat {
 export interface TokenMobileRowSpec {
     showRank: boolean;
     showPrice: boolean;
+    /** Paint the 24h sparkline as a faded backdrop on the row's right half. */
+    showChart: boolean;
     change: { key: 'priceChange1hPercent' | 'priceChange24hPercent'; label: string } | null;
     stats: TokenMobileStat[];
     displayName: (token: Token) => string;
@@ -151,7 +160,7 @@ function TokenMobileRow({
     return (
         <li
             style={{ height: MOBILE_ROW_HEIGHT }}
-            className="flex cursor-pointer items-center gap-2.5 px-4 transition-colors active:bg-gray-50/60"
+            className="relative flex cursor-pointer items-center gap-2.5 px-4 transition-colors active:bg-gray-50/60"
             tabIndex={0}
             onClick={() => handlers.onClick(token)}
             onKeyDown={event => {
@@ -162,13 +171,34 @@ function TokenMobileRow({
             onPointerDown={() => handlers.onPointerDown(token)}
             onFocus={() => handlers.onFocus(token)}
         >
+            {spec.showChart ? (
+                // The 24h sparkline as a quiet backdrop behind the numbers: right half only,
+                // masked in from the left so it never collides with the name.
+                <div
+                    aria-hidden
+                    className="pointer-events-none absolute inset-y-0 right-0 w-1/2 opacity-30 [mask-image:linear-gradient(to_right,transparent,black_55%)]"
+                >
+                    <InlinePriceChart
+                        assetId={token.assetId}
+                        coingeckoId={token.coingeckoId}
+                        useCanonicalAssetChart={token.canonicalMarketSource === 'clickhouse_stock'}
+                        address={token.address}
+                        percentChange24h={token.priceChange24hPercent}
+                        symbol={token.symbol}
+                        emptyText=""
+                        chartHeight={MOBILE_ROW_HEIGHT}
+                        fallbackDays={INLINE_CHART_FALLBACK_DAYS}
+                        className="relative h-full w-full overflow-hidden bg-transparent"
+                    />
+                </div>
+            ) : null}
             {spec.showRank ? (
                 <span className="w-5 shrink-0 text-right text-[12px] font-medium tabular-nums text-text-low">
                     {token.trendingRank ?? index + 1}
                 </span>
             ) : null}
             <TokenLogo token={token} />
-            <div className="flex min-w-0 flex-1 flex-col gap-1">
+            <div className="relative flex min-w-0 flex-1 flex-col gap-1">
                 <div className="flex items-center justify-between gap-3">
                     <div className="flex min-w-0 items-center gap-1.5">
                         <span

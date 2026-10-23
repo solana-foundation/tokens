@@ -556,6 +556,7 @@ function buildMobileRowSpec(variant: TokenTableVariantConfig, trendingWindow: Tr
     return {
         showRank: variant.columns.showRank,
         showPrice: variant.columns.showPrice,
+        showChart: variant.columns.showChart24h,
         change: variant.columns.showPriceChange1h
             ? { key: 'priceChange1hPercent', label: '1H' }
             : variant.columns.showPriceChange24h
