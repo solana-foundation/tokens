@@ -863,8 +863,11 @@ export function computeChainStats(
     for (const chain of CHAIN_KINDS) {
         const entry = byChain.get(chain);
         if (!entry) continue;
+        // The worker rollup sums every row on the chain without the quality guard,
+        // so it only stands in for the variant sums when the guard excluded nothing
+        // on that chain; otherwise a rejected row would re-enter the totals through it.
         const rollup = rollupByChain?.get(chain);
-        if (rollup && (rollup.liquidity > 0 || rollup.volume24hUSD > 0)) {
+        if (rollup && entry.excludedCount === 0 && (rollup.liquidity > 0 || rollup.volume24hUSD > 0)) {
             entry.liquidity = rollup.liquidity;
             entry.volume24hUSD = rollup.volume24hUSD;
         }

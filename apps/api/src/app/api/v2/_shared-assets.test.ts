@@ -349,6 +349,31 @@ describe('chain stats', () => {
         expect(stats.solana?.volume24hUSD).toBe(42);
         expect(stats.solana?.marketCap).toBe(1000);
     });
+
+    test('the rollup is not used on a chain where the guard excluded a row (it sums rows unguarded)', () => {
+        const NOW = 1_800_000_000_000;
+        const junk = variant('solana', 'JunkMint11111111111111111111111111111111111', 'spot');
+        const byKey = new Map([
+            [`solana:${USDC_SOLANA}`, { ...market(100_000, 1000), price: 1, volume24hUSD: 50_000, lastFetchedAt: NOW - 60_000 }],
+            [junk.key, { ...market(11, 5), price: 40, volume24hUSD: 40, lastFetchedAt: NOW - 60_000 }],
+        ]);
+        const rollup: V2ChainRollupResult = {
+            assetId: 'usd',
+            chain: 'solana',
+            liquidity: 100_011,
+            volume24hUSD: 50_040,
+            volume30dUSD: 7,
+            primaryAddress: null,
+            variantCount: 2,
+            lastComputedAt: 1,
+        };
+        const quality = assessVariantMarkets([variants[0]!, junk], byKey, { priceUsd: 1 }, NOW);
+        expect(quality.get(junk.key)?.included).toBe(false);
+        const stats = computeChainStats([variants[0]!, junk], byKey, new Map([['solana', rollup]]), quality);
+        expect(stats.solana?.liquidity).toBe(100_000);
+        expect(stats.solana?.volume24hUSD).toBe(50_000);
+        expect(stats.solana?.excludedCount).toBe(1);
+    });
 });
 
 describe('mappers', () => {

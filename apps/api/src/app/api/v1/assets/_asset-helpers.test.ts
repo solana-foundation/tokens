@@ -270,6 +270,23 @@ describe('aggregate token stats', () => {
         expect(aggregateTokenStats(asset, tokens, junk)?.marketCap).toBe(829_000_000);
     });
 
+    it('an excluded primary stays out of the headline when verdicts are keyed chain:address (the v2 caller)', () => {
+        const NOW = 1_800_000_000_000;
+        // Snapshots carry the bare address; the map and the verdicts use the variant key.
+        const good = makeToken('GoodMint', { price: 386, liquidity: 4_000_000, volume24hUSD: 2_000_000, marketCap: 90_000_000, lastFetchedAt: NOW });
+        const junk = makeToken('JunkMint', { price: 15_192, liquidity: 11, volume24hUSD: 40, marketCap: 739_000_000, lastFetchedAt: NOW });
+        const asset = makeAsset(['solana:GoodMint', 'arbitrum:JunkMint']);
+        const tokens = new Map([
+            ['solana:GoodMint', good],
+            ['arbitrum:JunkMint', junk],
+        ]);
+        const quality = assessTokenMarkets(asset, tokens, { priceUsd: 386 }, NOW);
+        expect(quality.get('arbitrum:JunkMint')?.included).toBe(false);
+        const stats = aggregateTokenStats(asset, tokens, junk, quality);
+        expect(stats?.price).toBe(386);
+        expect(stats?.marketCap).toBe(90_000_000);
+    });
+
     it('falls back to volume-weighted price when no variants have liquidity', () => {
         const primary = makeToken('primary', {
             price: 100,

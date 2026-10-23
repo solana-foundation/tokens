@@ -748,8 +748,13 @@ export function aggregateTokenStats(
     const spotLikeVariants = asset.variants.filter(v => isSpotLikeKind(v.kind));
     const variants = spotLikeVariants.length > 0 ? spotLikeVariants : asset.variants;
     const included = (mint: string) => qualityByMint?.get(mint)?.included !== false;
+    // The primary's verdict is keyed like `tokenByMint` (a mint on v1, `chain:address`
+    // on v2), not necessarily like the snapshot's own `address`, so find its key by identity.
+    const primaryKey = primaryToken
+        ? (Array.from(tokenByMint.entries()).find(([, token]) => token === primaryToken)?.[0] ?? primaryToken.address)
+        : null;
 
-    const base = tokenToStats(primaryToken && included(primaryToken.address) ? primaryToken : undefined) ?? {
+    const base = tokenToStats(primaryToken && primaryKey && included(primaryKey) ? primaryToken : undefined) ?? {
         price: null,
         liquidity: null,
         volume24hUSD: null,
