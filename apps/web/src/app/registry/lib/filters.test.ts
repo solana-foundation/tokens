@@ -97,6 +97,24 @@ describe('applyFilters', () => {
         expect(applyFilters(rows, { q: 'MINT', filters: [] })).toHaveLength(3);
     });
 
+    test('search also matches the taxonomy tiers and provider classes', () => {
+        expect(applyFilters(rows, { q: 'stablecoin', filters: [] }).map(r => r.symbol)).toEqual(['USDC']);
+        expect(applyFilters(rows, { q: 'stocks', filters: [] }).map(r => r.symbol)).toEqual(['TSLAX', 'NOVAL']);
+        expect(applyFilters(rows, { q: 'equities', filters: [] })).toHaveLength(2);
+        const tagged = [
+            row({ symbol: 'T', rwaClass: 'Treasuries' }),
+            row({ symbol: 'A', alliumClass: 'Private Credit' }),
+        ];
+        expect(applyFilters(tagged, { q: 'treasur', filters: [] }).map(r => r.symbol)).toEqual(['T']);
+        expect(applyFilters(tagged, { q: 'private credit', filters: [] }).map(r => r.symbol)).toEqual(['A']);
+    });
+
+    test('every search term must match, each against any field', () => {
+        expect(applyFilters(rows, { q: 'fiat stable', filters: [] }).map(r => r.symbol)).toEqual(['USDC']);
+        expect(applyFilters(rows, { q: 'tslax stable', filters: [] })).toHaveLength(0);
+        expect(applyFilters(rows, { q: '   ', filters: [] })).toHaveLength(3);
+    });
+
     test('category is / is_not', () => {
         expect(
             applyFilters(rows, { q: '', filters: [{ field: 'assetClass', op: 'is', value: 'Stocks' }] }).map(

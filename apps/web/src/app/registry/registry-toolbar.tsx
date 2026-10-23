@@ -142,7 +142,7 @@ export function RegistryToolbar({
                         type="search"
                         value={state.q}
                         onChange={event => state.setQ(event.target.value)}
-                        placeholder="Search by name, symbol, or mint"
+                        placeholder="Search by name, symbol, mint, or category"
                         aria-label="Search registry"
                         aria-keyshortcuts="/"
                         className="h-9 w-full rounded-full border-border-medium bg-white pl-9 pr-10 font-sans text-[13px] text-text-extra-high shadow-none placeholder:text-text-low focus-visible:ring-border-medium"

@@ -254,14 +254,28 @@ export function matchesFilter(row: RegistryRow, filter: RegistryFilter): boolean
     }
 }
 
+/** Everything a row shows or classifies by, so "stablecoin" or "treasuries" finds rows too. */
+const SEARCHABLE_FIELDS = [
+    'symbol',
+    'name',
+    'mintAddress',
+    'group',
+    'category',
+    'assetClass',
+    'rwaClass',
+    'alliumClass',
+] as const satisfies ReadonlyArray<keyof RegistryRow>;
+
+/**
+ * Case-insensitive substring search. Each whitespace-separated term must match
+ * at least one field, so "fiat stable" narrows to fiat-backed stablecoins while
+ * "usd coin" still finds USD Coin by name.
+ */
 export function matchesSearch(row: RegistryRow, q: string): boolean {
-    const needle = q.toLowerCase().trim();
-    if (!needle) return true;
-    return (
-        row.symbol.toLowerCase().includes(needle) ||
-        row.mintAddress.toLowerCase().includes(needle) ||
-        (row.name?.toLowerCase().includes(needle) ?? false)
-    );
+    const terms = q.toLowerCase().split(/\s+/).filter(Boolean);
+    if (terms.length === 0) return true;
+    const haystack = SEARCHABLE_FIELDS.map(field => row[field]?.toLowerCase() ?? '');
+    return terms.every(term => haystack.some(value => value.includes(term)));
 }
 
 export function applyFilters(
