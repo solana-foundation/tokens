@@ -251,7 +251,11 @@ export type V2ExcludedByIssuance = {
 };
 
 export type V2ChainStats = {
-    /** Liquidity-weighted (else volume-weighted) average over the chain's included, priced rows. */
+    /**
+     * Average over the chain's included, priced rows, each weighted by its
+     * liquidity (else 24h volume); when no included row has either, the plain
+     * mean, so a lone fresh pool with no activity yet still reports its price.
+     */
     price: number | null;
     priceChange24hPercent: number | null;
     priceChange1hPercent: number | null;
@@ -833,24 +837,55 @@ export interface NativeHomeSupply {
 
 export const NATIVE_HOME_TAG = 'native-home';
 
-interface WeightedAccumulator {
-    price: { sum: number; weight: number };
-    change24h: { sum: number; weight: number };
-    change1h: { sum: number; weight: number };
+/**
+ * One weighted mean in progress. `sum` / `weight` carry only rows with a
+ * positive weight; `plainSum` / `count` carry every finite value so a figure
+ * survives when no row has any activity (a fresh single pool with no
+ * liquidity or volume yet still has a price).
+ */
+interface MeanAccumulator {
+    sum: number;
+    weight: number;
+    plainSum: number;
+    count: number;
+}
+
+/** Per-field accumulators; a row missing one field contributes nothing to that field's weight. */
+export interface WeightedAccumulator {
+    price: MeanAccumulator;
+    change24h: MeanAccumulator;
+    change1h: MeanAccumulator;
+}
+
+function emptyMean(): MeanAccumulator {
+    return { sum: 0, weight: 0, plainSum: 0, count: 0 };
 }
 
 function emptyAccumulator(): WeightedAccumulator {
-    return { price: { sum: 0, weight: 0 }, change24h: { sum: 0, weight: 0 }, change1h: { sum: 0, weight: 0 } };
+    return { price: emptyMean(), change24h: emptyMean(), change1h: emptyMean() };
 }
 
-function accumulate(acc: { sum: number; weight: number }, value: number | null | undefined, weight: number): void {
-    if (typeof value !== 'number' || !Number.isFinite(value) || weight <= 0) return;
+function accumulate(acc: MeanAccumulator, value: number | null | undefined, weight: number): void {
+    if (typeof value !== 'number' || !Number.isFinite(value)) return;
+    acc.plainSum += value;
+    acc.count += 1;
+    if (weight <= 0) return;
     acc.sum += value * weight;
     acc.weight += weight;
 }
 
-function weighted(acc: { sum: number; weight: number }): number | null {
-    return acc.weight > 0 ? acc.sum / acc.weight : null;
+/** Fold `other` into `acc` (both already weighted the same way). */
+function merge(acc: MeanAccumulator, other: MeanAccumulator): void {
+    acc.sum += other.sum;
+    acc.weight += other.weight;
+    acc.plainSum += other.plainSum;
+    acc.count += other.count;
+}
+
+/** The weighted mean, else the plain mean of the values seen, else null. */
+function weighted(acc: MeanAccumulator): number | null {
+    if (acc.weight > 0) return acc.sum / acc.weight;
+    return acc.count > 0 ? acc.plainSum / acc.count : null;
 }
 
 /** The weight a row carries in the price averages: liquidity, else 24h volume, else nothing. */
@@ -866,7 +901,7 @@ export function computeChainStats(
     variants: ReadonlyArray<Pick<V2VariantResult, 'chain' | 'address' | 'key' | 'kind' | 'tags'>>,
     marketByKey: ReadonlyMap<VariantKey, VariantMarketSnapshotResult>,
     /** Kept for the Solana 30d rollup only; liquidity and volume are the guarded variant sums on every chain. */
-    _rollupByChain: ReadonlyMap<ChainId, V2ChainRollupResult> | null,
+    rollupByChain: ReadonlyMap<ChainId, V2ChainRollupResult> | null,
     /** From `assessVariantMarkets`; excluded rows leave every sum (they still count in `variantCount`). */
     qualityByKey?: ReadonlyMap<VariantKey, MarketQuality>,
     /** Supply for a `native-home` row without a market (the asset's reference figures). */
@@ -874,6 +909,23 @@ export function computeChainStats(
     /** From `variantIssuanceByKey(variants, asset.category)`; computed category-blind when absent. */
     issuanceByKey?: ReadonlyMap<VariantKey, VariantIssuance>,
 ): Partial<Record<ChainId, V2ChainStats>> {
+    return computeChainStatsDetailed(variants, marketByKey, rollupByChain, qualityByKey, nativeHomeSupply, issuanceByKey).chainStats;
+}
+
+/**
+ * `computeChainStats` plus each chain's per-field accumulators, which
+ * `aggregateChainStats` folds into the cross-chain averages so a row missing
+ * a field does not lend its liquidity to that field's mean.
+ */
+export function computeChainStatsDetailed(
+    variants: ReadonlyArray<Pick<V2VariantResult, 'chain' | 'address' | 'key' | 'kind' | 'tags'>>,
+    marketByKey: ReadonlyMap<VariantKey, VariantMarketSnapshotResult>,
+    _rollupByChain: ReadonlyMap<ChainId, V2ChainRollupResult> | null,
+    qualityByKey?: ReadonlyMap<VariantKey, MarketQuality>,
+    nativeHomeSupply?: NativeHomeSupply | null,
+    /** From `variantIssuanceByKey(variants, asset.category)`; computed category-blind when absent. */
+    issuanceByKey?: ReadonlyMap<VariantKey, VariantIssuance>,
+): { chainStats: Partial<Record<ChainId, V2ChainStats>>; accumulatorsByChain: ReadonlyMap<ChainId, WeightedAccumulator> } {
     const byChain = new Map<ChainId, V2ChainStats>();
     const issuance = issuanceByKey ?? variantIssuanceByKey(variants);
     const accByChain = new Map<ChainId, WeightedAccumulator>();
@@ -948,10 +1000,20 @@ export function computeChainStats(
         entry.priceChange1hPercent = weighted(acc.change1h);
         out[chain] = entry;
     }
-    return out;
+    return { chainStats: out, accumulatorsByChain: accByChain };
 }
 
-export function aggregateChainStats(chainStats: Partial<Record<ChainId, V2ChainStats>>): V2Aggregate {
+/**
+ * Cross-chain totals and averages. With `accumulatorsByChain` (from
+ * `computeChainStatsDetailed`) each average carries exactly the weight of the
+ * rows that had the field; without it the chain averages are weighted by the
+ * chain's liquidity (else volume), which overstates a chain whose rows lack
+ * the field, so callers with the variants at hand should pass it.
+ */
+export function aggregateChainStats(
+    chainStats: Partial<Record<ChainId, V2ChainStats>>,
+    accumulatorsByChain?: ReadonlyMap<ChainId, WeightedAccumulator>,
+): V2Aggregate {
     const out: V2Aggregate = {
         price: null,
         priceChange24hPercent: null,
@@ -971,15 +1033,20 @@ export function aggregateChainStats(chainStats: Partial<Record<ChainId, V2ChainS
         chainCount: 0,
         excludedFromSupplyCount: 0,
     };
-    // A chain's averages are weighted by its own included rows; weighting the
-    // chain figures by chain liquidity (else volume) reproduces the overall mean.
     const acc = emptyAccumulator();
-    for (const entry of Object.values(chainStats)) {
+    for (const [chain, entry] of Object.entries(chainStats) as Array<[ChainId, V2ChainStats | undefined]>) {
         if (!entry) continue;
-        const weight = (entry.liquidity ?? 0) > 0 ? (entry.liquidity as number) : (entry.volume24hUSD ?? 0) > 0 ? (entry.volume24hUSD as number) : 0;
-        accumulate(acc.price, entry.price, weight);
-        accumulate(acc.change24h, entry.priceChange24hPercent, weight);
-        accumulate(acc.change1h, entry.priceChange1hPercent, weight);
+        const chainAcc = accumulatorsByChain?.get(chain);
+        if (chainAcc) {
+            merge(acc.price, chainAcc.price);
+            merge(acc.change24h, chainAcc.change24h);
+            merge(acc.change1h, chainAcc.change1h);
+        } else {
+            const weight = (entry.liquidity ?? 0) > 0 ? (entry.liquidity as number) : (entry.volume24hUSD ?? 0) > 0 ? (entry.volume24hUSD as number) : 0;
+            accumulate(acc.price, entry.price, weight);
+            accumulate(acc.change24h, entry.priceChange24hPercent, weight);
+            accumulate(acc.change1h, entry.priceChange1hPercent, weight);
+        }
         out.totalSupply = addFinite(out.totalSupply, entry.totalSupply);
         out.chainCount += 1;
         out.variantCount += entry.variantCount;
@@ -1389,8 +1456,15 @@ export function buildV2Asset(ctx: V2AssetBuildContext): V2Asset | null {
               totalSupply: coingeckoSnapshot.totalSupply,
           }
         : null;
-    const chainStats = computeChainStats(ctx.variants, ctx.marketByKey, ctx.rollupByChain, qualityByKey, nativeHomeSupply, issuanceByKey);
-    const aggregate = aggregateChainStats(chainStats);
+    const { chainStats, accumulatorsByChain } = computeChainStatsDetailed(
+        ctx.variants,
+        ctx.marketByKey,
+        ctx.rollupByChain,
+        qualityByKey,
+        nativeHomeSupply,
+        issuanceByKey,
+    );
+    const aggregate = aggregateChainStats(chainStats, accumulatorsByChain);
     const solanaRollup = ctx.rollupByChain?.get('solana') ?? null;
     const stats = selectV2HeadlineStats({
         reference: {

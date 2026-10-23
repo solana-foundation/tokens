@@ -10,6 +10,7 @@ import {
     buildStandaloneV2Variant,
     buildV2Asset,
     computeChainStats,
+    computeChainStatsDetailed,
     decodeAssetIdPath,
     decodeChainAddressPath,
     decodeChainParam,
@@ -680,6 +681,40 @@ describe('chain stats', () => {
         expect(stats.solana?.liquidity).toBe(100_000);
         expect(stats.solana?.volume24hUSD).toBe(50_000);
         expect(stats.solana?.excludedCount).toBe(1);
+    });
+
+    test('a row missing a field lends no weight to that field: +10% on $10K, -10% on $10K and $90K unreported is 0%', () => {
+        const a1 = variant('base', '0x00000000000000000000000000000000000000a1', 'stablecoin');
+        const a2 = variant('base', '0x00000000000000000000000000000000000000a2', 'stablecoin');
+        const b1 = variant('ethereum', '0x00000000000000000000000000000000000000b1', 'stablecoin');
+        const byKey = new Map([
+            [a1.key, { ...market(10_000, 100), price: 1, priceChange24hPercent: 10 }],
+            [a2.key, { ...market(90_000, 100), price: 1, priceChange24hPercent: undefined }],
+            [b1.key, { ...market(10_000, 100), price: 1, priceChange24hPercent: -10 }],
+        ]);
+        const { chainStats, accumulatorsByChain } = computeChainStatsDetailed([a1, a2, b1], byKey, null);
+        expect(chainStats.base?.priceChange24hPercent).toBe(10);
+        expect(aggregateChainStats(chainStats, accumulatorsByChain).priceChange24hPercent).toBeCloseTo(0, 9);
+        // Without the accumulators the chain's whole liquidity weights the field (the documented approximation).
+        expect(aggregateChainStats(chainStats).priceChange24hPercent).toBeCloseTo((100_000 * 10 - 10_000 * 10) / 110_000, 6);
+    });
+
+    test('a priced row with no liquidity or volume still yields a price (plain mean fallback)', () => {
+        const lone = variant('base', '0x00000000000000000000000000000000000000c1', 'stablecoin');
+        const other = variant('base', '0x00000000000000000000000000000000000000c2', 'stablecoin');
+        const byKey = new Map([
+            [lone.key, { ...market(0, 100), price: 2, volume24hUSD: 0, priceChange24hPercent: 5 }],
+            [other.key, { ...market(0, 100), price: 4, volume24hUSD: 0, priceChange24hPercent: undefined }],
+        ]);
+        const { chainStats, accumulatorsByChain } = computeChainStatsDetailed([lone, other], byKey, null);
+        expect(chainStats.base?.price).toBe(3);
+        expect(chainStats.base?.priceChange24hPercent).toBe(5);
+        const aggregate = aggregateChainStats(chainStats, accumulatorsByChain);
+        expect(aggregate.price).toBe(3);
+        expect(aggregate.priceChange24hPercent).toBe(5);
+        // A weighted row wins over the plain fallback once one exists.
+        byKey.set(other.key, { ...market(50, 100), price: 4, volume24hUSD: 0, priceChange24hPercent: undefined });
+        expect(computeChainStats([lone, other], byKey, null).base?.price).toBe(4);
     });
 
     test('chain price is the liquidity-weighted average of included priced rows; aggregate weights chains by liquidity', () => {
