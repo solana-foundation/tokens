@@ -110,7 +110,7 @@ function TaxonomyBadge({ category, assetClass }: { category: string | null; asse
 /** One stat line of the phone row's right column: label left, number right. */
 function StatRow({ label, value, muted = false }: { label: string; value: number | null; muted?: boolean }) {
     return (
-        <div className="flex items-baseline justify-between gap-2 py-1 first:pt-0 last:pb-0">
+        <div className="flex flex-1 items-center justify-between gap-2 py-1 pl-2.5 pr-4">
             <dt className="text-[11px] font-medium text-text-extra-low">{label}</dt>
             <dd
                 className={cn(
@@ -126,11 +126,11 @@ function StatRow({ label, value, muted = false }: { label: string; value: number
 
 function RegistryMobileRow({ row }: { row: RegistryRow }) {
     return (
-        <li className="flex items-stretch gap-2.5 px-4 py-3">
+        <li className="flex items-stretch">
             {/* Main area: identity, then the taxonomy badge right under the address. The symbol
                 links to the asset page and the address to the explorer: two separate anchors
                 side by side rather than one nested in the other. */}
-            <div className="flex min-w-0 flex-1 flex-col justify-center gap-2">
+            <div className="flex min-w-0 flex-1 flex-col justify-center gap-2 py-3 pl-4 pr-2.5">
                 <div className="flex min-w-0 items-center gap-2.5">
                     <TokenLink row={row} className="-m-1 shrink-0 p-1">
                         <RegistryTokenLogo row={row} size={32} />
@@ -148,8 +148,11 @@ function RegistryMobileRow({ row }: { row: RegistryRow }) {
                     <TaxonomyBadge category={row.category} assetClass={row.assetClass} />
                 </div>
             </div>
-            {/* Stats column: the three numbers as a hairline-separated list, split from the main area. */}
-            <dl className="flex w-[120px] shrink-0 flex-col justify-center divide-y divide-border-extra-light border-l border-border-light pl-2.5">
+            {/* Stats column: the three numbers as a hairline-separated list, split from the main
+                area. It fills the row's height and runs to the card's edge, so its left rule meets
+                the row dividers and each hairline spans the column edge to edge (padding lives on
+                the stat lines, not here). */}
+            <dl className="flex w-[137px] shrink-0 flex-col divide-y divide-border-extra-light border-l border-border-light">
                 <StatRow label="Allium" value={row.alliumValueUsd} />
                 <StatRow label="RWA.xyz" value={row.rwaValueUsd} />
                 <StatRow label="Mcap" value={row.marketCapUsd} muted />
