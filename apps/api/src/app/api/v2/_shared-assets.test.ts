@@ -463,6 +463,74 @@ describe('detail include= enrichments', () => {
     });
 });
 
+describe('variant reference', () => {
+    const request = new Request('https://api.example.test/api/v2/assets/tesla');
+    test("an equity's variant that is the asset's own coin still gets its CoinGecko reference while the headline is the stock", () => {
+        const tslax = { ...variant('solana', 'TSLAxMint1111111111111111111111111111111111', 'tokenized_equity'), assetId: 'tesla', coingeckoId: 'tesla-xstock' };
+        const out = buildV2Asset({
+            request,
+            asset: {
+                assetId: 'tesla',
+                category: 'equity',
+                aliases: [],
+                isActive: true,
+                createdAt: 0,
+                updatedAt: 0,
+                region: null,
+                industry: null,
+                name: 'Tesla',
+                symbol: 'TSLA',
+                coingeckoId: 'tesla-xstock',
+            },
+            variants: [tslax],
+            marketByKey: new Map(),
+            rollupByChain: null,
+            advisoriesByMint: new Map(),
+            coingeckoPrice: {
+                coinId: 'tesla-xstock',
+                priceUsd: 401,
+                marketCapUsd: 90_000_000,
+                volume24hUsd: null,
+                priceChange24hPercent: null,
+                providerLastUpdatedAt: null,
+                lastFetchedAt: 1,
+                circulatingSupply: 225_000,
+                totalSupply: 225_000,
+                maxSupply: null,
+                fdvUsd: 90_000_000,
+            },
+            stockInstrument: { assetId: 'tesla', symbol: 'TSLA', normalizedSymbol: 'TSLA', isActive: true, source: 'clickhouse', lastSyncedAt: 1 },
+            stockPrice: {
+                assetId: 'tesla',
+                symbol: 'TSLA',
+                normalizedSymbol: 'TSLA',
+                priceUsd: 400,
+                volume24hUsd: null,
+                priceChange24hPercent: null,
+                sharesOutstanding: null,
+                sharesAsOf: null,
+                sharesLastFetchedAt: null,
+                asOf: null,
+                lastFetchedAt: 1,
+                source: 'clickhouse_stock',
+            },
+            preStocksByMint: new Map(),
+            requestedStrategy: null,
+            hideBlocked: false,
+            listChain: null,
+            includeVariants: true,
+            rank: null,
+        })!;
+        expect(out.referenceMarket?.source).toBe('stock');
+        const v = out.variants!.find(entry => entry.key === tslax.key)!;
+        expect(v.coingeckoId).toBe('tesla-xstock');
+        expect(v.reference?.source).toBe('coingecko');
+        expect(v.reference?.coinId).toBe('tesla-xstock');
+        expect(v.reference?.marketCap).toBe(90_000_000);
+        expect(v.reference?.circulatingSupply).toBe(225_000);
+    });
+});
+
 describe('primary variant selection', () => {
     const request = new Request('https://api.example.test/api/v2/assets/x');
     const SOL = 'cbbtcf3aa214zXHbiAZQwf4122FBYbraNdFqgw4iMij';

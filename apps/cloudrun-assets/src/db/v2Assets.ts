@@ -333,6 +333,7 @@ export function makePostgresV2AssetsJobsRepo(sql: Sql): V2AssetsJobsRepo {
                     source_kind: string | null;
                     source_tags: unknown;
                     source_label: string | null;
+                    coin_known: boolean;
                     platforms: unknown;
                     detail_platforms: unknown;
                     asset_platform_id: string | null;
@@ -355,21 +356,29 @@ export function makePostgresV2AssetsJobsRepo(sql: Sql): V2AssetsJobsRepo {
                     FROM live_assets a
                     WHERE a.coingecko_id IS NOT NULL AND length(trim(a.coingecko_id)) > 0
                     UNION ALL
-                    SELECT DISTINCT ON (v.asset_id, v.coingecko_id)
-                           v.asset_id, a.category, v.coingecko_id, 'variant',
-                           v.chain, v.address, v.kind, v.tags, v.label
-                    FROM v2_asset_variants v
-                    JOIN live_assets a ON a.asset_id = v.asset_id
-                    WHERE v.is_active = true
-                      AND v.coingecko_id IS NOT NULL
-                      AND v.coingecko_id IS DISTINCT FROM trim(a.coingecko_id)
-                    ORDER BY v.asset_id, v.coingecko_id, (v.chain = 'solana') DESC, v.address ASC
+                    -- Parenthesized: an ORDER BY after UNION ALL would apply to the
+                    -- union (where the alias v is out of scope) instead of the DISTINCT ON.
+                    (
+                        SELECT DISTINCT ON (v.asset_id, v.coingecko_id)
+                               v.asset_id, a.category, v.coingecko_id, 'variant',
+                               v.chain, v.address, v.kind, v.tags, v.label
+                        FROM v2_asset_variants v
+                        JOIN live_assets a ON a.asset_id = v.asset_id
+                        WHERE v.is_active = true
+                          AND v.coingecko_id IS NOT NULL
+                          AND v.coingecko_id IS DISTINCT FROM trim(a.coingecko_id)
+                        ORDER BY v.asset_id, v.coingecko_id, (v.chain = 'solana') DESC, v.address ASC
+                    )
                 ),
                 scoped AS (
                     SELECT DISTINCT asset_id FROM sources ORDER BY asset_id ASC LIMIT ${Math.max(1, Math.floor(maxAssets))}
                 )
+                -- LEFT JOIN: a scoped asset whose coin id is unknown to coingecko_coins
+                -- still comes back (platforms NULL, coin_known false) so the caller's
+                -- count of scanned assets is the bounded selection, not the joined rows.
                 SELECT s.asset_id, s.category, s.coin_id, s.role,
                        s.source_chain, s.source_address, s.source_kind, s.source_tags, s.source_label,
+                       (c.coin_id IS NOT NULL) AS coin_known,
                        c.platforms,
                        c.coin->'detail_platforms' AS detail_platforms,
                        c.coin->>'asset_platform_id' AS asset_platform_id,
@@ -377,7 +386,7 @@ export function makePostgresV2AssetsJobsRepo(sql: Sql): V2AssetsJobsRepo {
                        c.last_synced_at
                 FROM sources s
                 JOIN scoped sc ON sc.asset_id = s.asset_id
-                JOIN coingecko_coins c ON c.coin_id = s.coin_id
+                LEFT JOIN coingecko_coins c ON c.coin_id = s.coin_id
                 ORDER BY s.asset_id ASC, (s.role = 'reference') DESC, s.coin_id ASC
             `;
             return rows.map((row): V2AssetCoinSourceRow => ({
@@ -395,6 +404,7 @@ export function makePostgresV2AssetsJobsRepo(sql: Sql): V2AssetsJobsRepo {
                               label: row.source_label ?? null,
                           }
                         : null,
+                coinKnown: row.coin_known === true,
                 platforms: toStringRecord(row.platforms),
                 decimalsByPlatform: toDecimalsRecord(row.detail_platforms),
                 assetPlatformId: row.asset_platform_id ?? null,

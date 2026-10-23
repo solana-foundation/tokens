@@ -489,6 +489,54 @@ describe('sync-v2-evm-variants', () => {
         expect(kept.keptStale).toBe(1);
     });
 
+    test('an asset whose coin id is unknown still counts as scanned, derives nothing and keeps its rows', async () => {
+        const ghostRow: V2DerivedVariantRow = {
+            chain: 'base',
+            address: '0x2222222222222222222222222222222222222222',
+            assetId: 'ghost',
+            variantId: 'base:0x2222222222222222222222222222222222222222',
+            isActive: true,
+        };
+        const otherRow: V2DerivedVariantRow = { ...ghostRow, address: '0x3333333333333333333333333333333333333333', assetId: 'other-asset', variantId: 'base:0x3333333333333333333333333333333333333333' };
+        const unknown: V2AssetCoinSourceRow = {
+            assetId: 'ghost',
+            category: 'crypto',
+            coinId: 'not-a-coin',
+            role: 'reference',
+            source: null,
+            coinKnown: false,
+            platforms: {},
+            decimalsByPlatform: {},
+            assetPlatformId: null,
+            coinSymbol: null,
+            coinLastSyncedAt: null,
+        };
+        const repo = fakeRepo({
+            async listAssetCoinSources() {
+                return [unknown];
+            },
+            async listActiveAssets() {
+                return [
+                    { assetId: 'ghost', category: 'crypto' },
+                    { assetId: 'other-asset', category: 'crypto' },
+                ];
+            },
+            async listDerivedVariants() {
+                return [ghostRow, otherRow];
+            },
+        });
+        // maxAssets equals the scoped rows: the scan may have been cut short, so
+        // other-asset (never examined) keeps its row, and ghost keeps its own
+        // because its coin has no synced-at to judge staleness by.
+        const result = await syncEvmVariants(deps(repo), { maxAssets: 1 });
+        expect(result.coinSourcesUnknown).toBe(1);
+        expect(result.inserted).toBe(0);
+        expect(result.updated).toBe(0);
+        expect(result.deactivated).toBe(0);
+        expect(result.keptUnscanned).toBe(1);
+        expect(result.keptStale).toBe(1);
+    });
+
     test('a bounded scan leaves the derived rows of unscanned assets alone', async () => {
         const otherAssetRow: V2DerivedVariantRow = {
             chain: 'base',

@@ -81,6 +81,8 @@ export interface V2AssetCoinSourceRow {
         tags: string[];
         label: string | null;
     } | null;
+    /** False when the coin id is not in `coingecko_coins` (the asset still counts as scanned). Absent = known. */
+    coinKnown?: boolean;
     /** CoinGecko `platforms` map: platform id → contract address ('' for the coin's home chain). */
     platforms: Record<string, string>;
     /** CoinGecko `detail_platforms`: platform id → decimals, when the per-coin metadata was fetched. */
@@ -421,6 +423,8 @@ interface EvmVariantsSyncSummary {
     /** (asset, coin) pairs read; `coinSourcesSkipped` are variant coins whose linking variant is not issued supply. */
     coinSources: number;
     coinSourcesSkipped: number;
+    /** (asset, coin) pairs whose coin id is not in `coingecko_coins`: nothing derived, existing rows kept. */
+    coinSourcesUnknown: number;
     /** Assets whose coin list was cut at MAX_COIN_SOURCES_PER_ASSET. */
     coinSourcesCapped: number;
     /** Two coins of one asset listing the same (chain, address): the first (reference, then coin id order) won. */
@@ -462,10 +466,12 @@ export async function syncEvmVariants(deps: V2AssetsCronDeps, rawArgs: unknown):
     }
 
     const sources = await deps.repo.listAssetCoinSources(args.maxAssets);
+    // Every scoped asset is returned, including one whose coin id is unknown to
+    // coingecko_coins (coinKnown false, no platforms), so this is the bounded
+    // selection itself: `maxAssets` bounds the scan, an asset outside the window
+    // was never examined, and "no longer linked to a coin" is only a DB fact
+    // when the scan came back short of the bound (i.e. it saw everything).
     const scannedAssetIds = new Set(sources.map(s => s.assetId));
-    // `maxAssets` bounds the scan. An asset outside the window was never
-    // examined, so "no longer linked to a coin" is only a DB fact when the
-    // scan came back short of the bound (i.e. it saw everything).
     const scanComplete = scannedAssetIds.size < args.maxAssets;
     const activeAssets = await deps.repo.listActiveAssets();
     const existing = await deps.repo.listDerivedVariants(chains);
@@ -505,6 +511,7 @@ export async function syncEvmVariants(deps: V2AssetsCronDeps, rawArgs: unknown):
     const sourceFreshness = new Map<string, number | null>();
     let coinSourcesSkipped = 0;
     let coinSourcesCapped = 0;
+    let coinSourcesUnknown = 0;
     for (const [assetId, list] of sourcesByAsset) {
         let freshest: number | null = null;
         let coinsUsed = 0;
@@ -514,6 +521,13 @@ export async function syncEvmVariants(deps: V2AssetsCronDeps, rawArgs: unknown):
                 freshest = source.coinLastSyncedAt;
             }
             if (source.role === 'reference') referenceCoinByAsset.set(assetId, source.coinId);
+            if (source.coinKnown === false) {
+                // Not in the coin list (an invalid id, or one the Sunday sync has not
+                // seen yet): nothing to derive from, and with no synced-at the asset's
+                // existing derived rows are kept rather than deactivated.
+                coinSourcesUnknown += 1;
+                continue;
+            }
             // A variant coin only contributes deployments when the linking variant is
             // itself issued supply: an LST's or ETF's other-chain copies are not the
             // asset's supply anywhere, and a bridged copy's coin is the bridge's.
@@ -749,6 +763,7 @@ export async function syncEvmVariants(deps: V2AssetsCronDeps, rawArgs: unknown):
         resolved,
         coinSources: sources.length,
         coinSourcesSkipped,
+        coinSourcesUnknown,
         coinSourcesCapped,
         coinConflicts,
         duration_ms: deps.now() - start,
@@ -777,6 +792,7 @@ export async function syncEvmVariants(deps: V2AssetsCronDeps, rawArgs: unknown):
         resolved,
         coinSources: sources.length,
         coinSourcesSkipped,
+        coinSourcesUnknown,
         coinSourcesCapped,
         coinConflicts,
         ...(failed > 0 ? { partial: true } : {}),

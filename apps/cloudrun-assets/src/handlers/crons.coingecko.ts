@@ -1308,39 +1308,47 @@ export async function validateCoingeckoIds(rawDeps: import('./crons').CronDeps, 
         }
     }
 
+    // The audit table is the report operators are told to read (it is the whole
+    // output of a write:false run), so a failed audit write is a failed run.
     let auditWritten = 0;
-    try {
-        for (const chunk of chunkArr(audit, 200)) {
+    let auditFailed = 0;
+    for (const chunk of chunkArr(audit, 200)) {
+        try {
             await deps.coingeckoRepo.upsertCoinIdAudit(chunk);
             auditWritten += chunk.length;
+        } catch (err) {
+            auditFailed += chunk.length;
+            console.error('[validate-coingecko-ids] audit upsert failed', err instanceof Error ? err.message : String(err));
         }
-    } catch (err) {
-        console.error('[validate-coingecko-ids] audit upsert failed', err instanceof Error ? err.message : String(err));
     }
 
+    const ok = writeFailed === 0 && auditFailed === 0;
+    const reason = writeFailed > 0 ? 'writes_failed' : auditFailed > 0 ? 'audit_write_failed' : null;
     const durationMs = deps.now() - start;
     console.log(
         JSON.stringify({
             job: VALIDATE_COINGECKO_IDS_JOB,
             event: COINGECKO_ID_VALIDATION_EVENT,
-            ok: writeFailed === 0,
+            ok,
             write,
             assets: assets.length,
             statuses: counts,
             writeFailed,
             auditWritten,
+            auditFailed,
             duration_ms: durationMs,
         }),
     );
     return {
-        ok: writeFailed === 0,
+        ok,
         processed: assets.length,
         durationMs,
         write,
         statuses: counts,
         writeFailed,
         auditWritten,
-        ...(writeFailed > 0 ? { partial: true, reason: 'writes_failed' } : {}),
+        auditFailed,
+        ...(reason ? { partial: true, reason } : {}),
     };
 }
 

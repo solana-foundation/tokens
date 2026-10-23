@@ -1211,7 +1211,10 @@ export function buildV2Asset(ctx: V2AssetBuildContext): V2Asset | null {
             : null;
     const variantReference = (variant: V2VariantResult): V2CoinGeckoReference | null => {
         if (!variant.coingeckoId) return null;
-        if (variant.coingeckoId === coinId) return referenceMarket?.source === 'coingecko' ? referenceMarket : null;
+        // The asset's own coin: its snapshot is loaded whether or not it is the
+        // headline reference (an equity's referenceMarket is the stock feed, but
+        // the chosen issuer's CoinGecko supply and cap are still this variant's).
+        if (variant.coingeckoId === coinId) return ctx.coingeckoPrice ? toCoinGeckoReference(coinId, ctx.coingeckoPrice) : null;
         const snapshot = ctx.variantCoingeckoPriceByCoinId?.get(variant.coingeckoId);
         return snapshot === undefined ? null : toCoinGeckoReference(variant.coingeckoId, snapshot);
     };

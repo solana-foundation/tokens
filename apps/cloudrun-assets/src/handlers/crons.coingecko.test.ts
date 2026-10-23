@@ -839,6 +839,21 @@ describe('validate-coingecko-ids', () => {
         expect(statusOf(state, 'tesla')?.status).toBe('ok');
     });
 
+    it('a failed audit write fails the run, since the audit table is the report', async () => {
+        const { deps } = makeDeps({
+            state: { validationAssets: [asset()], knownCoins: { 'tesla-xstock': { solanaMint: 'TSLAxMint' } } },
+        });
+        deps.coingeckoRepo!.upsertCoinIdAudit = async () => {
+            throw new Error('relation does not exist');
+        };
+        const res = await validateCoingeckoIds(deps, { write: false });
+        expect(res.ok).toBe(false);
+        expect(res.partial).toBe(true);
+        expect(res.reason).toBe('audit_write_failed');
+        expect(res.auditFailed).toBe(1);
+        expect(res.auditWritten).toBe(0);
+    });
+
     it('a generated id CoinGecko does not know is repaired from the Solana mint, xStock preferred', async () => {
         const { deps, state } = makeDeps({
             state: {
