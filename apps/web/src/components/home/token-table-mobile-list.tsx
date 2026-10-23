@@ -12,8 +12,8 @@ import type { Token } from '@/lib/types';
 import { INLINE_CHART_FALLBACK_DAYS, PercentChangeCell, TokenLogo, TokenTablePriceCell } from './token-table-cells';
 
 const MOBILE_ROW_HEIGHT = 68;
-// Text block = 18px name line + 3px gap + 21px stats pill, so the logo matches it exactly.
-const MOBILE_LOGO_SIZE = 42;
+// The logo sits inside the 20px name line, same height as the text, so it never outweighs the row.
+const MOBILE_LOGO_SIZE = 20;
 
 // Backdrop sparkline: no loading placeholder, it fades in once the data is there.
 const InlinePriceChart = dynamic(() => import('@/components/inline-price-chart').then(m => m.InlinePriceChart), {
@@ -163,7 +163,7 @@ function TokenMobileRow({
     return (
         <li
             style={{ height: MOBILE_ROW_HEIGHT }}
-            className="relative flex cursor-pointer items-center gap-2.5 px-4 transition-colors active:bg-gray-50/60"
+            className="relative flex cursor-pointer flex-col justify-center px-4 transition-colors active:bg-gray-50/60"
             tabIndex={0}
             onClick={() => handlers.onClick(token)}
             onKeyDown={event => {
@@ -200,15 +200,16 @@ function TokenMobileRow({
                     />
                 </div>
             ) : null}
-            {spec.showRank ? (
-                <span className="w-5 shrink-0 text-right text-[12px] font-medium tabular-nums text-text-low">
-                    {token.trendingRank ?? index + 1}
-                </span>
-            ) : null}
-            <TokenLogo token={token} size={MOBILE_LOGO_SIZE} />
-            <div className="relative flex min-w-0 flex-1 flex-col gap-[3px]">
-                <div className="flex items-center justify-between gap-3 leading-[18px]">
-                    <div className="flex min-w-0 items-center gap-1.5">
+            <div className="relative flex min-w-0 flex-col gap-[3px]">
+                {/* Line 1: rank, a name-sized logo and the name, price on the right. */}
+                <div className="flex items-center justify-between gap-3 leading-5">
+                    <div className="flex min-w-0 items-center gap-2">
+                        {spec.showRank ? (
+                            <span className="w-4 shrink-0 text-right text-[12px] font-medium tabular-nums text-text-low">
+                                {token.trendingRank ?? index + 1}
+                            </span>
+                        ) : null}
+                        <TokenLogo token={token} size={MOBILE_LOGO_SIZE} />
                         <span
                             className="truncate text-[15px] font-medium text-text-extra-high"
                             title={spec.displayName(token)}
@@ -226,6 +227,7 @@ function TokenMobileRow({
                         </span>
                     ) : null}
                 </div>
+                {/* Line 2: the stats pill, price change on the right. */}
                 <div className="flex items-center justify-between gap-3 text-[12px] leading-none">
                     <SplitBadge
                         className="bg-white"
