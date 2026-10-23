@@ -50,7 +50,7 @@ and a bad run cannot damage another origin's rows:
 | `config`    | v2_asset_variants             | sync-v2-evm-variants (natives) |
 | `birdeye`   | v2_variant_markets_latest     | refresh-v2-evm-variant-markets |
 | `admin`     | v2_asset_variants             | reserved, unused               |
-| `computed`  | v2_asset_chain_markets_latest | reserved, unused               |
+| `computed`  | v2_asset_chain_markets_latest | rollup-v2-chain-volume-30d     |
 
 The upserts carry `WHERE <table>.origin = '<own origin>'` guards; a row that
 exists under another origin is reported as `skippedOwned` and left alone.
@@ -182,6 +182,28 @@ asset's reference id, then the coin ids active variants link to, so
 `coingecko_prices_latest` covers per-issuer / per-wrapper coins and
 registered-but-not-curated assets (`maxCoins` 500 in prd). Metadata, tickers
 and OHLCV stay curated-only.
+
+### rollup-v2-chain-volume-30d
+
+Cross-chain 30d volume. Every successful Birdeye write from the refresh
+below also records that UTC day's sample in `v2_variant_volume_daily`
+(migration 0036; the last sample of the day wins, since Birdeye's 24h volume
+is a trailing window and a per-day max would double count the previous
+day's tail). Daily at `25 0 * * *` this job sums the last 30 days per
+(asset, chain) over the asset's active EVM variants into
+`v2_asset_chain_markets_latest` with `origin='computed'` and
+`volume_30d_days` (distinct sampled days), then prunes samples older than
+`retentionDays` (45). Solana's 30d stays v1's candle rollup, mirrored as
+`solana_v1`.
+
+The API serves `stats.volume30dUSD` only when every chain with 24h volume has
+a complete window (`solana_v1`, or `computed` with ≥ 28 days) and labels it
+with `stats.volume30dScope` (`all` | `solana` | null); after this ships, EVM
+assets show null for ~4 weeks while the samples accrue.
+
+Args: `chains` (EVM ids, default all), `retentionDays` (31–365, default
+45). Result / log event `v2_volume_30d_rollup`: `assetsWritten`,
+`rowsWritten`, `pruned`; a failed prune is logged, not fatal.
 
 ### refresh-v2-evm-variant-markets
 

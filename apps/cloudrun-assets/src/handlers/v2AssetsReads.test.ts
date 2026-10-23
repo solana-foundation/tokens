@@ -7,6 +7,7 @@ import type { CoingeckoReadsRepo } from './coingeckoReads';
 import type { StockReadsRepo } from './stockReads';
 import {
     rowToMarketResult,
+    rowToRollupResult,
     rowToVariantResult,
     v2AssetsChains,
     v2AssetsGetMarketsByKeys,
@@ -180,6 +181,15 @@ function deps(v2: V2AssetsReadsRepo): V2AssetsReadsDeps {
 }
 
 describe('row mappers', () => {
+    test('rollup rows: the Solana mirror is a complete 30-day window, computed rows carry their sampled days', () => {
+        const base = { asset_id: 'usd', chain: 'solana', liquidity: 1, volume_24h_usd: 2, volume_30d_usd: 60, primary_address: null, variant_count: 1, last_computed_at: 5 };
+        expect(rowToRollupResult(base)).toEqual(expect.objectContaining({ origin: 'solana_v1', volume30dDays: 30, volume30dUSD: 60 }));
+        expect(rowToRollupResult({ ...base, chain: 'base', origin: 'computed', volume_30d_days: 12 })).toEqual(
+            expect.objectContaining({ origin: 'computed', volume30dDays: 12 }),
+        );
+        expect(rowToRollupResult({ ...base, chain: 'base', origin: 'computed', volume_30d_days: null })?.volume30dDays).toBe(0);
+    });
+
     test('variant rows carry the key and explorer url; unknown chains are dropped', () => {
         const out = rowToVariantResult(variantRow())!;
         expect(out.key).toBe(`base:${USDC_BASE}`);

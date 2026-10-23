@@ -19,6 +19,7 @@ import {
     decodePrimaryScopeParam,
     hasVisibleVariantOnChain,
     selectV2HeadlineStats,
+    selectVolume30d,
     assessVariantMarkets,
     toV2Chain,
     toV2Market,
@@ -648,9 +649,11 @@ describe('chain stats', () => {
             liquidity: 999,
             volume24hUSD: 42,
             volume30dUSD: 7,
+            volume30dDays: 30,
             primaryAddress: null,
             variantCount: 1,
             lastComputedAt: 1,
+            origin: 'solana_v1',
         };
         const stats = computeChainStats(variants, marketByKey, new Map([['solana', rollup]]));
         expect(stats.solana?.liquidity).toBe(100);
@@ -1094,5 +1097,59 @@ describe('primary variant selection', () => {
             primaryScope: 'global',
         });
         expect(out.primaryVariant?.key).toBe(`solana:${SOL}`);
+    });
+});
+
+describe('selectVolume30d', () => {
+    const chainStats = (volumes: Partial<Record<'solana' | 'ethereum' | 'base', number>>) => {
+        const out: Parameters<typeof selectVolume30d>[0] = {};
+        for (const [chain, volume24hUSD] of Object.entries(volumes)) {
+            out[chain as 'solana' | 'ethereum' | 'base'] = {
+                price: null,
+                priceChange24hPercent: null,
+                priceChange1hPercent: null,
+                liquidity: null,
+                volume24hUSD,
+                trade24h: null,
+                marketCap: null,
+                fdv: null,
+                circulatingSupply: null,
+                totalSupply: null,
+                variantCount: 1,
+                issuedVariantCount: 1,
+                excludedByIssuance: { bridged: 0, wrapped: 0, derivative: 0 },
+                excludedCount: 0,
+                excludedByQuality: { stale: 0, dust: 0, priceOutlier: 0 },
+            };
+        }
+        return out;
+    };
+    const rollup = (chain: 'solana' | 'ethereum' | 'base', volume30dUSD: number | null, days: number, origin: 'solana_v1' | 'computed') =>
+        [chain, { assetId: 'x', chain, liquidity: 0, volume24hUSD: 0, volume30dUSD, volume30dDays: days, primaryAddress: null, variantCount: 1, lastComputedAt: 1, origin }] as const;
+
+    test('Solana-only volume with the mirrored rollup is served with scope solana', () => {
+        expect(selectVolume30d(chainStats({ solana: 100 }), new Map([rollup('solana', 3_000, 30, 'solana_v1')]))).toEqual({
+            volume30dUSD: 3_000,
+            scope: 'solana',
+        });
+    });
+
+    test('a traded EVM chain with fewer than 28 sampled days makes the figure null', () => {
+        const rollups = new Map([rollup('solana', 3_000, 30, 'solana_v1'), rollup('ethereum', 900, 20, 'computed')]);
+        expect(selectVolume30d(chainStats({ solana: 100, ethereum: 50 }), rollups)).toEqual({ volume30dUSD: null, scope: null });
+        expect(selectVolume30d(chainStats({ solana: 100, ethereum: 50 }), new Map([rollup('solana', 3_000, 30, 'solana_v1')]))).toEqual({
+            volume30dUSD: null,
+            scope: null,
+        });
+    });
+
+    test('complete windows on every traded chain sum with scope all; untraded chains are ignored', () => {
+        const rollups = new Map([
+            rollup('solana', 3_000, 30, 'solana_v1'),
+            rollup('ethereum', 900, 29, 'computed'),
+            rollup('base', 50, 3, 'computed'),
+        ]);
+        expect(selectVolume30d(chainStats({ solana: 100, ethereum: 50, base: 0 }), rollups)).toEqual({ volume30dUSD: 3_900, scope: 'all' });
+        expect(selectVolume30d(chainStats({}), rollups)).toEqual({ volume30dUSD: null, scope: null });
     });
 });

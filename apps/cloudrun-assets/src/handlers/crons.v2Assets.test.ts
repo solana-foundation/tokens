@@ -11,6 +11,7 @@ import {
     isEvmChainDown,
     parseEvmChainsArg,
     refreshEvmVariantMarkets,
+    rollupChainVolume30d,
     syncEvmVariants,
     syncSolanaVariants,
     type V2AssetsCronDeps,
@@ -83,6 +84,12 @@ function fakeRepo(overrides: Partial<V2AssetsJobsRepo> = {}): V2AssetsJobsRepo &
         },
         async touchVariantMarket(chain, address) {
             touched.push({ chain, address });
+        },
+        async rollupChainVolume30d() {
+            return { assetsWritten: 0, rowsWritten: 0 };
+        },
+        async pruneVolumeDaily() {
+            return 0;
         },
         async setVariantDecimalsIfNull() {},
         ...overrides,
@@ -834,5 +841,44 @@ describe('refresh-v2-evm-variant-markets', () => {
         expect(result.ok).toBe(true);
         expect(result.noClient).toBe(1);
         expect(repo.touched).toHaveLength(0);
+    });
+});
+
+describe('rollup-v2-chain-volume-30d', () => {
+    test('rolls every EVM chain up by default, prunes, and reports counts', async () => {
+        const calls: Array<{ chains: readonly ChainKind[]; nowMs: number }> = [];
+        const pruneCalls: number[] = [];
+        const repo = fakeRepo({
+            async rollupChainVolume30d(chains, nowMs) {
+                calls.push({ chains, nowMs });
+                return { assetsWritten: 12, rowsWritten: 20 };
+            },
+            async pruneVolumeDaily(olderThanDays) {
+                pruneCalls.push(olderThanDays);
+                return 7;
+            },
+        });
+        const result = await rollupChainVolume30d(deps(repo), {});
+        expect(result.ok).toBe(true);
+        expect(result.rowsWritten).toBe(20);
+        expect(result.assetsWritten).toBe(12);
+        expect(result.pruned).toBe(7);
+        expect(calls[0]?.chains).toEqual(['ethereum', 'base', 'arbitrum', 'polygon', 'bnb']);
+        expect(calls[0]?.nowMs).toBe(NOW);
+        expect(pruneCalls).toEqual([45]);
+    });
+
+    test('a failed prune does not fail the run', async () => {
+        const repo = fakeRepo({
+            async rollupChainVolume30d() {
+                return { assetsWritten: 1, rowsWritten: 1 };
+            },
+            async pruneVolumeDaily() {
+                throw new Error('boom');
+            },
+        });
+        const result = await rollupChainVolume30d(deps(repo), { chains: ['base'], retentionDays: 60 });
+        expect(result.ok).toBe(true);
+        expect(result.pruned).toBe(0);
     });
 });

@@ -143,8 +143,9 @@ export function v1StatsToV2Stats(stats: V1DetailStats | undefined): V2AssetStats
         priceChange1hPercent: finiteOrNull(stats.priceChange1hPercent),
         totalSupply: finiteOrNull(stats.totalSupply),
         circulatingSupply: finiteOrNull(stats.circulatingSupply),
-        // v1 does not say where a figure came from.
+        // v1 does not say where a figure came from; its 30d volume is Solana's.
         source: {},
+        volume30dScope: finiteOrNull(stats.volume30dUSD) === null ? null : 'solana',
     };
 }
 

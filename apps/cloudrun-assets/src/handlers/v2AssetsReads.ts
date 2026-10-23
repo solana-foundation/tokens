@@ -81,9 +81,11 @@ export interface V2ChainRollupDbRow {
     liquidity: number | null;
     volume_24h_usd: number | null;
     volume_30d_usd: number | null;
+    volume_30d_days?: number | null;
     primary_address: string | null;
     variant_count: number | null;
     last_computed_at: number | string | bigint | null;
+    origin?: string | null;
 }
 
 export interface V2ChainSummaryDbRow {
@@ -156,9 +158,13 @@ export interface V2ChainRollupResult {
     liquidity: number;
     volume24hUSD: number;
     volume30dUSD: number | null;
+    /** Distinct days behind `volume30dUSD`: 30 for the Solana candle rollup, the sample count for computed EVM rows. */
+    volume30dDays: number | null;
     primaryAddress: string | null;
     variantCount: number;
     lastComputedAt: number | null;
+    /** `solana_v1` (mirrored from v1's candle rollup) or `computed` (daily EVM samples). */
+    origin: 'solana_v1' | 'computed';
 }
 
 export interface V2ChainSummaryResult {
@@ -369,9 +375,16 @@ export function rowToRollupResult(row: V2ChainRollupDbRow): V2ChainRollupResult 
             typeof row.volume_24h_usd === 'number' && Number.isFinite(row.volume_24h_usd) ? row.volume_24h_usd : 0,
         volume30dUSD:
             typeof row.volume_30d_usd === 'number' && Number.isFinite(row.volume_30d_usd) ? row.volume_30d_usd : null,
+        volume30dDays:
+            row.origin === 'computed'
+                ? typeof row.volume_30d_days === 'number' && Number.isFinite(row.volume_30d_days)
+                    ? row.volume_30d_days
+                    : 0
+                : 30,
         primaryAddress: row.primary_address,
         variantCount: toCount(row.variant_count),
         lastComputedAt: toEpochMs(row.last_computed_at),
+        origin: row.origin === 'computed' ? 'computed' : 'solana_v1',
     };
 }
 

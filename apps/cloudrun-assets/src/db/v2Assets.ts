@@ -686,6 +686,73 @@ export function makePostgresV2AssetsJobsRepo(sql: Sql): V2AssetsJobsRepo {
                     updated_at = now()
                 WHERE v2_variant_markets_latest.origin = 'birdeye'
             `;
+            // One sample per UTC day for the 30d roll-up: Birdeye's volume24h is a
+            // trailing window, so the LAST sample of a day (not the max) approximates
+            // that day's volume without double counting the previous day's tail.
+            if (typeof args.volume24hUSD === 'number' && Number.isFinite(args.volume24hUSD) && args.volume24hUSD >= 0) {
+                await sql`
+                    INSERT INTO v2_variant_volume_daily (chain, address, day, volume_24h_usd, sampled_at)
+                    VALUES (
+                        ${args.chain}, ${args.address},
+                        (to_timestamp(${args.lastFetchedAt} / 1000.0) AT TIME ZONE 'UTC')::date,
+                        ${args.volume24hUSD}, ${args.lastFetchedAt}
+                    )
+                    ON CONFLICT (chain, address, day) DO UPDATE SET
+                        volume_24h_usd = EXCLUDED.volume_24h_usd,
+                        sampled_at = EXCLUDED.sampled_at
+                    WHERE EXCLUDED.sampled_at > v2_variant_volume_daily.sampled_at
+                `;
+            }
+        },
+
+        async rollupChainVolume30d(chains, nowMs) {
+            if (chains.length === 0) return { assetsWritten: 0, rowsWritten: 0 };
+            // Last 30 UTC days of daily samples, summed per (asset, chain) over the
+            // asset's active variants; `volume_30d_days` = distinct days with a
+            // sample so the API can tell a complete window from a partial one.
+            const rows = await sql<{ asset_id: string; chain: string }[]>`
+                WITH window AS (
+                    SELECT ((to_timestamp(${nowMs} / 1000.0) AT TIME ZONE 'UTC')::date - 30) AS start_day
+                ),
+                totals AS (
+                    SELECT v.asset_id, v.chain,
+                           sum(d.volume_24h_usd) AS volume_30d_usd,
+                           count(DISTINCT d.day)::int AS days,
+                           count(DISTINCT v.address)::int AS variant_count
+                    FROM v2_asset_variants v
+                    JOIN assets a ON a.asset_id = v.asset_id AND a.is_active = true
+                    JOIN v2_variant_volume_daily d ON d.chain = v.chain AND d.address = v.address
+                    CROSS JOIN window w
+                    WHERE v.is_active = true
+                      AND v.chain IN ${sql([...chains])}
+                      AND d.day >= w.start_day
+                    GROUP BY v.asset_id, v.chain
+                )
+                INSERT INTO v2_asset_chain_markets_latest (
+                    asset_id, chain, liquidity, volume_24h_usd, volume_30d_usd, volume_30d_days,
+                    primary_address, variant_count, last_computed_at, origin
+                )
+                SELECT t.asset_id, t.chain, 0, 0, t.volume_30d_usd, t.days, NULL, t.variant_count, ${nowMs}, 'computed'
+                FROM totals t
+                ON CONFLICT (asset_id, chain) DO UPDATE SET
+                    volume_30d_usd = EXCLUDED.volume_30d_usd,
+                    volume_30d_days = EXCLUDED.volume_30d_days,
+                    variant_count = EXCLUDED.variant_count,
+                    last_computed_at = EXCLUDED.last_computed_at,
+                    updated_at = now()
+                WHERE v2_asset_chain_markets_latest.origin = 'computed'
+                RETURNING asset_id, chain
+            `;
+            return { assetsWritten: new Set(rows.map(r => r.asset_id)).size, rowsWritten: rows.length };
+        },
+
+        async pruneVolumeDaily(olderThanDays, nowMs) {
+            const rows = await sql<{ day: string }[]>`
+                DELETE FROM v2_variant_volume_daily
+                WHERE day < ((to_timestamp(${nowMs} / 1000.0) AT TIME ZONE 'UTC')::date - ${Math.max(1, Math.floor(olderThanDays))})
+                RETURNING day
+            `;
+            return rows.length;
         },
 
         async touchVariantMarket(chain, address, lastFetchedAt) {
@@ -788,8 +855,8 @@ export function makePostgresV2AssetsReadsRepo(sql: Sql): V2AssetsReadsRepo {
         async findRollupsByAssetIds(assetIds) {
             if (assetIds.length === 0) return [];
             return sql<V2ChainRollupDbRow[]>`
-                SELECT asset_id, chain, liquidity, volume_24h_usd, volume_30d_usd, primary_address,
-                       variant_count, last_computed_at
+                SELECT asset_id, chain, liquidity, volume_24h_usd, volume_30d_usd, volume_30d_days, primary_address,
+                       variant_count, last_computed_at, origin
                 FROM v2_asset_chain_markets_latest
                 WHERE asset_id IN ${sql([...assetIds])}
             `;

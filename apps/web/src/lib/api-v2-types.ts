@@ -147,7 +147,9 @@ export interface V2AssetStats {
     totalSupply: number | null;
     circulatingSupply: number | null;
     /** Provenance per figure (reference-first headline); a key is absent when the figure is null. */
-    source: Partial<Record<Exclude<keyof V2AssetStats, 'source'>, V2StatsSourceKind>>;
+    source: Partial<Record<Exclude<keyof V2AssetStats, 'source' | 'volume30dScope'>, V2StatsSourceKind>>;
+    /** What `volume30dUSD` covers: every traded chain, Solana only, or null while an EVM window is incomplete. */
+    volume30dScope: 'all' | 'solana' | null;
 }
 
 export interface V2ChainStats {

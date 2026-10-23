@@ -238,10 +238,44 @@ export type V2VariantEnrichments = {
 export type V2StatsSourceKind = 'coingecko' | 'stock' | 'onchain';
 export type V2StatsSource = Partial<Record<keyof AssetStats, V2StatsSourceKind>>;
 
+/** Which chains `volume30dUSD` covers: every chain with volume, Solana only, or none (window incomplete). */
+export type V2Volume30dScope = 'all' | 'solana' | null;
+
 export type V2AssetStats = AssetStats & {
     /** Provenance per figure; a key is absent when the figure is null. */
     source: V2StatsSource;
+    volume30dScope: V2Volume30dScope;
 };
+
+/** Days a computed EVM rollup row needs before its 30d figure is served. */
+export const VOLUME_30D_MIN_DAYS = 28;
+
+/**
+ * 30d volume across chains: the sum of each chain's rollup when every chain
+ * that traded in the last 24h has a complete window (`solana_v1` rows come
+ * from a 30-day candle series; `computed` EVM rows need ≥ 28 sampled days),
+ * else null. `scope` says what the number covers so an asset whose only
+ * volume is on Solana is still served as `solana`.
+ */
+export function selectVolume30d(
+    chainStats: Partial<Record<ChainId, V2ChainStats>>,
+    rollupByChain: ReadonlyMap<ChainId, V2ChainRollupResult> | null,
+): { volume30dUSD: number | null; scope: V2Volume30dScope } {
+    const tradedChains = CHAIN_KINDS.filter(chain => (chainStats[chain]?.volume24hUSD ?? 0) > 0);
+    if (tradedChains.length === 0) return { volume30dUSD: null, scope: null };
+    let sum = 0;
+    let any = false;
+    for (const chain of tradedChains) {
+        const rollup = rollupByChain?.get(chain);
+        if (!rollup || rollup.volume30dUSD === null) return { volume30dUSD: null, scope: null };
+        const complete = rollup.origin === 'solana_v1' || (rollup.volume30dDays ?? 0) >= VOLUME_30D_MIN_DAYS;
+        if (!complete) return { volume30dUSD: null, scope: null };
+        sum += rollup.volume30dUSD;
+        any = true;
+    }
+    if (!any) return { volume30dUSD: null, scope: null };
+    return { volume30dUSD: sum, scope: tradedChains.length === 1 && tradedChains[0] === 'solana' ? 'solana' : 'all' };
+}
 
 /** Variants left out of supply / market cap, by why. */
 export type V2ExcludedByIssuance = {
@@ -1126,6 +1160,7 @@ export function selectV2HeadlineStats(args: {
     reference: V2HeadlineReference;
     onChain: V2Aggregate;
     volume30dUSD: number | null;
+    volume30dScope?: V2Volume30dScope;
 }): V2AssetStats | null {
     const { onChain } = args;
     const cg = args.reference.coingecko;
@@ -1179,7 +1214,7 @@ export function selectV2HeadlineStats(args: {
               ]),
           };
     const hasAny = Object.values(stats).some(value => typeof value === 'number' && Number.isFinite(value));
-    return hasAny ? { ...stats, source } : null;
+    return hasAny ? { ...stats, source, volume30dScope: stats.volume30dUSD === null ? null : (args.volume30dScope ?? 'solana') } : null;
 }
 
 // ---------------------------------------------------------------------------
@@ -1495,7 +1530,7 @@ export function buildV2Asset(ctx: V2AssetBuildContext): V2Asset | null {
         issuanceByKey,
     );
     const aggregate = aggregateChainStats(chainStats, accumulatorsByChain);
-    const solanaRollup = ctx.rollupByChain?.get('solana') ?? null;
+    const volume30d = selectVolume30d(chainStats, ctx.rollupByChain);
     const stats = selectV2HeadlineStats({
         reference: {
             coingecko: coingeckoSnapshot,
@@ -1504,7 +1539,8 @@ export function buildV2Asset(ctx: V2AssetBuildContext): V2Asset | null {
                 : null,
         },
         onChain: aggregate,
-        volume30dUSD: solanaRollup?.volume30dUSD ?? null,
+        volume30dUSD: volume30d.volume30dUSD,
+        volume30dScope: volume30d.scope,
     });
 
     const referenceMarket: V2ReferenceMarket | null = stockSnapshot

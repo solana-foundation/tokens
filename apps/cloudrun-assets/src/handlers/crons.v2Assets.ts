@@ -43,6 +43,8 @@ import {
 export const V2_SOLANA_SYNC_JOB = 'sync-v2-solana-variants';
 export const V2_EVM_VARIANTS_SYNC_JOB = 'sync-v2-evm-variants';
 export const V2_EVM_MARKETS_REFRESH_JOB = 'refresh-v2-evm-variant-markets';
+export const V2_VOLUME_30D_ROLLUP_JOB = 'rollup-v2-chain-volume-30d';
+export const V2_VOLUME_30D_ROLLUP_EVENT = 'v2_volume_30d_rollup';
 
 export const V2_SOLANA_SYNC_EVENT = 'v2_solana_sync';
 export const V2_EVM_VARIANTS_SYNC_EVENT = 'v2_evm_variants_sync';
@@ -196,7 +198,12 @@ export interface V2AssetsJobsRepo {
         cutoffs: { beforeOverviewFetchedAt: number; beforeEmptyFetchedAt?: number },
         limit: number,
     ): Promise<V2VariantKeyRef[]>;
+    /** Writes the market row and the day's volume sample (last sample of the UTC day wins). */
     upsertVariantMarketFromBirdeye(args: V2VariantMarketUpsert): Promise<void>;
+    /** Sum the last 30 UTC days of samples per (asset, chain) into the `computed` rollup rows. */
+    rollupChainVolume30d(chains: readonly ChainKind[], nowMs: number): Promise<{ assetsWritten: number; rowsWritten: number }>;
+    /** Delete daily samples older than `olderThanDays`; returns rows deleted. */
+    pruneVolumeDaily(olderThanDays: number, nowMs: number): Promise<number>;
     /** Stamp a (chain, address) so it leaves the stale set even when Birdeye had nothing. */
     touchVariantMarket(chain: ChainKind, address: string, lastFetchedAt: number): Promise<void>;
     /** Write-through of Birdeye decimals into derived rows that had none from CoinGecko. */
@@ -1018,10 +1025,54 @@ export async function refreshEvmVariantMarkets(deps: V2AssetsCronDeps, rawArgs: 
 
 export type V2AssetsJobHandler = (deps: V2AssetsCronDeps, args: unknown) => Promise<CronResult>;
 
+// ---------------------------------------------------------------------------
+// rollup-v2-chain-volume-30d
+// ---------------------------------------------------------------------------
+
+const VOLUME_30D_ARG_SPECS = {
+    /** Daily samples older than this are pruned after the roll-up. */
+    retentionDays: { kind: 'int', fallback: 45, min: 31, max: 365 },
+} satisfies JobArgSpecs;
+
+/**
+ * Cross-chain 30d volume for EVM chains from the daily samples the market
+ * refresh writes (Solana's comes from v1's candle rollup, mirrored as
+ * `solana_v1`). One `computed` row per (asset, chain) with `volume_30d_days`
+ * so the API serves null until the window is complete.
+ */
+export async function rollupChainVolume30d(deps: V2AssetsCronDeps, rawArgs: unknown): Promise<CronResult> {
+    const raw = asObject(rawArgs ?? {});
+    const chains = parseEvmChainsArg(raw.chains);
+    const args = await Effect.runPromise(decodeJobArgs(VOLUME_30D_ARG_SPECS, rawArgs ?? {}));
+    const start = deps.now();
+    const written = await deps.repo.rollupChainVolume30d(chains, start);
+    let pruned = 0;
+    try {
+        pruned = await deps.repo.pruneVolumeDaily(args.retentionDays, start);
+    } catch (err) {
+        console.error(`[${V2_VOLUME_30D_ROLLUP_JOB}] prune failed`, err instanceof Error ? err.message : String(err));
+    }
+    const durationMs = deps.now() - start;
+    console.log(
+        JSON.stringify({
+            job: V2_VOLUME_30D_ROLLUP_JOB,
+            event: V2_VOLUME_30D_ROLLUP_EVENT,
+            ok: true,
+            chains,
+            assetsWritten: written.assetsWritten,
+            rowsWritten: written.rowsWritten,
+            pruned,
+            duration_ms: durationMs,
+        }),
+    );
+    return { ok: true, processed: written.rowsWritten, durationMs, chains, ...written, pruned };
+}
+
 export const v2AssetsJobs: Record<string, V2AssetsJobHandler> = {
     [V2_SOLANA_SYNC_JOB]: syncSolanaVariants,
     [V2_EVM_VARIANTS_SYNC_JOB]: syncEvmVariants,
     [V2_EVM_MARKETS_REFRESH_JOB]: refreshEvmVariantMarkets,
+    [V2_VOLUME_30D_ROLLUP_JOB]: rollupChainVolume30d,
 };
 
 export { EVM_NATIVE_ASSET_ADDRESS };

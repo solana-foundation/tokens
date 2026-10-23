@@ -54,5 +54,15 @@ locals {
       attempt_deadline = "540s"
       retry_count      = 0
     },
+    {
+      # Daily: sums the last 30 UTC days of per-variant volume samples into the
+      # `computed` chain rollup rows (EVM 30d volume; Solana's is mirrored from v1).
+      name             = "rollup-v2-chain-volume-30d"
+      schedule         = "25 0 * * *"
+      http_path        = "/jobs/rollup-v2-chain-volume-30d"
+      body_json        = jsonencode({ retentionDays = 45 })
+      attempt_deadline = "300s"
+      retry_count      = 1
+    },
   ]
 }
