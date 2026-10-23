@@ -509,7 +509,12 @@ export async function syncEvmVariants(deps: V2AssetsCronDeps, rawArgs: unknown):
         sourcesByAsset.set(source.assetId, list);
     }
     const referenceCoinByAsset = new Map<string, string>();
-    /** Freshest coin row per asset, over every source read (drives deactivation). */
+    /**
+     * Per asset, the LEAST fresh coin row among the sources that contribute
+     * deployments (null when any is unknown). Deactivation keys on it: a row
+     * missing from `desired` is only "gone" when every source it could have come
+     * from was read fresh; a fresh sibling coin says nothing about a stale one's rows.
+     */
     const sourceFreshness = new Map<string, number | null>();
     let coinSourcesSkipped = 0;
     let coinSourcesCapped = 0;
@@ -517,19 +522,18 @@ export async function syncEvmVariants(deps: V2AssetsCronDeps, rawArgs: unknown):
     /** Assets whose coin set was cut at the cap: their derived rows were not all re-examined, so none is deactivated. */
     const cappedAssets = new Set<string>();
     for (const [assetId, list] of sourcesByAsset) {
-        let freshest: number | null = null;
+        let leastFresh: number | null = null;
+        let anyUnknown = false;
         let coinsUsed = 0;
         let capped = false;
         for (const source of list) {
-            if (source.coinLastSyncedAt !== null && (freshest === null || source.coinLastSyncedAt > freshest)) {
-                freshest = source.coinLastSyncedAt;
-            }
             if (source.role === 'reference') referenceCoinByAsset.set(assetId, source.coinId);
             if (source.coinKnown === false) {
                 // Not in the coin list (an invalid id, or one the Sunday sync has not
                 // seen yet): nothing to derive from, and with no synced-at the asset's
                 // existing derived rows are kept rather than deactivated.
                 coinSourcesUnknown += 1;
+                anyUnknown = true;
                 continue;
             }
             // A variant coin only contributes deployments when the linking variant is
@@ -548,6 +552,8 @@ export async function syncEvmVariants(deps: V2AssetsCronDeps, rawArgs: unknown):
                 continue;
             }
             coinsUsed += 1;
+            if (source.coinLastSyncedAt === null) anyUnknown = true;
+            else if (leastFresh === null || source.coinLastSyncedAt < leastFresh) leastFresh = source.coinLastSyncedAt;
             const issuerLabel = source.source?.label?.trim() ? `issuer:${source.source.label.trim()}` : null;
             for (const chain of chains) {
                 const platform = CHAINS[chain].providers.coingeckoPlatform;
@@ -584,7 +590,7 @@ export async function syncEvmVariants(deps: V2AssetsCronDeps, rawArgs: unknown):
             }
         }
         if (capped) coinSourcesCapped += 1;
-        sourceFreshness.set(assetId, freshest);
+        sourceFreshness.set(assetId, anyUnknown ? null : leastFresh);
     }
     if (coinSourcesCapped > 0) {
         console.warn(

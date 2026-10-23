@@ -537,6 +537,39 @@ describe('sync-v2-evm-variants', () => {
         expect(result.keptStale).toBe(1);
     });
 
+    test("a fresh sibling coin does not deactivate rows that a stale coin's deployments could still own", async () => {
+        const fresh: V2AssetCoinSourceRow = { ...usdcCoin(NOW), assetId: 'two-issuers', coinId: 'issuer-a' };
+        const stale: V2AssetCoinSourceRow = {
+            ...usdcCoin(NOW - 400 * 24 * 60 * 60 * 1000),
+            assetId: 'two-issuers',
+            coinId: 'issuer-b',
+            role: 'variant',
+            source: { chain: 'solana', address: 'IssuerBMint', kind: 'spot', tags: [], label: 'Issuer B' },
+            platforms: {},
+        };
+        const oldRow: V2DerivedVariantRow = {
+            chain: 'base',
+            address: '0x4444444444444444444444444444444444444444',
+            assetId: 'two-issuers',
+            variantId: 'base:0x4444444444444444444444444444444444444444',
+            isActive: true,
+        };
+        const repo = fakeRepo({
+            async listAssetCoinSources() {
+                return [fresh, stale];
+            },
+            async listActiveAssets() {
+                return [{ assetId: 'two-issuers', category: 'crypto' }];
+            },
+            async listDerivedVariants() {
+                return [oldRow];
+            },
+        });
+        const result = await syncEvmVariants(deps(repo), {});
+        expect(result.deactivated).toBe(0);
+        expect(result.keptStale).toBe(1);
+    });
+
     test('a coin past the per-asset cap keeps its existing deployments active', async () => {
         const coinSource = (i: number): V2AssetCoinSourceRow => ({
             assetId: 'fanout',
