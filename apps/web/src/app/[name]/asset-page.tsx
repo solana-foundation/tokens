@@ -575,7 +575,9 @@ function AssetPageShellFallback({ assetId, requestedName, requested, shell }: As
             buyAddress={null}
             header={
                 <TokenHeader
-                    address={active?.address ?? assetId}
+                    // A requested EVM variant the compiled registry lacks still names its own address, so the
+                    // explorer link is the contract's, never <chain explorer>/token/<assetId>.
+                    address={active?.address ?? requested?.address ?? assetId}
                     chain={activeChain}
                     symbol={displaySymbol}
                     displayName={displayName}
