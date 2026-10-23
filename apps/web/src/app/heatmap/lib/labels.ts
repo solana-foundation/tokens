@@ -2,10 +2,7 @@ import { formatLargeNumber, formatPercent } from '@/lib/format';
 import type { LayoutTile } from './treemap';
 import type { HeatmapAsset, HeatmapPeriod } from './types';
 
-/** `formatLargeNumber` stops at billions; stock market caps run into trillions. */
 export function formatUsdCompact(value: number | null | undefined): string {
-    if (value == null || !Number.isFinite(value)) return '—';
-    if (value >= 1_000_000_000_000) return `$${(value / 1_000_000_000_000).toFixed(2)}T`;
     return formatLargeNumber(value);
 }
 
