@@ -164,7 +164,9 @@ while `minAgeMs` was one hour, which looked like a stall in the 2026-10-22
 audit). The served `market.lastFetchedAt` moves only on a successful Birdeye
 write; touches bump `overviewLastFetchedAt` only. The alert
 `assets-v2-evm-markets-refresh-silent` fires when no run has refreshed at
-least one row in 45 minutes.
+least one row in the 45 minutes before the evaluation. It is an instant
+Loki query on purpose: a range query would keep returning the last positive
+count from earlier in its window and delay the page by the window length.
 
 Result: `processed`, `refreshed`, `failed` (Birdeye empty + thrown),
 `noClient` (chain without a client), `byChain`

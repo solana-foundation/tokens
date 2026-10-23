@@ -10,14 +10,16 @@
         {
             "refId": "A",
             "datasourceUid": "grafanacloud-logs",
-            "queryType": "range",
+            "queryType": "instant",
             "relativeTimeRange": {
                 "from": 2700,
                 "to": 0
             },
             "model": {
                 "expr": "sum(count_over_time({service=~\"tokens-assets(-jobs)?-prd-us\"} | json | job=\"refresh-v2-evm-variant-markets\" | event=\"v2_evm_markets_refresh\" | refreshed > 0 [45m]))",
-                "queryType": "range",
+                "queryType": "instant",
+                "instant": true,
+                "range": false,
                 "refId": "A"
             }
         },
@@ -89,7 +91,7 @@
     },
     "annotations": {
         "summary": "refresh-v2-evm-variant-markets has not written a single EVM market row in 45 minutes",
-        "description": "No v2_evm_markets_refresh summary with refreshed > 0 from refresh-v2-evm-variant-markets in 45 minutes (three 15-minute ticks). The chain-down rule only fires when a run attempts a chain and fails, so it is blind to a scheduler that stops firing, a run that returns early with processed:0, or Birdeye returning empty for every row (those are touched, which bumps overviewLastFetchedAt but leaves the served lastFetchedAt where it was). Check the Cloud Scheduler run history for tokens-refresh-v2-evm-variant-markets-prd (404 v2_assets_jobs_disabled = BIRDEYE_API_KEY missing on the worker), then the external_call lines with provider=birdeye. /api/v2 keeps serving the last snapshot, so this is EVM staleness, not an outage; Solana rows are refreshed by v1 and mirrored separately.",
+        "description": "No v2_evm_markets_refresh summary with refreshed > 0 from refresh-v2-evm-variant-markets in the 45 minutes before the evaluation (three 15-minute ticks; an instant query, so a positive count earlier in a range could not keep the rule quiet). The chain-down rule only fires when a run attempts a chain and fails, so it is blind to a scheduler that stops firing, a run that returns early with processed:0, or Birdeye returning empty for every row (those are touched, which bumps overviewLastFetchedAt but leaves the served lastFetchedAt where it was). Check the Cloud Scheduler run history for tokens-refresh-v2-evm-variant-markets-prd (404 v2_assets_jobs_disabled = BIRDEYE_API_KEY missing on the worker), then the external_call lines with provider=birdeye. /api/v2 keeps serving the last snapshot, so this is EVM staleness, not an outage; Solana rows are refreshed by v1 and mirrored separately.",
         "runbook_url": "https://github.com/solana-foundation/tokens/blob/main/docs/operations/v2-multichain-assets.md"
     }
 }
