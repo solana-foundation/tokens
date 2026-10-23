@@ -872,6 +872,8 @@ export function mergeAssetStatsWithAggregates(
 }
 
 export interface TokenMarketsDocLike {
+    /** ms epoch of the provider fetch behind the document; carried onto the snapshot for the staleness check. */
+    lastFetchedAt?: number | null;
     markets: Array<{
         liquidity?: number;
         volume24h?: number;
@@ -946,6 +948,8 @@ export function buildSnapshotFromTokenMarketsDoc(params: {
         holder: null,
         totalSupply: null,
         circulatingSupply: null,
+        // The document's fetch time, so a fallback-only row can still go stale.
+        lastFetchedAt: toFiniteNumberOrNull(doc.lastFetchedAt),
     };
 }
 

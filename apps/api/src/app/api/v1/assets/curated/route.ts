@@ -821,6 +821,8 @@ export const GET = route(
 
                     const merged: TokenMarketSnapshot = {
                         address: mint,
+                        // Keep the row's fetch time (else the document's) so the quality guard can still find it stale.
+                        lastFetchedAt: existing.lastFetchedAt ?? snapshot.lastFetchedAt ?? null,
                         symbol: existing.symbol && existing.symbol.trim() ? existing.symbol : snapshot.symbol,
                         name: existing.name && existing.name.trim() ? existing.name : snapshot.name,
                         decimals:

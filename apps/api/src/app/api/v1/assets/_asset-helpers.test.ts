@@ -5,6 +5,7 @@ import { __setAdvisoriesForTests } from '@/lib/advisories';
 
 import {
     aggregateTokenStats,
+    buildSnapshotFromTokenMarketsDoc,
     assessTokenMarkets,
     computeCompanyMarketCapUsd,
     computePreStocksDerived,
@@ -610,6 +611,14 @@ describe('canonical asset stat selection', () => {
         });
 
         expect(selected?.marketCap).toBe(18_180_000);
+    });
+});
+
+describe('buildSnapshotFromTokenMarketsDoc', () => {
+    it("carries the document's fetch time so a fallback-only row can still be stale", () => {
+        const doc = { lastFetchedAt: 1_700_000_000_000, markets: [{ liquidity: 10, volume24h: 5, price: 1, base: { address: 'MintA', symbol: 'A' } }] };
+        expect(buildSnapshotFromTokenMarketsDoc({ mint: 'MintA', assetFallbackSymbol: 'A', assetFallbackName: 'A', tokenMarketsDoc: doc })?.lastFetchedAt).toBe(1_700_000_000_000);
+        expect(buildSnapshotFromTokenMarketsDoc({ mint: 'MintA', assetFallbackSymbol: 'A', assetFallbackName: 'A', tokenMarketsDoc: { markets: doc.markets } })?.lastFetchedAt).toBeNull();
     });
 });
 
