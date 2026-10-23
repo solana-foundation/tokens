@@ -43,18 +43,50 @@ export function issuanceFromKind(kind: string): VariantIssuance {
     return 'native';
 }
 
-export function resolveVariantIssuance(variant: {
+export interface IssuanceInput {
     chain: ChainKind;
     address: string;
     kind: string;
     tags: readonly string[];
-}): VariantIssuance {
+}
+
+/** Where a variant's issuance came from, in precedence order. */
+export type IssuanceSource = 'tag' | 'override' | 'kind';
+
+export function resolveVariantIssuanceDetailed(variant: IssuanceInput): { issuance: VariantIssuance; source: IssuanceSource } {
     for (const tag of variant.tags) {
         if (!tag.startsWith(ISSUANCE_TAG_PREFIX)) continue;
         const value = tag.slice(ISSUANCE_TAG_PREFIX.length);
-        if (isVariantIssuance(value)) return value;
+        if (isVariantIssuance(value)) return { issuance: value, source: 'tag' };
     }
     const override = ISSUANCE_OVERRIDES[issuanceOverrideKey(variant.chain, variant.address)];
-    if (override) return override.issuance;
-    return issuanceFromKind(variant.kind);
+    if (override) return { issuance: override.issuance, source: 'override' };
+    return { issuance: issuanceFromKind(variant.kind), source: 'kind' };
+}
+
+export function resolveVariantIssuance(variant: IssuanceInput): VariantIssuance {
+    return resolveVariantIssuanceDetailed(variant).issuance;
+}
+
+/**
+ * Issuance across one asset's variants, in input order.
+ *
+ * A derivative kind marks a claim on *another* asset's supply: an LST under
+ * `solana`, an ETF-share token under `gold`. When an asset has no deployment
+ * of any other class (a standalone treasury fund whose only variant is
+ * `yield`, a leveraged ETF registered as its own asset, a basket) those
+ * variants are not derivatives of anything else: they are the asset, and
+ * their supply is its supply. So when every variant resolves to `derivative`
+ * from its kind, they are all promoted to `native`. Explicit `issuance:` tags
+ * and curated overrides are never promoted: an operator who marked a variant
+ * `derivative` meant it. A single native, bridged or wrapped sibling keeps the
+ * derivative class for everyone else (an LST next to SOL stays derivative).
+ */
+export function resolveAssetIssuance(variants: readonly IssuanceInput[]): VariantIssuance[] {
+    const detailed = variants.map(resolveVariantIssuanceDetailed);
+    const standaloneProduct =
+        detailed.length > 0 && detailed.every(entry => entry.issuance === 'derivative');
+    return detailed.map(entry =>
+        standaloneProduct && entry.source === 'kind' ? 'native' : entry.issuance,
+    );
 }

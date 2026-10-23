@@ -263,7 +263,10 @@ Reading the numbers:
   (liquid staking token, ETF share, leveraged or basket product) is exposure to the asset rather
   than its supply. `excludedFromSupplyCount` tells you how many were left out and
   `excludedByIssuance` why. Issuance is an explicit `issuance:` tag, else a curated per-deployment
-  override, else the variant kind. `chainStats.solana` is the number
+  override, else the variant kind. A derivative kind only means "derivative of this asset" when
+  the asset has some other deployment: when every variant of an asset is a yield / ETF /
+  leveraged / basket token (a standalone treasury fund, a leveraged ETF registered on its own)
+  those variants are the asset and count as `native`. `chainStats.solana` is the number
   v1 reported.
 - `aggregate` is the sum of `chainStats` across chains. `stats` is the headline view: price, market
   cap and supply come from `referenceMarket` when there is one (CoinGecko for crypto, the stock

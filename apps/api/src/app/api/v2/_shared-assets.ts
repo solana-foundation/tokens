@@ -39,6 +39,7 @@ import {
     type VariantAdvisory,
     type VariantKind,
     isPrimaryEligibleVariant,
+    resolveAssetIssuance,
     resolveVariantIssuance,
     type VariantIssuance,
 } from '@tokens/asset-registry';
@@ -613,7 +614,13 @@ function toStockVariantTier(value: string | null): StockVariantTier | null {
         : null;
 }
 
-/** Tag > curated override > kind; see `resolveVariantIssuance` in the registry. */
+/**
+ * Tag > curated override > kind for one variant on its own; see
+ * `resolveVariantIssuance` in the registry. Prefer `variantIssuanceByKey`
+ * whenever the asset's variant set is at hand: a yield / ETF / leveraged /
+ * basket token is only a derivative *of the asset* when the asset has some
+ * other deployment, so a standalone fund's single variant is its supply.
+ */
 export function variantIssuance(variant: {
     chain: ChainId;
     address: string;
@@ -621,6 +628,16 @@ export function variantIssuance(variant: {
     tags: readonly string[];
 }): VariantIssuance {
     return resolveVariantIssuance(variant);
+}
+
+/** Issuance per variant key over one asset's variants (`resolveAssetIssuance` in the registry). */
+export function variantIssuanceByKey(
+    variants: ReadonlyArray<Pick<V2VariantResult, 'chain' | 'address' | 'key' | 'kind' | 'tags'>>,
+): Map<VariantKey, VariantIssuance> {
+    const resolved = resolveAssetIssuance(variants);
+    const out = new Map<VariantKey, VariantIssuance>();
+    variants.forEach((variant, index) => out.set(variant.key, resolved[index]!));
+    return out;
 }
 
 export function toV2Market(snapshot: VariantMarketSnapshotResult | null | undefined): V2Market | null {
@@ -730,6 +747,7 @@ export function computeChainStats(
     rollupByChain: ReadonlyMap<ChainId, V2ChainRollupResult> | null,
 ): Partial<Record<ChainId, V2ChainStats>> {
     const byChain = new Map<ChainId, V2ChainStats>();
+    const issuanceByKey = variantIssuanceByKey(variants);
     const seen = new Set<VariantKey>();
     for (const variant of variants) {
         if (seen.has(variant.key)) continue;
@@ -750,7 +768,7 @@ export function computeChainStats(
         entry.liquidity = addFinite(entry.liquidity, market?.liquidity);
         entry.volume24hUSD = addFinite(entry.volume24hUSD, market?.volume24hUSD);
         entry.trade24h = addFinite(entry.trade24h, market?.trade24h);
-        const issuance = variantIssuance(variant);
+        const issuance = issuanceByKey.get(variant.key) ?? variantIssuance(variant);
         if (issuance === 'native') {
             entry.issuedVariantCount += 1;
             entry.marketCap = addFinite(entry.marketCap, market?.marketCap);
@@ -1100,6 +1118,7 @@ export function buildV2Asset(ctx: V2AssetBuildContext): V2Asset | null {
     // Stats: v1's aggregation over every chain, liquidity / volume from the chain stats
     // (worker rollup for Solana), then the v1 headline selection against the reference.
     const chainStats = computeChainStats(visible, ctx.marketByKey, ctx.rollupByChain);
+    const issuanceByKey = variantIssuanceByKey(visible);
     const aggregate = aggregateChainStats(chainStats);
     const primaryToken = primary ? tokenByKey.get(primary.mint) : undefined;
     const solanaRollup = ctx.rollupByChain?.get('solana') ?? null;
@@ -1192,7 +1211,7 @@ export function buildV2Asset(ctx: V2AssetBuildContext): V2Asset | null {
             assetId: asset.assetId,
             variantId: variant.variantId,
             kind: isVariantKind(variant.kind) ? variant.kind : 'spot',
-            issuance: variantIssuance(variant),
+            issuance: issuanceByKey.get(variant.key) ?? variantIssuance(variant),
             symbol: identity.symbol,
             name: identity.name,
             label: variant.label,
@@ -1338,6 +1357,8 @@ export function buildStandaloneV2Variant(ctx: {
         assetId: variant.assetId,
         variantId: variant.variantId,
         kind: isVariantKind(variant.kind) ? variant.kind : 'spot',
+        // On its own: without the siblings a standalone fund's yield token reads
+        // as derivative here; the asset detail (`variantIssuanceByKey`) is authoritative.
         issuance: variantIssuance(variant),
         symbol: symbol || null,
         name,

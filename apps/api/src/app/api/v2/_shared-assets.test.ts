@@ -21,6 +21,7 @@ import {
     toV2Market,
     toV2PegHealth,
     variantIssuance,
+    variantIssuanceByKey,
 } from './_shared-assets';
 
 const USDC_SOLANA = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
@@ -238,6 +239,20 @@ describe('chain stats', () => {
         const aggregate = aggregateChainStats(stats);
         expect(aggregate.excludedFromSupplyCount).toBe(1);
         expect(aggregate.excludedByIssuance.derivative).toBe(1);
+    });
+
+    test('a standalone fund whose only variant is a yield token counts its own supply', () => {
+        const tbill = variant('solana', '4MmJVdwYN8LwvbGeCowYjSx7KoEi6BJWg8XXnW4fDDp6', 'yield');
+        const byKey = new Map([[tbill.key, market(300, 3000)]]);
+        const stats = computeChainStats([tbill], byKey, null);
+        expect(stats.solana?.marketCap).toBe(3000);
+        expect(stats.solana?.circulatingSupply).toBe(5);
+        expect(stats.solana?.issuedVariantCount).toBe(1);
+        expect(stats.solana?.excludedByIssuance).toEqual({ bridged: 0, wrapped: 0, derivative: 0 });
+        expect(variantIssuanceByKey([tbill]).get(tbill.key)).toBe('native');
+        // An explicit tag is an operator decision and is not promoted.
+        const tagged = variant('solana', '4MmJVdwYN8LwvbGeCowYjSx7KoEi6BJWg8XXnW4fDDp6', 'yield', ['issuance:derivative']);
+        expect(computeChainStats([tagged], byKey, null).solana?.marketCap).toBeNull();
     });
 
     test('liquidity sums every variant; supply / mcap only issued ones; canonical chain order', () => {

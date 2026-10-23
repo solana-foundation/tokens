@@ -6,6 +6,7 @@ import {
     isVariantIssuance,
     issuanceFromKind,
     issuanceOverrideKey,
+    resolveAssetIssuance,
     resolveVariantIssuance,
 } from './issuance';
 
@@ -45,6 +46,31 @@ describe('resolveVariantIssuance', () => {
         } finally {
             delete overrides[key];
         }
+    });
+
+    test('a standalone fund whose only variant is a yield token is the asset, so it counts as native', () => {
+        const tbill = { chain: 'solana' as const, address: '4MmJVdwYN8LwvbGeCowYjSx7KoEi6BJWg8XXnW4fDDp6', kind: 'yield', tags: [] };
+        expect(resolveVariantIssuance(tbill)).toBe('derivative');
+        expect(resolveAssetIssuance([tbill])).toEqual(['native']);
+        const tqqq = { chain: 'solana' as const, address: 'XsjQP3iMAaQ3kQScQKthQpx9ALRbjKAjQtHg6TFomoc', kind: 'leveraged', tags: [] };
+        const basket = { chain: 'solana' as const, address: 'BasketMint111111111111111111111111111111111', kind: 'basket', tags: [] };
+        expect(resolveAssetIssuance([tqqq, basket])).toEqual(['native', 'native']);
+    });
+
+    test('a derivative next to a native, bridged or wrapped sibling stays a derivative', () => {
+        const sol = { chain: 'solana' as const, address: 'So11111111111111111111111111111111111111112', kind: 'native', tags: [] };
+        const lst = { chain: 'solana' as const, address: 'J1toso1uCk3RLmjorhTtrVwY9HJ7X8V9yYac6Y7kGCPn', kind: 'yield', tags: [] };
+        expect(resolveAssetIssuance([sol, lst])).toEqual(['native', 'derivative']);
+        const wrapped = { chain: 'ethereum' as const, address: '0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2', kind: 'wrapped', tags: [] };
+        expect(resolveAssetIssuance([wrapped, lst])).toEqual(['wrapped', 'derivative']);
+        expect(resolveAssetIssuance([])).toEqual([]);
+    });
+
+    test('an explicit issuance:derivative tag is never promoted, but its kind-derived siblings are', () => {
+        const fund = { chain: 'solana' as const, address: 'FundMint1111111111111111111111111111111111111', kind: 'yield', tags: [] };
+        const tagged = { chain: 'solana' as const, address: 'FundMint2222222222222222222222222222222222222', kind: 'yield', tags: ['issuance:derivative'] };
+        expect(resolveAssetIssuance([fund, tagged])).toEqual(['native', 'derivative']);
+        expect(resolveAssetIssuance([tagged])).toEqual(['derivative']);
     });
 
     test('isVariantIssuance guards the union', () => {
