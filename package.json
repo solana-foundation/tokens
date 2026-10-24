@@ -61,7 +61,6 @@
         "@clerk/shared": "3.47.7",
         "@clerk/types": "4.101.25",
         "dompurify": "3.4.17",
-    "zod": "4.6.7",
         "js-cookie": "3.0.8",
         "nanoid": "3.3.18",
         "postcss": "8.5.23",
