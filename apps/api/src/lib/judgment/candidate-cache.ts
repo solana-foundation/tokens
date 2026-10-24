@@ -91,6 +91,19 @@ interface ProcessEntry {
 
 const processTier = new Map<string, ProcessEntry>();
 
+/**
+ * A degraded set (provider late or failed) is held in the process tier only
+ * briefly. The instance that produced it rewrites Redis with the complete set
+ * once the provider finishes; every *other* instance that back-filled the
+ * degraded entry must re-read Redis soon to see that, instead of serving the
+ * incomplete set for the whole window.
+ */
+const DEGRADED_PROCESS_TTL_MS = 5_000;
+
+function processExpiry(set: RawCandidateSet, windowEnd: number, now: number): number {
+    return set.sources.provider === 'degraded' ? Math.min(windowEnd, now + DEGRADED_PROCESS_TTL_MS) : windowEnd;
+}
+
 export function candidateCacheEnabled(): boolean {
     return process.env.TOKENS_JUDGED_CANDIDATE_CACHE?.trim().toLowerCase() !== 'off';
 }
@@ -220,7 +233,7 @@ export function readRawCandidates(
                     sources: envelope.sources,
                     cachedAt: envelope.cachedAt,
                 };
-                rememberInProcess(key, set, envelope.cachedAt + windowMs, readAt);
+                rememberInProcess(key, set, processExpiry(set, envelope.cachedAt + windowMs, readAt), readAt);
                 return set;
             }),
         );
@@ -242,7 +255,7 @@ export function storeRawCandidates(
     const cachedAt = set.cachedAt ?? now;
     const windowSeconds = candidateCacheWindowSeconds();
     const stored: RawCandidateSet = { raws: set.raws, sources: set.sources, cachedAt };
-    rememberInProcess(key, stored, cachedAt + windowSeconds * 1_000, now);
+    rememberInProcess(key, stored, processExpiry(stored, cachedAt + windowSeconds * 1_000, now), now);
 
     const redis = redisOrNull(options.getClient);
     if (!redis) return;

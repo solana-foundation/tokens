@@ -175,6 +175,54 @@ describe('read / store', () => {
         expect(await Effect.runPromise(readRawCandidates(key, opts))).toBeNull();
     });
 
+    it("a degraded set leaves the process tier within seconds so another instance's warm-up is read from Redis", async () => {
+        const redis = fakeRedis();
+        let now = 2_000_000;
+        const opts = { getClient: () => redis.client, scheduleWrite: inlineWrite, now: () => now };
+        const key = keyFor('zzqx');
+
+        // Instance B back-fills a degraded entry that instance A wrote to Redis.
+        redis.store.set(key, {
+            value: JSON.stringify({
+                v: 1,
+                cachedAt: now,
+                raws: [raw('ZzqxMint222222222222222222222222222222222222', 'ZZQX2')],
+                sources: { provider: 'degraded', db: 'ok' },
+            }),
+        });
+        const degraded = await Effect.runPromise(readRawCandidates(key, opts));
+        expect(degraded?.sources.provider).toBe('degraded');
+
+        // Instance A's provider finishes and overwrites Redis with the full set.
+        redis.store.set(key, {
+            value: JSON.stringify({
+                v: 1,
+                cachedAt: now + 700,
+                raws: [raw(USDC, 'ZZQX'), raw('ZzqxMint222222222222222222222222222222222222', 'ZZQX2')],
+                sources: { provider: 'ok', db: 'ok' },
+            }),
+        });
+        // Still inside the degraded entry's short local lifetime: local copy.
+        now += 3_000;
+        expect((await Effect.runPromise(readRawCandidates(key, opts)))?.raws.length).toBe(1);
+        // Past it (but well inside the 45 s window): Redis is consulted again.
+        now += 3_000;
+        const refreshed = await Effect.runPromise(readRawCandidates(key, opts));
+        expect(refreshed?.sources.provider).toBe('ok');
+        expect(refreshed?.raws.length).toBe(2);
+    });
+
+    it('a complete set stays in the process tier for the whole window', async () => {
+        const redis = fakeRedis();
+        let now = 3_000_000;
+        const opts = { getClient: () => redis.client, scheduleWrite: inlineWrite, now: () => now };
+        const key = keyFor('sol');
+        storeRawCandidates(key, { raws: [raw(USDC, 'SOL')], sources: { provider: 'ok', db: 'ok' } }, opts);
+        redis.setFail(true);
+        now += 40_000;
+        expect((await Effect.runPromise(readRawCandidates(key, opts)))?.raws.length).toBe(1);
+    });
+
     it('ignores malformed Redis payloads and Redis failures', async () => {
         const redis = fakeRedis();
         const opts = { getClient: () => redis.client, scheduleWrite: inlineWrite };
