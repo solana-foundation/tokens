@@ -1,0 +1,16 @@
+Every non-2xx response is JSON with one `error` object:
+
+```json
+{
+  "error": {
+    "_tag": "BadRequestError",
+    "message": "Invalid mint",
+    "details": { "code": "invalid_mint" }
+  }
+}
+```
+
+- `_tag` names the error class and maps to the HTTP status (table below).
+- `message` is human-readable and may change; do not branch on it.
+- `details` is optional. When present it is an object; stable machine-readable cases carry a `details.code`. Branch on `_tag` first, then `details.code`.
+- Error responses are never cached (`Cache-Control: no-store`) and carry an `x-request-id` header.

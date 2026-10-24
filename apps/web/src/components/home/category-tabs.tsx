@@ -3,6 +3,7 @@
 import { useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { domAnimation, LazyMotion, m, useReducedMotion } from 'motion/react';
 import { trackEvent } from '@/lib/posthog-client';
+import { useScrollEdges } from '@/hooks/use-scroll-edges';
 import { TokenTable } from './token-table';
 import { TRENDING_MODE_IDS, TRENDING_WINDOW_IDS } from './home-tokens-constants';
 import { useHomeTokens } from './home-tokens-provider';
@@ -250,11 +251,29 @@ function CategoryTabsInner() {
         [activeCategoryId, categories],
     );
 
+    const tabStripRef = useRef<HTMLDivElement>(null);
+    const tabStripEdges = useScrollEdges(tabStripRef);
+
     return (
         <div>
             <div className="mx-auto max-w-7xl px-4 md:px-6">
                 <div className="mb-4 flex items-center justify-between gap-3">
-                    <div className="min-w-0 flex-1 overflow-x-auto pb-2 -mb-2 scrollbar-hide">
+                    <div
+                        ref={tabStripRef}
+                        className={cn(
+                            'min-w-0 flex-1 overflow-x-auto pb-2 -mb-2 scrollbar-hide',
+                            // Fade whichever edge is clipping tabs instead of cutting them off.
+                            tabStripEdges.left &&
+                                tabStripEdges.right &&
+                                '[mask-image:linear-gradient(to_right,transparent,black_40px,black_calc(100%-40px),transparent)]',
+                            tabStripEdges.left &&
+                                !tabStripEdges.right &&
+                                '[mask-image:linear-gradient(to_right,transparent,black_40px)]',
+                            !tabStripEdges.left &&
+                                tabStripEdges.right &&
+                                '[mask-image:linear-gradient(to_right,black_calc(100%-40px),transparent)]',
+                        )}
+                    >
                         <SegmentedControl
                             className={cn(
                                 'w-max min-w-0 [&_button]:!text-[22px]',
@@ -356,7 +375,34 @@ function TokenTableSkeleton() {
     return (
         <section className="mx-auto max-w-7xl px-4 md:px-6 pb-12 md:pb-24">
             <div className="bg-white rounded-[24px] md:rounded-[32px] border border-border-medium shadow-[0_8px_40px_rgba(0,0,0,0.03)] overflow-hidden">
-                <div className="overflow-x-auto">
+                {/* Phone list skeleton: the TokenTableMobileList shape (sort header, stacked rows). */}
+                <div className="md:hidden">
+                    <div className="flex items-center justify-between border-b border-border-light bg-gray-50/80 px-4 py-2.5">
+                        <Skeleton className="h-3.5 w-12 rounded bg-gray-100" />
+                        <div className="flex gap-4">
+                            <Skeleton className="h-3.5 w-14 rounded bg-gray-100" />
+                            <Skeleton className="h-3.5 w-10 rounded bg-gray-100" />
+                        </div>
+                    </div>
+                    <ul className="divide-y divide-border-extra-light">
+                        {Array.from({ length: 8 }, (_, rowIndex) => (
+                            <li key={rowIndex} className="flex h-16 items-center gap-3 px-4">
+                                <Skeleton className="size-8 shrink-0 rounded-full bg-gray-100" />
+                                <div className="flex flex-1 flex-col gap-1.5">
+                                    <Skeleton
+                                        className={`h-4 rounded bg-gray-100 ${rowIndex % 3 === 0 ? 'w-20' : 'w-14'}`}
+                                    />
+                                    <Skeleton className="h-3 w-28 rounded bg-gray-100" />
+                                </div>
+                                <div className="flex flex-col items-end gap-1.5">
+                                    <Skeleton className="h-4 w-16 rounded bg-gray-100" />
+                                    <Skeleton className="h-3 w-10 rounded bg-gray-100" />
+                                </div>
+                            </li>
+                        ))}
+                    </ul>
+                </div>
+                <div className="hidden overflow-x-auto md:block">
                     <table className="w-full text-left border-collapse">
                         <thead>
                             <tr className="border-b border-border-extra-light bg-gray-50/80">

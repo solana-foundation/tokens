@@ -46,7 +46,11 @@ interface EditVariantDialogProps {
 export function EditVariantDialog({ variantRef, open, onOpenChange }: EditVariantDialogProps): React.JSX.Element {
     const mint = variantRef?.address ?? null;
     const isSolana = variantRef === null || variantRef.chain === 'solana';
-    const { data: editor } = useAdminQuery<VariantEditor>(
+    const {
+        data: editor,
+        error: editorError,
+        isLoading: isEditorLoading,
+    } = useAdminQuery<VariantEditor | null>(
         'getVariantEditor',
         open && variantRef ? variantRefArgs(variantRef) : 'skip',
     );
@@ -142,10 +146,20 @@ export function EditVariantDialog({ variantRef, open, onOpenChange }: EditVarian
                 </DialogHeader>
 
                 {!editor ? (
-                    <div className="flex items-center justify-center py-10">
-                        <Button variant="outline" size="sm" disabled>
-                            Loading…
-                        </Button>
+                    <div className="flex items-center justify-center py-10 text-center text-sm text-muted-foreground">
+                        {editorError ? (
+                            <span className="text-destructive">Could not load this variant: {editorError.message}</span>
+                        ) : isEditorLoading ? (
+                            <Button variant="outline" size="sm" disabled>
+                                Loading…
+                            </Button>
+                        ) : (
+                            <span>
+                                This variant could not be found
+                                {variantRef ? ` (${chainLabel(variantRef.chain)} · ${variantRef.address})` : ''}. It may
+                                have been removed or moved to another canonical asset.
+                            </span>
+                        )}
                     </div>
                 ) : (
                     <div className="grid gap-6 py-2 md:grid-cols-2">

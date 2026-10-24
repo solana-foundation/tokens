@@ -1,0 +1,124 @@
+---
+title: Taxonomy
+description: The Foundation's group › category › assetClass tiers, with the Allium and RWA.xyz vocabularies that sit beside them.
+---
+
+Every registry item carries three classification views: the Solana Foundation data team's own
+taxonomy in `group`, `category` and `assetClass`, Allium's in `alliumClass`, and RWA.xyz's in
+`rwaClass`. This page lists the vocabularies as they stand today. The data team adds classes and
+reclassifies assets as the market changes, so treat the counts as illustrative and read the live
+values from the API rather than hard-coding them.
+
+## The Foundation taxonomy
+
+The three tiers form a strict tree: each `assetClass` belongs to one `category`, each `category` to one
+`group`. The list endpoint filters on all three (`group`, `category`, `class`) as **case-sensitive,
+exact-match** values, spelled exactly as the API returns them — `Fiat-Backed`, not `fiat-backed`;
+`ETF / Indices` with the spaces around the slash. Combine filters freely; a class filter on its own is
+already unambiguous.
+
+Counts below are the number of registry items in each class at the time of writing (3,293 in total).
+
+### Crypto Native
+
+Assets whose value comes from a blockchain protocol rather than an off-chain claim. About 500 items.
+
+| Category | Class | Examples |
+| --- | --- | --- |
+| `Bridged` | `Bridged` (156) | Tokens issued on another chain and bridged to Solana, such as wrapped ETH and wrapped BTC. |
+| `SOL` | `SOL` (3) | SOL itself and its wrapped-SOL mints. |
+| `Solana Native` | `Solana Native` (344) | Tokens issued natively on Solana — protocol, governance and community tokens such as JUP and BONK. |
+
+### RWA
+
+Tokenized claims on real-world assets. The largest group by count, about 2,700 items, and where
+Allium and RWA.xyz coverage is densest.
+
+| Category | Class | Examples |
+| --- | --- | --- |
+| `Commodities` | `Metals` (9) | Tokenized gold such as PAXG and Tether Gold. |
+| `Equities` | `ETF / Indices` (171) | Tokenized index funds and ETFs, such as an S&P 500 tracker. |
+| `Equities` | `Stocks` (984) | Tokenized single stocks — a tokenized Tesla or NVIDIA share. |
+| `Fixed Income` | `US Treasuries` (27) | Tokenized US Treasury bills and funds holding them. |
+| `Fixed Income` | `Asset Backed Securities` (7) | Tokenized securities backed by pools of loans or receivables. |
+| `Fixed Income` | `CLOs` (3) | Tokenized collateralized loan obligations. |
+| `Fixed Income` | `Other Structured Credit` (1,425) | Structured credit instruments outside the classes above; the bulk of the registry by count. |
+| `Fixed Income` | `Non US Gov Debt` (6) | Tokenized sovereign debt of governments other than the US. |
+| `Fixed Income` | `Bonds` (2) | Tokenized corporate and other bonds. |
+| `Private Funds` | `PE/VC` (18) | Tokenized private equity and venture fund interests. |
+| `Private Funds` | `Private Credit` (2) | Tokenized direct-lending funds. |
+| `Private Funds` | `Credit Funds` (7) | Tokenized funds holding diversified credit. |
+| `Real Estate` | `Real Estate` (14) | Tokenized property and real-estate funds. |
+| `Tokenized Active Strategies` | `Tokenized Active Strategies` (14) | Actively managed strategies issued as tokens. |
+
+### Stablecoins
+
+Tokens designed to hold a fixed value against a reference currency. About 100 items.
+
+| Category | Class | Examples |
+| --- | --- | --- |
+| `Crypto-Backed` | `Crypto-Backed Stablecoins` (7) | Stablecoins collateralized by on-chain assets. |
+| `Fiat-Backed` | `USD Stablecoins` (65) | USD-referenced stablecoins backed by fiat reserves — USDC, USDT, PYUSD. |
+| `Fiat-Backed` | `LCY Stablecoins` (29) | Local-currency stablecoins referencing a currency other than the US dollar, such as the euro or the Brazilian real. |
+
+## Allium classification
+
+`alliumClass` is [Allium](https://www.allium.so)'s view. It is a flat, lowercase vocabulary with no
+tiers, and it groups by economic exposure rather than instrument — so Allium's `rates` spans what the
+Foundation splits into `US Treasuries` and other `Fixed Income` classes, and `credit` collects the
+Foundation's structured-credit and private-credit classes.
+
+| `alliumClass` | Covers |
+| --- | --- |
+| `equities` | Tokenized stocks, ETFs and indices. |
+| `stablecoins` | Fiat- and crypto-backed stablecoins. |
+| `rates` | Treasury and other rate-bearing instruments. |
+| `private_funds` | Tokenized fund interests. |
+| `credit` | Structured and private credit. |
+| `commodities` | Tokenized metals and other commodities. |
+
+`alliumClass` is `null` for most crypto-native assets. `alliumValueUsd` is Allium's on-chain value for
+the mint in USD.
+
+## RWA.xyz classification
+
+`rwaClass` is [RWA.xyz](https://www.rwa.xyz)'s view. Like Allium's it is flat, but it is finer-grained
+on the credit side and uses title-case names. It classifies by product type: where the Foundation has
+one `Other Structured Credit` class, RWA.xyz distinguishes `Specialty Finance`, `Corporate Credit`,
+`Asset-Backed Credit` and `Diversified Credit`.
+
+| `rwaClass` | Covers |
+| --- | --- |
+| `Stocks` | Tokenized equities. |
+| `Stablecoins` | Stablecoins. |
+| `US Treasury Debt` | Tokenized US Treasuries. |
+| `Commodities` | Tokenized commodities. |
+| `Specialty Finance` | Niche lending and receivables products. |
+| `Corporate Credit` | Tokenized corporate loans and bonds. |
+| `Asset-Backed Credit` | Credit backed by pools of assets. |
+| `Diversified Credit` | Multi-strategy credit funds. |
+| `Real Estate` | Tokenized property. |
+| `Private Equity` | Tokenized private equity and venture interests. |
+| `Active Strategies` | Actively managed tokenized strategies. |
+
+`rwaClass` is `null` where RWA.xyz does not cover the mint. `rwaValueUsd` is RWA.xyz's on-chain value
+for the mint in USD.
+
+## One asset, three views
+
+USDC (`EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v`) shows how the views line up:
+
+```json
+{
+  "group": "Stablecoins",
+  "category": "Fiat-Backed",
+  "assetClass": "USD Stablecoins",
+  "alliumClass": "stablecoins",
+  "rwaClass": "Stablecoins",
+  "assetId": "usd"
+}
+```
+
+The Foundation taxonomy is the one the list endpoint filters on. Allium and RWA.xyz classes are returned
+on every item but are not filterable; filter by the Foundation tier and read the provider classes from
+the results. Credit the provider when you display their class or value.

@@ -1,21 +1,149 @@
 @import "tailwindcss";
 @import "@tokens/ui/globals.css";
+@import "fumadocs-ui/css/generated/spacious.css";
 @import "fumadocs-ui/css/neutral.css";
 @import "fumadocs-ui/css/preset.css";
 
 :root {
-  --fd-nav-height: 0px !important;
   --font-sans: "Inter Variable", Inter, system-ui, sans-serif;
   --font-inter: var(--font-sans);
   --font-abc-diatype: var(--font-sans);
   --font-berkeley-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
 }
 
-@media (min-width: 1280px) {
-  #nd-docs-layout {
-    --fd-layout-width: 100vw;
-  }
-}
-
 /* Tailwind v4 source scanning for shared UI package */
 @source "../../../../packages/ui/src/**/*.{ts,tsx}";
+
+/*
+ * Code blocks and inline code, modelled on the Rex docs (superlogical.com/rex/docs).
+ * The copy animation lives in src/lib/copy-sheen.ts and reads --tk-code-fill and
+ * --tk-code-accent from the block.
+ */
+:root {
+  --tk-code-font: ui-monospace, "SF Mono", Menlo, monospace;
+  --tk-code-ink: #181d16;
+  --tk-code-muted: #b3b3b3;
+  --tk-code-wash: #181d160d;
+  --tk-code-fill: #fff;
+  --tk-code-edge-top: color-mix(in srgb, var(--tk-code-ink) 4%, transparent);
+  --tk-code-edge-bottom: color-mix(in srgb, var(--tk-code-ink) 13%, transparent);
+  --tk-code-shadow: 0 1px 1px #181d1608, 0 2px 2px -1px #181d1608, 0 4px 6px -3px #181d160a;
+  --tk-code-accent: #ff8b5d;
+}
+
+/*
+ * Content column matched to the reference article measure (its 38–46rem measure
+ * minus 2rem), so code blocks are the same width and the copy sheen behaves the same.
+ */
+#fd-spacious-layout {
+  --fd-page-width: clamp(36rem, calc(36rem + (100vw - 90rem) * 0.2667), 44rem);
+}
+
+.tk-code-block {
+  /* Dark panel on the light page, using the reference's dark-theme values. */
+  --tk-code-ink: #ececea;
+  --tk-code-muted: #737b6f;
+  --tk-code-fill: #191c17;
+  /*
+   * Tuned for a dark block on a light page: the reference's pale top edge reads as a
+   * white outline here, so the edge darkens instead, and the sweep is doubled so it
+   * stays as visible as it is on their dark page.
+   */
+  --tk-code-edge-top: rgba(0, 0, 0, 0.25);
+  --tk-code-edge-bottom: rgba(0, 0, 0, 0.4);
+  --tk-code-shadow: 0 1px 1px #0003, 0 2px 2px -1px #0003, 0 4px 6px -3px #0000003d;
+  --tk-code-sheen: 0.8;
+  position: relative;
+  margin-top: 1rem;
+}
+
+/* The site is forced light, so Shiki's light colours apply by default; use the dark palette here. */
+.tk-code-block > pre.shiki code span {
+  color: var(--shiki-dark);
+  font-style: var(--shiki-dark-font-style);
+}
+
+.tk-code-block > pre {
+  margin: 0;
+  overflow-x: auto;
+  border: 1px solid transparent;
+  border-radius: 0.75rem;
+  background:
+    linear-gradient(var(--tk-code-fill), var(--tk-code-fill)) padding-box,
+    linear-gradient(to bottom, var(--tk-code-edge-top), var(--tk-code-edge-bottom)) border-box;
+  box-shadow: var(--tk-code-shadow);
+  color: var(--tk-code-ink);
+  font-family: var(--tk-code-font);
+  font-size: 1em;
+  line-height: 1.5em;
+}
+
+/* Beats the shared design system's `.prose pre` !important padding. */
+.prose .tk-code-block > pre {
+  padding: calc(0.625rem - 1px) calc(1rem - 1px) !important;
+}
+
+/* Fumadocs pads each Shiki line; the pre padding governs here instead. */
+.tk-code-block > pre.shiki {
+  --padding-left: 0px;
+  --padding-right: 0px;
+}
+
+.tk-code-block > pre code {
+  font-family: inherit;
+  font-size: 0.875em;
+  letter-spacing: 0;
+  background: none;
+  padding: 0;
+}
+
+.tk-copy-code {
+  position: absolute;
+  top: 0.375rem;
+  right: 0.375rem;
+  display: grid;
+  place-items: center;
+  width: 1.75rem;
+  height: 1.75rem;
+  padding: 0;
+  border: 0;
+  border-radius: 9999px;
+  background: var(--tk-code-fill);
+  color: var(--tk-code-muted);
+  cursor: pointer;
+  transition: color 0.1s;
+}
+
+.tk-copy-code:hover,
+.tk-copy-code:focus-visible {
+  color: var(--tk-code-ink);
+}
+
+.tk-copy-code svg {
+  width: 1rem;
+  height: 1rem;
+}
+
+.tk-copy-code .tk-copy-done,
+.tk-copy-code[data-copied] .tk-copy-idle {
+  display: none;
+}
+
+.tk-copy-code[data-copied] .tk-copy-done {
+  display: inline;
+}
+
+/*
+ * Inline code in page prose. The shared design system styles prose code with
+ * !important (up to `.prose p code`); `:not(pre code)` outranks it.
+ */
+.prose code:not(pre code) {
+  border: 0 !important;
+  border-radius: 0.25rem !important;
+  background: var(--tk-code-wash) !important;
+  padding: 0.1em 0.35em !important;
+  color: var(--tk-code-ink) !important;
+  font-family: var(--tk-code-font) !important;
+  font-size: 0.875em !important;
+  letter-spacing: 0;
+}

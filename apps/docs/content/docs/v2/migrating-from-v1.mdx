@@ -1,0 +1,57 @@
+---
+title: Migrating from v1
+description: The endpoint map and field map from the v1 asset routes to the v2 asset and variant routes.
+---
+
+v1 keeps working unchanged. v2 is a different shape, not a renamed one: the variant is addressed by
+`<chain>:<address>`, every number is cross-chain by default, and raw-mint paths are gone from the
+asset surface.
+
+Both APIs serve registered assets only. On v1 an unregistered Solana mint is `404` with
+`details.code: "asset_not_registered"`; on v2 it is `404 variant_not_found` (or `missing[]` in a
+batch) and an address-shaped `{assetId}` is `400 invalid_asset_id`. Neither API synthesises an
+asset for a mint it does not know. For those tokens use [Token lists](/v2/concepts/token-lists)
+or [`GET /v2/search`](/v2/endpoints/search).
+
+## Endpoints
+
+| v1 | v2 |
+|---|---|
+| `GET /v1/assets/curated?list=…&groupBy=asset` | `GET /v2/assets?list=…` |
+| `GET /v1/assets/curated?variants=all` | `GET /v2/assets?include=variants` |
+| `GET /v1/assets/curated?groupBy=mint` | dropped; use `GET /v2/assets/{assetId}/variants`, or `include=variants` and flatten client-side |
+| `GET /v1/assets/search?q=` (canonical rows) | `GET /v2/assets?q=` for the curated set; unregistered tokens via [`GET /v2/search`](/v2/endpoints/search) |
+| `GET /v1/assets/{assetId}` | `GET /v2/assets/{assetId}` |
+| `GET /v1/assets/{mint}` (a registered mint) | `GET /v2/variants/solana/{mint}`: the variant plus an asset summary. Unregistered mints are `404` on both (`asset_not_registered` on v1, `variant_not_found` on v2) |
+| `GET /v1/assets/{assetId}/variants` | `GET /v2/assets/{assetId}/variants` |
+| `GET /v1/assets/resolve?ref=` | `GET /v2/assets/{assetId}` (`resolvedBy`) for ids and aliases; `GET /v2/variants/{chain}/{address}` for addresses |
+| `GET /v1/assets/variant-markets?mints=` | `GET /v2/variants?keys=solana:{mint},…` |
+| `GET /v1/assets/{assetId}?include=profile,risk,ohlcv,markets` | `profile`, `risk`, `ohlcv` and `markets` are not in v2. Keep using the v1 route and its `/risk-*`, `/ohlcv` and `/markets` siblings for Solana variants. The per-variant enrichments v1 attached implicitly are opt-in on v2: `GET /v2/assets/{assetId}?include=executionQuality,pegHealth,preStocks` |
+
+Unknown `list=` values are `400 invalid_list` on v2; v1 silently coerced them to `all`.
+
+## Fields
+
+| v1 | v2 |
+|---|---|
+| `variant.mint` | `variant.key` (`<chain>:<address>`), with `variant.chain` and `variant.address` split out |
+| `asset.variantGroups.spot[]`, `.tokenizedEquity[]`, … | `variants[]`, flat and liquidity-ordered; group on `variant.kind` |
+| `asset.canonicalMarket` | `referenceMarket`; `source: "clickhouse_stock"` is `"stock"`; the PreStocks arm's `mint` is `key` |
+| `asset.stats` (on-Solana aggregate) | `stats` (cross-chain headline); the on-Solana figures are `chainStats.solana` |
+| — | `chains`, `chainStats`, `aggregate`, `primaryVariantByChain`, `variant.issuance`, `variant.explorerUrl` (new) |
+| `resolution` (top-level, detail) / `resolvedBy` (resolve) | `resolvedBy: 'assetId' \| 'alias' \| 'rename'` on the detail response |
+| `advisories[].mint` | `advisories[].key` + `.chain` + `.address` |
+| `symbol?`, `name?`, `issuer?`, `label?` (absent when unknown) | always present, `null` when unknown |
+| `pagination: { hasMore, nextOffset }` | `total` with `limit` / `offset`; page until `offset + items.length >= total` |
+| `variantsMode=all` | not needed; `/v2/assets/{assetId}/variants` is never capped |
+| `variant.executionQuality`, `variant.pegHealth`, `variant.preStocks` (always attached) | opt-in via `include=executionQuality,pegHealth,preStocks` on `GET /v2/assets/{assetId}`; present on every variant when requested, `null` off-capability (EVM) or without data; `executionQuality.quoteMint` is `quoteKey`; `pegHealth.provider` and `.referenceKind` are always present |
+| `include=profile,risk,ohlcv,markets` / `resolution` | dropped; `include=` on the v2 detail route takes the three variant enrichments above instead |
+
+The full type catalogue is in [Shared shapes](/v2/concepts/shared-shapes).
+
+## Addresses
+
+Solana addresses are case-sensitive base58, exactly as in v1. EVM addresses are accepted in any
+casing and always **returned lowercase**; compare keys, not checksummed strings. The chain is
+always explicit on v2: a path segment on `GET /v2/variants/{chain}/{address}` or the key prefix in
+`keys=`. See [Multichain assets → Variant keys](/v2/concepts/multichain-assets#variant-keys).

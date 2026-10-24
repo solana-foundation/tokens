@@ -1,0 +1,142 @@
+---
+title: Search and resolve
+description: Search registered assets by text, and resolve a mint, alias or id to its registered asset.
+---
+
+Both endpoints use `https://api.tokens.xyz/v1` with an `x-api-key` header and the `assets:read` scope; see [Authentication](/v1/authentication). Both return registered assets only; see [Registered assets only](/v1/concepts/assets-and-variants#registered-assets-only).
+
+## `GET /v1/assets/search`
+
+Search registered assets by text. Each result is a canonical asset with its aggregate stats and primary variant.
+
+### Query params
+
+| Param                    | Type                                                     | Default     | Notes                                                                                   |
+| ------------------------ | -------------------------------------------------------- | ----------- | --------------------------------------------------------------------------------------- |
+| `q`                      | string                                                   | required    | Search text: name, symbol, alias or mint.                                               |
+| `limit`                  | integer 1 to 50                                          | `20`        |                                                                                         |
+| `category`               | asset category                                           |             | Unknown values return `400` with the allowed list.                                      |
+| `region`, `industry`     | [tag slugs](/v1/concepts/assets-and-variants#region-and-industry-tags) |  | Exact match, AND-combined. Any filter excludes untagged assets.                          |
+| `variants`               | `all`                                                    |             | Adds `variants[]` to each result (sorted by liquidity). By default only `primaryVariant`. |
+| `primaryVariantStrategy` | `liquidity`, `execution_quality`, `stock_redeemability`  | `liquidity` | See [The primary variant](/v1/concepts/assets-and-variants#the-primary-variant).        |
+
+### Response
+
+```ts
+interface AssetsSearchResponse {
+  query: string;
+  category: string | null;
+  region: string | null;
+  industry: string | null;
+  primaryVariantStrategy: 'liquidity' | 'execution_quality' | 'stock_redeemability';
+  results: Array<{
+    assetId: string;
+    name?: string;
+    symbol?: string;
+    category: string;
+    region: string | null;
+    industry: string | null;
+    imageUrl: string | null;
+    stats: null | {
+      price: number | null;
+      liquidity: number | null;
+      volume24hUSD: number | null;
+      volume30dUSD: number | null;
+      marketCap: number | null;
+      priceChange24hPercent: number | null;
+      priceChange1hPercent: number | null;
+    };
+    advisories: AssetAdvisoryEntry[];   // [] when no variant is flagged
+    primaryVariant: Variant | null;
+    variants?: Variant[];               // with variants=all
+  }>;
+}
+```
+
+`Variant` and `AssetAdvisoryEntry` are defined in [Assets and variants](/v1/concepts/assets-and-variants#variants) and [Advisories](/v1/concepts/advisories#shapes).
+
+### Notes
+
+- Variants flagged `blocked` are omitted; `compromised` and `blocked` variants are never the `primaryVariant`. See [Advisories](/v1/concepts/advisories).
+- `stats` aggregates the asset's spot-like variants. For mapped equities, `stats.price`, `stats.volume24hUSD` and `stats.priceChange24hPercent` come from the stock market.
+- Results never include synthesized rows for unregistered mints. A mint query that is not registered returns an empty `results`.
+
+### Example
+
+```bash
+curl -sS "$API_BASE_URL/v1/assets/search?q=tesla&variants=all" \
+  -H "x-api-key: $API_KEY"
+```
+
+## `GET /v1/assets/resolve`
+
+Resolve a Solana mint or an asset reference to its registered `assetId` and matching variant, without fetching the full asset.
+
+### Query params
+
+| Param  | Type   | Notes                                                                                             |
+| ------ | ------ | ------------------------------------------------------------------------------------------------- |
+| `mint` | string | A Solana mint (base58).                                                                           |
+| `ref`  | string | An `assetId`, alias, mint, or `solana-<mint>`.                                                    |
+
+One of the two is required. If both are present, `mint` wins.
+
+### Response
+
+```ts
+interface AssetsResolveResponse {
+  assetId: string;
+  resolvedBy?: 'assetId' | 'alias' | 'mint' | 'singletonMint' | 'registry' | 'sanctum' | 'singleton';
+  mint?: string | null;
+  asset: {
+    assetId: string;
+    name: string | null;
+    symbol: string | null;
+    category: string;
+    aliases: string[];
+  };
+  variant: {
+    mint: string;
+    chain: 'solana';
+    kind: string;
+    liquidityTier: string;
+    trustTier: string;
+    tags: string[];
+    issuer?: string;
+    issuerUrl?: string;
+    label?: string;
+  } | null;
+}
+```
+
+`resolvedBy` values: `assetId` and `alias` for id lookups; `mint` for a curated variant; `singletonMint` when a `solana-<mint>` ref reverse-resolved to its group; `registry` for a compiled-registry mint; `sanctum` for a liquid-staking token (resolves to `solana`); `singleton` for an asset exposed under its own per-mint id.
+
+```json
+{
+  "assetId": "usd",
+  "resolvedBy": "mint",
+  "mint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+  "asset": { "assetId": "usd", "name": "US Dollar", "symbol": "USD", "category": "stablecoin", "aliases": [] },
+  "variant": {
+    "mint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+    "chain": "solana",
+    "kind": "native",
+    "liquidityTier": "tier1",
+    "trustTier": "tier1",
+    "tags": [],
+    "label": "USDC"
+  }
+}
+```
+
+### Notes
+
+- An unregistered mint returns `404` with `details.code: "asset_not_registered"`. The envelope is on [Errors and limits](/v1/errors-and-limits#unregistered-assets). Do not retry; track the token with a [Token List](/v2/endpoints/lists) instead.
+- Cached for two minutes.
+
+### Example
+
+```bash
+curl -sS "$API_BASE_URL/v1/assets/resolve?ref=btc" \
+  -H "x-api-key: $API_KEY"
+```

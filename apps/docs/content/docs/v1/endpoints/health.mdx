@@ -1,0 +1,22 @@
+---
+title: Health
+description: The liveness check.
+---
+
+## `GET /v1/health`
+
+A liveness check for monitoring. It needs no API key and is not rate limited like the data routes.
+
+### Response
+
+```json
+{ "ok": true }
+```
+
+### Example
+
+```bash
+curl -sS "$API_BASE_URL/v1/health"
+```
+
+Use it to confirm connectivity from a new environment. It says nothing about data freshness; for that, read the `Cache-Control` header and the `lastFetchedAt` or `updatedAt` fields on data responses.

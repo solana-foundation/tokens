@@ -1,0 +1,7 @@
+{
+  "title": "Registry",
+  "description": "The Solana Foundation asset registry",
+  "icon": "BookOpen",
+  "root": true,
+  "pages": ["index", "taxonomy", "---Reference---", "endpoints"]
+}

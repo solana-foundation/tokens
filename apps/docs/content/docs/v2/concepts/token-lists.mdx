@@ -1,0 +1,103 @@
+---
+title: Token lists
+description: Lists as plugins — curated and community lists, project ownership, statuses, member caps, provider budgets, and how composition works.
+---
+
+A token list is a named, ordered set of Solana mints with an accountable curator. The routes are
+on [Lists](/v2/endpoints/lists); this page is the model.
+
+## Lists as plugins
+
+Consuming apps explicitly name the lists they trust and compose them into one corpus with
+`GET /v2/lists/tokens?lists=a,b`. There is deliberately no global "all lists" union, because
+trust in a curator is the whole model: a list is a plugin you install, not a feed you inherit.
+
+## Curated and community lists
+
+- **Curated lists** are ours: `majors`, `currencies`, `lsts`, `rwas`, `etfs`, `metals`, `stocks`.
+  The legacy aliases `stables` (`currencies`) and `xstocks` (`etfs`) are accepted wherever a slug
+  is, on `{slug}` paths and in `lists=`. Curated slugs serve the effective curated membership and
+  carry `curated: true` with a `description` and an `owner.name`.
+- **Community lists** are published by any API key. They carry `curated: false`, a `null`
+  description and an `owner.projectId`.
+
+The catalog (`GET /v2/lists`) returns every curated list plus every published community list;
+pagination applies to the community rows only and the curated set is prepended to page one.
+
+## Ownership
+
+Any API key can create lists. The key that creates a list binds it to that key's **project**:
+every key on the project, regardless of read scopes, may manage that project's lists, and keys
+from other projects get `403` on writes. Anyone with an `assets:read` key can read any published
+or unlisted list. Moderators can lock a list, which also returns `403` on writes.
+
+Slugs are globally unique and match `^[a-z][a-z0-9-]{2,62}$`. Curated ids, their aliases and
+route words (`all`, `lists`, `curated`, `tokens`, `search-tokens`, `check-slug`) are reserved.
+Prefix by convention: `ownership-core`. A renamed or deleted slug is held for its previous owner
+for a 30-day window before anyone else can claim it.
+
+## Statuses
+
+| Status | In the catalog | Readable by slug | Composable | Notes |
+|---|---|---|---|---|
+| `draft` | no | owner only via `mine=true` | no (`notFound`) | Load it before anyone sees it |
+| `unlisted` | no | yes, by anyone with the link | yes | Hidden from the catalog and from `inLists` annotations |
+| `published` | yes | yes | yes | The default on create |
+| `archived` | no | owner only via `mine=true` | no (`notFound`) | The reversible hide-it option; `DELETE` is irreversible |
+
+`GET /v2/lists?mine=true` returns your project's lists in every status with `status` on each
+row, which is what a management UI should drive from.
+
+## Members and verification
+
+A member is a mint plus an optional `rank` and `note`. Every mint must resolve somewhere when it
+is added: the curated registry (`verified: true`), then the token index, then a live provider
+lookup whose metadata is snapshotted onto the member. A mint unknown everywhere is rejected with
+`unknown_mint`; a malformed address with `invalid_mint`.
+
+Lists may include mints outside the curated registry. Those tokens carry `verified: false` so
+your UI can render caution; `verified` is the only trust signal the list itself gives you.
+
+Hydrated list tokens carry an `advisory` field:
+
+<include>../../../shared/advisory-statuses.mdx</include>
+
+On lists specifically, `blocked` mints are omitted from `tokens` during hydration (`rank` stays
+dense) and `tokenCount` reflects the visible tokens. The long form is in
+[Advisories](/v1/concepts/advisories).
+
+## Caps and budgets
+
+| Cap | Value |
+|---|---|
+| Mints per batch add | 250 (`batch_too_large`) |
+| Members per list | 5000 (`list_full`) |
+| Lists per project | 100 (`project_lists_limit`) |
+| Slugs per compose call | 10 |
+| Members composed per list | 5000; larger lists return `truncated: true` |
+| `name` | 80 characters |
+| `note` | 500 characters |
+
+Batch adds and single-member `PUT`s may reach the live provider for mints unknown to the index,
+so they draw from a per-key `batch` budget (30 calls per 10 minutes by default). Within one batch
+call at most about 50 unknown mints are resolved against the provider; the rest fail individually
+as `unknown_mint` and can be retried later. The curator search `GET /v2/lists/search-tokens`
+shares the `search` budget with `/v2/search` and `/v2/resolve` (120 calls per 10 minutes). Both
+budgets return `429` when exhausted; see
+[Provider lookup budget](/v2/errors-and-limits#provider-lookup-budget).
+
+Recommended automation flow: check the slug, create the list as `draft`, load it with one or a few
+batch calls, publish with `PATCH { status: 'published' }`, then keep it fresh with individual
+`PUT` and `DELETE /members/{mint}` calls. The [Quickstart](/v2/quickstart#publish-your-own-list)
+walks through exactly this with curl.
+
+## Composing lists
+
+`GET /v2/lists/tokens?lists=majors,acme-core` returns the union of the named lists, deduped by
+mint, each token annotated with `lists[]`, the requested slugs that contain it. Curated and
+community slugs mix freely. Unknown, draft or archived slugs are reported in `notFound[]` rather
+than failing the call, so a consumer can keep working when one of its curators disappears.
+
+Compose responses are cached for 60 seconds and fall back to a last-good copy (up to 10 minutes
+old) when the list backend is unavailable; `updatedAt` on each list summary is the freshness
+signal.

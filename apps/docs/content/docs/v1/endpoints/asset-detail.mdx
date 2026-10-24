@@ -1,0 +1,187 @@
+---
+title: Asset detail
+description: One registered asset with its aggregate stats, canonical market, variants, advisories and optional include blocks.
+---
+
+Uses `https://api.tokens.xyz/v1` with an `x-api-key` header and the `assets:read` scope; see [Authentication](/v1/authentication).
+
+## `GET /v1/assets/{assetId}`
+
+Fetch a registered asset and, optionally, attach `profile`, `risk`, `ohlcv` and `markets` blocks in the same request.
+
+### Path
+
+`{assetId}` is a canonical id (`solana`, `usd`, `tesla`), an alias (`btc`), a raw Solana mint, or `solana-<mint>`. Whatever the form, it must resolve to a registered asset; otherwise the response is `404` with `details.code: "asset_not_registered"` (see [Errors and limits](/v1/errors-and-limits#unregistered-assets)). A registered mint reference returns the asset group it belongs to, so `/v1/assets/solana-EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v` returns `asset.assetId: "usd"`.
+
+### Query params
+
+| Param                    | Type                                                    | Default     | Notes                                                                                                                                 |
+| ------------------------ | ------------------------------------------------------- | ----------- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| `include`                | comma-separated `profile`, `risk`, `ohlcv`, `markets`   |             | Unknown values return `400` with `details.allowed` and `details.invalid`. Each include needs `assets:read` or its own scope (`assets:profile:read`, `assets:risk:read`, `assets:ohlcv:read`, `assets:markets:read`), otherwise `403`. |
+| `mint`                   | Solana mint                                             |             | Pins the variant used for per-variant include computations. Must belong to the asset, otherwise `400`. Without it, a mint in the path is used when it belongs to the asset, else the primary variant. |
+| `primaryVariantStrategy` | `liquidity`, `execution_quality`, `stock_redeemability` | `liquidity` | Equities default to `stock_redeemability` when the param is absent. See [The primary variant](/v1/concepts/assets-and-variants#the-primary-variant). |
+| `variantsMode`           | `all`                                                   |             | Lifts the cap on the `solana` asset's yield variants (by default at most 500 with at least $250k liquidity; a pinned `mint` is always kept). |
+| `ohlcvInterval`          | `1m`, `5m`, `15m`, `1H`, `4H`, `1D`, `1W`               | `1H`        | For `include=ohlcv`.                                                                                                                  |
+| `ohlcvFrom`, `ohlcvTo`   | unix seconds                                            | last 7 days | For `include=ohlcv`. Same range rules as [`/ohlcv`](/v1/endpoints/charts#get-v1assetsassetidohlcv), including the 10,000-candle cap. |
+| `marketsOffset`          | integer                                                 | `0`         | For `include=markets`.                                                                                                                |
+| `marketsLimit`           | integer 1 to 50                                         | `10`        | For `include=markets`.                                                                                                                |
+
+### Response
+
+```ts
+interface AssetDetailResponse {
+  asset: {
+    assetId: string;
+    name?: string;
+    symbol?: string;                 // the stock symbol for mapped equities
+    description?: string;
+    category: 'crypto' | 'stablecoin' | 'lst' | 'rwa' | 'commodity' | 'equity' | 'etf' | 'index';
+    region: string | null;
+    industry: string | null;
+    aliases: string[];
+    symbols: string[];
+    imageUrl: string | null;
+    stats: {                         // aggregate over the spot-like Solana variants; null when nothing is known
+      price: number | null;
+      liquidity: number | null;
+      volume24hUSD: number | null;
+      volume30dUSD: number | null;   // rolling 30-day sum
+      marketCap: number | null;
+      fdv: number | null;
+      priceChange24hPercent: number | null;
+      priceChange1hPercent: number | null;
+      totalSupply: number | null;        // on-Solana tokenized supply
+      circulatingSupply: number | null;  // on-Solana tokenized supply
+    } | null;
+    primaryVariantStrategy: 'liquidity' | 'execution_quality' | 'stock_redeemability';
+    canonicalMarket?: CanonicalMarket;  // absent when no off-chain reference applies
+    advisories: AssetAdvisoryEntry[];   // most severe first; [] when none
+    variantGroups: {                    // every key always present
+      spot: Variant[];                  // native, wrapped, bridged, spot and stablecoin kinds
+      etf: Variant[];
+      yield: Variant[];
+      leveraged: Variant[];
+      basket: Variant[];
+      lst: Variant[];
+      tokenizedEquity: Variant[];
+    };
+    primaryVariant: Variant | null;
+  };
+  includes?: {                        // only when include= was passed
+    profile?: IncludeResult<ProfileData>;
+    risk?: IncludeResult<{
+      marketScore: MarketScore;
+      marketScoreInput: MarketScoreInput;
+      pegHealth: PegHealth | null;
+      structuralHealth: StructuralHealth | null;
+    }>;
+    ohlcv?: IncludeResult<Candle[]>;
+    markets?: IncludeResult<{ markets: Market[]; total: number; offset: number; limit: number }>;
+  };
+  resolution?: {                      // when the path was an alias or mint reference
+    assetId: string;
+    ref: string;
+    resolvedBy: 'assetId' | 'alias' | 'mint' | 'singletonMint' | 'registry' | 'sanctum' | 'singleton';
+    mint: string | null;
+  };
+}
+
+type IncludeResult<T> =
+  | { ok: true; data: T }
+  | { ok: false; reason: 'not_available' | 'not_found' | 'error'; message: string };
+
+type CanonicalMarket =
+  | {
+      source: 'coingecko';
+      coinId: string;
+      price: number | null;
+      marketCap: number | null;
+      volume24hUSD: number | null;
+      priceChange24hPercent: number | null;
+      circulatingSupply: number | null;   // cross-chain, provider-sourced
+      totalSupply: number | null;
+      maxSupply: number | null;           // null when uncapped
+      lastFetchedAt: number | null;       // unix ms
+      providerLastUpdatedAt: number | null; // unix seconds
+    }
+  | {
+      source: 'clickhouse_stock';
+      symbol: string;
+      price: number | null;
+      marketCap: number | null;           // the company's market cap
+      volume24hUSD: number | null;
+      priceChange24hPercent: number | null;
+      lastFetchedAt: number | null;       // unix ms
+      providerLastUpdatedAt: number | null; // unix seconds, the latest candle
+      asOf: number | null;                // unix seconds
+    }
+  | {
+      source: 'prestocks';
+      symbol: string;
+      mint: string;
+      price: number | null;
+      marketCap: number | null;           // implied company valuation
+      markPriceUsd: number | null;
+      markValuationUsd: number | null;
+      impliedValuationUsd: number | null;
+      premiumToMarkPercent: number | null;
+      volume24hUSD: null;
+      priceChange24hPercent: null;
+      lastFetchedAt: number | null;       // unix ms; PreStocks publishes no timestamp
+      providerLastUpdatedAt: number | null;
+      asOf: number | null;
+    };
+```
+
+`Variant` and `AssetAdvisoryEntry` are defined in [Assets and variants](/v1/concepts/assets-and-variants#variants) and [Advisories](/v1/concepts/advisories#shapes). `ProfileData` is the `data` arm of [`/profile`](/v1/endpoints/profile#get-v1assetsassetidprofile); `Candle` is on [Charts](/v1/endpoints/charts); `Market`, `MarketScore` and `MarketScoreInput` are on [Variants and markets](/v1/endpoints/variants-and-markets#get-v1assetsassetidmarkets) and [Risk](/v1/endpoints/risk#shapes); `PegHealth` and `StructuralHealth` are on [Stablecoin health](/v1/concepts/stablecoin-health).
+
+### Notes
+
+- Includes are independent and best-effort. `not_available` means the asset has no external listing or no primary variant; `not_found` means nothing is cached yet. Render each block from its own `ok`.
+- `include=ohlcv` returns the canonical series for the asset (stock candles for equities, provider candles for listed crypto) unless you pin a `mint`, in which case it returns that mint's on-chain candles.
+- `include=risk` carries the full `pegHealth` and `structuralHealth` blocks for stablecoins; the `risk` routes add `advisory` and `lastUpdatedAt`.
+- `stats` supply fields are the tokenized supply on Solana. For BTC that is the few thousand BTC wrapped on Solana. The cross-chain figures are on `canonicalMarket` when its `source` is `coingecko`. For mapped equities, `stats.price`, `stats.volume24hUSD` and `stats.priceChange24hPercent` come from the stock market.
+- `primaryVariant` is chosen from the spot-like variants; flagged `compromised` or `blocked` variants are skipped while another eligible variant exists. Every variant object carries `advisory`, and stablecoin variants also carry a compact `pegHealth`.
+- Variants whose mint is a PreStocks token carry a `preStocks` block derived from that token's own on-chain price.
+- This route never returns `404` for a registered flagged mint; see [Advisories](/v1/concepts/advisories#guarantees).
+- Cached for 30 seconds.
+
+### Example
+
+```bash
+curl -sS "$API_BASE_URL/v1/assets/tesla?include=profile,risk,markets&primaryVariantStrategy=execution_quality" \
+  -H "x-api-key: $API_KEY"
+```
+
+```json
+{
+  "asset": {
+    "assetId": "tesla",
+    "name": "Tesla",
+    "symbol": "TSLA",
+    "category": "equity",
+    "region": "north_america",
+    "industry": "automotive",
+    "primaryVariantStrategy": "execution_quality",
+    "canonicalMarket": { "source": "clickhouse_stock", "symbol": "TSLA", "price": 412.5, "marketCap": 1310000000000 },
+    "advisories": [],
+    "primaryVariant": {
+      "variantId": "tesla:xStock",
+      "mint": "XsDoVfqeBukxuZHWhdvWHBhgEHjGNst4MLodqsJHzoB",
+      "kind": "tokenized_equity",
+      "label": "xStock",
+      "stockVariantTier": "cash_redeemable",
+      "liquidityTier": "tier1",
+      "advisory": null,
+      "executionQuality": { "executionScore": 99.2, "isEligibleForPrimary": true }
+    }
+  },
+  "includes": {
+    "profile": { "ok": false, "reason": "not_available", "message": "No external listing for this asset" },
+    "risk": { "ok": true, "data": { "marketScore": { "score": 91, "grade": "A" } } },
+    "markets": { "ok": true, "data": { "total": 6, "offset": 0, "limit": 10, "markets": [] } }
+  }
+}
+```
+
+The excerpt omits most fields for brevity; every key described above is present in a real response.

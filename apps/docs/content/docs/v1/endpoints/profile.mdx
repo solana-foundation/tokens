@@ -1,0 +1,137 @@
+---
+title: Profile, description and launches
+description: Off-chain profile and stats, description text, and coins launched against an asset's mints.
+---
+
+All endpoints below use `https://api.tokens.xyz/v1` with an `x-api-key` header and the `assets:read` scope; see [Authentication](/v1/authentication). `{assetId}` accepts an id, alias, mint or `solana-<mint>` and must resolve to a registered asset.
+
+## `GET /v1/assets/{assetId}/profile`
+
+Profile, links and global market stats for assets with an external listing.
+
+### Response
+
+```ts
+interface AssetProfileResponse {
+  assetId: string;
+  profile:
+    | {
+        ok: true;
+        data: {
+          price: number;                 // USD
+          marketCap: number;             // USD, 0 when unknown
+          fdv: number;                   // USD, 0 when unknown
+          volume24h: number;             // USD, 0 when unknown
+          priceChange24h: number;        // percent
+          allTimeHigh: number;           // USD
+          allTimeHighDate: string;       // ISO 8601, "" when unknown
+          circulatingSupply: number | null;
+          totalSupply: number | null;
+          maxSupply: number | null;      // null when uncapped or unknown
+          description?: string;
+          links?: { website?: string; twitter?: string; telegram?: string; discord?: string; reddit?: string };
+        };
+      }
+    | { ok: false; reason: 'not_available' | 'not_found' | 'error'; message: string };
+}
+```
+
+### Notes
+
+- `not_available` means the asset has no external listing; `not_found` means nothing is cached yet.
+- The supply trio is also on `asset.canonicalMarket` in [Asset detail](/v1/endpoints/asset-detail) when its `source` is `coingecko`, so you rarely need both calls.
+- Cached for five minutes.
+
+### Example
+
+```bash
+curl -sS "$API_BASE_URL/v1/assets/bitcoin/profile" \
+  -H "x-api-key: $API_KEY"
+```
+
+## `GET /v1/assets/{assetId}/description`
+
+A short description for one mint, when one has been generated.
+
+### Query params
+
+| Param  | Type        | Default             | Notes                                                               |
+| ------ | ----------- | ------------------- | ------------------------------------------------------------------- |
+| `mint` | Solana mint | the primary variant | When the path itself is a mint reference, that mint is the default. |
+
+### Response
+
+```ts
+interface AssetDescriptionResponse {
+  assetId: string;
+  mint: string;
+  description: { summary: string; generatedAt: number } | null;  // generatedAt in unix ms
+}
+```
+
+### Notes
+
+- `null` is the normal answer for mints without a generated summary.
+- Cached for five minutes.
+
+### Example
+
+```bash
+curl -sS "$API_BASE_URL/v1/assets/solana/description" \
+  -H "x-api-key: $API_KEY"
+```
+
+## `GET /v1/assets/{assetId}/launches`
+
+Coins launched on an approved launchpad (currently [stonk.fun](https://www.stonkfun.xyz)) using one of this asset's mints as the quote token: for `usd`, everything launched against USDC.
+
+### Query params
+
+| Param   | Type             | Default | Notes |
+| ------- | ---------------- | ------- | ----- |
+| `limit` | integer 1 to 100 | `25`    |       |
+
+### Response
+
+```ts
+interface AssetLaunchesResponse {
+  assetId: string;
+  total: number;                       // every visible launch, not just this page
+  limit: number;
+  launches: Array<{
+    mint: string;
+    symbol: string | null;
+    name: string | null;
+    logoURI: string | null;
+    quoteMint: string;                 // which of the asset's mints it launched against
+    quoteSymbol: string | null;
+    launchpad: string;                 // e.g. "stonkfun"
+    price: number | null;
+    marketCap: number | null;
+    fdv: number | null;
+    liquidity: number | null;
+    volume24hUSD: number | null;
+    priceChange24hPercent: number | null;
+    launchedAt: number | null;         // unix ms
+    graduatedAt: number | null;        // unix ms; null while still on the launchpad curve
+    externalUrl: string;               // the coin's page on the launchpad
+    advisory: VariantAdvisory | null;
+  }>;
+  lastUpdatedAt: number | null;        // unix ms
+}
+```
+
+### Notes
+
+- Ordered by 24h volume, descending.
+- Only launchpads and coins approved by Tokens operators appear, so `total: 0` is a normal answer for most assets.
+- `blocked` mints are omitted; `caution` and `compromised` launches are returned with `advisory` populated. See [Advisories](/v1/concepts/advisories).
+- An approved launch coin also has its own `solana-<mint>` asset page while it is approved.
+- Cached for one minute.
+
+### Example
+
+```bash
+curl -sS "$API_BASE_URL/v1/assets/usd/launches?limit=10" \
+  -H "x-api-key: $API_KEY"
+```

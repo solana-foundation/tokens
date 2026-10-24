@@ -1,0 +1,7 @@
+| Status        | Meaning                                                                 | What the API does                                                                                   |
+| ------------- | ----------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------- |
+| `caution`     | Trade with care: a known concern that does not make the token unsafe.   | Returned everywhere; never changes ranking or inclusion.                                           |
+| `compromised` | The token or its issuer was exploited or has otherwise lost integrity.  | Never the primary variant; excluded from trending; still readable with the advisory attached.      |
+| `blocked`     | Do not trade: operators have withdrawn the token from the surface.      | Never the primary variant; excluded from trending, search and curated lists; still readable by id. |
+
+Each advisory carries `status`, `reason`, an optional `url` with more detail, `since` (unix milliseconds the current status was set), and `source` (`admin` for a human operator, `webacy_depeg` for the Webacy depeg monitor, `peg_guard` for the tokens.xyz peg monitor). System sources only ever set `caution`; escalation is a human decision. Read endpoints annotate; they never refuse. Treat `compromised` and `blocked` as do-not-trade in your UI.

@@ -1,0 +1,26 @@
+---
+title: Authentication
+description: The x-api-key header, the scope v2 needs, who may write to a list, and how to keep your key safe.
+---
+
+<include>../../shared/api-key-header.mdx</include>
+
+## Scopes and ownership
+
+- Every v2 endpoint, reads and writes alike, needs only the default `assets:read` scope. A key
+  with that scope can read every published list, search, resolve, and read every asset, variant
+  and chain.
+- Write endpoints (`POST /v2/lists`, `PATCH` and `DELETE /v2/lists/{slug}`, and the
+  `/members` routes) act only on lists owned by the caller's **project**. The key that creates a
+  list binds it to that key's project; every key on the project can manage it, and keys from other
+  projects get `403` on writes. See [Token lists → Ownership](/v2/concepts/token-lists#ownership).
+- The provider lookup budget behind search and batch writes is counted per **key**, not per
+  project; see [Errors & limits](/v2/errors-and-limits#provider-lookup-budget).
+
+## Keep your key server-side
+
+<include>../../shared/key-safety.mdx</include>
+
+## Request ids
+
+<include>../../shared/request-ids.mdx</include>
