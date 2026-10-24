@@ -16,9 +16,10 @@
   "dependencies": {
     "@tokens/ui": "workspace:*",
     "@types/mdx": "^2.0.13",
-    "fumadocs-core": "^16.7.15",
-    "fumadocs-mdx": "^14.2.14",
-    "fumadocs-ui": "^16.7.15",
+    "fumadocs-core": "^16.17.8",
+    "fumadocs-mdx": "^15.4.10",
+    "fumadocs-ui": "npm:@fumadocs/base-ui@^16.17.8",
+    "lucide-react": "^1.61.0",
     "next": "16.3.8",
     "react": "^19.2.3",
     "react-dom": "^19.2.3"

@@ -1,11 +1,17 @@
 import { notFound, redirect } from 'next/navigation';
 import type { Metadata } from 'next';
 import { createRelativeLink } from 'fumadocs-ui/mdx';
-import { DocsBody, DocsDescription, DocsPage, DocsTitle } from 'fumadocs-ui/layouts/docs/page';
+import {
+    DocsBody,
+    DocsDescription,
+    DocsPage,
+    DocsTitle,
+    MarkdownCopyButton,
+    ViewOptionsPopover,
+} from 'fumadocs-ui/layouts/spacious/page';
 
 import { getMDXComponents } from '@/mdx-components';
 import { source } from '@/lib/source';
-import { CopyMarkdownButton } from '@/components/copy-markdown-button';
 
 interface PageProps {
     params: Promise<{
@@ -30,18 +36,17 @@ export default async function Page(props: PageProps) {
         page as unknown as Parameters<typeof createRelativeLink>[1],
     );
 
+    const markdownUrl = `/api/page-markdown?slug=${encodeURIComponent(slugPath)}`;
+
     return (
-        <DocsPage toc={page.data.toc} full={page.data.full} className="xl:ms-0 xl:me-auto">
-            <div className="flex items-center justify-between gap-3">
-                <div className="min-w-0 flex-1">
-                    <DocsTitle>{page.data.title}</DocsTitle>
-                </div>
-                <div className="shrink-0">
-                    <CopyMarkdownButton slugPath={slugPath} />
-                </div>
+        <DocsPage toc={page.data.toc} full={page.data.full}>
+            <DocsTitle className="text-2xl">{page.data.title}</DocsTitle>
+            <DocsDescription className="mb-2 text-base">{page.data.description}</DocsDescription>
+            <div className="mb-4 flex flex-row flex-wrap items-center gap-2 border-b pb-6">
+                <MarkdownCopyButton markdownUrl={markdownUrl} />
+                <ViewOptionsPopover markdownUrl={markdownUrl} />
             </div>
-            <DocsDescription>{page.data.description}</DocsDescription>
-            <DocsBody>
+            <DocsBody className="[--tw-prose-size:0.9375]">
                 <MDX
                     components={getMDXComponents({
                         a: relativeLink,

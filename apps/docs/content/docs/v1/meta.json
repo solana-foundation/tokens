@@ -1,6 +1,8 @@
 {
   "title": "API v1",
-  "defaultOpen": true,
+  "description": "Solana assets, markets and risk",
+  "icon": "Box",
+  "root": true,
   "pages": [
     "overview",
     "endpoints-at-a-glance",
@@ -12,4 +14,3 @@
     "./endpoints"
   ]
 }
-
