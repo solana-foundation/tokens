@@ -24,9 +24,11 @@
  * request.
  */
 
-import { Effect } from 'effect';
+import { Duration, Effect, Fiber, Option } from 'effect';
 
 import { tapErrorAndDefault } from '@tokens/effect';
+
+import { runAfterResponse } from '@/effect/after-response';
 import { getVariantByMint, resolveAlias, searchAssets } from '@tokens/asset-registry';
 
 import { loadAdvisoriesOrEmpty } from '@/lib/advisories';
@@ -157,17 +159,82 @@ function registryCandidateMints(query: string, interpretation: QueryInterpretati
     return mints.slice(0, 15);
 }
 
+/** How the live provider fared on this collect. `timeout` is reported to callers as `degraded`. */
+export type ProviderOutcome = 'ok' | 'degraded' | 'disabled' | 'timeout';
+
 export interface RawCandidates {
     raws: RawCandidate[];
     sources: RawSourcesStatus;
+    providerOutcome: ProviderOutcome;
+    /**
+     * Set only when the provider missed its deadline: resolves to the full
+     * raw set once the still-running provider call finishes (or `null` if it
+     * then fails). The caller stores it off the response path so the next
+     * request for this query is complete.
+     */
+    late: Effect.Effect<RawCandidates | null, never> | null;
+}
+
+const DEFAULT_PROVIDER_DEADLINE_MS = 500;
+const MAX_PROVIDER_DEADLINE_MS = 10_000;
+
+/**
+ * Soft deadline for the live provider search, in ms. `0` disables it (the
+ * request waits for the provider as before). Default 500: the provider's own
+ * p50 is ~190 ms and p90 ~250 ms, so the deadline only trims its tail.
+ */
+export function providerDeadlineMs(): number {
+    const raw = process.env.TOKENS_SEARCH_PROVIDER_DEADLINE_MS;
+    if (raw === undefined || raw.trim() === '') return DEFAULT_PROVIDER_DEADLINE_MS;
+    const value = Number(raw);
+    if (!Number.isFinite(value) || value <= 0) return 0;
+    return Math.min(Math.floor(value), MAX_PROVIDER_DEADLINE_MS);
+}
+
+type ProviderResult = { ok: boolean; tokens: ProviderSearchToken[] };
+type DbResult = { ok: boolean; tokens: DbSearchToken[] };
+
+/** Pure merge: provider (liquidity-sorted) first, then index, then registry mints the others missed. */
+function assembleRaws(
+    query: string,
+    interpretation: QueryInterpretation,
+    providerTokens: readonly ProviderSearchToken[],
+    dbTokens: readonly DbSearchToken[],
+): RawCandidate[] {
+    const byMint = new Map<string, RawCandidate>();
+
+    for (const token of providerTokens) {
+        if (!looksLikeSolanaMintAddress(token.address)) continue;
+        const candidate = byMint.get(token.address) ?? newRawCandidate(token.address);
+        mergeProviderToken(candidate, token);
+        byMint.set(token.address, candidate);
+    }
+
+    for (const token of dbTokens) {
+        if (!looksLikeSolanaMintAddress(token.address)) continue;
+        const candidate = byMint.get(token.address) ?? newRawCandidate(token.address);
+        mergeDbToken(candidate, token);
+        byMint.set(token.address, candidate);
+    }
+
+    for (const mint of registryCandidateMints(query, interpretation)) {
+        const candidate = byMint.get(mint) ?? newRawCandidate(mint);
+        addSource(candidate, 'registry');
+        byMint.set(mint, candidate);
+    }
+
+    return Array.from(byMint.values()).slice(0, MAX_CANDIDATES);
 }
 
 /**
  * Find candidates for a query from the live provider, the token index and
  * the registry. Provider and index run concurrently; either failing degrades
- * that source rather than the call. The result is capped at
- * `MAX_CANDIDATES`, provider (liquidity-sorted) first, then index, then
- * registry mints the other sources missed.
+ * that source rather than the call.
+ *
+ * The provider gets a soft deadline (`providerDeadlineMs`). When it is late
+ * the result is assembled from the index and registry alone and reported as
+ * `degraded`, but the provider call keeps running: `late` resolves to the
+ * complete set so the caller can warm the cache after the response.
  */
 export function collectRawCandidates(
     query: string,
@@ -177,59 +244,70 @@ export function collectRawCandidates(
         const providerConfigured = Boolean((process.env.BIRDEYE_API_KEY ?? '').trim());
         // What the sources are asked must match what the cache key describes.
         const source = sourceQueryFor(query, interpretation);
+        const deadlineMs = providerDeadlineMs();
 
-        const [providerResult, dbResult] = yield* Effect.all(
-            [
-                providerConfigured
-                    ? searchProviderTokens(source, { limit: 20 }).pipe(
-                          Effect.map(tokens => ({ ok: true as const, tokens })),
-                          tapErrorAndDefault(
-                              'v2.lists.searchTokens.provider',
-                              { ok: false as const, tokens: [] },
-                              { query },
-                          ),
-                      )
-                    : Effect.succeed({ ok: false as const, tokens: [] as ProviderSearchToken[] }),
-                tokensSearchTokens({ query: source, limit: 20 }).pipe(
-                    Effect.map(tokens => ({ ok: true as const, tokens: tokens as DbSearchToken[] })),
-                    tapErrorAndDefault(
-                        'v2.lists.searchTokens.db',
-                        { ok: false as const, tokens: [] as DbSearchToken[] },
-                        { query },
-                    ),
-                ),
-            ],
-            { concurrency: 2 },
+        const providerEffect: Effect.Effect<ProviderResult, never> = providerConfigured
+            ? searchProviderTokens(source, { limit: 20 }).pipe(
+                  Effect.map(tokens => ({ ok: true, tokens })),
+                  tapErrorAndDefault('v2.lists.searchTokens.provider', { ok: false, tokens: [] }, { query }),
+              )
+            : Effect.succeed({ ok: false, tokens: [] });
+
+        const dbEffect: Effect.Effect<DbResult, never> = tokensSearchTokens({ query: source, limit: 20 }).pipe(
+            Effect.map(tokens => ({ ok: true, tokens: tokens as DbSearchToken[] })),
+            tapErrorAndDefault('v2.lists.searchTokens.db', { ok: false, tokens: [] }, { query }),
         );
 
-        const byMint = new Map<string, RawCandidate>();
+        // With a deadline, the provider runs on a detached fiber so it can
+        // outlive the race; without one it is awaited like any other source.
+        const racedProvider: Effect.Effect<
+            { result: ProviderResult | null; pending: Effect.Effect<ProviderResult, never> | null },
+            never
+        > =
+            providerConfigured && deadlineMs > 0
+                ? Effect.gen(function* () {
+                      const fiber = yield* Effect.forkDetach(providerEffect);
+                      const joined = yield* Fiber.join(fiber).pipe(Effect.timeoutOption(Duration.millis(deadlineMs)));
+                      return Option.isSome(joined)
+                          ? { result: joined.value, pending: null }
+                          : { result: null, pending: Fiber.join(fiber) };
+                  })
+                : providerEffect.pipe(Effect.map(result => ({ result, pending: null })));
 
-        for (const token of providerResult.tokens) {
-            if (!looksLikeSolanaMintAddress(token.address)) continue;
-            const candidate = byMint.get(token.address) ?? newRawCandidate(token.address);
-            mergeProviderToken(candidate, token);
-            byMint.set(token.address, candidate);
-        }
+        const [provider, dbResult] = yield* Effect.all([racedProvider, dbEffect], { concurrency: 2 });
 
-        for (const token of dbResult.tokens) {
-            if (!looksLikeSolanaMintAddress(token.address)) continue;
-            const candidate = byMint.get(token.address) ?? newRawCandidate(token.address);
-            mergeDbToken(candidate, token);
-            byMint.set(token.address, candidate);
-        }
+        const providerTokens = provider.result?.tokens ?? [];
+        const raws = assembleRaws(source, interpretation, providerTokens, dbResult.tokens);
 
-        for (const mint of registryCandidateMints(source, interpretation)) {
-            const candidate = byMint.get(mint) ?? newRawCandidate(mint);
-            addSource(candidate, 'registry');
-            byMint.set(mint, candidate);
-        }
-
-        const raws = Array.from(byMint.values()).slice(0, MAX_CANDIDATES);
+        const providerOutcome: ProviderOutcome = !providerConfigured
+            ? 'disabled'
+            : provider.result === null
+              ? 'timeout'
+              : provider.result.ok
+                ? 'ok'
+                : 'degraded';
         const sources: RawSourcesStatus = {
-            provider: providerConfigured ? (providerResult.ok ? 'ok' : 'degraded') : 'disabled',
+            provider: providerOutcome === 'ok' ? 'ok' : providerOutcome === 'disabled' ? 'disabled' : 'degraded',
             db: dbResult.ok ? 'ok' : 'degraded',
         };
-        return { raws, sources };
+
+        const late: RawCandidates['late'] =
+            provider.pending === null
+                ? null
+                : provider.pending.pipe(
+                      Effect.map((lateResult): RawCandidates | null =>
+                          lateResult.ok
+                              ? {
+                                    raws: assembleRaws(source, interpretation, lateResult.tokens, dbResult.tokens),
+                                    sources: { provider: 'ok', db: sources.db },
+                                    providerOutcome: 'ok',
+                                    late: null,
+                                }
+                              : null,
+                      ),
+                  );
+
+        return { raws, sources, providerOutcome, late };
     });
 }
 
@@ -401,11 +479,15 @@ export interface GatherOptions<E> {
     budget?: Effect.Effect<void, E>;
     /** Cache injection for tests. */
     cache?: CandidateCacheOptions;
+    /** Where the warm-on-degrade work runs. Defaults to `runAfterResponse`. */
+    scheduleAfterResponse?: (effect: Effect.Effect<void, never>) => void;
 }
 
 export interface GatheredCandidates {
     candidates: EnrichedCandidate[];
     sources: CandidateSourcesStatus;
+    /** `cached` when the raw set was served from the cache (no provider call this request). */
+    providerOutcome: ProviderOutcome | 'cached';
     timing: { collectMs: number; enrichMs: number };
 }
 
@@ -413,6 +495,11 @@ export interface GatheredCandidates {
  * Cached collect → live enrich. The cache key is intent + normalized query,
  * so every route in the family shares one raw set per query regardless of
  * policy or limit.
+ *
+ * When the provider missed its deadline, the degraded set is what this
+ * request answers with (and what is cached right now), and the late provider
+ * result is written over it after the response — so the *next* request for
+ * the query inside the window is complete and fast.
  */
 export function gatherCandidates<E = never>(
     query: string,
@@ -424,31 +511,51 @@ export function gatherCandidates<E = never>(
         const collectStart = Date.now();
 
         let cache: CandidateCacheStatus = candidateCacheEnabled() ? 'miss' : 'bypass';
-        let raw: RawCandidates | null = null;
+        let raws: RawCandidate[];
+        let sources: RawSourcesStatus;
+        let providerOutcome: GatheredCandidates['providerOutcome'];
         let collectedAtMs = collectStart;
 
         const cached = yield* readRawCandidates(key, options.cache);
         if (cached) {
             cache = 'hit';
-            raw = { raws: cached.raws, sources: cached.sources };
+            raws = cached.raws;
+            sources = cached.sources;
+            providerOutcome = 'cached';
             collectedAtMs = cached.cachedAt;
         } else {
             if (options.budget) yield* options.budget;
-            raw = yield* collectRawCandidates(query, interpretation);
+            const collected = yield* collectRawCandidates(query, interpretation);
+            raws = collected.raws;
+            sources = collected.sources;
+            providerOutcome = collected.providerOutcome;
             // One timestamp for the stored entry and this request's dataAsOf,
             // so a later hit reports exactly the age a miss would have.
             collectedAtMs = Date.now();
-            storeRawCandidates(key, { ...raw, cachedAt: collectedAtMs }, options.cache);
+            storeRawCandidates(key, { ...collected, cachedAt: collectedAtMs }, options.cache);
+
+            if (collected.late) {
+                const late = collected.late;
+                const schedule = options.scheduleAfterResponse ?? runAfterResponse;
+                schedule(
+                    late.pipe(
+                        Effect.map(full => {
+                            if (full) storeRawCandidates(key, full, options.cache);
+                        }),
+                    ),
+                );
+            }
         }
         const collectMs = Date.now() - collectStart;
 
         const enrichStart = Date.now();
-        const candidates = yield* enrichCandidates(raw.raws, { collectedAtMs });
+        const candidates = yield* enrichCandidates(raws, { collectedAtMs });
         const enrichMs = Date.now() - enrichStart;
 
         return {
             candidates,
-            sources: { ...raw.sources, registry: 'ok', cache },
+            sources: { ...sources, registry: 'ok', cache },
+            providerOutcome,
             timing: { collectMs, enrichMs },
         };
     });

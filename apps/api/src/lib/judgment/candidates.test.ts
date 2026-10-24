@@ -26,6 +26,7 @@ const ZZ2_MINT = 'ZzqxMint222222222222222222222222222222222222';
 
 let providerCalls = 0;
 let providerFails = false;
+let providerDelayMs = 0;
 let dbCalls = 0;
 let marketCalls = 0;
 let providerKeywords: string[] = [];
@@ -41,6 +42,7 @@ const ORIGINAL_LOG = console.log;
 const ENV_KEYS = [
     'BIRDEYE_API_KEY',
     'TOKENS_JUDGED_CANDIDATE_CACHE',
+    'TOKENS_SEARCH_PROVIDER_DEADLINE_MS',
     'TOKENS_CLOUDRUN_AUTH_TOKEN',
     'TOKENS_CLOUDRUN_ASSETS_URL',
     'TOKENS_CLOUDRUN_PRICES_URL',
@@ -68,6 +70,7 @@ beforeEach(() => {
     __setCuratedMembershipSnapshotForTests({ loadedAt: Date.now(), mintsByList: {}, allMints: [], entriesByMint: {} });
     providerCalls = 0;
     providerFails = false;
+    providerDelayMs = 0;
     dbCalls = 0;
     marketCalls = 0;
     providerKeywords = [];
@@ -80,6 +83,7 @@ beforeEach(() => {
         if (url.includes('public-api.birdeye.so/defi/v3/search')) {
             providerCalls += 1;
             providerKeywords.push(new URL(url).searchParams.get('keyword') ?? '');
+            if (providerDelayMs > 0) await new Promise(resolve => setTimeout(resolve, providerDelayMs));
             if (providerFails) return json({ success: false }, 503);
             return json({
                 success: true,
@@ -274,5 +278,92 @@ describe('gatherCandidates', () => {
         expect(out.candidates.some(c => c.mint === ZZ_MINT)).toBe(true);
         const again = await gather(ZZ_MINT);
         expect(again.sources.cache).toBe('hit');
+    });
+});
+
+describe('gatherCandidates: provider deadline', () => {
+    /** Capture the deferred warm-up so the test can run and await it. */
+    function warmCollector() {
+        const scheduled: Array<Effect.Effect<void, never>> = [];
+        return {
+            schedule: (effect: Effect.Effect<void, never>) => void scheduled.push(effect),
+            run: async () => {
+                for (const effect of scheduled) await Effect.runPromise(effect);
+                return scheduled.length;
+            },
+        };
+    }
+
+    it('a late provider degrades the request, caches the degraded set, then warms the full set after the response', async () => {
+        process.env.TOKENS_SEARCH_PROVIDER_DEADLINE_MS = '20';
+        providerDelayMs = 80;
+        const warm = warmCollector();
+
+        const first = await Effect.runPromise(
+            gatherCandidates('zzqx', classifyQuery('zzqx'), { cache: noRedis, scheduleAfterResponse: warm.schedule }),
+        );
+        expect(first.providerOutcome).toBe('timeout');
+        expect(first.sources.provider).toBe('degraded');
+        expect(first.sources.cache).toBe('miss');
+        expect(first.candidates.map(c => c.mint)).toEqual([ZZ2_MINT]);
+
+        // Until the warm-up runs, a repeat sees the degraded set from cache.
+        const repeat = await gather('zzqx');
+        expect(repeat.sources.cache).toBe('hit');
+        expect(repeat.candidates.map(c => c.mint)).toEqual([ZZ2_MINT]);
+
+        expect(await warm.run()).toBe(1);
+        const warmed = await gather('zzqx');
+        expect(warmed.sources.cache).toBe('hit');
+        expect(warmed.providerOutcome).toBe('cached');
+        expect(warmed.sources.provider).toBe('ok');
+        expect(warmed.candidates.map(c => c.mint)).toEqual([ZZ_MINT, ZZ2_MINT]);
+        expect(providerCalls).toBe(1);
+    });
+
+    it('a late provider that then fails leaves the degraded set in place', async () => {
+        process.env.TOKENS_SEARCH_PROVIDER_DEADLINE_MS = '20';
+        providerDelayMs = 80;
+        providerFails = true;
+        const warm = warmCollector();
+        await Effect.runPromise(
+            gatherCandidates('zzqx', classifyQuery('zzqx'), { cache: noRedis, scheduleAfterResponse: warm.schedule }),
+        );
+        expect(await warm.run()).toBe(1);
+        const after = await gather('zzqx');
+        expect(after.sources.cache).toBe('hit');
+        expect(after.sources.provider).toBe('degraded');
+        expect(after.candidates.map(c => c.mint)).toEqual([ZZ2_MINT]);
+    });
+
+    it('a provider inside the deadline is simply ok, nothing is scheduled', async () => {
+        process.env.TOKENS_SEARCH_PROVIDER_DEADLINE_MS = '500';
+        const warm = warmCollector();
+        const out = await Effect.runPromise(
+            gatherCandidates('zzqx', classifyQuery('zzqx'), { cache: noRedis, scheduleAfterResponse: warm.schedule }),
+        );
+        expect(out.providerOutcome).toBe('ok');
+        expect(out.candidates.map(c => c.mint)).toEqual([ZZ_MINT, ZZ2_MINT]);
+        expect(await warm.run()).toBe(0);
+    });
+
+    it('TOKENS_SEARCH_PROVIDER_DEADLINE_MS=0 disables the deadline and waits for the provider', async () => {
+        process.env.TOKENS_SEARCH_PROVIDER_DEADLINE_MS = '0';
+        providerDelayMs = 60;
+        const warm = warmCollector();
+        const out = await Effect.runPromise(
+            gatherCandidates('zzqx', classifyQuery('zzqx'), { cache: noRedis, scheduleAfterResponse: warm.schedule }),
+        );
+        expect(out.providerOutcome).toBe('ok');
+        expect(out.candidates.map(c => c.mint)).toEqual([ZZ_MINT, ZZ2_MINT]);
+        expect(await warm.run()).toBe(0);
+    });
+
+    it('a provider failure inside the deadline is degraded, not timeout', async () => {
+        process.env.TOKENS_SEARCH_PROVIDER_DEADLINE_MS = '500';
+        providerFails = true;
+        const out = await gather('zzqx');
+        expect(out.providerOutcome).toBe('degraded');
+        expect(out.sources.provider).toBe('degraded');
     });
 });

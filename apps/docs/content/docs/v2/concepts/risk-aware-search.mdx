@@ -20,6 +20,16 @@ through four stages:
 4. **Explanations** — every ranked result carries `reasons`, `warnings` and `badges`; every
    suppressed row carries `suppressedBy`.
 
+### Provider deadline
+
+The live provider gets a bounded slice of each uncached request (about 500 ms). When it is late,
+the request is answered from the token index and the registry and `sources.provider` reads
+`degraded`; the provider call is not cancelled, and its result still refreshes the candidate cache
+after the response, so repeating the query inside the cache window returns the full set. A
+`degraded` source on a small share of unique queries is therefore normal, not an outage: it means
+the long tail was slow for that one request. A provider error inside the deadline is reported the
+same way. Index and registry candidates are never affected.
+
 ## Policies and overrides
 
 A policy is a declarative bundle of hard gates, score weights and a refusal bar. Presets:

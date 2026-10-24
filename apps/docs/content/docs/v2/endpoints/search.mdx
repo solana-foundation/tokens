@@ -57,7 +57,7 @@ interface SearchResponse {
     policyVersion: string;
     scoringVersion: string;
     sources: {
-        provider: 'ok' | 'degraded' | 'disabled';
+        provider: 'ok' | 'degraded' | 'disabled'; // degraded = the live provider was late or failed for this request
         db: 'ok' | 'degraded';
         registry: 'ok';
         cache: 'hit' | 'miss' | 'bypass'; // whether this query's candidate set came from the server-side cache
@@ -118,6 +118,10 @@ curl -sS "$API_BASE_URL/v2/search?q=dog&policy=degen&limit=50" -H "x-api-key: $A
   `/v2/lists/search-tokens`. A hit (`sources.cache: 'hit'`) costs no provider budget; a miss is
   charged. Market data, advisories and tombstones are applied live on every call, so a cached query
   still reflects a mint blocked a second ago. Responses also carry `Cache-Control: private, max-age=30`.
+- The live provider has a soft deadline of about 500 ms per uncached request. If it is late the
+  response is built from the index and registry with `sources.provider: 'degraded'`, and the late
+  provider result still warms the cache for the next call. See
+  [Provider deadline](/v2/concepts/risk-aware-search#provider-deadline).
 
 ## `GET /v2/resolve`
 

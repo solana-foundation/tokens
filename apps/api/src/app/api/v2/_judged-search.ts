@@ -188,7 +188,7 @@ export function runJudgedSearch(params: {
     return Effect.gen(function* () {
         const startedAt = Date.now();
         const interpretation = classifyQuery(params.q);
-        const { candidates, sources, timing } = yield* gatherCandidates(params.q, interpretation, {
+        const { candidates, sources, providerOutcome, timing } = yield* gatherCandidates(params.q, interpretation, {
             budget: params.budget,
         });
         const protectedIndex = yield* Effect.promise(() => getProtectedSymbolIndex());
@@ -203,6 +203,7 @@ export function runJudgedSearch(params: {
             intent: interpretation.intent,
             cache: sources.cache,
             provider: sources.provider,
+            provider_outcome: providerOutcome,
             db: sources.db,
             candidates: candidates.length,
             results: results.length,
