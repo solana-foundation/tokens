@@ -1,16 +1,26 @@
 /**
- * Candidate sourcing + enrichment for the curator-assist token search
+ * Candidate sourcing + enrichment for the judged-search family
  * (ported from the archive repo's v2 search PR; the asset-risk cache was
  * dropped — risk is computeMarketScore over candidate market data, see risk.ts).
  *
- * Candidates come from three places (merged, deduped by mint):
+ * Two halves, so each can be reused and cached on its own:
+ *
+ * `collectRawCandidates` — the I/O that *finds* tokens for a query, merged
+ * and deduped by mint:
  * - `provider`: live Birdeye v3 search (broad long-tail coverage)
  * - `db`:       Cloud Run `tokens` full-text search (curated corpus)
  * - `registry`: checked-in canonical registry aliases
+ * This is the slow, provider-budgeted half; `gatherCandidates` caches its
+ * output per normalized query (see candidate-cache.ts) and only charges the
+ * caller's budget effect on a cache miss.
  *
- * Enrichment overlays Cloud Run market/fill-quality snapshots, registry
- * variant metadata, curated-list membership, and deletion tombstones. A
- * provider outage degrades to db/registry candidates — it never fails the
+ * `enrichCandidates` — overlays Cloud Run market/fill-quality snapshots,
+ * registry variant metadata, curated-list membership, advisories and deletion
+ * tombstones onto raw candidates. Always live, never cached, so editorial
+ * state (a new `blocked` advisory, a hard delete) takes effect on the next
+ * request. `POST /v2/judge` feeds caller-supplied raws straight into it.
+ *
+ * A provider outage degrades to db/registry candidates — it never fails the
  * request.
  */
 
@@ -23,11 +33,7 @@ import { loadAdvisoriesOrEmpty } from '@/lib/advisories';
 import { getCuratedListSlugsByMint } from '@/lib/curated-membership';
 
 import { searchProviderTokens, type ProviderSearchToken } from '@/lib/birdeye-search';
-import {
-    tokensSearchTokens,
-    variantFillQualityGetLatestByMints,
-    variantMarketsGetLatestByMints,
-} from '@/lib/cloudrun';
+import { tokensSearchTokens, variantFillQualityGetLatestByMints, variantMarketsGetLatestByMints } from '@/lib/cloudrun';
 import { listDeletedRefs } from '@/lib/deleted-refs';
 
 import {
@@ -35,36 +41,36 @@ import {
     tokenMarketSnapshotFromConvexMarket,
 } from '@/app/api/v1/assets/_asset-helpers';
 import { looksLikeSolanaMintAddress } from '@/app/api/v1/assets/_singleton-asset-id';
+import {
+    candidateCacheEnabled,
+    rawCandidateCacheKey,
+    readRawCandidates,
+    storeRawCandidates,
+    type CandidateCacheOptions,
+    type RawCandidate,
+    type RawSourcesStatus,
+} from './candidate-cache';
 import { registryClaimedSymbol } from './protected-symbols';
 import { riskFromMarket } from './risk';
 import type { CandidateSource, EnrichedCandidate, QueryInterpretation } from './types';
 
-const MAX_CANDIDATES = 40;
+export type { RawCandidate } from './candidate-cache';
+
+export const MAX_CANDIDATES = 40;
 const CLOUDRUN_CHUNK = 250;
 
-export interface CandidateSourcesStatus {
-    provider: 'ok' | 'degraded' | 'disabled';
-    db: 'ok' | 'degraded';
+export type CandidateCacheStatus = 'hit' | 'miss' | 'bypass';
+
+export interface CandidateSourcesStatus extends RawSourcesStatus {
     registry: 'ok';
+    /**
+     * Whether the raw candidate set came from the per-query cache. `bypass`
+     * means the cache is disabled (or the route never consults it).
+     */
+    cache: CandidateCacheStatus;
 }
 
-interface RawCandidate {
-    mint: string;
-    symbol: string | null;
-    name: string | null;
-    decimals: number | null;
-    logoURI: string | null;
-    price: number | null;
-    liquidityUsd: number | null;
-    volume24hUsd: number | null;
-    marketCapUsd: number | null;
-    priceChange24hPercent: number | null;
-    holderCount: number | null;
-    tokenMintTime: string | null;
-    sources: Set<CandidateSource>;
-}
-
-function newRawCandidate(mint: string): RawCandidate {
+export function newRawCandidate(mint: string): RawCandidate {
     return {
         mint,
         symbol: null,
@@ -78,12 +84,16 @@ function newRawCandidate(mint: string): RawCandidate {
         priceChange24hPercent: null,
         holderCount: null,
         tokenMintTime: null,
-        sources: new Set(),
+        sources: [],
     };
 }
 
+function addSource(candidate: RawCandidate, source: CandidateSource): void {
+    if (!candidate.sources.includes(source)) candidate.sources.push(source);
+}
+
 function mergeProviderToken(candidate: RawCandidate, token: ProviderSearchToken): void {
-    candidate.sources.add('provider');
+    addSource(candidate, 'provider');
     candidate.symbol ??= token.symbol;
     candidate.name ??= token.name;
     candidate.decimals ??= token.decimals;
@@ -111,7 +121,7 @@ interface DbSearchToken {
 }
 
 function mergeDbToken(candidate: RawCandidate, token: DbSearchToken): void {
-    candidate.sources.add('db');
+    addSource(candidate, 'db');
     candidate.symbol ??= token.symbol || null;
     candidate.name ??= token.name || null;
     candidate.decimals ??= Number.isFinite(token.decimals) ? token.decimals : null;
@@ -146,15 +156,22 @@ function registryCandidateMints(query: string, interpretation: QueryInterpretati
     return mints.slice(0, 15);
 }
 
-export interface GatheredCandidates {
-    candidates: EnrichedCandidate[];
-    sources: CandidateSourcesStatus;
+export interface RawCandidates {
+    raws: RawCandidate[];
+    sources: RawSourcesStatus;
 }
 
-export function gatherCandidates(
+/**
+ * Find candidates for a query from the live provider, the token index and
+ * the registry. Provider and index run concurrently; either failing degrades
+ * that source rather than the call. The result is capped at
+ * `MAX_CANDIDATES`, provider (liquidity-sorted) first, then index, then
+ * registry mints the other sources missed.
+ */
+export function collectRawCandidates(
     query: string,
     interpretation: QueryInterpretation,
-): Effect.Effect<GatheredCandidates, unknown> {
+): Effect.Effect<RawCandidates, never> {
     return Effect.gen(function* () {
         const providerConfigured = Boolean((process.env.BIRDEYE_API_KEY ?? '').trim());
 
@@ -163,19 +180,25 @@ export function gatherCandidates(
                 providerConfigured
                     ? searchProviderTokens(query, { limit: 20 }).pipe(
                           Effect.map(tokens => ({ ok: true as const, tokens })),
-                          tapErrorAndDefault('v2.lists.searchTokens.provider', { ok: false as const, tokens: [] }, { query }),
+                          tapErrorAndDefault(
+                              'v2.lists.searchTokens.provider',
+                              { ok: false as const, tokens: [] },
+                              { query },
+                          ),
                       )
                     : Effect.succeed({ ok: false as const, tokens: [] as ProviderSearchToken[] }),
                 tokensSearchTokens({ query, limit: 20 }).pipe(
                     Effect.map(tokens => ({ ok: true as const, tokens: tokens as DbSearchToken[] })),
-                    tapErrorAndDefault('v2.lists.searchTokens.db', { ok: false as const, tokens: [] as DbSearchToken[] }, { query }),
+                    tapErrorAndDefault(
+                        'v2.lists.searchTokens.db',
+                        { ok: false as const, tokens: [] as DbSearchToken[] },
+                        { query },
+                    ),
                 ),
             ],
             { concurrency: 2 },
         );
 
-        // Merge/dedupe by mint. Provider ordering (liquidity-sorted) first, then
-        // db, then registry mints the other sources missed.
         const byMint = new Map<string, RawCandidate>();
 
         for (const token of providerResult.tokens) {
@@ -194,46 +217,55 @@ export function gatherCandidates(
 
         for (const mint of registryCandidateMints(query, interpretation)) {
             const candidate = byMint.get(mint) ?? newRawCandidate(mint);
-            candidate.sources.add('registry');
+            addSource(candidate, 'registry');
             byMint.set(mint, candidate);
         }
 
         const raws = Array.from(byMint.values()).slice(0, MAX_CANDIDATES);
+        const sources: RawSourcesStatus = {
+            provider: providerConfigured ? (providerResult.ok ? 'ok' : 'degraded') : 'disabled',
+            db: dbResult.ok ? 'ok' : 'degraded',
+        };
+        return { raws, sources };
+    });
+}
+
+/**
+ * Overlay live enrichment onto raw candidates. Best-effort throughout:
+ * absence means unknown, not bad. The three Cloud Run reads are independent
+ * and run concurrently; advisories and curated membership come from their
+ * own in-process caches.
+ */
+export function enrichCandidates(raws: readonly RawCandidate[]): Effect.Effect<EnrichedCandidate[], never> {
+    return Effect.gen(function* () {
         const mints = raws.map(raw => raw.mint);
+        if (mints.length === 0) return [];
 
-        // ---- Enrichment fan-in (best-effort; absence means unknown, not bad) ----
-
-        const marketRows =
-            mints.length > 0
-                ? yield* Effect.all(
-                      chunk(mints, CLOUDRUN_CHUNK).map(part =>
-                          variantMarketsGetLatestByMints({ mints: part }).pipe(
-                              tapErrorAndDefault('v2.lists.searchTokens.variantMarkets', [], { count: part.length }),
-                          ),
-                      ),
-                      { concurrency: 2 },
-                  ).pipe(Effect.map(rows => rows.flat()))
-                : [];
-
-        const fillQualityRows =
-            mints.length > 0
-                ? yield* Effect.all(
-                      chunk(mints, CLOUDRUN_CHUNK).map(part =>
-                          variantFillQualityGetLatestByMints({ mints: part }).pipe(
-                              tapErrorAndDefault('v2.lists.searchTokens.fillQuality', [], { count: part.length }),
-                          ),
-                      ),
-                      { concurrency: 2 },
-                  ).pipe(Effect.map(rows => rows.flat()))
-                : [];
-
-        const tombstonedRefs = new Set(
-            mints.length > 0
-                ? yield* listDeletedRefs({ refs: mints }).pipe(
-                      tapErrorAndDefault('v2.lists.searchTokens.tombstones', [], { count: mints.length }),
-                  )
-                : [],
+        const [marketRows, fillQualityRows, tombstonedList] = yield* Effect.all(
+            [
+                Effect.all(
+                    chunk(mints, CLOUDRUN_CHUNK).map(part =>
+                        variantMarketsGetLatestByMints({ mints: part }).pipe(
+                            tapErrorAndDefault('v2.lists.searchTokens.variantMarkets', [], { count: part.length }),
+                        ),
+                    ),
+                    { concurrency: 2 },
+                ).pipe(Effect.map(rows => rows.flat())),
+                Effect.all(
+                    chunk(mints, CLOUDRUN_CHUNK).map(part =>
+                        variantFillQualityGetLatestByMints({ mints: part }).pipe(
+                            tapErrorAndDefault('v2.lists.searchTokens.fillQuality', [], { count: part.length }),
+                        ),
+                    ),
+                    { concurrency: 2 },
+                ).pipe(Effect.map(rows => rows.flat())),
+                listDeletedRefs({ refs: mints }).pipe(
+                    tapErrorAndDefault('v2.lists.searchTokens.tombstones', [], { count: mints.length }),
+                ),
+            ],
+            { concurrency: 3 },
         );
+        const tombstonedRefs = new Set(tombstonedList);
 
         // Admin advisories (fail-open: an outage means no advisory gates for
         // this request, logged loudly by the cache).
@@ -278,7 +310,7 @@ export function gatherCandidates(
         // *freshest* data we have, not stale/unknown.
         const enrichedAtMs = Date.now();
 
-        const candidates: EnrichedCandidate[] = raws.map(raw => {
+        return raws.map((raw): EnrichedCandidate => {
             const market = marketByMint.get(raw.mint) ?? null;
             const registryMatch = getVariantByMint(raw.mint);
             const fillQuality = fillQualityByMint.get(raw.mint) ?? null;
@@ -309,7 +341,7 @@ export function gatherCandidates(
                 holderCount,
                 top10HoldersPercent,
                 tokenMintTime: raw.tokenMintTime,
-                sources: Array.from(raw.sources.size > 0 ? raw.sources : new Set<CandidateSource>(['db'])),
+                sources: raw.sources.length > 0 ? [...raw.sources] : ['db'],
                 curatedListIds,
                 registry: registryMatch
                     ? {
@@ -337,17 +369,66 @@ export function gatherCandidates(
                 advisory: advisoriesByMint.get(raw.mint) ?? null,
                 dataAsOf:
                     marketAsOfByMint.get(raw.mint) ??
-                    (raw.sources.has('provider') && raw.price !== null ? enrichedAtMs : null),
+                    (raw.sources.includes('provider') && raw.price !== null ? enrichedAtMs : null),
             };
         });
+    });
+}
 
-        const sources: CandidateSourcesStatus = {
-            provider: providerConfigured ? (providerResult.ok ? 'ok' : 'degraded') : 'disabled',
-            db: dbResult.ok ? 'ok' : 'degraded',
-            registry: 'ok',
+export interface GatherOptions<E> {
+    /**
+     * Charged once, before the live sources run, only when the raw set is
+     * not served from cache. Its failure (e.g. the provider budget's
+     * `RateLimitedError`) fails the gather.
+     */
+    budget?: Effect.Effect<void, E>;
+    /** Cache injection for tests. */
+    cache?: CandidateCacheOptions;
+}
+
+export interface GatheredCandidates {
+    candidates: EnrichedCandidate[];
+    sources: CandidateSourcesStatus;
+    timing: { collectMs: number; enrichMs: number };
+}
+
+/**
+ * Cached collect → live enrich. The cache key is intent + normalized query,
+ * so every route in the family shares one raw set per query regardless of
+ * policy or limit.
+ */
+export function gatherCandidates<E = never>(
+    query: string,
+    interpretation: QueryInterpretation,
+    options: GatherOptions<E> = {},
+): Effect.Effect<GatheredCandidates, E> {
+    return Effect.gen(function* () {
+        const key = rawCandidateCacheKey(interpretation);
+        const collectStart = Date.now();
+
+        let cache: CandidateCacheStatus = candidateCacheEnabled() ? 'miss' : 'bypass';
+        let raw: RawCandidates | null = null;
+
+        const cached = yield* readRawCandidates(key, options.cache);
+        if (cached) {
+            cache = 'hit';
+            raw = { raws: cached.raws, sources: cached.sources };
+        } else {
+            if (options.budget) yield* options.budget;
+            raw = yield* collectRawCandidates(query, interpretation);
+            storeRawCandidates(key, raw, options.cache);
+        }
+        const collectMs = Date.now() - collectStart;
+
+        const enrichStart = Date.now();
+        const candidates = yield* enrichCandidates(raw.raws);
+        const enrichMs = Date.now() - enrichStart;
+
+        return {
+            candidates,
+            sources: { ...raw.sources, registry: 'ok', cache },
+            timing: { collectMs, enrichMs },
         };
-
-        return { candidates, sources };
     });
 }
 

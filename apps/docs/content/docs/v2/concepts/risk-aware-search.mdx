@@ -152,6 +152,8 @@ Each policy has its own refusal bar: `strict` refuses most readily, `degen` leas
 ## Cost
 
 Unique queries can reach the live provider, so `/v2/search`, `/v2/resolve` and
-`/v2/lists/search-tokens` share a per-key budget of 120 calls per 10 minutes by default.
-Identical queries within the 30-second cache window do not count. See
+`/v2/lists/search-tokens` share a per-key budget of 120 calls per 10 minutes by default. The three
+routes also share a server-side cache of each normalized query's candidate set (about 45 seconds);
+a hit is reported as `sources.cache: 'hit'` and is not charged. Only the candidate *set* is cached:
+market data, advisories and tombstones are applied live on every call. See
 [Provider lookup budget](/v2/errors-and-limits#provider-lookup-budget).

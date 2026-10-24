@@ -9,8 +9,9 @@ All endpoints below use `https://api.tokens.xyz/v2` with an `x-api-key` header; 
 [Risk-aware search](/v2/concepts/risk-aware-search).
 
 Both routes share the per-key `search` provider budget (120 calls per 10 minutes by default) with
-`GET /v2/lists/search-tokens`; see
-[Provider lookup budget](/v2/errors-and-limits#provider-lookup-budget).
+`GET /v2/lists/search-tokens`. The budget is charged only when a query's candidate set is not already
+in the server-side cache (about 45 seconds per normalized query), so repeating or refining a query is
+free; see [Provider lookup budget](/v2/errors-and-limits#provider-lookup-budget).
 
 ## `GET /v2/search`
 
@@ -55,7 +56,12 @@ interface SearchResponse {
     };
     policyVersion: string;
     scoringVersion: string;
-    sources: { provider: 'ok' | 'degraded' | 'disabled'; db: 'ok' | 'degraded'; registry: 'ok' };
+    sources: {
+        provider: 'ok' | 'degraded' | 'disabled';
+        db: 'ok' | 'degraded';
+        registry: 'ok';
+        cache: 'hit' | 'miss' | 'bypass'; // whether this query's candidate set came from the server-side cache
+    };
     latencyMs: number;
     results: Array<{
         mint: string;
@@ -107,7 +113,11 @@ curl -sS "$API_BASE_URL/v2/search?q=dog&policy=degen&limit=50" -H "x-api-key: $A
   every policy and cannot be overridden.
 - The vocabularies for `reasons`, `warnings`, `badges`, `claims.attestations` and `suppressedBy`
   are listed under [Explanation codes](/v2/concepts/risk-aware-search#explanation-codes).
-- Cached for 30 s; identical queries inside the window do not count against the budget.
+- The candidate set for a normalized query (case-insensitive, `$` prefix ignored; a mint address is
+  exact) is cached server-side for about 45 seconds and shared by `/v2/search`, `/v2/resolve` and
+  `/v2/lists/search-tokens`. A hit (`sources.cache: 'hit'`) costs no provider budget; a miss is
+  charged. Market data, advisories and tombstones are applied live on every call, so a cached query
+  still reflects a mint blocked a second ago. Responses also carry `Cache-Control: private, max-age=30`.
 
 ## `GET /v2/resolve`
 
@@ -133,7 +143,7 @@ interface ResolveResponse {
     policy: SearchResponse['policy'];
     policyVersion: string;
     scoringVersion: string;
-    sources: SearchResponse['sources'];
+    sources: SearchResponse['sources']; // includes `cache`
     latencyMs: number;
     status: 'resolved' | 'ambiguous' | 'no_confident_match';
     // `resolved`: the single answer. `confidence` is 0–1 (exact mint paste → 1).
@@ -156,4 +166,5 @@ curl -sS "$API_BASE_URL/v2/resolve?q=USDC" -H "x-api-key: $API_KEY"
   by a margin; `ambiguous` means several credible claimers exist, so show `candidates` and let the
   user pick. See [Resolve: confidence or refusal](/v2/concepts/risk-aware-search#resolve-confidence-or-refusal).
 - Each policy has its own refusal bar: `strict` refuses most readily, `degen` least.
-- Cached for 30 s.
+- Shares the search candidate cache: a query resolved or searched in the last ~45 seconds is served
+  from it (`sources.cache: 'hit'`) and does not count against the budget.

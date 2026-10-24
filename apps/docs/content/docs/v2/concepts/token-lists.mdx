@@ -82,8 +82,8 @@ Batch adds and single-member `PUT`s may reach the live provider for mints unknow
 so they draw from a per-key `batch` budget (30 calls per 10 minutes by default). Within one batch
 call at most about 50 unknown mints are resolved against the provider; the rest fail individually
 as `unknown_mint` and can be retried later. The curator search `GET /v2/lists/search-tokens`
-shares the `search` budget with `/v2/search` and `/v2/resolve` (120 calls per 10 minutes). Both
-budgets return `429` when exhausted; see
+shares the `search` budget with `/v2/search` and `/v2/resolve` (120 calls per 10 minutes; only
+candidate-cache misses are charged). Both budgets return `429` when exhausted; see
 [Provider lookup budget](/v2/errors-and-limits#provider-lookup-budget).
 
 Recommended automation flow: check the slug, create the list as `draft`, load it with one or a few

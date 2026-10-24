@@ -18,13 +18,26 @@ const { USDC_MINT, BONK_MINT, FAKE_USDC_MINT, NEW_DOG_MINT, fakeUsdc, homoglyphU
 
 let nextCandidates: EnrichedCandidate[] = [];
 let gatherCalls = 0;
+let budgetCalls = 0;
 mock.module('@/lib/judgment/candidates', () => ({
-    gatherCandidates: () => {
+    gatherCandidates: (
+        _query: string,
+        _interpretation: unknown,
+        options?: { budget?: Effect.Effect<void, unknown> },
+    ) => {
         gatherCalls += 1;
-        return Effect.succeed({
-            candidates: nextCandidates,
-            sources: { provider: 'ok', db: 'ok', registry: 'ok' },
-        });
+        // The real gather charges the budget only on a cache miss; here every
+        // call is a miss, so a wired budget must run exactly once per gather.
+        const charge = options?.budget
+            ? options.budget.pipe(Effect.tap(() => Effect.sync(() => void (budgetCalls += 1))))
+            : Effect.void;
+        return charge.pipe(
+            Effect.map(() => ({
+                candidates: nextCandidates,
+                sources: { provider: 'ok', db: 'ok', registry: 'ok', cache: 'miss' },
+                timing: { collectMs: 0, enrichMs: 0 },
+            })),
+        );
     },
 }));
 
@@ -81,6 +94,7 @@ beforeEach(() => {
     console.error = () => undefined;
     nextCandidates = [];
     gatherCalls = 0;
+    budgetCalls = 0;
 });
 
 afterEach(() => {
@@ -182,7 +196,9 @@ describe('GET /v2/search', () => {
         expect(typeof body.policy.gates.minLiquidityUsd).toBe('number');
         expect(body.policyVersion.startsWith('v2-policy-')).toBe(true);
         expect(body.scoringVersion.startsWith('v2-scoring-')).toBe(true);
-        expect(body.sources).toEqual({ provider: 'ok', db: 'ok', registry: 'ok' });
+        expect(body.sources).toEqual({ provider: 'ok', db: 'ok', registry: 'ok', cache: 'miss' });
+        // The provider budget is wired through gather (charged on a cache miss only).
+        expect(budgetCalls).toBe(1);
 
         expect(body.results.map(r => r.mint)).toEqual([USDC_MINT]);
         expect(body.results[0]?.verified).toBe(true);

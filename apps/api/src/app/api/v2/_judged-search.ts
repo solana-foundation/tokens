@@ -7,7 +7,7 @@
 
 import { Effect } from 'effect';
 
-import { BadRequestError, decodeLimit } from '@tokens/effect';
+import { BadRequestError, decodeLimit, emitEvent } from '@tokens/effect';
 
 import { gatherCandidates, type CandidateSourcesStatus } from '@/lib/judgment/candidates';
 import { classifyQuery } from '@/lib/judgment/intent';
@@ -167,22 +167,51 @@ export interface JudgedSearchOutput {
     latencyMs: number;
 }
 
-/** intent → candidates (I/O) → protected index → pure judgment. */
+export type JudgedRoute = 'search' | 'resolve' | 'lists.search-tokens';
+
+/**
+ * intent → candidates (cached collect + live enrich) → protected index →
+ * pure judgment. `budget` is the route's provider-budget charge; it runs only
+ * when the raw candidate set is not served from cache, which is what makes
+ * "repeat queries are free" true.
+ *
+ * Emits one `judged_search` event per call so cache hit rate, provider
+ * degradation and the collect/enrich split are a single Loki query.
+ */
 export function runJudgedSearch(params: {
+    route: JudgedRoute;
     q: string;
     policy: PolicyDocument;
     limit: number;
+    budget?: Effect.Effect<void, unknown>;
 }): Effect.Effect<JudgedSearchOutput, unknown> {
     return Effect.gen(function* () {
         const startedAt = Date.now();
         const interpretation = classifyQuery(params.q);
-        const { candidates, sources } = yield* gatherCandidates(params.q, interpretation);
+        const { candidates, sources, timing } = yield* gatherCandidates(params.q, interpretation, {
+            budget: params.budget,
+        });
         const protectedIndex = yield* Effect.promise(() => getProtectedSymbolIndex());
         const { results, suppressed } = judgeCandidates(candidates, interpretation, params.policy, protectedIndex, {
             nowMs: Date.now(),
             limit: params.limit,
         });
-        return { interpretation, candidates, sources, results, suppressed, latencyMs: Date.now() - startedAt };
+        const latencyMs = Date.now() - startedAt;
+        emitEvent({
+            event: 'judged_search',
+            route: params.route,
+            intent: interpretation.intent,
+            cache: sources.cache,
+            provider: sources.provider,
+            db: sources.db,
+            candidates: candidates.length,
+            results: results.length,
+            suppressed: suppressed.length,
+            collect_ms: timing.collectMs,
+            enrich_ms: timing.enrichMs,
+            duration_ms: latencyMs,
+        });
+        return { interpretation, candidates, sources, results, suppressed, latencyMs };
     });
 }
 
