@@ -22,13 +22,7 @@ function logScale(value: number | null, floor: number, ceiling: number): number 
     return Math.round(100 * clamp01(Math.log10(value / floor) / Math.log10(ceiling / floor)));
 }
 
-export type MatchKind =
-    | 'mint'
-    | 'exact_symbol'
-    | 'exact_name'
-    | 'symbol_prefix'
-    | 'name_contains'
-    | 'weak';
+export type MatchKind = 'mint' | 'exact_symbol' | 'exact_name' | 'symbol_prefix' | 'name_contains' | 'weak';
 
 export function classifyMatch(candidate: EnrichedCandidate, interpretation: QueryInterpretation): MatchKind {
     if (interpretation.intent === 'mint') {
@@ -36,6 +30,10 @@ export function classifyMatch(candidate: EnrichedCandidate, interpretation: Quer
     }
 
     const query = interpretation.normalizedQuery;
+    // No query (POST /v2/judge without `q`): nothing can match, ranking is
+    // credibility alone. Without this an empty query would equal a missing
+    // symbol's empty normalization.
+    if (!query) return 'weak';
     const symbol = normalizeClaim(candidate.symbol).normalized;
     const name = normalizeClaim(candidate.name).normalized;
     const registrySymbol = normalizeClaim(candidate.registry?.symbol).normalized;
@@ -91,8 +89,7 @@ export function computeComponents(
 
     const volumeScore = logScale(candidate.volume24hUsd, 100, 50_000_000);
     const executionScore = candidate.fillQuality?.executionScore ?? null;
-    const activity =
-        executionScore !== null ? Math.round(0.7 * volumeScore + 0.3 * executionScore) : volumeScore;
+    const activity = executionScore !== null ? Math.round(0.7 * volumeScore + 0.3 * executionScore) : volumeScore;
 
     return {
         matchQuality: MATCH_SCORES[interpretation.intent][match],

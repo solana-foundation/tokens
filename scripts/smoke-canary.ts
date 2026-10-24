@@ -36,8 +36,8 @@ type Probe = {
     auth: boolean;
     expectJson?: boolean;
     budgetMs: number;
-    /** Feature the probe needs; see `v2AssetsSkipReason`. */
-    requires?: 'v2-assets';
+    /** Feature the probe needs; see `v2AssetsSkipReason` / `v2JudgeSkipReason`. */
+    requires?: 'v2-assets' | 'v2-judge';
     assert: (ctx: { json: unknown; body: string; status: number; finalUrl: string }) => void;
 };
 
@@ -118,6 +118,40 @@ const apiProbes: Probe[] = [
         },
     },
     {
+        // Bring-your-own-candidates judgment: no provider call, no provider
+        // budget. The real USDC must rank and the impostor claiming its symbol
+        // must be suppressed by the protected-symbol gate.
+        name: 'v2-judge',
+        target: 'api',
+        method: 'POST',
+        path: '/api/v2/judge',
+        auth: true,
+        budgetMs: 5000,
+        requires: 'v2-judge',
+        body: {
+            q: 'USDC',
+            candidates: [
+                { mint: USDC_MINT },
+                { mint: 'FakeUSDCmint11111111111111111111111111111111', symbol: 'USDC', name: 'USD Coin' },
+            ],
+        },
+        assert: ({ json, status }) => {
+            assert(status === 200, `expected 200, got ${status}`);
+            assert(isObject(json) && Array.isArray(json.results), 'expected { results: [] }');
+            const results = json.results as Array<{ mint?: unknown }>;
+            assert(results[0]?.mint === USDC_MINT, 'judge must rank the real USDC first');
+            assert(Array.isArray(json.suppressed), 'expected suppressed[]');
+            const suppressed = json.suppressed as Array<{ mint?: unknown; suppressedBy?: unknown }>;
+            const fake = suppressed.find(row => row.mint === 'FakeUSDCmint11111111111111111111111111111111');
+            assert(fake !== undefined, 'the impostor must be suppressed');
+            assert(
+                Array.isArray(fake.suppressedBy) && fake.suppressedBy.includes('gate_impersonation'),
+                'the impostor must be suppressed by gate_impersonation',
+            );
+            assert(isObject(json.sources) && json.sources.caller === 'ok', 'expected sources.caller === "ok"');
+        },
+    },
+    {
         // Exercises the documented public path (`/v2/...` -> `/api/v2/...`
         // rewrite in next.config.ts); the probe above uses the internal path.
         name: 'v2-resolve-public-path',
@@ -145,7 +179,10 @@ const apiProbes: Probe[] = [
         assert: ({ json, status }) => {
             assert(status === 200, `expected 200, got ${status}`);
             assert(isObject(json) && Array.isArray(json.chains), 'expected { chains: [] }');
-            assert((json.chains as unknown[]).length === 6, `expected exactly 6 chains, got ${(json.chains as unknown[]).length}`);
+            assert(
+                (json.chains as unknown[]).length === 6,
+                `expected exactly 6 chains, got ${(json.chains as unknown[]).length}`,
+            );
         },
     },
     {
@@ -194,7 +231,10 @@ const apiProbes: Probe[] = [
         assert: ({ json, status }) => {
             assert(status === 200, `expected 200, got ${status}`);
             assert(isObject(json) && Array.isArray(json.variants), 'expected { variants: [] }');
-            assert((json.variants as unknown[]).length === 1, `expected exactly 1 variant for wrapped SOL, got ${(json.variants as unknown[]).length}`);
+            assert(
+                (json.variants as unknown[]).length === 1,
+                `expected exactly 1 variant for wrapped SOL, got ${(json.variants as unknown[]).length}`,
+            );
         },
     },
     {
@@ -385,11 +425,7 @@ const webProbes: Probe[] = [
     },
 ];
 
-const probes: Probe[] = [
-    ...apiProbes,
-    ...(appBaseUrl ? appProbes : []),
-    ...(webBaseUrl ? webProbes : []),
-];
+const probes: Probe[] = [...apiProbes, ...(appBaseUrl ? appProbes : []), ...(webBaseUrl ? webProbes : [])];
 
 function probeBaseUrl(probe: Probe): string {
     if (probe.target === 'app') return appBaseUrl;
@@ -498,12 +534,42 @@ async function runProbe(probe: Probe): Promise<ProbeResult> {
  * every other probe. Any other state (5xx, network error) is left to the
  * probes themselves so a real outage still fails.
  */
+/**
+ * Same shape for `POST /v2/judge`: the pre-API prod canary runs against the
+ * previous API, where the route does not exist yet (404 from Next, not from
+ * the handler). Once the route answers at all — 400 for the empty body here —
+ * the probe is enforced like every other one.
+ */
+async function v2JudgeSkipReason(): Promise<string | null> {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+        const res = await fetch(`${apiBaseUrl}/api/v2/judge`, {
+            method: 'POST',
+            headers: { 'x-api-key': apiKey, 'content-type': 'application/json' },
+            body: JSON.stringify({ candidates: [] }),
+            signal: controller.signal,
+        });
+        if (res.status === 404 || res.status === 405) {
+            return `POST /api/v2/judge not deployed yet (→ ${res.status})`;
+        }
+        return null;
+    } catch {
+        return null;
+    } finally {
+        clearTimeout(timer);
+    }
+}
+
 async function v2AssetsSkipReason(): Promise<string | null> {
     const get = async (path: string): Promise<{ status: number; json: unknown }> => {
         const controller = new AbortController();
         const timer = setTimeout(() => controller.abort(), timeoutMs);
         try {
-            const res = await fetch(`${apiBaseUrl}${path}`, { headers: { 'x-api-key': apiKey }, signal: controller.signal });
+            const res = await fetch(`${apiBaseUrl}${path}`, {
+                headers: { 'x-api-key': apiKey },
+                signal: controller.signal,
+            });
             const text = await res.text();
             let json: unknown = null;
             try {
@@ -551,9 +617,14 @@ function skippedResult(probe: Probe, reason: string): ProbeResult {
 
 async function main(): Promise<void> {
     const v2Skip = probes.some(p => p.requires === 'v2-assets') ? await v2AssetsSkipReason() : null;
+    const judgeSkip = probes.some(p => p.requires === 'v2-judge') ? await v2JudgeSkipReason() : null;
     const settled = await Promise.allSettled(
         probes.map(probe =>
-            probe.requires === 'v2-assets' && v2Skip ? Promise.resolve(skippedResult(probe, v2Skip)) : runProbe(probe),
+            probe.requires === 'v2-assets' && v2Skip
+                ? Promise.resolve(skippedResult(probe, v2Skip))
+                : probe.requires === 'v2-judge' && judgeSkip
+                  ? Promise.resolve(skippedResult(probe, judgeSkip))
+                  : runProbe(probe),
         ),
     );
     const results: ProbeResult[] = settled.map((s, i) => {
@@ -580,9 +651,7 @@ async function main(): Promise<void> {
         console.log(
             `[${tag}] [${result.target}] ${result.name} ${result.method} ${result.path} status=${statusStr} duration=${result.durationMs}ms${retryNote}${
                 result.error ? ` error="${result.error}"` : ''
-            }${
-                result.skipped ? ` skipped="${result.skipped}"` : ''
-            }`,
+            }${result.skipped ? ` skipped="${result.skipped}"` : ''}`,
         );
     }
 

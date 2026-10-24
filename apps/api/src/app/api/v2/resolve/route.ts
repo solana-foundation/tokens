@@ -22,14 +22,16 @@ const RESOLVE_CANDIDATE_LIMIT = 10;
 export const GET = route(
     (request: Request, ctx: { platformAuth: PlatformAuthContext }) =>
         Effect.gen(function* () {
-            yield* enforceProviderBudget(ctx.platformAuth, 'search');
             const url = new URL(request.url);
             const params = yield* parseJudgedSearchParams(url, { defaultPolicy: 'default' });
 
+            // Budget charged only on a candidate-cache miss (see runJudgedSearch).
             const { interpretation, candidates, sources, results, latencyMs } = yield* runJudgedSearch({
+                route: 'resolve',
                 q: params.q,
                 policy: params.policy,
                 limit: RESOLVE_CANDIDATE_LIMIT,
+                budget: enforceProviderBudget(ctx.platformAuth, 'search'),
             });
 
             const outcome = resolveFromJudged(results, interpretation, params.policy);

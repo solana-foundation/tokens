@@ -443,7 +443,12 @@ interface SearchTokensResponse {
     policy: string; // the preset id; overrides are applied but not echoed here
     policyVersion: string;
     scoringVersion: string;
-    sources: { provider: 'ok' | 'degraded' | 'disabled'; db: 'ok' | 'degraded'; registry: 'ok' };
+    sources: {
+        provider: 'ok' | 'degraded' | 'disabled';
+        db: 'ok' | 'degraded';
+        registry: 'ok';
+        cache: 'hit' | 'miss' | 'bypass'; // whether this query's candidate set came from the server-side cache
+    };
     latencyMs: number;
     results: Array<{
         mint: string;
@@ -482,4 +487,5 @@ curl -sS "$API_BASE_URL/v2/lists/search-tokens?q=bonk" -H "x-api-key: $API_KEY"
   `gate_advisory_compromised`, so a curator sees that the mint was rejected and why. See
   [Advisories](/v1/concepts/advisories).
 - `inLists` excludes `unlisted` lists.
-- Cached for 30 s.
+- Shares the search candidate cache with `/v2/search` and `/v2/resolve`: a query any of them saw in
+  the last ~45 seconds is a hit (`sources.cache: 'hit'`) and does not count against the budget.

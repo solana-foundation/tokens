@@ -20,7 +20,7 @@ or [`GET /v2/search`](/v2/endpoints/search).
 | `GET /v1/assets/curated?list=…&groupBy=asset` | `GET /v2/assets?list=…` |
 | `GET /v1/assets/curated?variants=all` | `GET /v2/assets?include=variants` |
 | `GET /v1/assets/curated?groupBy=mint` | dropped; use `GET /v2/assets/{assetId}/variants`, or `include=variants` and flatten client-side |
-| `GET /v1/assets/search?q=` (canonical rows) | `GET /v2/assets?q=` for the curated set; unregistered tokens via [`GET /v2/search`](/v2/endpoints/search) |
+| `GET /v1/assets/search?q=` (canonical rows) | `GET /v2/assets?q=` for the curated set; unregistered tokens via [`GET /v2/search`](/v2/endpoints/search); if you keep your own search, judge its results with [`POST /v2/judge`](/v2/endpoints/search#post-v2judge) |
 | `GET /v1/assets/{assetId}` | `GET /v2/assets/{assetId}` |
 | `GET /v1/assets/{mint}` (a registered mint) | `GET /v2/variants/solana/{mint}`: the variant plus an asset summary. Unregistered mints are `404` on both (`asset_not_registered` on v1, `variant_not_found` on v2) |
 | `GET /v1/assets/{assetId}/variants` | `GET /v2/assets/{assetId}/variants` |

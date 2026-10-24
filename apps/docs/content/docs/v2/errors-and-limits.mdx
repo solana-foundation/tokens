@@ -37,6 +37,10 @@ Domain errors from list writes are `400` unless noted. The code is stable; the m
 | `slug_held` | 400 | Slug was released recently and is reclaimable only by its previous owner during the hold-down window |
 | `invalid_mint` | 400 | Not a base58 Solana mint address |
 | `unknown_mint` | 400 | Mint not found in the registry, the token index, or the live provider |
+| `invalid_body` | 400 | `POST /v2/judge`: body is not a JSON object |
+| `invalid_candidates` | 400 | `POST /v2/judge`: `candidates` missing, not an array, or empty |
+| `too_many_candidates` | 400 | `POST /v2/judge`: more than 40 candidates (`details.max`, `details.received`) |
+| `invalid_param` | 400 | `POST /v2/judge`: a flag (`q`, `policy`, a gate override, `limit`, `includeSuppressed`) is an object or array instead of a string, number or boolean (`details.param`) |
 | `project_lists_limit` | 400 | Project is at its list cap; delete a list first |
 | `list_full` | 400 | List is at its member cap |
 | `batch_too_large` | 400 | Batch exceeds the per-call mint cap |
@@ -84,15 +88,18 @@ they share a per-**key** budget on top of the standard rate limits:
 |---|---|---|
 | `search` | `GET /v2/search`, `GET /v2/resolve`, `GET /v2/lists/search-tokens` | 120 calls / 10 min |
 | `batch` | `POST /v2/lists/{slug}/members`, `PUT /v2/lists/{slug}/members/{mint}` | 30 calls / 10 min |
+| — | `POST /v2/judge` | not budgeted: the caller brings the candidates, nothing is looked up at the provider |
 
-- Every **call** is charged, not every lookup; the API cannot know in advance how many mints will
-  miss the local index. Within a batch call, at most about 50 unknown mints are resolved against
+- Every **call that misses the candidate cache** is charged, not every lookup; the API cannot know
+  in advance how many mints will miss the local index. Within a batch call, at most about 50 unknown mints are resolved against
   the provider; the rest fail individually as `unknown_mint` and can be retried in a later batch.
 - Exhausting a budget returns `429` with `_tag: "RateLimitedError"`. There is no `Retry-After`;
   back off until the window resets (10 minutes by default) rather than retrying immediately.
 - The budget is keyed per API key, not per project. Defaults are server-tunable and may be raised
   for a project on request.
-- Identical search queries within the cache window (below) are served from cache and do not count.
+- Search, resolve and curator search share a server-side cache of each normalized query's candidate
+  set (about 45 seconds). A hit is reported as `sources.cache: 'hit'` and is not charged; only misses
+  draw from the budget. Case and a leading `$` do not change the key; a mint address is exact.
 - If the budget store is unavailable the check fails open; the per-call caps still bound cost.
 
 ## Caching and staleness
@@ -103,12 +110,12 @@ Successful `GET` responses carry `Cache-Control` and may be served from an edge 
 |---|---|
 | `GET /v2/lists` | 300 s |
 | `GET /v2/lists/{slug}`, `GET /v2/lists/tokens` | 60 s |
-| `GET /v2/search`, `GET /v2/resolve`, `GET /v2/lists/search-tokens` | 30 s |
+| `GET /v2/search`, `GET /v2/resolve`, `GET /v2/lists/search-tokens` | 30 s (plus the ~45 s server-side candidate cache, see above) |
 | `GET /v2/chains` | 3600 s (`stale-while-revalidate` 86400 s) |
 | `GET /v2/assets` | 60 s (`stale-while-revalidate` 300 s) |
 | `GET /v2/assets/{assetId}`, `GET /v2/variants/{chain}/{address}` | 60 s (`stale-while-revalidate` 120 s) |
 | `GET /v2/assets/{assetId}/variants`, `GET /v2/variants?keys=` | 30 s (`stale-while-revalidate` 60 s) |
-| `GET /v2/lists/check-slug`, all writes | not cached |
+| `GET /v2/lists/check-slug`, `POST /v2/judge`, all writes | not cached |
 
 The registry routes have their own windows; see [Registry endpoints](/registry/endpoints).
 

@@ -21,17 +21,18 @@ import { parseJudgedSearchParams, runJudgedSearch, withVerified } from '../../_j
 export const GET = route(
     (request: Request, ctx: { platformAuth: PlatformAuthContext }) =>
         Effect.gen(function* () {
-            // Unique-q searches bypass the 30s response cache; the per-key
-            // window budget bounds sustained provider spend.
-            yield* enforceProviderBudget(ctx.platformAuth, 'search');
             const url = new URL(request.url);
             // Curators default to the strict policy; ?policy=default|degen widens the net.
             const params = yield* parseJudgedSearchParams(url, { defaultPolicy: 'strict' });
 
+            // The per-key window budget bounds sustained provider spend. It is
+            // charged only when the query's candidate set is not in the cache.
             const { interpretation, candidates, sources, results, suppressed, latencyMs } = yield* runJudgedSearch({
+                route: 'lists.search-tokens',
                 q: params.q,
                 policy: params.policy,
                 limit: params.limit,
+                budget: enforceProviderBudget(ctx.platformAuth, 'search'),
             });
 
             // Prior art for the curator: which lists (curated ∪ published
