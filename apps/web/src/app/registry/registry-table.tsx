@@ -25,8 +25,8 @@ import {
     TextCell,
     TokenLink,
     UsdCell,
-    displayNameOf,
 } from './registry-cells';
+import { displayNameOf } from './lib/registry-row';
 import type { CategoryOptions } from './registry-filter-editor';
 import { RegistryMobileList } from './registry-mobile-list';
 import { RegistryNuqsAdapter } from './registry-nuqs-adapter';

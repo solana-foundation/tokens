@@ -23,18 +23,16 @@ import { getVariantByMint } from '@tokens/asset-registry';
 import { cn } from '@tokens/ui/cn';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@tokens/ui/tooltip';
 import { AssetAdvisoryBadge } from '@/components/asset-advisory-badge';
+import { PercentChangeCell, TokenLogo, TokenTablePriceCell } from './token-table-cells';
 import {
     INLINE_CHART_FALLBACK_DAYS,
-    PercentChangeCell,
     TRENDING_WINDOW_LABELS,
-    TokenLogo,
-    TokenTablePriceCell,
     formatInteger,
     formatOptionalVolume,
     formatVolume,
     getTradeForWindow,
     getVolumeForWindow,
-} from './token-table-cells';
+} from './token-table-format';
 import { TokenTableMobileList, type TokenMobileRowSpec, type TokenMobileStat } from './token-table-mobile-list';
 
 const InlinePriceChart = dynamic(() => import('@/components/inline-price-chart').then(m => m.InlinePriceChart), {
@@ -460,12 +458,13 @@ function createColumns(variant: TokenTableVariantConfig, trendingWindow: Trendin
               })
             : null,
         variant.columns.showVolume1hUSD && isTrending
-            ? columnHelper.display({
+            ? columnHelper.accessor(token => getVolumeForWindow(token, trendingWindow), {
                   id: `volume:${trendingWindow}`,
                   header: `${windowLabel} Volume`,
+                  sortUndefined: 'last',
                   cell: info => (
                       <span className="block w-full text-right text-[14px] text-[#2D2D2D] font-medium tabular-nums">
-                          {formatOptionalVolume(getVolumeForWindow(info.row.original, trendingWindow))}
+                          {formatOptionalVolume(info.getValue())}
                       </span>
                   ),
               })
@@ -515,7 +514,7 @@ function buildMobileRowSpec(variant: TokenTableVariantConfig, trendingWindow: Tr
             id: 'volume',
             label: `${windowLabel} Vol`,
             format: token => formatOptionalVolume(getVolumeForWindow(token, trendingWindow)),
-            sortColumnId: trendingWindow === '24h' ? 'volume24hUSD' : undefined,
+            sortColumnId: `volume:${trendingWindow}`,
         });
         if (variant.columns.showTrade1h) {
             stats.push({

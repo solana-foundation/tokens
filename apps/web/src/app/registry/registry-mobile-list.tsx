@@ -6,7 +6,8 @@ import { ChevronDown, ChevronRight, ChevronUp, ChevronsUpDown } from 'lucide-rea
 
 import { cn, truncateAddress } from '@tokens/ui/cn';
 import type { RegistryRow } from './lib/types';
-import { RegistryEmptyState, displayNameOf } from './registry-cells';
+import { RegistryEmptyState } from './registry-cells';
+import { displayNameOf } from './lib/registry-row';
 import { RegistryDetailDrawer } from './registry-detail-drawer';
 import { RegistryTokenLogo } from './registry-token-logo';
 
@@ -94,26 +95,22 @@ function RegistryMobileRow({ row, onOpen }: { row: RegistryRow; onOpen: (row: Re
     const secondary = row.name ? displayNameOf(row) : truncateAddress(row.mintAddress);
 
     return (
-        <li
-            role="button"
-            tabIndex={0}
-            aria-label={`${row.symbol} details`}
-            className="flex cursor-pointer items-center gap-3 px-4 py-3 transition-colors active:bg-gray-50/60"
-            onClick={() => onOpen(row)}
-            onKeyDown={event => {
-                if (event.key !== 'Enter' && event.key !== ' ') return;
-                event.preventDefault();
-                onOpen(row);
-            }}
-        >
-            <RegistryTokenLogo row={row} size={32} />
-            <div className="flex min-w-0 flex-1 flex-col leading-tight">
-                <span className="truncate text-[15px] font-semibold text-text-extra-high">{row.symbol}</span>
-                <span className={cn('truncate text-[12px] text-text-low', !row.name && 'font-mono')} title={secondary}>
-                    {secondary}
-                </span>
-            </div>
-            <ChevronRight className="size-4 shrink-0 text-text-extra-low" aria-hidden />
+        <li>
+            <button
+                type="button"
+                aria-label={`${row.symbol} details`}
+                className="flex w-full cursor-pointer items-center gap-3 px-4 py-3 text-left transition-colors active:bg-gray-50/60"
+                onClick={() => onOpen(row)}
+            >
+                <RegistryTokenLogo row={row} size={32} />
+                <div className="flex min-w-0 flex-1 flex-col leading-tight">
+                    <span className="truncate text-[15px] font-semibold text-text-extra-high">{row.symbol}</span>
+                    <span className={cn('truncate text-[12px] text-text-low', !row.name && 'font-mono')} title={secondary}>
+                        {secondary}
+                    </span>
+                </div>
+                <ChevronRight className="size-4 shrink-0 text-text-extra-low" aria-hidden />
+            </button>
         </li>
     );
 }

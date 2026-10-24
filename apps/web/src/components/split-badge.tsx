@@ -26,7 +26,7 @@ export function SplitBadge({
             title={title}
         >
             {segments.map((segment, index) => (
-                <span key={index} className="contents">
+                <span key={typeof segment === 'string' ? `${index}:${segment}` : `segment-${index}`} className="contents">
                     {index > 0 ? (
                         <span
                             aria-hidden

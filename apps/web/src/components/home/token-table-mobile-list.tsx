@@ -9,13 +9,8 @@ import { ChevronDown, ChevronUp, ChevronsUpDown } from 'lucide-react';
 import { AssetAdvisoryBadge } from '@/components/asset-advisory-badge';
 import { MobileDetailDrawer } from '@/components/mobile-detail-drawer';
 import type { Token } from '@/lib/types';
-import {
-    INLINE_CHART_FALLBACK_DAYS,
-    PercentChangeCell,
-    TokenLogo,
-    TokenTablePriceCell,
-    formatVolume,
-} from './token-table-cells';
+import { PercentChangeCell, TokenLogo, TokenTablePriceCell } from './token-table-cells';
+import { INLINE_CHART_FALLBACK_DAYS, formatVolume } from './token-table-format';
 
 const MOBILE_ROW_HEIGHT = 64;
 
@@ -75,11 +70,30 @@ export function TokenTableMobileList({
     const [scrollMargin, setScrollMargin] = React.useState(0);
     const [detail, setDetail] = React.useState<Token | null>(null);
 
+    // Where the list starts in the document. Both home layouts stay mounted and
+    // the hidden one measures zero (its wrapper is display: none), so measure
+    // again whenever a resize across the md breakpoint can reveal this layout.
     React.useLayoutEffect(() => {
         const el = topRef.current;
         if (!el) return;
-        const rect = el.getBoundingClientRect();
-        setScrollMargin(rect.top + window.scrollY);
+        let frame = 0;
+        const measure = () => {
+            if (el.getClientRects().length === 0) return; // hidden layout; keep the last value
+            setScrollMargin(el.getBoundingClientRect().top + window.scrollY);
+        };
+        const schedule = () => {
+            cancelAnimationFrame(frame);
+            frame = requestAnimationFrame(measure);
+        };
+        measure();
+        const media = window.matchMedia('(min-width: 768px)');
+        window.addEventListener('resize', schedule);
+        media.addEventListener('change', schedule);
+        return () => {
+            cancelAnimationFrame(frame);
+            window.removeEventListener('resize', schedule);
+            media.removeEventListener('change', schedule);
+        };
     }, [categoryId]);
 
     const virtualizer = useWindowVirtualizer({
@@ -189,20 +203,14 @@ function TokenMobileRow({
 }) {
     const change = spec.change ? token[spec.change.key] : undefined;
     return (
-        <li
-            style={{ height: MOBILE_ROW_HEIGHT }}
-            role="button"
-            tabIndex={0}
-            aria-label={`${spec.displayName(token)} details`}
-            className="relative flex cursor-pointer items-center gap-3 px-4 transition-colors active:bg-gray-50/60"
-            onClick={() => onOpen(token)}
-            onKeyDown={event => {
-                if (event.key !== 'Enter' && event.key !== ' ') return;
-                event.preventDefault();
-                onOpen(token);
-            }}
-            onFocus={() => onPrefetch(token)}
-        >
+        <li style={{ height: MOBILE_ROW_HEIGHT }}>
+            <button
+                type="button"
+                aria-label={`${spec.displayName(token)} details`}
+                className="relative flex h-full w-full cursor-pointer items-center gap-3 px-4 text-left transition-colors active:bg-gray-50/60"
+                onClick={() => onOpen(token)}
+                onFocus={() => onPrefetch(token)}
+            >
             {spec.showChart ? (
                 // The 24h sparkline as a quiet backdrop in the row's middle band: a soft filled
                 // area that fades in after the name and out again under the price, so it reads
@@ -250,6 +258,7 @@ function TokenMobileRow({
                 {spec.showPrice ? <TokenTablePriceCell token={token} /> : null}
                 {spec.change ? <ChangeCell value={change} className="[&_span]:text-[12px]" /> : null}
             </div>
+            </button>
         </li>
     );
 }
@@ -267,9 +276,9 @@ function TokenDetailDrawer({
     onViewMore: (token: Token) => void;
 }) {
     // Keep the last token mounted while the drawer animates closed.
-    const lastToken = React.useRef<Token | null>(null);
-    if (token) lastToken.current = token;
-    const shown = token ?? lastToken.current;
+    const [lastToken, setLastToken] = React.useState<Token | null>(token);
+    if (token && token !== lastToken) setLastToken(token);
+    const shown = token ?? lastToken;
     if (!shown) return null;
 
     const change = spec.change ? shown[spec.change.key] : undefined;

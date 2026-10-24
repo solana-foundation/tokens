@@ -6,31 +6,12 @@ import { IconTriangleFill } from 'symbols-react';
 
 import { cn } from '@tokens/ui/cn';
 import { useInlineLatestClose } from '@/hooks/queries/use-inline-latest-close';
-import { formatSmallPriceDecimal } from '@/lib/format';
 import { getTokenLogoURLWithSecondarySymbol } from '@/lib/logo-overrides';
 import { normalizeLogoSrc } from '@/lib/normalize-logo-src';
-import type { Token, TrendingWindow } from '@/lib/types';
+import type { Token } from '@/lib/types';
+import { INLINE_CHART_FALLBACK_DAYS, formatPrice } from './token-table-format';
 
-/** Formatters and cell renderers shared by the home table and its phone list. */
-
-export const INLINE_CHART_FALLBACK_DAYS = 7;
-
-export const TRENDING_WINDOW_LABELS: Record<TrendingWindow, string> = {
-    '5m': '5m',
-    '15m': '15m',
-    '1h': '1h',
-    '6h': '6h',
-    '24h': '24h',
-};
-
-export function formatPrice(price: number | null | undefined): string {
-    if (price == null || isNaN(price)) return '$0.00';
-    if (price === 0) return '$0.00';
-    if (price < 0.00001) return `$${formatSmallPriceDecimal(price)}`;
-    if (price < 0.01) return `$${price.toFixed(6)}`;
-    if (price < 1) return `$${price.toFixed(4)}`;
-    return `$${price.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-}
+/** Cell renderers shared by the home table and its phone list; formatters live in token-table-format.ts. */
 
 export function TokenTablePriceCell({ token, className }: { token: Token; className?: string }) {
     const shouldUseCanonicalAssetChart = token.canonicalMarketSource === 'clickhouse_stock';
@@ -47,54 +28,6 @@ export function TokenTablePriceCell({ token, className }: { token: Token; classN
             {formatPrice(displayPrice)}
         </span>
     );
-}
-
-export function formatVolume(volume: number | null | undefined): string {
-    if (volume == null || isNaN(volume)) return '$0.00';
-    if (volume >= 1_000_000_000) return `$${(volume / 1_000_000_000).toFixed(2)}B`;
-    if (volume >= 1_000_000) return `$${(volume / 1_000_000).toFixed(2)}M`;
-    if (volume >= 1_000) return `$${(volume / 1_000).toFixed(2)}K`;
-    return `$${volume.toFixed(2)}`;
-}
-
-export function formatOptionalVolume(volume: number | null | undefined): string {
-    if (volume == null || isNaN(volume)) return '—';
-    return formatVolume(volume);
-}
-
-export function formatInteger(value: number | null | undefined): string {
-    if (value == null || !Number.isFinite(value)) return '—';
-    return Math.round(value).toLocaleString();
-}
-
-export function getVolumeForWindow(token: Token, window: TrendingWindow): number | undefined {
-    switch (window) {
-        case '5m':
-            return token.volume5mUSD;
-        case '15m':
-            return token.volume15mUSD;
-        case '1h':
-            return token.volume1hUSD;
-        case '6h':
-            return token.volume6hUSD;
-        case '24h':
-            return token.volume24hUSD;
-    }
-}
-
-export function getTradeForWindow(token: Token, window: TrendingWindow): number | undefined {
-    switch (window) {
-        case '5m':
-            return token.trade5m;
-        case '15m':
-            return token.trade15m;
-        case '1h':
-            return token.trade1h;
-        case '6h':
-            return token.trade6h;
-        case '24h':
-            return token.trade24h;
-    }
 }
 
 export function PercentChangeCell({ value }: { value: number }) {
@@ -126,7 +59,7 @@ export function TokenLogo({ token, size = 26 }: { token: Token; size?: number })
     if (!resolvedLogoURI || hasError) {
         return (
             <div
-                className="rounded-full bg-gray-1400 flex items-center justify-center flex-shrink-0"
+                className="rounded-full bg-gray-1400 flex items-center justify-center shrink-0"
                 style={{ width: size, height: size }}
             >
                 <span className={cn('font-bold text-white', size >= 40 ? 'text-[14px]' : 'text-[10px]')}>
@@ -143,7 +76,7 @@ export function TokenLogo({ token, size = 26 }: { token: Token; size?: number })
             width={size}
             height={size}
             style={{ width: size, height: size }}
-            className="rounded-full bg-gray-50 object-cover flex-shrink-0"
+            className="rounded-full bg-gray-50 object-cover shrink-0"
             loading="lazy"
             decoding="async"
             onError={() => setHasError(true)}

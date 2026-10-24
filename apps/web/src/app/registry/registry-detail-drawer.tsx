@@ -1,13 +1,14 @@
 'use client';
 
-import { useRef } from 'react';
+import { useState } from 'react';
 
 import { CopyButton } from '@/components/copy-button';
 import { MobileDetailDrawer } from '@/components/mobile-detail-drawer';
 import { SplitBadge } from '@/components/split-badge';
 import { formatLargeNumber } from '@/lib/format';
 import type { RegistryRow } from './lib/types';
-import { AddressLink, displayNameOf, tokenHref } from './registry-cells';
+import { AddressLink } from './registry-cells';
+import { displayNameOf, tokenHref } from './lib/registry-row';
 import { RegistryTokenLogo } from './registry-token-logo';
 
 /**
@@ -25,9 +26,9 @@ export function RegistryDetailDrawer({
     onOpenResponse: (row: RegistryRow) => void;
 }) {
     // Keep the last row mounted while the drawer animates closed (same as the home drawer).
-    const lastRow = useRef<RegistryRow | null>(null);
-    if (row) lastRow.current = row;
-    const shown = row ?? lastRow.current;
+    const [lastRow, setLastRow] = useState<RegistryRow | null>(row);
+    if (row && row !== lastRow) setLastRow(row);
+    const shown = row ?? lastRow;
     if (!shown) return null;
 
     const taxonomy = [shown.group, shown.category, shown.assetClass].filter((value): value is string => !!value);

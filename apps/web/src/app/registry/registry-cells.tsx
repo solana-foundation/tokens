@@ -5,25 +5,11 @@ import { ArrowUpRight } from 'lucide-react';
 
 import { cn, truncateAddress } from '@tokens/ui/cn';
 import { Button } from '@tokens/ui/button';
-import { buildCoinHref } from '@/lib/coin-href';
 import { formatLargeNumber } from '@/lib/format';
-import { cleanTokenName } from '@/lib/logo-overrides';
+import { tokenHref } from './lib/registry-row';
 import type { RegistryRow } from './lib/types';
 
 /** Cell renderers shared by the desktop table and the phone list (registry-mobile-list.tsx). */
-
-export function displayNameOf(row: RegistryRow): string {
-    return row.name ? cleanTokenName(row.name) : row.symbol;
-}
-
-/**
- * Direct asset-page link (`/{assetId}?solana={mint}`), the same the home table builds;
- * the mint redirect only covers a cached payload from before the API carried assetId.
- */
-export function tokenHref(row: RegistryRow): string {
-    return row.assetId ? buildCoinHref(row.assetId, row.mintAddress) : `/token/${row.mintAddress}`;
-}
-
 /** Asset-page link when the Tokens API knows the mint, otherwise a plain block. */
 export function TokenLink({
     row,
