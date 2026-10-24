@@ -59,15 +59,21 @@ function text(value: string | null | undefined): string | null {
     return trimmed ? trimmed : null;
 }
 
+function isoOrNull(ms: number): string | null {
+    // Outside the representable Date range `getTime()` is NaN and
+    // `toISOString()` would throw — a bad timestamp is unknown, not a 500.
+    const date = new Date(ms);
+    return Number.isNaN(date.getTime()) ? null : date.toISOString();
+}
+
 function createdAtIso(value: string | number | null | undefined): string | null {
     if (value === null || value === undefined) return null;
     if (typeof value === 'number') {
         if (!Number.isFinite(value) || value <= 0) return null;
-        const ms = value > 1e12 ? value : value * 1000;
-        return new Date(ms).toISOString();
+        return isoOrNull(value > 1e12 ? value : value * 1000);
     }
     const parsed = Date.parse(value);
-    return Number.isFinite(parsed) ? new Date(parsed).toISOString() : null;
+    return Number.isFinite(parsed) ? isoOrNull(parsed) : null;
 }
 
 /** One body candidate → the raw shape enrichment consumes. */

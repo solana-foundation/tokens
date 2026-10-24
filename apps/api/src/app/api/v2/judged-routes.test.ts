@@ -450,6 +450,22 @@ describe('POST /v2/judge', () => {
         expect(gate.status).toBe(400);
         expect(((await gate.json()) as Envelope).error.message).toContain('Invalid minMarketScore');
 
+        // An object/array flag is malformed, not absent — it must not widen the result set.
+
+        const nonScalar = await judgePost(
+            judgeRequest({ candidates: [{ mint: USDC_MINT }], verifiedOnly: [true] }, auth),
+
+            {} as never,
+        );
+
+        expect(nonScalar.status).toBe(400);
+
+        const nonScalarBody = (await nonScalar.json()) as Envelope;
+
+        expect(nonScalarBody.error.message).toBe('Invalid verifiedOnly: expected a string, number or boolean');
+
+        expect(nonScalarBody.error.details).toEqual({ code: 'invalid_param', param: 'verifiedOnly' });
+
         const policy = await judgePost(
             judgeRequest({ candidates: [{ mint: USDC_MINT }], policy: 'yolo' }, auth),
             {} as never,

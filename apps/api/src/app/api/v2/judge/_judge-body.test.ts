@@ -88,6 +88,9 @@ describe('rawFromJudgeCandidate', () => {
             new Date(1_700_000_000_000).toISOString(),
         );
         expect(rawFromJudgeCandidate({ mint: USDC, createdAt: 'yesterday' }).tokenMintTime).toBeNull();
+        // Beyond the Date range: unknown, never a throw.
+        expect(rawFromJudgeCandidate({ mint: USDC, createdAt: 10_000_000_000_000_000 }).tokenMintTime).toBeNull();
+        expect(rawFromJudgeCandidate({ mint: USDC, createdAt: 9e15 }).tokenMintTime).toBeNull();
         expect(rawFromJudgeCandidate({ mint: USDC }).tokenMintTime).toBeNull();
     });
 });

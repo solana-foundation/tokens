@@ -7,7 +7,14 @@ import { enrichCandidates, type CandidateSourcesStatus } from '@/lib/judgment/ca
 import { classifyQuery } from '@/lib/judgment/intent';
 import { POLICY_VERSION } from '@/lib/judgment/policies';
 import { SCORING_VERSION, type QueryInterpretation } from '@/lib/judgment/types';
-import { judgeEnriched, paramsFromBody, parseJudgedParams, policyEnvelope, withVerified } from '../_judged-search';
+import {
+    judgeEnriched,
+    paramsFromBody,
+    parseJudgedParams,
+    policyEnvelope,
+    rejectNonScalarParams,
+    withVerified,
+} from '../_judged-search';
 import { parseJudgeBody } from './_judge-body';
 
 /** No query: nothing can match, so ranking is credibility alone. */
@@ -36,6 +43,7 @@ export const POST = route(
             const startedAt = Date.now();
             const json = yield* readJsonBody(request);
             const { body, raws } = yield* parseJudgeBody(json);
+            yield* rejectNonScalarParams(body);
             const params = yield* parseJudgedParams(paramsFromBody(body), {
                 defaultPolicy: 'default',
                 allowIncludeSuppressed: true,

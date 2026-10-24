@@ -36,8 +36,8 @@ type Probe = {
     auth: boolean;
     expectJson?: boolean;
     budgetMs: number;
-    /** Feature the probe needs; see `v2AssetsSkipReason`. */
-    requires?: 'v2-assets';
+    /** Feature the probe needs; see `v2AssetsSkipReason` / `v2JudgeSkipReason`. */
+    requires?: 'v2-assets' | 'v2-judge';
     assert: (ctx: { json: unknown; body: string; status: number; finalUrl: string }) => void;
 };
 
@@ -127,6 +127,7 @@ const apiProbes: Probe[] = [
         path: '/api/v2/judge',
         auth: true,
         budgetMs: 5000,
+        requires: 'v2-judge',
         body: {
             q: 'USDC',
             candidates: [
@@ -533,6 +534,33 @@ async function runProbe(probe: Probe): Promise<ProbeResult> {
  * every other probe. Any other state (5xx, network error) is left to the
  * probes themselves so a real outage still fails.
  */
+/**
+ * Same shape for `POST /v2/judge`: the pre-API prod canary runs against the
+ * previous API, where the route does not exist yet (404 from Next, not from
+ * the handler). Once the route answers at all — 400 for the empty body here —
+ * the probe is enforced like every other one.
+ */
+async function v2JudgeSkipReason(): Promise<string | null> {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+        const res = await fetch(`${apiBaseUrl}/api/v2/judge`, {
+            method: 'POST',
+            headers: { 'x-api-key': apiKey, 'content-type': 'application/json' },
+            body: JSON.stringify({ candidates: [] }),
+            signal: controller.signal,
+        });
+        if (res.status === 404 || res.status === 405) {
+            return `POST /api/v2/judge not deployed yet (→ ${res.status})`;
+        }
+        return null;
+    } catch {
+        return null;
+    } finally {
+        clearTimeout(timer);
+    }
+}
+
 async function v2AssetsSkipReason(): Promise<string | null> {
     const get = async (path: string): Promise<{ status: number; json: unknown }> => {
         const controller = new AbortController();
@@ -589,9 +617,14 @@ function skippedResult(probe: Probe, reason: string): ProbeResult {
 
 async function main(): Promise<void> {
     const v2Skip = probes.some(p => p.requires === 'v2-assets') ? await v2AssetsSkipReason() : null;
+    const judgeSkip = probes.some(p => p.requires === 'v2-judge') ? await v2JudgeSkipReason() : null;
     const settled = await Promise.allSettled(
         probes.map(probe =>
-            probe.requires === 'v2-assets' && v2Skip ? Promise.resolve(skippedResult(probe, v2Skip)) : runProbe(probe),
+            probe.requires === 'v2-assets' && v2Skip
+                ? Promise.resolve(skippedResult(probe, v2Skip))
+                : probe.requires === 'v2-judge' && judgeSkip
+                  ? Promise.resolve(skippedResult(probe, judgeSkip))
+                  : runProbe(probe),
         ),
     );
     const results: ProbeResult[] = settled.map((s, i) => {

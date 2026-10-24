@@ -70,10 +70,43 @@ export function paramsFromUrl(url: URL): ParamGetter {
     return key => url.searchParams.get(key);
 }
 
+/** Every flag the judged-search parser reads; a body may carry them as scalars. */
+export const JUDGED_PARAM_KEYS = [
+    'q',
+    'policy',
+    'minLiquidityUsd',
+    'minAgeDays',
+    'minMarketScore',
+    'requireMarketData',
+    'suppressImpersonation',
+    'verifiedOnly',
+    'limit',
+    'includeSuppressed',
+] as const;
+
+/**
+ * A body flag that is an object or array is malformed, not absent: silently
+ * ignoring `verifiedOnly: [true]` would widen the result set the caller
+ * asked to narrow. Rejected before parsing with the key named.
+ */
+export function rejectNonScalarParams(body: Record<string, unknown>): Effect.Effect<void, BadRequestError> {
+    for (const key of JUDGED_PARAM_KEYS) {
+        const value = body[key];
+        if (value === undefined || value === null) continue;
+        if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') continue;
+        return badRequest(`Invalid ${key}: expected a string, number or boolean`, {
+            code: 'invalid_param',
+            param: key,
+        });
+    }
+    return Effect.void;
+}
+
 /**
  * Body fields as parameters: numbers and booleans are stringified so the same
  * validators (and the same error messages) apply to `?minLiquidityUsd=1000`
- * and `{ "minLiquidityUsd": 1000 }`. Objects and arrays are not parameters.
+ * and `{ "minLiquidityUsd": 1000 }`. Call `rejectNonScalarParams` first;
+ * anything else here is treated as absent.
  */
 export function paramsFromBody(body: Record<string, unknown>): ParamGetter {
     return key => {
