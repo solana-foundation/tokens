@@ -47,8 +47,8 @@ type AssetsMarketSnapshotsResponse = Array<{
     trade24h?: number;
     uniqueWallet1h?: number;
     uniqueWallet24h?: number;
-    lastTradeAt?: number;        // unix seconds
-    asOf?: number;               // unix seconds
+    lastTradeAt?: number;        // unix ms
+    asOf?: number;               // unix seconds, trade-sourced rows only
     lastFetchedAt?: number;      // unix ms
   } | null;
   hasMarket: boolean;

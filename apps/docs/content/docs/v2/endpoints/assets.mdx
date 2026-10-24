@@ -188,8 +188,8 @@ UI that pages through variants.
 - `stockVariantTier` (optional): `share_redeemable`, `cash_redeemable` or `not_redeemable`
   (`invalid_stock_variant_tier` otherwise).
 - `sort` (optional): `liquidity` (default), `stock_redeemability` (redeemable tiers first, then
-  liquidity) or `execution_quality` (`invalid_sort` otherwise). `execution_quality` falls back to
-  liquidity order on chains without the `executionQuality` capability.
+  liquidity) or `execution_quality` (`invalid_sort` otherwise). `execution_quality` is accepted but
+  currently orders by liquidity on every chain; it will use fill-quality scores once they join v2.
 - `limit` (1–1000, default 100; clamped), `offset`.
 
 ### Response

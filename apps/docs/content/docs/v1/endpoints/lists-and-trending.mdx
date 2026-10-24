@@ -159,8 +159,8 @@ interface AssetsTrendingResponse {
       uniqueWallet24h: number | null;
       priceChange1hPercent: number | null;
       priceChange24hPercent: number | null;
-      lastTradeAt: number | null;      // unix seconds
-      asOf: number | null;             // unix seconds, shared by the whole run
+      lastTradeAt: number | null;      // mode=fresh: unix ms (the snapshot's own stamp); mode=flow: unix seconds
+      asOf: number | null;             // unix seconds; in mode=flow shared by the whole run
       lastFetchedAt?: number;          // unix ms, mode=fresh only
     };
     trending: {
@@ -179,7 +179,7 @@ interface AssetsTrendingResponse {
 }
 ```
 
-With `mode=flow` every `market` field comes from direct USD-stable Solana trades (`source` is always `clickhouse_trades`, the window fields are never `null`, and there is no `liquidity` or `lastFetchedAt`).
+With `mode=flow` every `market` field comes from direct USD-stable Solana trades (`source` is always `clickhouse_trades`, the window fields are never `null`, and there is no `liquidity` or `lastFetchedAt`). Timestamp units differ by mode: `flow` rows carry `lastTradeAt` and `asOf` in unix seconds, while `fresh` rows pass through the market snapshot's `lastTradeAt`, which is unix milliseconds.
 
 ### Notes
 
