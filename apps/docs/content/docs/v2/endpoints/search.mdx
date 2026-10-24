@@ -229,6 +229,7 @@ The [`SearchResponse`](#response) shape, with:
 | `invalid_body` | 400 | Body is not a JSON object |
 | `invalid_candidates` | 400 | `candidates` missing, not an array, or empty |
 | `too_many_candidates` | 400 | More than 40 candidates (`details.max`, `details.received`) |
+| `invalid_param` | 400 | A flag (`q`, `policy`, a gate override, `limit`, `includeSuppressed`) is an object or array; `details.param` names it |
 | — | 400 | A candidate has no valid Solana mint or a non-numeric market field; a malformed `policy` or gate override (same messages as `GET /v2/search`) |
 
 ### Examples
