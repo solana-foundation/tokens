@@ -10,6 +10,8 @@ import type {
     V2VariantPreStocks,
     VariantIssuance,
 } from '@/lib/api-v2-types';
+
+export type AssetPageVariantReference = V2Variant['reference'];
 import { normalizeCompactPegHealth } from '@/lib/stablecoin-health';
 
 /**
@@ -39,6 +41,8 @@ export interface AssetPageVariant {
     rank: number | null;
     explorerUrl: string;
     market: V2Market | null;
+    /** The variant's own CoinGecko coin figures (per issuer / wrapper), when linked and loaded. */
+    reference: AssetPageVariantReference;
     advisory: AssetAdvisory | null;
     /** Best-effort display strings (provider-label rules applied). */
     displaySymbol: string;
@@ -156,6 +160,7 @@ export function toAssetPageVariant(
         rank: variant.rank,
         explorerUrl: variant.explorerUrl,
         market: variant.market,
+        reference: variant.reference ?? null,
         advisory: normalizeAdvisory(variant.advisory),
         displaySymbol,
         displayName,

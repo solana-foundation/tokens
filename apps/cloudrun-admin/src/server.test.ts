@@ -33,6 +33,7 @@ function makeReadsRepo(): AdminReadsRepo {
         listCollectionMembers: async () => [],
         getAssetByAssetId: async () => null,
         getVariantByMint: async () => null,
+        getVariantByRef: async () => null,
         getMarketByMint: async () => null,
         searchAssets: async () => [],
     };

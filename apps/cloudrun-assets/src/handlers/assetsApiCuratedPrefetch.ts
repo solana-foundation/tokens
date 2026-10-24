@@ -31,6 +31,7 @@
  * handler targets is round-trip latency, not aggregation cost.
  */
 
+import { normalizeCoinGeckoCoinIdForAsset } from '@tokens/asset-registry/coingecko-id';
 import { CURATED_LIST_ORDER, type CuratedListSlug } from '@tokens/asset-registry/curated-lists';
 
 import { createConcurrencyLimiter } from '../concurrencyLimiter';
@@ -157,23 +158,6 @@ export interface CuratedPrefetchArgs {
     additionalCoingeckoIds?: string[];
 }
 
-/**
- * Port of apps/api's normalizeCoinGeckoCoinIdForAsset — kept in sync with
- * the caller so composite-driven and per-call paths agree on which coin
- * IDs to fetch. Applied to every candidate coin id before batching.
- */
-function normalizeCoinGeckoCoinIdForAsset(params: {
-    assetId: string;
-    coinId: string | null | undefined;
-}): string | null {
-    const rawCoinId = (params.coinId ?? '').trim();
-    if (!rawCoinId) return null;
-    const assetId = params.assetId.trim();
-    if (assetId === 'bnb' && rawCoinId === 'bnb') return 'binancecoin';
-    if (assetId === 'tron' && rawCoinId === 'tron-xstock') return 'tron';
-    if (assetId === 'spacex' && rawCoinId === 'spacex-prestocks-2') return null;
-    return rawCoinId;
-}
 
 /**
  * Port of apps/api's missingScoreForMint (curated variant). Callers use it

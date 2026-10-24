@@ -24,6 +24,12 @@ export interface NativeCoinDeployment {
     address: string;
     kind: 'native' | 'wrapped';
     label: string;
+    /**
+     * The chain that issues the coin: its native row there is issued supply
+     * (served from the asset's CoinGecko reference, since the row has no
+     * market) and its native rows elsewhere are bridged.
+     */
+    home?: true;
 }
 
 /**
@@ -35,7 +41,7 @@ export interface NativeCoinDeployment {
  */
 export const NATIVE_COIN_DEPLOYMENTS: Readonly<Record<string, readonly NativeCoinDeployment[]>> = {
     ethereum: [
-        { chain: 'ethereum', address: EVM_NATIVE_ASSET_ADDRESS, kind: 'native', label: 'ETH' },
+        { chain: 'ethereum', address: EVM_NATIVE_ASSET_ADDRESS, kind: 'native', label: 'ETH', home: true },
         { chain: 'ethereum', address: '0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2', kind: 'wrapped', label: 'WETH' },
         { chain: 'base', address: EVM_NATIVE_ASSET_ADDRESS, kind: 'native', label: 'ETH' },
         { chain: 'base', address: '0x4200000000000000000000000000000000000006', kind: 'wrapped', label: 'WETH' },
@@ -43,11 +49,11 @@ export const NATIVE_COIN_DEPLOYMENTS: Readonly<Record<string, readonly NativeCoi
         { chain: 'arbitrum', address: '0x82af49447d8a07e3bd95bd0d56f35241523fbab1', kind: 'wrapped', label: 'WETH' },
     ],
     bnb: [
-        { chain: 'bnb', address: EVM_NATIVE_ASSET_ADDRESS, kind: 'native', label: 'BNB' },
+        { chain: 'bnb', address: EVM_NATIVE_ASSET_ADDRESS, kind: 'native', label: 'BNB', home: true },
         { chain: 'bnb', address: '0xbb4cdb9cbd36b01bd1cbaebf2de08d9173bc095c', kind: 'wrapped', label: 'WBNB' },
     ],
     polygon: [
-        { chain: 'polygon', address: EVM_NATIVE_ASSET_ADDRESS, kind: 'native', label: 'POL' },
+        { chain: 'polygon', address: EVM_NATIVE_ASSET_ADDRESS, kind: 'native', label: 'POL', home: true },
         { chain: 'polygon', address: '0x0d500b1d8e8ef31e21c99d1db9a6444d3adf1270', kind: 'wrapped', label: 'WPOL' },
     ],
 };

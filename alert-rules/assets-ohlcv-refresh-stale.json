@@ -16,7 +16,7 @@
                 "to": 0
             },
             "model": {
-                "expr": "sum(count_over_time({service=\"tokens-assets-prd-us\"} |= \"ohlcv_refresh_stale\" [30m]))",
+                "expr": "sum(count_over_time({service=~\"tokens-assets(-jobs)?-prd-us\"} |= \"ohlcv_refresh_stale\" [30m]))",
                 "queryType": "range",
                 "refId": "A"
             }

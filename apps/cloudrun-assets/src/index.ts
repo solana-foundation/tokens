@@ -367,13 +367,18 @@ const launchpadAdminDeps: LaunchpadAdminDeps = {
     ...(cronDeps ? { identity: { birdeye: cronDeps.birdeye, baseRepo: cronDeps.repo } } : {}),
     now: () => Date.now(),
 };
-if (cronDeps && miscCronDeps && seedCronDeps) {
+const v2AssetsReadsRepo = makePostgresV2AssetsReadsRepo(sql);
+// v2AssetsCronDeps is built in the same Birdeye block as cronDeps, so the
+// admin actions (which mirror into / write the v2 tables) share its gate.
+if (cronDeps && miscCronDeps && seedCronDeps && v2AssetsCronDeps) {
     adminActionsDeps = {
         adminAllowlist,
         repo: makePostgresAdminActionsRepo(sql),
         seedRepo: seedCronDeps.repo,
         cron: cronDeps,
         misc: miscCronDeps,
+        v2: v2AssetsCronDeps,
+        v2Reads: v2AssetsReadsRepo,
         now: () => Date.now(),
     };
 } else {
@@ -421,7 +426,7 @@ const app = createApp({
     ohlcvReadsRepo: makePostgresOhlcvReadsRepo(sql),
     prestocksReadsRepo: makePostgresPrestocksReadsRepo(sql),
     launchpadReadsRepo: makePostgresLaunchpadReadsRepo(sql),
-    v2AssetsReadsRepo: makePostgresV2AssetsReadsRepo(sql),
+    v2AssetsReadsRepo,
     solanaDataReadsRepo: makePostgresSolanaDataReadsRepo(sql),
     authToken: bearerTokenCandidates(authToken, process.env.TOKENS_CLOUDRUN_AUTH_TOKEN_PREVIOUS),
     serviceRole,

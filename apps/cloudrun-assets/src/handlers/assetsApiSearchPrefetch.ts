@@ -34,6 +34,7 @@
  * not aggregation cost.
  */
 
+import { normalizeCoinGeckoCoinIdForAsset } from '@tokens/asset-registry/coingecko-id';
 import { isAssetIndustry, isAssetRegion, type AssetIndustry, type AssetRegion } from '@tokens/asset-registry';
 
 import type { AssetCategory, AssetResult, AssetsRepo, GetByAssetIdsEntry } from './assets';
@@ -258,22 +259,7 @@ function looksLikeSolanaMintAddress(value: string): boolean {
     return /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(value);
 }
 
-/**
- * Port of apps/api's `normalizeCoinGeckoCoinIdForAsset` — kept in sync so the
- * composite and per-call paths agree on which coin IDs to fetch.
- */
-export function normalizeCoinGeckoCoinIdForAsset(params: {
-    assetId: string;
-    coinId: string | null | undefined;
-}): string | null {
-    const rawCoinId = (params.coinId ?? '').trim();
-    if (!rawCoinId) return null;
-    const assetId = params.assetId.trim();
-    if (assetId === 'bnb' && rawCoinId === 'bnb') return 'binancecoin';
-    if (assetId === 'tron' && rawCoinId === 'tron-xstock') return 'tron';
-    if (assetId === 'spacex' && rawCoinId === 'spacex-prestocks-2') return null;
-    return rawCoinId;
-}
+export { normalizeCoinGeckoCoinIdForAsset } from '@tokens/asset-registry/coingecko-id';
 
 /**
  * Mirrors the search route's `missingScoreForMint` — decides which mints

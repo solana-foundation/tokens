@@ -10,6 +10,16 @@ locals {
       attempt_deadline = "1800s"
     },
     {
+      # Weekly, after the coin-list sync: validates assets.coingecko_id against
+      # coingecko_coins, resolves missing / unknown ids by Solana mint and
+      # reports to asset_coingecko_id_audit (docs/operations/v2-multichain-assets.md).
+      name             = "validate-coingecko-ids"
+      schedule         = "30 5 * * 0"
+      http_path        = "/jobs/validate-coingecko-ids"
+      body_json        = jsonencode({ write = true })
+      attempt_deadline = "540s"
+    },
+    {
       name      = "refresh-curated-coingecko-metadata"
       schedule  = "15 */6 * * *"
       http_path = "/jobs/refresh-curated-coingecko-metadata"
@@ -45,7 +55,7 @@ locals {
       schedule  = "1-59/5 * * * *"
       http_path = "/jobs/refresh-curated-coingecko-prices"
       body_json = jsonencode({
-        maxCoins          = 250
+        maxCoins          = 500
         minAgeMs          = 0
         chunkSize         = 200
         delayMs           = 150

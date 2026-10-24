@@ -7,6 +7,7 @@ import type { CoingeckoReadsRepo } from './coingeckoReads';
 import type { StockReadsRepo } from './stockReads';
 import {
     rowToMarketResult,
+    rowToRollupResult,
     rowToVariantResult,
     v2AssetsChains,
     v2AssetsGetMarketsByKeys,
@@ -180,11 +181,33 @@ function deps(v2: V2AssetsReadsRepo): V2AssetsReadsDeps {
 }
 
 describe('row mappers', () => {
+    test('rollup rows: the Solana mirror is a complete 30-day window, computed rows carry their sampled days', () => {
+        const base = { asset_id: 'usd', chain: 'solana', liquidity: 1, volume_24h_usd: 2, volume_30d_usd: 60, primary_address: null, variant_count: 1, last_computed_at: 5 };
+        expect(rowToRollupResult(base)).toEqual(expect.objectContaining({ origin: 'solana_v1', volume30dDays: 30, volume30dUSD: 60 }));
+        expect(rowToRollupResult({ ...base, chain: 'base', origin: 'computed', volume_30d_days: 12 })).toEqual(
+            expect.objectContaining({ origin: 'computed', volume30dDays: 12 }),
+        );
+        expect(rowToRollupResult({ ...base, chain: 'base', origin: 'computed', volume_30d_days: null })?.volume30dDays).toBe(0);
+        const envelope = { computedAt: 1_700_000_000_000, shares: { '0xabc': { volume: 7, days: 12 }, '0xdef': { volume: '5', days: '3' }, bad: 1 } };
+        const computed = rowToRollupResult({ ...base, chain: 'base', origin: 'computed', volume_30d_days: 12, volume_30d_by_address: envelope });
+        expect(computed?.volume30dByAddress).toEqual({ '0xabc': { volume: 7, days: 12 }, '0xdef': { volume: 5, days: 3 } });
+        expect(computed?.volume30dSharesComputedAt).toBe(1_700_000_000_000);
+        // The bare map shape (no envelope) is not a valid column value.
+        expect(rowToRollupResult({ ...base, chain: 'base', origin: 'computed', volume_30d_by_address: { '0xabc': { volume: 7, days: 12 } } })?.volume30dByAddress).toBeNull();
+        expect(rowToRollupResult({ ...base, origin: 'solana_v1', volume_30d_by_address: { computedAt: 5, shares: { x: { volume: 1, days: 2 } } } })?.volume30dByAddress).toEqual({ x: { volume: 1, days: 2 } });
+        expect(rowToRollupResult({ ...base, origin: 'solana_v1', volume_30d_by_address: null })?.volume30dByAddress).toBeNull();
+    });
+
     test('variant rows carry the key and explorer url; unknown chains are dropped', () => {
         const out = rowToVariantResult(variantRow())!;
         expect(out.key).toBe(`base:${USDC_BASE}`);
         expect(out.explorerUrl).toBe(`https://basescan.org/token/${USDC_BASE}`);
         expect(out.tags).toEqual(['coingecko-derived']);
+        expect(out.coingeckoId).toBeNull();
+        expect(rowToVariantResult(variantRow({ coingecko_id: 'usd-coin', coingecko_id_source: 'resolved' }))?.coingeckoId).toBe(
+            'usd-coin',
+        );
+        expect(rowToVariantResult(variantRow({ coingecko_id: '  ' }))?.coingeckoId).toBeNull();
         expect(rowToVariantResult(variantRow({ chain: 'tron' }))).toBeNull();
     });
 

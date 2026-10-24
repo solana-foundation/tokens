@@ -5,6 +5,7 @@ import { Effect } from 'effect';
 import { route } from '@/effect/next-route';
 import { withStaleFallback } from '@/effect/stale-response-cache';
 import { decodeLimit, decodeOffset } from '@tokens/effect';
+import { normalizeCoinGeckoCoinIdForAsset } from '@tokens/asset-registry/coingecko-id';
 import { getAdvisoryRevisionSync } from '@/lib/advisories';
 import { v2AssetsCuratedPrefetch, type V2VariantResult } from '@/lib/cloudrun';
 
@@ -95,10 +96,11 @@ export const GET = route(
                     const variants = variantsByAsset.get(asset.assetId) ?? [];
                     if (variants.length === 0) continue;
                     if (chain !== null && !hasVisibleVariantOnChain(variants, chain, advisoriesByMint)) continue;
-                    const coinId = asset.coingeckoId
-                        ? (coingeckoByCoinId.get(asset.coingeckoId) ??
-                          coingeckoByCoinId.get(asset.coingeckoId === 'bnb' ? 'binancecoin' : asset.coingeckoId))
-                        : null;
+                    const normalizedCoinId = normalizeCoinGeckoCoinIdForAsset({
+                        assetId: asset.assetId,
+                        coinId: asset.coingeckoId,
+                    });
+                    const coinId = normalizedCoinId ? (coingeckoByCoinId.get(normalizedCoinId) ?? null) : null;
                     const out = buildV2Asset({
                         request,
                         asset,

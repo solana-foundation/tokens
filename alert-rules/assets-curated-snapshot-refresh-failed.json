@@ -16,7 +16,7 @@
                 "to": 0
             },
             "model": {
-                "expr": "sum(count_over_time({service=\"tokens-assets-prd-us\"} |= \"curated_snapshot_refresh_failed\" [15m]))",
+                "expr": "sum(count_over_time({service=~\"tokens-assets(-jobs)?-prd-us\"} |= \"curated_snapshot_refresh_failed\" [15m]))",
                 "queryType": "range",
                 "refId": "A"
             }

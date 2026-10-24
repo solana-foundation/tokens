@@ -15,6 +15,15 @@
  * through a key adapter: the registry's mint-keyed ranking / aggregation is fed
  * variants whose `mint` is the variant key, so nothing in the package changes.
  */
+import {
+    INCLUDED_MARKET_QUALITY,
+    assessMarkets,
+    countExcludedReasons,
+    emptyExcludedByQuality,
+    type ExcludedByQuality,
+    type MarketQuality,
+    type MarketQualityInput,
+} from '../v1/assets/_market-quality';
 import { Effect } from 'effect';
 
 import {
@@ -39,6 +48,9 @@ import {
     type VariantAdvisory,
     type VariantKind,
     isPrimaryEligibleVariant,
+    resolveAssetIssuance,
+    resolveVariantIssuance,
+    type VariantIssuance,
 } from '@tokens/asset-registry';
 import {
     CHAINS,
@@ -70,18 +82,15 @@ import type { StockInstrumentResult, StockPriceResult } from '../../../../../clo
 import type { VariantMarketSnapshotResult } from '../../../../../cloudrun-assets/src/handlers/variantMarkets';
 
 import {
-    aggregateTokenStats,
     buildCuratedMintRank,
     computeCompanyMarketCapUsd,
     computePreStocksDerived,
     deriveVariantTierFields,
     isCanonicalPublicEquityAsset,
-    mergeAssetStatsWithAggregates,
     optionalText,
     parsePrimaryVariantStrategy,
     resolveAssetImageUrl,
     resolveVariantSymbol,
-    selectCanonicalAssetStats,
     toFiniteNumberOrNull,
     tokenMarketSnapshotFromConvexMarket,
     type AssetStats,
@@ -148,6 +157,8 @@ export type V2Market = {
     asOf: number | null;
     /** Our fetch. */
     lastFetchedAt: number | null;
+    /** Whether this row entered the asset's sums and averages, and why not (stale / dust / price_outlier). */
+    quality: MarketQuality;
 };
 
 export type V2Advisory = {
@@ -158,7 +169,7 @@ export type V2Advisory = {
     source: NonNullable<VariantAdvisory['source']>;
 };
 
-export type VariantIssuance = 'native' | 'bridged' | 'wrapped';
+export type { VariantIssuance };
 
 export type V2Variant = {
     key: VariantKey;
@@ -167,7 +178,7 @@ export type V2Variant = {
     assetId: string;
     variantId: string;
     kind: VariantKind;
-    /** `issuance:<x>` tag, else from kind (bridged / wrapped), else native. Drives supply and market-cap counting. */
+    /** `issuance:<x>` tag, else the curated override for this deployment, else from kind (bridged / wrapped / derivative kinds), else native. Drives supply and market-cap counting. */
     issuance: VariantIssuance;
     symbol: string | null;
     name: string | null;
@@ -185,6 +196,10 @@ export type V2Variant = {
     rank: number | null;
     explorerUrl: string;
     market: V2Market | null;
+    /** The CoinGecko coin this deployment is (an issuer's, an LST's, a wrapper's); null when unlinked. */
+    coingeckoId: string | null;
+    /** CoinGecko's own figures for that coin (per-issuer / per-wrapper supply and cap); null when unlinked or not loaded. */
+    reference: V2CoinGeckoReference | null;
 } & V2VariantEnrichments;
 
 /** `GET /v2/assets/{id}?include=` values. Each adds one key to EVERY variant in the response. */
@@ -219,27 +234,199 @@ export type V2VariantEnrichments = {
     preStocks?: V2VariantPreStocks | null;
 };
 
-export type V2AssetStats = AssetStats;
+/** Where each headline figure came from: the off-chain reference or the guarded on-chain aggregate. */
+export type V2StatsSourceKind = 'coingecko' | 'stock' | 'onchain';
+export type V2StatsSource = Partial<Record<keyof AssetStats, V2StatsSourceKind>>;
+
+/** Which chains `volume30dUSD` covers: every chain with volume, Solana only, or none (window incomplete). */
+export type V2Volume30dScope = 'all' | 'solana' | null;
+
+export type V2AssetStats = AssetStats & {
+    /** Provenance per figure; a key is absent when the figure is null. */
+    source: V2StatsSource;
+    volume30dScope: V2Volume30dScope;
+};
+
+/** Days a computed EVM rollup row needs before its 30d figure is served. */
+export const VOLUME_30D_MIN_DAYS = 28;
+/** A computed rollup older than this is not served: the daily job stopped while the 24h refresh went on. */
+export const VOLUME_30D_MAX_AGE_MS = 48 * 60 * 60 * 1000;
+
+/**
+ * 30d volume across chains: the sum of each chain's rollup when every chain
+ * in the window has a complete one (`solana_v1` rows come from a 30-day
+ * candle series; `computed` EVM rows need ≥ 28 sampled days), else null. A
+ * chain is in the window when it traded in the last 24h or its accepted
+ * rollup carries volume: a pool quiet today still has its month counted, and
+ * is not quietly left out of a figure labelled `all`. `scope` says what the
+ * number covers so an asset whose only volume is on Solana is still served
+ * as `solana`.
+ */
+export function selectVolume30d(
+    chainStats: Partial<Record<ChainId, V2ChainStats>>,
+    rollupByChain: ReadonlyMap<ChainId, V2ChainRollupResult> | null,
+    /** A computed row whose `lastComputedAt` is more than `VOLUME_30D_MAX_AGE_MS` before this is treated as missing. */
+    nowMs: number = Date.now(),
+    /** From `assessVariantMarkets`: a computed chain is read over the accepted rows only (`volume30dByAddress`). */
+    qualityByKey?: ReadonlyMap<VariantKey, MarketQuality>,
+    /** The asset's current variants; shares of addresses deactivated since the rollup are dropped. */
+    variants?: ReadonlyArray<Pick<V2VariantResult, 'chain' | 'address' | 'key'>>,
+    /** Current markets; a current accepted variant trading without a saved share makes its chain incomplete. */
+    marketByKey?: ReadonlyMap<VariantKey, VariantMarketSnapshotResult>,
+): { volume30dUSD: number | null; scope: V2Volume30dScope } {
+    const none = { volume30dUSD: null, scope: null } as const;
+    let sum = 0;
+    const covered: ChainId[] = [];
+    // Only chains the asset currently has variants on; a rollup row left by a
+    // chain whose variants were all deactivated is not revived here.
+    for (const chain of CHAIN_KINDS.filter(chain => chainStats[chain] !== undefined)) {
+        const tradedToday = (chainStats[chain]?.volume24hUSD ?? 0) > 0;
+        const rollup = rollupByChain?.get(chain);
+        if (!rollup) {
+            if (tradedToday) return none;
+            continue;
+        }
+        const read = acceptedVolume30d(chain, rollup, qualityByKey, variants, marketByKey, nowMs);
+        const inWindow = tradedToday || (read.volume30dUSD !== null && read.volume30dUSD > 0);
+        if (!inWindow) continue;
+        if (read.volume30dUSD === null) return none;
+        const fresh =
+            rollup.origin === 'solana_v1' ||
+            (rollup.lastComputedAt !== null && nowMs - rollup.lastComputedAt <= VOLUME_30D_MAX_AGE_MS);
+        const complete = rollup.origin === 'solana_v1' || (read.days ?? 0) >= VOLUME_30D_MIN_DAYS;
+        if (!fresh || !complete) return none;
+        sum += read.volume30dUSD;
+        covered.push(chain);
+    }
+    if (covered.length === 0) return none;
+    return { volume30dUSD: sum, scope: covered.length === 1 && covered[0] === 'solana' ? 'solana' : 'all' };
+}
+
+/** Share of a chain's variants that counts toward the window's completeness. */
+const VOLUME_30D_COVERAGE_MIN_SHARE = 0.01;
+
+/**
+ * A rollup read over the rows the quality guard accepted: the rejected rows'
+ * shares leave the total, a share saved for a variant that is gone is dropped,
+ * and the sampled-day count is the smallest among the accepted variants that
+ * make up at least 1% of what is left (the rollup's own `volume30dDays` was
+ * computed over every row). A current, accepted variant that trades today but
+ * has no saved share yet (listed after the last rollup) makes the window
+ * incomplete. Rows written before migration 0037 carry no shares and are
+ * served as stored. The mirrored Solana row (`solana_v1`) keeps v1's candle
+ * figure until its own per-mint samples cover the window, then reads like a
+ * computed row.
+ */
+function acceptedVolume30d(
+    chain: ChainId,
+    rollup: V2ChainRollupResult,
+    qualityByKey: ReadonlyMap<VariantKey, MarketQuality> | undefined,
+    /** The asset's current variants; a share saved for an address no longer among them (deactivated since the rollup) is dropped. */
+    variants: ReadonlyArray<Pick<V2VariantResult, 'chain' | 'address' | 'key'>> | undefined,
+    /** Current markets: a current accepted variant with 24h volume and no saved share is missing history. */
+    marketByKey: ReadonlyMap<VariantKey, VariantMarketSnapshotResult> | undefined,
+    /** Clock for the Solana shares' freshness check. */
+    nowMs: number,
+): { volume30dUSD: number | null; days: number | null } {
+    const stored = { volume30dUSD: rollup.volume30dUSD, days: rollup.volume30dDays };
+    const byAddress = rollup.volume30dByAddress;
+    if (!byAddress) return stored;
+    const current = variants?.filter(v => v.chain === chain) ?? null;
+    const present = current ? new Set(current.map(v => v.address)) : null;
+    const rejected = new Set<string>();
+    for (const [key, quality] of qualityByKey ?? []) {
+        if (quality.included) continue;
+        const separator = key.indexOf(':');
+        if (separator > 0 && key.slice(0, separator) === chain) rejected.add(key.slice(separator + 1));
+    }
+    const accepted = Object.entries(byAddress).filter(
+        ([address]) => !rejected.has(address) && (present === null || present.has(address)),
+    );
+    const total = accepted.reduce((sum, [, share]) => sum + share.volume, 0);
+    let days: number | null = null;
+    for (const [, share] of accepted) {
+        if (total > 0 && share.volume < VOLUME_30D_COVERAGE_MIN_SHARE * total) continue;
+        days = days === null ? share.days : Math.min(days, share.days);
+    }
+    const tradingWithoutHistory = (current ?? []).some(
+        v =>
+            !rejected.has(v.address) &&
+            !(v.address in byAddress) &&
+            (marketByKey?.get(v.key)?.volume24hUSD ?? 0) > 0,
+    );
+    if (tradingWithoutHistory) days = 0;
+    const read = { volume30dUSD: accepted.length > 0 ? total : null, days };
+    if (rollup.origin === 'solana_v1') {
+        // v1's candle figure stands until the per-mint samples cover the window,
+        // and again whenever the shares are older than the rollup's freshness
+        // limit (the mirror keeps them while a stopped job would leave them frozen).
+        const sharesFresh =
+            rollup.volume30dSharesComputedAt != null && nowMs - rollup.volume30dSharesComputedAt <= VOLUME_30D_MAX_AGE_MS;
+        return sharesFresh && (read.days ?? 0) >= VOLUME_30D_MIN_DAYS && read.volume30dUSD !== null ? read : stored;
+    }
+    return read;
+}
+
+/** Variants left out of supply / market cap, by why. */
+export type V2ExcludedByIssuance = {
+    bridged: number;
+    wrapped: number;
+    derivative: number;
+};
 
 export type V2ChainStats = {
+    /**
+     * Average over the chain's included rows priced in the asset's units
+     * (derivatives such as ETF shares or LSTs only stand in when there is no
+     * other priced row), each weighted by its liquidity (else 24h volume);
+     * when no such row has either, the plain mean, so a lone fresh pool with
+     * no activity yet still reports its price.
+     */
+    price: number | null;
+    priceChange24hPercent: number | null;
+    priceChange1hPercent: number | null;
     liquidity: number | null;
     volume24hUSD: number | null;
     /** Sum of the chain's variant 24h trade counts. */
     trade24h: number | null;
-    /** Sum over this chain's issued (non-bridged, non-wrapped) variants. */
+    /** Sum over this chain's issued (`issuance: native`) variants. */
     marketCap: number | null;
     fdv: number | null;
     circulatingSupply: number | null;
+    totalSupply: number | null;
     variantCount: number;
     /** Variants counted toward supply / market cap. */
     issuedVariantCount: number;
+    /** Variants left out of supply / market cap on this chain, by issuance class. */
+    excludedByIssuance: V2ExcludedByIssuance;
+    /** Variants whose market row failed the quality guard and left every sum on this chain. */
+    excludedCount: number;
+    excludedByQuality: ExcludedByQuality;
 };
 
 export type V2Aggregate = V2ChainStats & {
     chainCount: number;
-    /** Bridged / wrapped variants left out of supply and market cap. */
+    /** Bridged / wrapped / derivative variants left out of supply and market cap (= the sum of `excludedByIssuance`). */
     excludedFromSupplyCount: number;
 };
+
+export type V2CoinGeckoReference = Extract<V2ReferenceMarket, { source: 'coingecko' }>;
+
+export function toCoinGeckoReference(coinId: string, snapshot: CoingeckoPriceSnapshot | null): V2CoinGeckoReference {
+    return {
+        source: 'coingecko',
+        coinId,
+        price: snapshot?.priceUsd ?? null,
+        marketCap: snapshot?.marketCapUsd ?? null,
+        volume24hUSD: snapshot?.volume24hUsd ?? null,
+        priceChange24hPercent: snapshot?.priceChange24hPercent ?? null,
+        circulatingSupply: snapshot?.circulatingSupply ?? null,
+        totalSupply: snapshot?.totalSupply ?? null,
+        maxSupply: snapshot?.maxSupply ?? null,
+        asOf: snapshot?.providerLastUpdatedAt ?? null,
+        lastFetchedAt: snapshot?.lastFetchedAt ?? null,
+    };
+}
 
 export type V2ReferenceMarket =
     | {
@@ -602,20 +789,38 @@ function toStockVariantTier(value: string | null): StockVariantTier | null {
         : null;
 }
 
-const ISSUANCE_TAG_PREFIX = 'issuance:';
-
-export function variantIssuance(variant: { kind: string; tags: readonly string[] }): VariantIssuance {
-    for (const tag of variant.tags) {
-        if (!tag.startsWith(ISSUANCE_TAG_PREFIX)) continue;
-        const value = tag.slice(ISSUANCE_TAG_PREFIX.length);
-        if (value === 'native' || value === 'bridged' || value === 'wrapped') return value;
-    }
-    if (variant.kind === 'bridged') return 'bridged';
-    if (variant.kind === 'wrapped') return 'wrapped';
-    return 'native';
+/**
+ * Tag > curated override > kind for one variant on its own; see
+ * `resolveVariantIssuance` in the registry. Prefer `variantIssuanceByKey`
+ * whenever the asset's variant set is at hand: a yield / ETF / leveraged /
+ * basket token is only a derivative *of the asset* when the asset has some
+ * other deployment, so a standalone fund's single variant is its supply.
+ */
+export function variantIssuance(variant: {
+    chain: ChainId;
+    address: string;
+    kind: string;
+    tags: readonly string[];
+}): VariantIssuance {
+    return resolveVariantIssuance(variant);
 }
 
-export function toV2Market(snapshot: VariantMarketSnapshotResult | null | undefined): V2Market | null {
+/** Issuance per variant key over one asset's variants (`resolveAssetIssuance` in the registry). */
+export function variantIssuanceByKey(
+    variants: ReadonlyArray<Pick<V2VariantResult, 'chain' | 'address' | 'key' | 'kind' | 'tags'>>,
+    /** The asset's category: a commodity's ETF-share tokens are never promoted to its supply. */
+    category?: string | null,
+): Map<VariantKey, VariantIssuance> {
+    const resolved = resolveAssetIssuance(variants, { category });
+    const out = new Map<VariantKey, VariantIssuance>();
+    variants.forEach((variant, index) => out.set(variant.key, resolved[index]!));
+    return out;
+}
+
+export function toV2Market(
+    snapshot: VariantMarketSnapshotResult | null | undefined,
+    quality: MarketQuality = INCLUDED_MARKET_QUALITY,
+): V2Market | null {
     if (!snapshot) return null;
     const metricsSource = snapshot.metricsSource ?? null;
     return {
@@ -639,7 +844,39 @@ export function toV2Market(snapshot: VariantMarketSnapshotResult | null | undefi
         lastTradeAt: toFiniteNumberOrNull(snapshot.lastTradeAt),
         asOf: toFiniteNumberOrNull(snapshot.asOf),
         lastFetchedAt: toFiniteNumberOrNull(snapshot.lastFetchedAt),
+        quality: { included: quality.included, reasons: [...quality.reasons] },
     };
+}
+
+/** Quality verdict per variant key for an asset's market rows (see `_market-quality.ts`). */
+export function assessVariantMarkets(
+    variants: ReadonlyArray<Pick<V2VariantResult, 'key' | 'chain' | 'address' | 'kind' | 'tags'>>,
+    marketByKey: ReadonlyMap<VariantKey, VariantMarketSnapshotResult>,
+    reference: { priceUsd: number | null | undefined } | null,
+    nowMs: number,
+    /** From `variantIssuanceByKey(variants, asset.category)`; derivatives skip the price check. Computed category-blind when absent. */
+    issuanceByKey?: ReadonlyMap<VariantKey, VariantIssuance>,
+): Map<VariantKey, MarketQuality> {
+    const issuance = issuanceByKey ?? variantIssuanceByKey(variants);
+    const rows: MarketQualityInput[] = [];
+    const seen = new Set<VariantKey>();
+    for (const variant of variants) {
+        if (seen.has(variant.key)) continue;
+        seen.add(variant.key);
+        const market = marketByKey.get(variant.key);
+        if (!market) continue;
+        rows.push({
+            key: variant.key,
+            chain: variant.chain,
+            price: market.price,
+            liquidity: market.liquidity,
+            volume24hUSD: market.volume24hUSD,
+            lastFetchedAt: market.lastFetchedAt,
+            // An LST or ETF share is not priced in the asset's units; the reference says nothing about it.
+            priceChecked: (issuance.get(variant.key) ?? variantIssuance(variant)) !== 'derivative',
+        });
+    }
+    return assessMarkets(rows, reference, nowMs) as Map<VariantKey, MarketQuality>;
 }
 
 export function toV2Advisory(advisory: VariantAdvisory | null | undefined): V2Advisory | null {
@@ -716,72 +953,267 @@ function addFinite(total: number | null, value: number | null | undefined): numb
  * elsewhere). For Solana the worker rollup (v1's `asset_markets_latest`)
  * supplies liquidity / volume when present, so `chainStats.solana` equals v1.
  */
+/** Supply figures a native coin's home-chain row carries although it has no market row (from the asset's reference). */
+export interface NativeHomeSupply {
+    marketCap: number | null;
+    fdv: number | null;
+    circulatingSupply: number | null;
+    totalSupply: number | null;
+}
+
+export const NATIVE_HOME_TAG = 'native-home';
+
+/**
+ * One weighted mean in progress. `sum` / `weight` carry only rows with a
+ * positive weight; `plainSum` / `count` carry every finite value so a figure
+ * survives when no row has any activity (a fresh single pool with no
+ * liquidity or volume yet still has a price).
+ */
+interface MeanAccumulator {
+    sum: number;
+    weight: number;
+    plainSum: number;
+    count: number;
+}
+
+/** Per-field accumulators; a row missing one field contributes nothing to that field's weight. */
+export interface WeightedAccumulator {
+    price: MeanAccumulator;
+    change24h: MeanAccumulator;
+    change1h: MeanAccumulator;
+}
+
+/** A chain's accumulators: rows priced in the asset's units, and derivative rows (ETF shares, LSTs) kept apart. */
+export interface ChainAccumulators {
+    own: WeightedAccumulator;
+    derivative: WeightedAccumulator;
+}
+
+function emptyMean(): MeanAccumulator {
+    return { sum: 0, weight: 0, plainSum: 0, count: 0 };
+}
+
+function emptyAccumulator(): WeightedAccumulator {
+    return { price: emptyMean(), change24h: emptyMean(), change1h: emptyMean() };
+}
+
+function accumulate(acc: MeanAccumulator, value: number | null | undefined, weight: number): void {
+    if (typeof value !== 'number' || !Number.isFinite(value)) return;
+    acc.plainSum += value;
+    acc.count += 1;
+    if (weight <= 0) return;
+    acc.sum += value * weight;
+    acc.weight += weight;
+}
+
+/** Fold `other` into `acc` (both already weighted the same way). */
+function merge(acc: MeanAccumulator, other: MeanAccumulator): void {
+    acc.sum += other.sum;
+    acc.weight += other.weight;
+    acc.plainSum += other.plainSum;
+    acc.count += other.count;
+}
+
+/** The weighted mean, else the plain mean of the values seen, else null. */
+function weighted(acc: MeanAccumulator): number | null {
+    if (acc.weight > 0) return acc.sum / acc.weight;
+    return acc.count > 0 ? acc.plainSum / acc.count : null;
+}
+
+/** The weight a row carries in the price averages: liquidity, else 24h volume, else nothing. */
+function activityWeight(market: VariantMarketSnapshotResult | undefined): number {
+    const liquidity = market?.liquidity;
+    if (typeof liquidity === 'number' && Number.isFinite(liquidity) && liquidity > 0) return liquidity;
+    const volume = market?.volume24hUSD;
+    if (typeof volume === 'number' && Number.isFinite(volume) && volume > 0) return volume;
+    return 0;
+}
+
 export function computeChainStats(
     variants: ReadonlyArray<Pick<V2VariantResult, 'chain' | 'address' | 'key' | 'kind' | 'tags'>>,
     marketByKey: ReadonlyMap<VariantKey, VariantMarketSnapshotResult>,
+    /** Kept for the Solana 30d rollup only; liquidity and volume are the guarded variant sums on every chain. */
     rollupByChain: ReadonlyMap<ChainId, V2ChainRollupResult> | null,
+    /** From `assessVariantMarkets`; excluded rows leave every sum (they still count in `variantCount`). */
+    qualityByKey?: ReadonlyMap<VariantKey, MarketQuality>,
+    /** Supply for a `native-home` row without a market (the asset's reference figures). */
+    nativeHomeSupply?: NativeHomeSupply | null,
+    /** From `variantIssuanceByKey(variants, asset.category)`; computed category-blind when absent. */
+    issuanceByKey?: ReadonlyMap<VariantKey, VariantIssuance>,
 ): Partial<Record<ChainId, V2ChainStats>> {
+    return computeChainStatsDetailed(variants, marketByKey, rollupByChain, qualityByKey, nativeHomeSupply, issuanceByKey).chainStats;
+}
+
+/**
+ * `computeChainStats` plus each chain's per-field accumulators, which
+ * `aggregateChainStats` folds into the cross-chain averages so a row missing
+ * a field does not lend its liquidity to that field's mean.
+ */
+export function computeChainStatsDetailed(
+    variants: ReadonlyArray<Pick<V2VariantResult, 'chain' | 'address' | 'key' | 'kind' | 'tags'>>,
+    marketByKey: ReadonlyMap<VariantKey, VariantMarketSnapshotResult>,
+    _rollupByChain: ReadonlyMap<ChainId, V2ChainRollupResult> | null,
+    qualityByKey?: ReadonlyMap<VariantKey, MarketQuality>,
+    nativeHomeSupply?: NativeHomeSupply | null,
+    /** From `variantIssuanceByKey(variants, asset.category)`; computed category-blind when absent. */
+    issuanceByKey?: ReadonlyMap<VariantKey, VariantIssuance>,
+): { chainStats: Partial<Record<ChainId, V2ChainStats>>; accumulatorsByChain: ReadonlyMap<ChainId, ChainAccumulators> } {
     const byChain = new Map<ChainId, V2ChainStats>();
+    const issuance = issuanceByKey ?? variantIssuanceByKey(variants);
+    const accByChain = new Map<ChainId, WeightedAccumulator>();
+    // Derivative rows (an ETF share next to spot gold, an LST next to SOL) are
+    // priced in other units; their liquidity and volume count, their prices
+    // only stand in when a chain has no other priced row (a commodity whose
+    // only token is a fund share).
+    const derivativeAccByChain = new Map<ChainId, WeightedAccumulator>();
     const seen = new Set<VariantKey>();
     for (const variant of variants) {
         if (seen.has(variant.key)) continue;
         seen.add(variant.key);
         const entry = byChain.get(variant.chain) ?? {
+            price: null,
+            priceChange24hPercent: null,
+            priceChange1hPercent: null,
             liquidity: null,
             volume24hUSD: null,
             trade24h: null,
             marketCap: null,
             fdv: null,
             circulatingSupply: null,
+            totalSupply: null,
             variantCount: 0,
             issuedVariantCount: 0,
+            excludedByIssuance: { bridged: 0, wrapped: 0, derivative: 0 },
+            excludedCount: 0,
+            excludedByQuality: emptyExcludedByQuality(),
         };
         entry.variantCount += 1;
+        byChain.set(variant.chain, entry);
+        const acc = accByChain.get(variant.chain) ?? emptyAccumulator();
+        accByChain.set(variant.chain, acc);
+        const quality = qualityByKey?.get(variant.key);
+        if (quality && !quality.included) {
+            entry.excludedCount += 1;
+            countExcludedReasons(entry.excludedByQuality, quality);
+            continue;
+        }
         const market = marketByKey.get(variant.key);
+        const variantIssuanceClass = issuance.get(variant.key) ?? variantIssuance(variant);
+        if (!market && nativeHomeSupply && variantIssuanceClass === 'native' && variant.tags.includes(NATIVE_HOME_TAG)) {
+            // The native coin's row on its issuing chain: no pool to read, so the
+            // reference's supply is the chain's issued supply.
+            entry.issuedVariantCount += 1;
+            entry.marketCap = addFinite(entry.marketCap, nativeHomeSupply.marketCap);
+            entry.fdv = addFinite(entry.fdv, nativeHomeSupply.fdv);
+            entry.circulatingSupply = addFinite(entry.circulatingSupply, nativeHomeSupply.circulatingSupply);
+            entry.totalSupply = addFinite(entry.totalSupply, nativeHomeSupply.totalSupply);
+            continue;
+        }
         entry.liquidity = addFinite(entry.liquidity, market?.liquidity);
         entry.volume24hUSD = addFinite(entry.volume24hUSD, market?.volume24hUSD);
         entry.trade24h = addFinite(entry.trade24h, market?.trade24h);
-        if (variantIssuance(variant) === 'native') {
+        const weight = activityWeight(market);
+        const price = market?.price;
+        const priceAcc =
+            variantIssuanceClass === 'derivative'
+                ? (derivativeAccByChain.get(variant.chain) ?? (derivativeAccByChain.set(variant.chain, emptyAccumulator()), derivativeAccByChain.get(variant.chain)!))
+                : acc;
+        if (typeof price === 'number' && Number.isFinite(price) && price > 0) accumulate(priceAcc.price, price, weight);
+        accumulate(priceAcc.change24h, market?.priceChange24hPercent, weight);
+        accumulate(priceAcc.change1h, market?.priceChange1hPercent, weight);
+        if (variantIssuanceClass === 'native') {
             entry.issuedVariantCount += 1;
             entry.marketCap = addFinite(entry.marketCap, market?.marketCap);
             entry.fdv = addFinite(entry.fdv, market?.fdv);
             entry.circulatingSupply = addFinite(entry.circulatingSupply, market?.circulatingSupply);
+            entry.totalSupply = addFinite(entry.totalSupply, market?.totalSupply);
+        } else {
+            entry.excludedByIssuance[variantIssuanceClass] += 1;
         }
-        byChain.set(variant.chain, entry);
     }
     const out: Partial<Record<ChainId, V2ChainStats>> = {};
+    const accumulators = new Map<ChainId, ChainAccumulators>();
     for (const chain of CHAIN_KINDS) {
         const entry = byChain.get(chain);
         if (!entry) continue;
-        const rollup = rollupByChain?.get(chain);
-        if (rollup && (rollup.liquidity > 0 || rollup.volume24hUSD > 0)) {
-            entry.liquidity = rollup.liquidity;
-            entry.volume24hUSD = rollup.volume24hUSD;
-        }
+        const own = accByChain.get(chain) ?? emptyAccumulator();
+        const derivative = derivativeAccByChain.get(chain) ?? emptyAccumulator();
+        // Derivative prices only when nothing on the chain is priced in the asset's units.
+        const acc = own.price.count > 0 ? own : derivative;
+        accumulators.set(chain, { own, derivative });
+        entry.price = weighted(acc.price);
+        entry.priceChange24hPercent = weighted(acc.change24h);
+        entry.priceChange1hPercent = weighted(acc.change1h);
         out[chain] = entry;
     }
-    return out;
+    return { chainStats: out, accumulatorsByChain: accumulators };
 }
 
-export function aggregateChainStats(chainStats: Partial<Record<ChainId, V2ChainStats>>): V2Aggregate {
+/**
+ * Cross-chain totals and averages. With `accumulatorsByChain` (from
+ * `computeChainStatsDetailed`) each average carries exactly the weight of the
+ * rows that had the field; without it the chain averages are weighted by the
+ * chain's liquidity (else volume), which overstates a chain whose rows lack
+ * the field, so callers with the variants at hand should pass it.
+ */
+export function aggregateChainStats(
+    chainStats: Partial<Record<ChainId, V2ChainStats>>,
+    accumulatorsByChain?: ReadonlyMap<ChainId, ChainAccumulators>,
+): V2Aggregate {
     const out: V2Aggregate = {
+        price: null,
+        priceChange24hPercent: null,
+        priceChange1hPercent: null,
         liquidity: null,
         volume24hUSD: null,
         trade24h: null,
         marketCap: null,
         fdv: null,
         circulatingSupply: null,
+        totalSupply: null,
         variantCount: 0,
         issuedVariantCount: 0,
+        excludedByIssuance: { bridged: 0, wrapped: 0, derivative: 0 },
+        excludedCount: 0,
+        excludedByQuality: emptyExcludedByQuality(),
         chainCount: 0,
         excludedFromSupplyCount: 0,
     };
-    for (const entry of Object.values(chainStats)) {
+    // Same rule as per chain: derivative rows (ETF shares, LSTs) only price the
+    // asset when no chain has a row priced in its units, so an ETF-only chain
+    // cannot mix its share price into another chain's spot price.
+    const acc = emptyAccumulator();
+    const derivativeAcc = emptyAccumulator();
+    for (const [chain, entry] of Object.entries(chainStats) as Array<[ChainId, V2ChainStats | undefined]>) {
         if (!entry) continue;
+        const chainAcc = accumulatorsByChain?.get(chain);
+        if (chainAcc) {
+            merge(acc.price, chainAcc.own.price);
+            merge(acc.change24h, chainAcc.own.change24h);
+            merge(acc.change1h, chainAcc.own.change1h);
+            merge(derivativeAcc.price, chainAcc.derivative.price);
+            merge(derivativeAcc.change24h, chainAcc.derivative.change24h);
+            merge(derivativeAcc.change1h, chainAcc.derivative.change1h);
+        } else {
+            const weight = (entry.liquidity ?? 0) > 0 ? (entry.liquidity as number) : (entry.volume24hUSD ?? 0) > 0 ? (entry.volume24hUSD as number) : 0;
+            accumulate(acc.price, entry.price, weight);
+            accumulate(acc.change24h, entry.priceChange24hPercent, weight);
+            accumulate(acc.change1h, entry.priceChange1hPercent, weight);
+        }
+        out.totalSupply = addFinite(out.totalSupply, entry.totalSupply);
         out.chainCount += 1;
         out.variantCount += entry.variantCount;
         out.issuedVariantCount += entry.issuedVariantCount;
-        out.excludedFromSupplyCount += entry.variantCount - entry.issuedVariantCount;
+        // Issuance only: rows the quality guard dropped are in excludedCount, not here.
+        out.excludedFromSupplyCount +=
+            entry.excludedByIssuance.bridged + entry.excludedByIssuance.wrapped + entry.excludedByIssuance.derivative;
+        out.excludedByIssuance.bridged += entry.excludedByIssuance.bridged;
+        out.excludedByIssuance.wrapped += entry.excludedByIssuance.wrapped;
+        out.excludedByIssuance.derivative += entry.excludedByIssuance.derivative;
+        out.excludedCount += entry.excludedCount;
+        out.excludedByQuality.stale += entry.excludedByQuality.stale;
+        out.excludedByQuality.dust += entry.excludedByQuality.dust;
+        out.excludedByQuality.priceOutlier += entry.excludedByQuality.priceOutlier;
         out.liquidity = addFinite(out.liquidity, entry.liquidity);
         out.volume24hUSD = addFinite(out.volume24hUSD, entry.volume24hUSD);
         out.trade24h = addFinite(out.trade24h, entry.trade24h);
@@ -789,34 +1221,90 @@ export function aggregateChainStats(chainStats: Partial<Record<ChainId, V2ChainS
         out.fdv = addFinite(out.fdv, entry.fdv);
         out.circulatingSupply = addFinite(out.circulatingSupply, entry.circulatingSupply);
     }
+    const chosen = acc.price.count > 0 ? acc : derivativeAcc;
+    out.price = weighted(chosen.price);
+    out.priceChange24hPercent = weighted(chosen.change24h);
+    out.priceChange1hPercent = weighted(chosen.change1h);
     return out;
 }
 
+export interface V2HeadlineReference {
+    coingecko: CoingeckoPriceSnapshot | null;
+    /** Stock snapshot plus the company market cap; only when one token is one share. */
+    stock: (StockPriceResult & { marketCapUsd: number | null }) | null;
+}
+
 /**
- * Headline on-chain stats for `stats`: v1's aggregation, with liquidity and
- * volume from the chain stats, and, whenever some variants are claims on supply
- * issued elsewhere, supply / market cap / FDV from the issuance-aware
- * `aggregate`. Otherwise `stats` would count a wrapped or bridged claim on top
- * of the native supply it represents and disagree with `aggregate` in the same
- * response. (`totalSupply` keeps v1's figure: the chain stats do not carry it.)
+ * Reference-first headline. Price, market cap, FDV, 24h change and supply come
+ * from the off-chain reference when there is one (CoinGecko for crypto, the
+ * stock feed for one-share-per-token equities); on-chain figures are reserved
+ * for liquidity, DEX volume, trades and the 1h change, and for whatever the
+ * reference does not carry. Every figure says where it came from in `source`.
+ *
+ * For an equity the company market cap is the headline and FDV is null (a
+ * company has none; the tokenized float lives in `aggregate`), while supply is
+ * the tokenized issued supply, labelled on-chain. Without a reference every
+ * figure is the guarded, issuance-aware on-chain aggregate.
  */
-export function headlineOnChainStats(
-    v1Stats: AssetStats | null,
-    aggregate: V2Aggregate,
-    volume30dUSD: number | null,
-): AssetStats | null {
-    const merged = mergeAssetStatsWithAggregates(v1Stats, {
-        liquidity: aggregate.liquidity ?? 0,
-        volume24hUSD: aggregate.volume24hUSD ?? 0,
-        volume30dUSD,
-    });
-    if (!merged || aggregate.excludedFromSupplyCount === 0) return merged;
-    return {
-        ...merged,
-        marketCap: aggregate.marketCap,
-        fdv: aggregate.fdv,
-        circulatingSupply: aggregate.circulatingSupply,
+export function selectV2HeadlineStats(args: {
+    reference: V2HeadlineReference;
+    onChain: V2Aggregate;
+    volume30dUSD: number | null;
+    volume30dScope?: V2Volume30dScope;
+}): V2AssetStats | null {
+    const { onChain } = args;
+    const cg = args.reference.coingecko;
+    const stock = args.reference.stock;
+    const source: V2StatsSource = {};
+    const pick = (
+        key: keyof AssetStats,
+        candidates: ReadonlyArray<[V2StatsSourceKind, number | null | undefined]>,
+    ): number | null => {
+        for (const [kind, value] of candidates) {
+            const number = toFiniteNumberOrNull(value);
+            if (number === null) continue;
+            source[key] = kind;
+            return number;
+        }
+        return null;
     };
+
+    const stats: AssetStats = stock
+        ? {
+              price: pick('price', [['stock', stock.priceUsd], ['onchain', onChain.price]]),
+              liquidity: pick('liquidity', [['onchain', onChain.liquidity]]),
+              volume24hUSD: pick('volume24hUSD', [['onchain', onChain.volume24hUSD]]),
+              volume30dUSD: pick('volume30dUSD', [['onchain', args.volume30dUSD]]),
+              marketCap: pick('marketCap', [['stock', stock.marketCapUsd], ['onchain', onChain.marketCap]]),
+              fdv: null,
+              priceChange24hPercent: pick('priceChange24hPercent', [
+                  ['stock', stock.priceChange24hPercent],
+                  ['onchain', onChain.priceChange24hPercent],
+              ]),
+              priceChange1hPercent: pick('priceChange1hPercent', [['onchain', onChain.priceChange1hPercent]]),
+              totalSupply: pick('totalSupply', [['onchain', onChain.totalSupply]]),
+              circulatingSupply: pick('circulatingSupply', [['onchain', onChain.circulatingSupply]]),
+          }
+        : {
+              price: pick('price', [['coingecko', cg?.priceUsd], ['onchain', onChain.price]]),
+              liquidity: pick('liquidity', [['onchain', onChain.liquidity]]),
+              volume24hUSD: pick('volume24hUSD', [['onchain', onChain.volume24hUSD]]),
+              volume30dUSD: pick('volume30dUSD', [['onchain', args.volume30dUSD]]),
+              marketCap: pick('marketCap', [['coingecko', cg?.marketCapUsd], ['onchain', onChain.marketCap]]),
+              fdv: pick('fdv', [['coingecko', cg?.fdvUsd], ['onchain', onChain.fdv]]),
+              priceChange24hPercent: pick('priceChange24hPercent', [
+                  ['coingecko', cg?.priceChange24hPercent],
+                  ['onchain', onChain.priceChange24hPercent],
+              ]),
+              priceChange1hPercent: pick('priceChange1hPercent', [['onchain', onChain.priceChange1hPercent]]),
+              totalSupply: pick('totalSupply', [['coingecko', cg?.totalSupply], ['onchain', onChain.totalSupply]]),
+              circulatingSupply: pick('circulatingSupply', [
+                  ['coingecko', cg?.circulatingSupply],
+                  ['onchain', onChain.circulatingSupply],
+              ]),
+          };
+    const hasAny = Object.values(stats).some(value => typeof value === 'number' && Number.isFinite(value));
+    return hasAny ? { ...stats, source, volume30dScope: stats.volume30dUSD === null ? null : (args.volume30dScope ?? 'solana') } : null;
 }
 
 // ---------------------------------------------------------------------------
@@ -832,6 +1320,8 @@ export interface V2AssetBuildContext {
     rollupByChain: ReadonlyMap<ChainId, V2ChainRollupResult> | null;
     advisoriesByMint: ReadonlyMap<string, VariantAdvisory>;
     coingeckoPrice: CoingeckoPriceSnapshot | null;
+    /** Prices of the coins variants link to, by coin id (detail surfaces); absent = `variant.reference` null. */
+    variantCoingeckoPriceByCoinId?: ReadonlyMap<string, CoingeckoPriceSnapshot | null>;
     stockInstrument: StockInstrumentResult | null;
     stockPrice: StockPriceResult | null;
     preStocksByMint: ReadonlyMap<string, PreStocksMintSnapshot>;
@@ -847,6 +1337,8 @@ export interface V2AssetBuildContext {
     rank: number | null;
     /** Requested `include=` enrichments; absent = no enrichment keys on the variants. */
     enrichments?: V2EnrichmentInputs;
+    /** Clock for the freshness guard; absent = Date.now(). */
+    nowMs?: number;
 }
 
 /** Inputs for the `include=` enrichments (mint-keyed: these pipelines are Solana-only today). */
@@ -1037,7 +1529,7 @@ export function buildV2Asset(ctx: V2AssetBuildContext): V2Asset | null {
     const canonical = toCanonicalAsset(asset, registryVariants);
 
     const tokenByKey = new Map<VariantKey, TokenMarketSnapshot>();
-    for (const variant of visible) {
+    for (const variant of ctx.variants) {
         const market = ctx.marketByKey.get(variant.key);
         if (!market) continue;
         tokenByKey.set(variant.key, tokenMarketSnapshotFromConvexMarket(variant.address, market));
@@ -1081,18 +1573,6 @@ export function buildV2Asset(ctx: V2AssetBuildContext): V2Asset | null {
         if (winner) primaryByChain[chain] = winner;
     }
 
-    // Stats: v1's aggregation over every chain, liquidity / volume from the chain stats
-    // (worker rollup for Solana), then the v1 headline selection against the reference.
-    const chainStats = computeChainStats(visible, ctx.marketByKey, ctx.rollupByChain);
-    const aggregate = aggregateChainStats(chainStats);
-    const primaryToken = primary ? tokenByKey.get(primary.mint) : undefined;
-    const solanaRollup = ctx.rollupByChain?.get('solana') ?? null;
-    const onChainStats = headlineOnChainStats(
-        aggregateTokenStats(canonical, tokenByKey, primaryToken),
-        aggregate,
-        solanaRollup?.volume30dUSD ?? null,
-    );
-
     const preStocksMints = selectPreStocksMints(visible.filter(v => v.chain === 'solana').map(v => v.address));
     const preStocksMarket =
         preStocksMints.length > 0
@@ -1102,30 +1582,67 @@ export function buildV2Asset(ctx: V2AssetBuildContext): V2Asset | null {
                   onChainPriceUsd: mint => tokenByKey.get(chainAddressKey('solana', mint))?.price,
               })
             : null;
-    const usesStockMarket = stockInstrument !== null || (isCanonicalPublicEquityAsset(canonical) && !preStocksMarket);
+    // The stock feed is a reference only when one token is one share: public
+    // equities and exchange-traded funds. A commodity's ETF mapping (gold → GLD)
+    // is a different instrument and never the headline.
+    const stockUnitsMatchToken = isCanonicalPublicEquityAsset(canonical) || canonical.category === 'etf';
+    const usesStockMarket = stockUnitsMatchToken && (stockInstrument !== null || !preStocksMarket);
     const coinId = normalizeCoinGeckoCoinIdForAsset({ assetId: asset.assetId, coinId: asset.coingeckoId }) ?? '';
-    const stockSnapshot = ctx.stockPrice;
-    const stats = selectCanonicalAssetStats({
-        coingecko: usesStockMarket ? null : coinId ? ctx.coingeckoPrice : null,
-        stock: stockSnapshot
-            ? { ...stockSnapshot, marketCapUsd: computeCompanyMarketCapUsd(canonical, stockSnapshot) }
-            : null,
-        aggregate: onChainStats,
-        preferAggregateVolume24h: !usesStockMarket,
-        preferStockMarket: usesStockMarket,
-        stockPriceMatchesTokenUnits: isCanonicalPublicEquityAsset(canonical),
+    const stockSnapshot = usesStockMarket ? ctx.stockPrice : null;
+    const coingeckoSnapshot = !usesStockMarket && coinId ? ctx.coingeckoPrice : null;
+
+    // Quality guard: which rows may enter the sums and averages. The anchor is the
+    // reference price in the token's units, else the rows' weighted median.
+    const qualityReference = usesStockMarket
+        ? { priceUsd: stockSnapshot?.priceUsd ?? null }
+        : coingeckoSnapshot
+          ? { priceUsd: coingeckoSnapshot.priceUsd }
+          : null;
+    // Sums, averages and the primary are computed from the FULL variant set so a
+    // list (hideBlocked) and the detail of the same asset agree; hiding only
+    // narrows what is listed.
+    const issuanceByKey = variantIssuanceByKey(ctx.variants, asset.category);
+    const qualityByKey = assessVariantMarkets(ctx.variants, ctx.marketByKey, qualityReference, ctx.nowMs ?? Date.now(), issuanceByKey);
+    const nativeHomeSupply: NativeHomeSupply | null = coingeckoSnapshot
+        ? {
+              marketCap: coingeckoSnapshot.marketCapUsd,
+              fdv: coingeckoSnapshot.fdvUsd,
+              circulatingSupply: coingeckoSnapshot.circulatingSupply,
+              totalSupply: coingeckoSnapshot.totalSupply,
+          }
+        : null;
+    const { chainStats, accumulatorsByChain } = computeChainStatsDetailed(
+        ctx.variants,
+        ctx.marketByKey,
+        ctx.rollupByChain,
+        qualityByKey,
+        nativeHomeSupply,
+        issuanceByKey,
+    );
+    const aggregate = aggregateChainStats(chainStats, accumulatorsByChain);
+    const volume30d = selectVolume30d(chainStats, ctx.rollupByChain, ctx.nowMs ?? Date.now(), qualityByKey, ctx.variants, ctx.marketByKey);
+    const stats = selectV2HeadlineStats({
+        reference: {
+            coingecko: coingeckoSnapshot,
+            stock: stockSnapshot
+                ? { ...stockSnapshot, marketCapUsd: computeCompanyMarketCapUsd(canonical, stockSnapshot) }
+                : null,
+        },
+        onChain: aggregate,
+        volume30dUSD: volume30d.volume30dUSD,
+        volume30dScope: volume30d.scope,
     });
 
-    const referenceMarket: V2ReferenceMarket | null = usesStockMarket
+    const referenceMarket: V2ReferenceMarket | null = stockSnapshot
         ? {
               source: 'stock',
               symbol: stockInstrument?.symbol ?? asset.symbol ?? asset.assetId.toUpperCase(),
-              price: stockSnapshot?.priceUsd ?? null,
+              price: stockSnapshot.priceUsd ?? null,
               marketCap: computeCompanyMarketCapUsd(canonical, stockSnapshot),
-              volume24hUSD: stockSnapshot?.volume24hUsd ?? null,
-              priceChange24hPercent: stockSnapshot?.priceChange24hPercent ?? null,
-              asOf: stockSnapshot?.asOf ?? null,
-              lastFetchedAt: stockSnapshot?.lastFetchedAt ?? null,
+              volume24hUSD: stockSnapshot.volume24hUsd ?? null,
+              priceChange24hPercent: stockSnapshot.priceChange24hPercent ?? null,
+              asOf: stockSnapshot.asOf ?? null,
+              lastFetchedAt: stockSnapshot.lastFetchedAt ?? null,
           }
         : preStocksMarket
           ? {
@@ -1143,21 +1660,18 @@ export function buildV2Asset(ctx: V2AssetBuildContext): V2Asset | null {
                 asOf: preStocksMarket.asOf,
                 lastFetchedAt: preStocksMarket.lastFetchedAt,
             }
-          : coinId
-            ? {
-                  source: 'coingecko',
-                  coinId,
-                  price: ctx.coingeckoPrice?.priceUsd ?? null,
-                  marketCap: ctx.coingeckoPrice?.marketCapUsd ?? null,
-                  volume24hUSD: ctx.coingeckoPrice?.volume24hUsd ?? null,
-                  priceChange24hPercent: ctx.coingeckoPrice?.priceChange24hPercent ?? null,
-                  circulatingSupply: ctx.coingeckoPrice?.circulatingSupply ?? null,
-                  totalSupply: ctx.coingeckoPrice?.totalSupply ?? null,
-                  maxSupply: ctx.coingeckoPrice?.maxSupply ?? null,
-                  asOf: ctx.coingeckoPrice?.providerLastUpdatedAt ?? null,
-                  lastFetchedAt: ctx.coingeckoPrice?.lastFetchedAt ?? null,
-              }
+          : coingeckoSnapshot
+            ? toCoinGeckoReference(coinId, coingeckoSnapshot)
             : null;
+    const variantReference = (variant: V2VariantResult): V2CoinGeckoReference | null => {
+        if (!variant.coingeckoId) return null;
+        // The asset's own coin: its snapshot is loaded whether or not it is the
+        // headline reference (an equity's referenceMarket is the stock feed, but
+        // the chosen issuer's CoinGecko supply and cap are still this variant's).
+        if (variant.coingeckoId === coinId) return ctx.coingeckoPrice ? toCoinGeckoReference(coinId, ctx.coingeckoPrice) : null;
+        const snapshot = ctx.variantCoingeckoPriceByCoinId?.get(variant.coingeckoId);
+        return snapshot === undefined ? null : toCoinGeckoReference(variant.coingeckoId, snapshot);
+    };
 
     // Liquidity rank across chains (0-based), then the public variant objects.
     const ordered = [...visible].sort(
@@ -1176,7 +1690,7 @@ export function buildV2Asset(ctx: V2AssetBuildContext): V2Asset | null {
             assetId: asset.assetId,
             variantId: variant.variantId,
             kind: isVariantKind(variant.kind) ? variant.kind : 'spot',
-            issuance: variantIssuance(variant),
+            issuance: issuanceByKey.get(variant.key) ?? variantIssuance(variant),
             symbol: identity.symbol,
             name: identity.name,
             label: variant.label,
@@ -1191,7 +1705,9 @@ export function buildV2Asset(ctx: V2AssetBuildContext): V2Asset | null {
             advisory: toV2Advisory(advisoryForVariant(variant, ctx.advisoriesByMint)),
             rank: rankByKey.get(variant.key) ?? 0,
             explorerUrl: explorerTokenUrl(variant.chain, variant.address),
-            market: toV2Market(market),
+            market: toV2Market(market, qualityByKey.get(variant.key)),
+            coingeckoId: variant.coingeckoId,
+            reference: variantReference(variant),
             ...variantEnrichments(variant, ctx.enrichments, ctx.preStocksByMint, market?.price),
         });
     }
@@ -1303,6 +1819,10 @@ export function buildStandaloneV2Variant(ctx: {
     market: VariantMarketSnapshotResult | null;
     advisoriesByMint: ReadonlyMap<string, VariantAdvisory>;
     canonicalSymbol: string | null;
+    /** Price of the variant's own CoinGecko coin, when loaded; absent = `reference` null. */
+    coingeckoPrice?: CoingeckoPriceSnapshot | null;
+    /** Clock for the staleness check; defaults to `Date.now()`. */
+    nowMs?: number;
 }): V2Variant {
     const { variant, market } = ctx;
     const registry = registryIdentity(variant);
@@ -1322,6 +1842,8 @@ export function buildStandaloneV2Variant(ctx: {
         assetId: variant.assetId,
         variantId: variant.variantId,
         kind: isVariantKind(variant.kind) ? variant.kind : 'spot',
+        // On its own: without the siblings a standalone fund's yield token reads
+        // as derivative here; the asset detail (`variantIssuanceByKey`) is authoritative.
         issuance: variantIssuance(variant),
         symbol: symbol || null,
         name,
@@ -1337,7 +1859,17 @@ export function buildStandaloneV2Variant(ctx: {
         advisory: toV2Advisory(advisoryForVariant(variant, ctx.advisoriesByMint)),
         rank: null,
         explorerUrl: explorerTokenUrl(variant.chain, variant.address),
-        market: toV2Market(market),
+        // The row's own verdict (stale; dust is relative and a lone row is kept):
+        // the asset-level outlier pass needs the siblings, which a batch lookup does not load.
+        market: toV2Market(
+            market,
+            assessVariantMarkets([variant], new Map(market ? [[variant.key, market]] : []), null, ctx.nowMs ?? Date.now()).get(variant.key),
+        ),
+        coingeckoId: variant.coingeckoId,
+        reference:
+            variant.coingeckoId && ctx.coingeckoPrice !== undefined
+                ? toCoinGeckoReference(variant.coingeckoId, ctx.coingeckoPrice)
+                : null,
     };
 }
 

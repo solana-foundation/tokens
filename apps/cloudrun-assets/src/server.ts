@@ -183,7 +183,9 @@ import {
     adminAddCheckedVariant,
     adminCheckVariantMintForCanonical,
     adminRefreshChartData,
+    adminRefreshV2VariantMarket,
     adminSeedAsset,
+    adminSyncV2SolanaVariants,
     type AdminActionsDeps,
 } from './handlers/adminActions';
 import {
@@ -666,6 +668,10 @@ export function createApp(deps: ServerDeps) {
         mutations.adminAddCheckedVariant = (args, identity) => adminAddCheckedVariant(adminActionsDeps, args, identity);
         mutations.adminSeedAsset = (args, identity) => adminSeedAsset(adminActionsDeps, args, identity);
         mutations.adminRefreshChartData = (args, identity) => adminRefreshChartData(adminActionsDeps, args, identity);
+        mutations.adminSyncV2SolanaVariants = (args, identity) =>
+            adminSyncV2SolanaVariants(adminActionsDeps, args, identity);
+        mutations.adminRefreshV2VariantMarket = (args, identity) =>
+            adminRefreshV2VariantMarket(adminActionsDeps, args, identity);
     }
     const launchpadAdminDeps = deps.launchpadAdminDeps;
     if (launchpadAdminDeps) {

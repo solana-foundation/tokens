@@ -12,6 +12,7 @@
  */
 
 import type { AssetCategory, AssetIndustry, AssetRegion, StockVariantTier, VariantKind } from '@tokens/asset-registry';
+import type { ChainKind } from '@tokens/asset-registry/chains';
 import { CURATED_LIST_SLUGS, type CuratedListSlug } from '@tokens/asset-registry/curated-lists';
 
 import { InvalidArgsError } from './errors';
@@ -35,12 +36,14 @@ import {
     optionalNullableString,
     optionalString,
     optionalStringArray,
+    parseVariantRef,
     requireEnum,
     requireString,
     requireStringArray,
     uniqueStrings,
     type CuratedCategorySlug,
     type StoredTrustTier,
+    type VariantRef,
 } from './shared';
 import { requireAdmin, type AdminAllowlist } from '../adminAuth';
 import type { CallerIdentity } from '../server';
@@ -116,8 +119,24 @@ export interface CreateVariantWrite {
     nowMs: number;
 }
 
-export interface UpdateVariantWrite {
+/**
+ * Which row a variant mutation targets. Solana rows live in v1
+ * `asset_variants` (keyed by mint; every write is mirrored into v2 in the
+ * same transaction). Other chains are v2-native rows keyed by
+ * (chain, address, asset_id); editing one adopts it (`origin = 'admin'`) so
+ * the daily CoinGecko derivation stops overwriting it.
+ */
+export interface VariantWriteRef {
+    chain: ChainKind;
+    /** Normalized address (base58 mint on Solana, lowercase 0x on EVM). */
+    address: string;
+    /** Owning asset; required for non-Solana rows (part of the v2 primary key). */
+    assetId?: string;
+    /** Same value as `address`; kept for the v1 tables and legacy callers. */
     mint: string;
+}
+
+export interface UpdateVariantWrite extends VariantWriteRef {
     variantId?: string;
     kind?: VariantKind;
     trustTier?: StoredTrustTier;
@@ -173,9 +192,10 @@ export interface AdminMutationsRepo {
     deleteCanonicalAsset(args: { assetId: string }): Promise<'deleted' | 'not_found' | 'has_variants'>;
     createVariant(args: CreateVariantWrite): Promise<CreateVariantOutcome>;
     updateVariant(args: UpdateVariantWrite): Promise<'updated' | 'not_found' | 'variant_id_collision'>;
-    deleteVariant(args: { mint: string }): Promise<'deleted' | 'not_found'>;
-    deactivateVariant(args: { mint: string; isActive: boolean; nowMs: number }): Promise<'updated' | 'not_found'>;
-    moveVariantToCanonical(args: { mint: string; toAssetId: string; nowMs: number }): Promise<MoveVariantOutcome>;
+    deleteVariant(args: VariantWriteRef): Promise<'deleted' | 'not_found'>;
+    deactivateVariant(args: VariantWriteRef & { isActive: boolean; nowMs: number }): Promise<'updated' | 'not_found'>;
+    /** `assetId` on the ref is the CURRENT owner (required for non-Solana rows); `toAssetId` is the destination. */
+    moveVariantToCanonical(args: VariantWriteRef & { toAssetId: string; nowMs: number }): Promise<MoveVariantOutcome>;
     /** Returns true when a membership row was deleted. */
     removeFromCategory(args: { slug: CuratedCategorySlug; assetId: string }): Promise<boolean>;
     updateCollectionMeta(args: UpdateCollectionMetaWrite): Promise<void>;
@@ -189,6 +209,21 @@ export interface AdminMutationsDeps {
 
 function nowMs(deps: AdminMutationsDeps): number {
     return deps.now ? deps.now() : Date.now();
+}
+
+function toWriteRef(ref: VariantRef): VariantWriteRef {
+    return { chain: ref.chain, address: ref.address, mint: ref.address, ...(ref.assetId ? { assetId: ref.assetId } : {}) };
+}
+
+/** Result fields every variant mutation echoes back (legacy `mint` = `address`). */
+interface VariantRefResult {
+    chain: ChainKind;
+    address: string;
+    mint: string;
+}
+
+function refResult(ref: VariantRef): VariantRefResult {
+    return { chain: ref.chain, address: ref.address, mint: ref.address };
 }
 
 /* ------------------------------------------------------------------------- *
@@ -390,11 +425,10 @@ export async function updateVariant(
     deps: AdminMutationsDeps,
     args: unknown,
     identity: CallerIdentity | null,
-): Promise<{ mint: string; updated: boolean }> {
+): Promise<VariantRefResult & { updated: boolean }> {
     requireAdmin(deps.adminAllowlist, identity);
     const obj = asArgsObject(args);
-    const mint = requireString(obj, 'mint').trim();
-    if (!mint) throw new InvalidArgsError('mint is required');
+    const ref = parseVariantRef(obj);
 
     let variantId: string | undefined;
     const rawVariantId = optionalString(obj, 'variantId');
@@ -420,7 +454,7 @@ export async function updateVariant(
     const marketLogoURI = triState('marketLogoURI');
 
     const outcome = await deps.repo.updateVariant({
-        mint,
+        ...toWriteRef(ref),
         ...(variantId !== undefined ? { variantId } : {}),
         ...(kind !== undefined ? { kind } : {}),
         ...(trustTier !== undefined ? { trustTier } : {}),
@@ -440,7 +474,7 @@ export async function updateVariant(
     if (outcome === 'variant_id_collision') {
         throw new InvalidArgsError('variantId already exists for this canonical asset');
     }
-    return { mint, updated: true };
+    return { ...refResult(ref), updated: true };
 }
 
 /* ------------------------------------------------------------------------- *
@@ -451,46 +485,46 @@ export async function deleteVariant(
     deps: AdminMutationsDeps,
     args: unknown,
     identity: CallerIdentity | null,
-): Promise<{ mint: string; deleted: boolean }> {
+): Promise<VariantRefResult & { deleted: boolean }> {
     requireAdmin(deps.adminAllowlist, identity);
     const obj = asArgsObject(args);
-    const mint = requireString(obj, 'mint').trim();
-    if (!mint) throw new InvalidArgsError('mint is required');
+    const ref = parseVariantRef(obj);
 
-    const outcome = await deps.repo.deleteVariant({ mint });
+    const outcome = await deps.repo.deleteVariant(toWriteRef(ref));
     if (outcome === 'not_found') throw new InvalidArgsError('Variant not found');
-    return { mint, deleted: true };
+    return { ...refResult(ref), deleted: true };
 }
 
 export async function deactivateVariant(
     deps: AdminMutationsDeps,
     args: unknown,
     identity: CallerIdentity | null,
-): Promise<{ mint: string; isActive: boolean; updated: boolean }> {
+): Promise<VariantRefResult & { isActive: boolean; updated: boolean }> {
     requireAdmin(deps.adminAllowlist, identity);
     const obj = asArgsObject(args);
-    const mint = requireString(obj, 'mint').trim();
-    if (!mint) throw new InvalidArgsError('mint is required');
+    const ref = parseVariantRef(obj);
     const isActive = optionalBoolean(obj, 'isActive') ?? false;
 
-    const outcome = await deps.repo.deactivateVariant({ mint, isActive, nowMs: nowMs(deps) });
+    const outcome = await deps.repo.deactivateVariant({ ...toWriteRef(ref), isActive, nowMs: nowMs(deps) });
     if (outcome === 'not_found') throw new InvalidArgsError('Variant not found');
-    return { mint, isActive, updated: true };
+    return { ...refResult(ref), isActive, updated: true };
 }
 
 export async function moveVariantToCanonical(
     deps: AdminMutationsDeps,
     args: unknown,
     identity: CallerIdentity | null,
-): Promise<{ mint: string; fromAssetId: string; toAssetId: string; moved: boolean }> {
+): Promise<VariantRefResult & { fromAssetId: string; toAssetId: string; moved: boolean }> {
     requireAdmin(deps.adminAllowlist, identity);
     const obj = asArgsObject(args);
-    const mint = requireString(obj, 'mint').trim();
-    const toAssetId = requireString(obj, 'assetId').trim();
-    if (!mint) throw new InvalidArgsError('mint is required');
+    // Wire shape: `toAssetId` is the destination; legacy callers sent it as
+    // `assetId`. For non-Solana rows the ref's owner travels as `fromAssetId`
+    // (the v2 key includes the asset), so `assetId` can keep its legacy meaning.
+    const toAssetId = (optionalString(obj, 'toAssetId') ?? optionalString(obj, 'assetId') ?? '').trim();
     if (!toAssetId) throw new InvalidArgsError('assetId is required');
+    const ref = parseVariantRef({ ...obj, assetId: obj.fromAssetId });
 
-    const outcome = await deps.repo.moveVariantToCanonical({ mint, toAssetId, nowMs: nowMs(deps) });
+    const outcome = await deps.repo.moveVariantToCanonical({ ...toWriteRef(ref), toAssetId, nowMs: nowMs(deps) });
     if (outcome.status === 'variant_not_found') throw new InvalidArgsError('Variant not found');
     if (outcome.status === 'asset_not_found') {
         throw new InvalidArgsError('Destination canonical asset not found');
@@ -499,9 +533,9 @@ export async function moveVariantToCanonical(
         throw new InvalidArgsError('Destination canonical already has this variantId');
     }
     if (outcome.status === 'noop') {
-        return { mint, fromAssetId: outcome.fromAssetId, toAssetId, moved: false };
+        return { ...refResult(ref), fromAssetId: outcome.fromAssetId, toAssetId, moved: false };
     }
-    return { mint, fromAssetId: outcome.fromAssetId, toAssetId, moved: true };
+    return { ...refResult(ref), fromAssetId: outcome.fromAssetId, toAssetId, moved: true };
 }
 
 /* ------------------------------------------------------------------------- *

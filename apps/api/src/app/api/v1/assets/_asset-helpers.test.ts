@@ -5,6 +5,10 @@ import { __setAdvisoriesForTests } from '@/lib/advisories';
 
 import {
     aggregateTokenStats,
+    mergeAssetStatsWithAggregates,
+    hasExcludedMarkets,
+    buildSnapshotFromTokenMarketsDoc,
+    assessTokenMarkets,
     computeCompanyMarketCapUsd,
     computePreStocksDerived,
     isCanonicalPublicEquityAsset,
@@ -249,6 +253,134 @@ describe('aggregate token stats', () => {
 
         expect(stats?.price).toBe(100);
         expect(stats?.priceChange24hPercent).toBe(5);
+    });
+
+    it('a row the quality guard excludes contributes neither price nor market cap, even as primary', () => {
+        const NOW = 1_800_000_000_000;
+        const good = makeToken('good', { price: 386, liquidity: 4_000_000, volume24hUSD: 2_000_000, marketCap: 90_000_000, lastFetchedAt: NOW });
+        const junk = makeToken('junk', { price: 15_192, liquidity: 11, volume24hUSD: 40, marketCap: 739_000_000, lastFetchedAt: NOW });
+        const asset = makeAsset(['good', 'junk']);
+        const tokens = new Map([
+            ['good', good],
+            ['junk', junk],
+        ]);
+        const quality = assessTokenMarkets(asset, tokens, { priceUsd: 386 }, NOW);
+        expect(quality.get('junk')?.included).toBe(false);
+        const stats = aggregateTokenStats(asset, tokens, junk, quality);
+        expect(stats?.price).toBe(386);
+        expect(stats?.marketCap).toBe(90_000_000);
+        // Without the guard the junk row owns the headline.
+        expect(aggregateTokenStats(asset, tokens, junk)?.marketCap).toBe(829_000_000);
+    });
+
+    it('an excluded primary stays out of the headline when verdicts are keyed chain:address (the v2 caller)', () => {
+        const NOW = 1_800_000_000_000;
+        // Snapshots carry the bare address; the map and the verdicts use the variant key.
+        const good = makeToken('GoodMint', { price: 386, liquidity: 4_000_000, volume24hUSD: 2_000_000, marketCap: 90_000_000, lastFetchedAt: NOW });
+        const junk = makeToken('JunkMint', { price: 15_192, liquidity: 11, volume24hUSD: 40, marketCap: 739_000_000, lastFetchedAt: NOW });
+        const asset = makeAsset(['solana:GoodMint', 'arbitrum:JunkMint']);
+        const tokens = new Map([
+            ['solana:GoodMint', good],
+            ['arbitrum:JunkMint', junk],
+        ]);
+        const quality = assessTokenMarkets(asset, tokens, { priceUsd: 386 }, NOW);
+        expect(quality.get('arbitrum:JunkMint')?.included).toBe(false);
+        const stats = aggregateTokenStats(asset, tokens, junk, quality);
+        expect(stats?.price).toBe(386);
+        expect(stats?.marketCap).toBe(90_000_000);
+    });
+
+    it('a yield variant next to the native coin skips the price check (mSOL at 1.3 SOL stays included)', () => {
+        const NOW = 1_800_000_000_000;
+        const asset = {
+            assetId: 'solana',
+            category: 'crypto',
+            variants: [
+                { mint: 'sol', kind: 'native' as const, tags: [] },
+                { mint: 'msol', kind: 'yield' as const, tags: [] },
+            ],
+        } as unknown as CanonicalAsset;
+        const tokens = new Map([
+            ['sol', makeToken('sol', { price: 100, liquidity: 1_000_000, volume24hUSD: 500_000, lastFetchedAt: NOW })],
+            ['msol', makeToken('msol', { price: 130, liquidity: 200_000, volume24hUSD: 50_000, lastFetchedAt: NOW })],
+        ]);
+        const quality = assessTokenMarkets(asset, tokens, { priceUsd: 100 }, NOW);
+        expect(quality.get('msol')).toEqual({ included: true, reasons: [] });
+    });
+
+    it('sums liquidity and volume over included rows, and keeps them over the unguarded rollup when a row was rejected', () => {
+        const NOW = 1_800_000_000_000;
+        const good = makeToken('good', { price: 386, liquidity: 4_000_000, volume24hUSD: 2_000_000, lastFetchedAt: NOW });
+        const also = makeToken('also', { price: 390, liquidity: 1_000_000, volume24hUSD: 500_000, lastFetchedAt: NOW });
+        const junk = makeToken('junk', { price: 15_192, liquidity: 11, volume24hUSD: 40, lastFetchedAt: NOW });
+        const asset = makeAsset(['good', 'also', 'junk']);
+        const tokens = new Map([
+            ['good', good],
+            ['also', also],
+            ['junk', junk],
+        ]);
+        const quality = assessTokenMarkets(asset, tokens, { priceUsd: 386 }, NOW);
+        expect(hasExcludedMarkets(quality)).toBe(true);
+        const stats = aggregateTokenStats(asset, tokens, good, quality)!;
+        expect(stats.liquidity).toBe(5_000_000);
+        expect(stats.volume24hUSD).toBe(2_500_000);
+        const rollup = { liquidity: 5_000_011, volume24hUSD: 2_500_040, volume30dUSD: 70_000_000 };
+        const kept = mergeAssetStatsWithAggregates(stats, rollup, { keepGuardedTotals: true })!;
+        expect(kept.liquidity).toBe(5_000_000);
+        expect(kept.volume24hUSD).toBe(2_500_000);
+        expect(kept.volume30dUSD).toBe(70_000_000);
+        // With nothing rejected the rollup stands, as before.
+        expect(mergeAssetStatsWithAggregates(stats, rollup, { keepGuardedTotals: false })?.liquidity).toBe(5_000_011);
+    });
+
+    it('when every market fails the guard the rollup totals do not come back through the merge', () => {
+        const NOW = 1_800_000_000_000;
+        const junk = makeToken('junk', { price: 15_192, liquidity: 11, volume24hUSD: 40, marketCap: 739_000_000, lastFetchedAt: NOW });
+        const asset = makeAsset(['junk']);
+        const tokens = new Map([['junk', junk]]);
+        const quality = assessTokenMarkets(asset, tokens, { priceUsd: 386 }, NOW);
+        expect(quality.get('junk')?.included).toBe(false);
+        const stats = aggregateTokenStats(asset, tokens, junk, quality);
+        expect(stats).toBeNull();
+        const rollup = { liquidity: 11, volume24hUSD: 40, volume30dUSD: 1_200 };
+        const merged = mergeAssetStatsWithAggregates(stats, rollup, { keepGuardedTotals: hasExcludedMarkets(quality) });
+        expect(merged?.liquidity).toBeNull();
+        expect(merged?.volume24hUSD).toBeNull();
+        expect(merged?.volume30dUSD).toBe(1_200);
+        expect(mergeAssetStatsWithAggregates(stats, { liquidity: 11, volume24hUSD: 40, volume30dUSD: null }, { keepGuardedTotals: true })).toBeNull();
+    });
+
+    it('liquidity and volume sum over every accepted variant; price and supply stay on the spot-like ones', () => {
+        const NOW = 1_800_000_000_000;
+        // gold: a spot token, a healthy ETF-share variant, and a stale spot row the guard rejects.
+        const asset = {
+            assetId: 'gold',
+            category: 'commodity',
+            variants: [
+                { mint: 'spot', kind: 'spot' as const, tags: [] },
+                { mint: 'etf', kind: 'etf' as const, tags: [] },
+                { mint: 'stale', kind: 'spot' as const, tags: [] },
+            ],
+        } as unknown as CanonicalAsset;
+        const spot = makeToken('spot', { price: 2_400, liquidity: 3_000_000, volume24hUSD: 900_000, marketCap: 50_000_000, totalSupply: 20_000, lastFetchedAt: NOW });
+        const etf = makeToken('etf', { price: 240, liquidity: 2_000_000, volume24hUSD: 400_000, marketCap: 30_000_000, totalSupply: 125_000, lastFetchedAt: NOW });
+        const stale = makeToken('stale', { price: 2_410, liquidity: 500_000, volume24hUSD: 100_000, marketCap: 5_000_000, lastFetchedAt: NOW - 30 * 24 * 60 * 60 * 1000 });
+        const tokens = new Map([
+            ['spot', spot],
+            ['etf', etf],
+            ['stale', stale],
+        ]);
+        const quality = assessTokenMarkets(asset, tokens, { priceUsd: 2_400 }, NOW);
+        expect(quality.get('stale')?.included).toBe(false);
+        expect(quality.get('etf')?.included).toBe(true);
+        const stats = aggregateTokenStats(asset, tokens, spot, quality)!;
+        // The healthy ETF pool keeps its activity in the guarded totals that replace the rollup.
+        expect(stats.liquidity).toBe(5_000_000);
+        expect(stats.volume24hUSD).toBe(1_300_000);
+        // Its share price and supply do not mix into the per-ounce figures.
+        expect(stats.price).toBe(2_400);
+        expect(stats.marketCap).toBe(50_000_000);
+        expect(stats.totalSupply).toBe(20_000);
     });
 
     it('falls back to volume-weighted price when no variants have liquidity', () => {
@@ -556,6 +688,14 @@ describe('canonical asset stat selection', () => {
         });
 
         expect(selected?.marketCap).toBe(18_180_000);
+    });
+});
+
+describe('buildSnapshotFromTokenMarketsDoc', () => {
+    it("carries the document's fetch time so a fallback-only row can still be stale", () => {
+        const doc = { lastFetchedAt: 1_700_000_000_000, markets: [{ liquidity: 10, volume24h: 5, price: 1, base: { address: 'MintA', symbol: 'A' } }] };
+        expect(buildSnapshotFromTokenMarketsDoc({ mint: 'MintA', assetFallbackSymbol: 'A', assetFallbackName: 'A', tokenMarketsDoc: doc })?.lastFetchedAt).toBe(1_700_000_000_000);
+        expect(buildSnapshotFromTokenMarketsDoc({ mint: 'MintA', assetFallbackSymbol: 'A', assetFallbackName: 'A', tokenMarketsDoc: { markets: doc.markets } })?.lastFetchedAt).toBeNull();
     });
 });
 

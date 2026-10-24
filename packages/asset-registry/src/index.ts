@@ -159,3 +159,19 @@ export {
     parseChainAddressKey,
     variantKeyFor,
 } from './chains';
+export { normalizeCoinGeckoCoinIdForAsset } from './coingecko-id';
+export type { AssetIssuanceOptions, IssuanceInput, IssuanceSource, VariantIssuance } from './issuance';
+export {
+    DERIVATIVE_KINDS,
+    NEVER_STANDALONE_PRODUCT_CATEGORIES,
+    ISSUANCE_TAG_PREFIX,
+    VARIANT_ISSUANCE,
+    isVariantIssuance,
+    issuanceFromKind,
+    issuanceOverrideKey,
+    resolveAssetIssuance,
+    resolveVariantIssuance,
+    resolveVariantIssuanceDetailed,
+} from './issuance';
+export type { IssuanceOverride } from './data/issuance-overrides';
+export { ISSUANCE_OVERRIDES } from './data/issuance-overrides';

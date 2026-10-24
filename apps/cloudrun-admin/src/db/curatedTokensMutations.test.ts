@@ -141,6 +141,9 @@ describe('renameAssetId', () => {
         'stock_ohlcv_candles',
         'trending_markets',
         'fresh_trending_markets',
+        // v2 (multichain) rows follow the asset too, derived EVM rows included.
+        'v2_asset_variants',
+        'v2_asset_chain_markets_latest',
     ];
     const writes = (queries: RecordedQuery[]) => queries.filter(q => !q.text.trim().startsWith('SELECT'));
     const updatedTable = (q: RecordedQuery) => /UPDATE\s+(\w+)/.exec(q.text)?.[1];

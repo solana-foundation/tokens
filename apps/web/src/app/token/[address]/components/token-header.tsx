@@ -60,6 +60,8 @@ interface TokenHeaderProps {
     explorerAriaLabel?: string;
     riskSummaryUrl?: string;
     riskQueryKey?: readonly unknown[];
+    /** Whether the risk popover applies to the viewed token (the page's capability gate); default true. */
+    showRisk?: boolean;
     variantGroup?: VariantHub | null;
     /** `<chain>:<address>` of the active variant (highlighted in the variants list). */
     variantCurrentKey?: string;
@@ -521,6 +523,7 @@ export function TokenHeader({
     explorerAriaLabel: explorerAriaLabelProp,
     riskSummaryUrl,
     riskQueryKey,
+    showRisk = true,
     variantGroup,
     variantCurrentKey,
     variantCurrentAddress,
@@ -619,7 +622,7 @@ export function TokenHeader({
                 <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2 mb-1">
                         <h1 className="text-title-md text-text-extra-high font-semibold truncate">{displayName}</h1>
-                        {chainSupports(chain, 'risk') ? (
+                        {showRisk && chainSupports(chain, 'risk') ? (
                             <TokenRiskPopover
                                 address={address}
                                 riskSummaryUrl={riskSummaryUrl}

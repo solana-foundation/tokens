@@ -1,5 +1,8 @@
 export function formatLargeNumber(num: number | null | undefined): string {
     if (num == null || !Number.isFinite(num)) return '—';
+    if (num >= 1_000_000_000_000) {
+        return `$${(num / 1_000_000_000_000).toFixed(2)}T`;
+    }
     if (num >= 1_000_000_000) {
         return `$${(num / 1_000_000_000).toFixed(2)}B`;
     }
@@ -31,4 +34,14 @@ export function formatPrice(price: number | null | undefined): string {
 export function formatPercent(percent: number): string {
     const formatted = Math.abs(percent).toFixed(2);
     return `${percent >= 0 ? '+' : '-'}${formatted}%`;
+}
+
+/**
+ * Epoch value → milliseconds. The v2 API stamps `*At` fields in ms but
+ * provider `asOf` timestamps arrive in seconds; anything below 1e12 (before
+ * 2001 in ms, after 2001 in s) is read as seconds. Null for non-positive input.
+ */
+export function toEpochMs(value: number | null | undefined): number | null {
+    if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) return null;
+    return value < 1_000_000_000_000 ? value * 1000 : value;
 }

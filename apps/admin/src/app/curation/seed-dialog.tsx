@@ -84,7 +84,8 @@ export function SeedDialog({ open, onOpenChange }: SeedDialogProps) {
                     <DialogTitle>Seed New Token</DialogTitle>
                     <DialogDescription>
                         Enter a Solana mint address. The system will fetch metadata from Birdeye, create the asset &amp;
-                        variant records, and optionally add it to a front-page list.
+                        variant records, and optionally add it to a front-page list. EVM tokens: create the canonical
+                        first, then use Add Variant with the chain selected.
                     </DialogDescription>
                 </DialogHeader>
 

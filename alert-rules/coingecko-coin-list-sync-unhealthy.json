@@ -16,7 +16,7 @@
         "to": 0
       },
       "model": {
-        "expr": "sum(count_over_time({service=\"tokens-assets-prd-us\"} |~ \"\\\\[syncCoingeckoCoinList\\\\] batch failed|failing open \\\\(is the coin-list sync healthy\\\\?\\\\)\" [1h]))",
+        "expr": "sum(count_over_time({service=~\"tokens-assets(-jobs)?-prd-us\"} |~ \"\\\\[syncCoingeckoCoinList\\\\] batch failed|failing open \\\\(is the coin-list sync healthy\\\\?\\\\)\" [1h]))",
         "queryType": "range",
         "refId": "A"
       }

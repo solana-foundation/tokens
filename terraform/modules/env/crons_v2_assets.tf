@@ -12,7 +12,10 @@ locals {
   #                                  registry's native-coin table. Daily.
   #   refresh-v2-evm-variant-markets per-chain Birdeye token-overview snapshots
   #                                  for the stalest EVM variants. Every 15 min
-  #                                  in prd (minAgeMs keeps a row to ~1 fetch/h).
+  #                                  in prd, hourly in stg: the API's quality
+  #                                  guard treats an EVM row older than 3 h as
+  #                                  stale, so a daily stg refresh would leave
+  #                                  every stg row out of the sums.
   #
   # Minute offsets stagger the two frequent jobs from the `*/10`
   # refresh-asset-variant-markets tick (whose output the Solana mirror copies),
@@ -41,17 +44,28 @@ locals {
     },
     {
       name      = "refresh-v2-evm-variant-markets"
-      schedule  = var.env == "stg" ? "20 3 * * *" : "7-59/15 * * * *"
+      schedule  = var.env == "stg" ? "7 * * * *" : "7-59/15 * * * *"
       http_path = "/jobs/refresh-v2-evm-variant-markets"
       body_json = jsonencode({
-        maxVariants = 250
-        minAgeMs    = 3600000
-        concurrency = 2
-        delayMs     = 150
-        budgetMs    = 500000
+        maxVariants   = 400
+        minAgeMs      = 900000
+        emptyMinAgeMs = 3600000
+        concurrency   = 2
+        delayMs       = 150
+        budgetMs      = 500000
       })
       attempt_deadline = "540s"
       retry_count      = 0
+    },
+    {
+      # Daily: sums the last 30 UTC days of per-variant volume samples into the
+      # `computed` chain rollup rows (EVM 30d volume; Solana's is mirrored from v1).
+      name             = "rollup-v2-chain-volume-30d"
+      schedule         = "25 0 * * *"
+      http_path        = "/jobs/rollup-v2-chain-volume-30d"
+      body_json        = jsonencode({ retentionDays = 45 })
+      attempt_deadline = "300s"
+      retry_count      = 1
     },
   ]
 }
