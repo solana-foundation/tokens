@@ -22,6 +22,10 @@ const config = {
     externalDir: true,
     optimizePackageImports: ["@tokens/ui"],
   },
+  async rewrites() {
+    // Public Markdown URLs: /v1/quickstart.md serves the page rendered as Markdown.
+    return [{ source: "/:slug*.md", destination: "/llms.mdx/:slug*/content.md" }];
+  },
   async redirects() {
     return [
       { source: "/", destination: "/v1", permanent: false },
