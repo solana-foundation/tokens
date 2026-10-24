@@ -45,6 +45,11 @@ export interface ParseOptions {
     defaultPolicy: PolicyId;
     /** Parse `includeSuppressed` (default `true` when honoured; ignored otherwise). */
     allowIncludeSuppressed?: boolean;
+    /**
+     * `false` lets `q` be absent (judge: the caller brings candidates, the
+     * query only sharpens match scoring). Default `true`.
+     */
+    requireQuery?: boolean;
 }
 
 /** Public shape of the effective policy: preset id, effective gates, and what was tuned. */
@@ -58,12 +63,34 @@ export function policyEnvelope(params: Pick<JudgedSearchParams, 'policyId' | 'po
     return { id: params.policyId, gates: params.policy.gates, overrides: params.overrides };
 }
 
+/** Reads one raw request parameter: a query-string value, or a JSON body field stringified. */
+export type ParamGetter = (key: string) => string | null;
+
+export function paramsFromUrl(url: URL): ParamGetter {
+    return key => url.searchParams.get(key);
+}
+
+/**
+ * Body fields as parameters: numbers and booleans are stringified so the same
+ * validators (and the same error messages) apply to `?minLiquidityUsd=1000`
+ * and `{ "minLiquidityUsd": 1000 }`. Objects and arrays are not parameters.
+ */
+export function paramsFromBody(body: Record<string, unknown>): ParamGetter {
+    return key => {
+        const value = body[key];
+        if (value === undefined || value === null) return null;
+        if (typeof value === 'string') return value;
+        if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+        return null;
+    };
+}
+
 const NONE_VALUES = new Set(['none', 'null', 'off']);
 const TRUE_VALUES = new Set(['true', '1', 'yes']);
 const FALSE_VALUES = new Set(['false', '0', 'no']);
 
-function rawParam(url: URL, key: string): string | undefined {
-    const value = url.searchParams.get(key);
+function rawParam(get: ParamGetter, key: string): string | undefined {
+    const value = get(key);
     if (value === null) return undefined;
     const trimmed = value.trim();
     return trimmed === '' ? undefined : trimmed;
@@ -73,8 +100,8 @@ function badRequest(message: string, details?: Record<string, unknown>) {
     return Effect.fail(new BadRequestError({ message, ...(details ? { details } : {}) }));
 }
 
-function parseBooleanParam(url: URL, key: string): Effect.Effect<boolean | undefined, BadRequestError> {
-    const raw = rawParam(url, key);
+function parseBooleanParam(get: ParamGetter, key: string): Effect.Effect<boolean | undefined, BadRequestError> {
+    const raw = rawParam(get, key);
     if (raw === undefined) return Effect.succeed(undefined);
     const lower = raw.toLowerCase();
     if (TRUE_VALUES.has(lower)) return Effect.succeed(true);
@@ -83,11 +110,11 @@ function parseBooleanParam(url: URL, key: string): Effect.Effect<boolean | undef
 }
 
 function parseGateNumberParam(
-    url: URL,
+    get: ParamGetter,
     key: string,
     rules: { integer: boolean; min: number; max?: number },
 ): Effect.Effect<number | null | undefined, BadRequestError> {
-    const raw = rawParam(url, key);
+    const raw = rawParam(get, key);
     if (raw === undefined) return Effect.succeed(undefined);
     if (NONE_VALUES.has(raw.toLowerCase())) return Effect.succeed(null);
     const value = Number(raw);
@@ -106,16 +133,24 @@ export function parseJudgedSearchParams(
     url: URL,
     options: ParseOptions,
 ): Effect.Effect<JudgedSearchParams, BadRequestError> {
+    return parseJudgedParams(paramsFromUrl(url), options);
+}
+
+/** Same flag set over any parameter source (query string or JSON body). */
+export function parseJudgedParams(
+    get: ParamGetter,
+    options: ParseOptions,
+): Effect.Effect<JudgedSearchParams, BadRequestError> {
     return Effect.gen(function* () {
-        const q = (url.searchParams.get('q') ?? '').trim();
-        if (!q) {
+        const q = (get('q') ?? '').trim();
+        if (!q && options.requireQuery !== false) {
             return yield* badRequest('Missing required query param: q');
         }
         if (q.length > MAX_QUERY_LENGTH) {
             return yield* badRequest(`Query too long (max ${MAX_QUERY_LENGTH} characters)`);
         }
 
-        const rawPolicy = url.searchParams.get('policy');
+        const rawPolicy = get('policy');
         const policyId =
             rawPolicy === null || rawPolicy.trim() === '' ? options.defaultPolicy : parsePolicyId(rawPolicy);
         if (!policyId) {
@@ -123,26 +158,26 @@ export function parseJudgedSearchParams(
         }
 
         const overrides: GateOverrides = {};
-        const minLiquidityUsd = yield* parseGateNumberParam(url, 'minLiquidityUsd', { integer: false, min: 0 });
+        const minLiquidityUsd = yield* parseGateNumberParam(get, 'minLiquidityUsd', { integer: false, min: 0 });
         if (minLiquidityUsd !== undefined) overrides.minLiquidityUsd = minLiquidityUsd;
-        const minAgeDays = yield* parseGateNumberParam(url, 'minAgeDays', { integer: true, min: 0 });
+        const minAgeDays = yield* parseGateNumberParam(get, 'minAgeDays', { integer: true, min: 0 });
         if (minAgeDays !== undefined) overrides.minAgeDays = minAgeDays;
-        const minMarketScore = yield* parseGateNumberParam(url, 'minMarketScore', { integer: true, min: 0, max: 100 });
+        const minMarketScore = yield* parseGateNumberParam(get, 'minMarketScore', { integer: true, min: 0, max: 100 });
         if (minMarketScore !== undefined) overrides.minMarketScore = minMarketScore;
-        const requireMarketData = yield* parseBooleanParam(url, 'requireMarketData');
+        const requireMarketData = yield* parseBooleanParam(get, 'requireMarketData');
         if (requireMarketData !== undefined) overrides.requireMarketData = requireMarketData;
-        const suppressImpersonation = yield* parseBooleanParam(url, 'suppressImpersonation');
+        const suppressImpersonation = yield* parseBooleanParam(get, 'suppressImpersonation');
         if (suppressImpersonation !== undefined) overrides.suppressImpersonation = suppressImpersonation;
-        const verifiedOnly = yield* parseBooleanParam(url, 'verifiedOnly');
+        const verifiedOnly = yield* parseBooleanParam(get, 'verifiedOnly');
         if (verifiedOnly !== undefined) overrides.requireRegistry = verifiedOnly;
 
-        const limit = yield* decodeLimit(url.searchParams.get('limit'), {
+        const limit = yield* decodeLimit(get('limit'), {
             defaultValue: DEFAULT_SEARCH_LIMIT,
             max: MAX_SEARCH_LIMIT,
         });
 
         const includeSuppressed = options.allowIncludeSuppressed
-            ? ((yield* parseBooleanParam(url, 'includeSuppressed')) ?? true)
+            ? ((yield* parseBooleanParam(get, 'includeSuppressed')) ?? true)
             : true;
 
         const applied = applyGateOverrides(POLICIES[policyId], overrides);
@@ -167,7 +202,7 @@ export interface JudgedSearchOutput {
     latencyMs: number;
 }
 
-export type JudgedRoute = 'search' | 'resolve' | 'lists.search-tokens';
+export type JudgedRoute = 'search' | 'resolve' | 'lists.search-tokens' | 'judge';
 
 /**
  * intent → candidates (cached collect + live enrich) → protected index →
@@ -191,11 +226,7 @@ export function runJudgedSearch(params: {
         const { candidates, sources, providerOutcome, timing } = yield* gatherCandidates(params.q, interpretation, {
             budget: params.budget,
         });
-        const protectedIndex = yield* Effect.promise(() => getProtectedSymbolIndex());
-        const { results, suppressed } = judgeCandidates(candidates, interpretation, params.policy, protectedIndex, {
-            nowMs: Date.now(),
-            limit: params.limit,
-        });
+        const { results, suppressed } = yield* judgeEnriched(candidates, interpretation, params.policy, params.limit);
         const latencyMs = Date.now() - startedAt;
         emitEvent({
             event: 'judged_search',
@@ -214,6 +245,20 @@ export function runJudgedSearch(params: {
         });
         return { interpretation, candidates, sources, results, suppressed, latencyMs };
     });
+}
+
+/** Protected index → pure judgment. Shared by the gathered routes and `POST /v2/judge`. */
+export function judgeEnriched(
+    candidates: EnrichedCandidate[],
+    interpretation: QueryInterpretation,
+    policy: PolicyDocument,
+    limit: number,
+): Effect.Effect<{ results: JudgedToken[]; suppressed: SuppressedToken[] }, never> {
+    return Effect.promise(() => getProtectedSymbolIndex()).pipe(
+        Effect.map(protectedIndex =>
+            judgeCandidates(candidates, interpretation, policy, protectedIndex, { nowMs: Date.now(), limit }),
+        ),
+    );
 }
 
 export type VerifiedJudgedToken = JudgedToken & { verified: boolean };

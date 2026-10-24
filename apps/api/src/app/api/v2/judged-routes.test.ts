@@ -19,7 +19,34 @@ const { USDC_MINT, BONK_MINT, FAKE_USDC_MINT, NEW_DOG_MINT, fakeUsdc, homoglyphU
 let nextCandidates: EnrichedCandidate[] = [];
 let gatherCalls = 0;
 let budgetCalls = 0;
+let enrichCalls = 0;
+const realCandidates = await import('@/lib/judgment/candidates');
+/** Offline enrichment for the judge route: known fixture mints get their fixture, anything else is judged on its claims alone. */
+const FIXTURE_BY_MINT: Record<string, () => EnrichedCandidate> = {
+    [USDC_MINT]: realUsdc,
+    [FAKE_USDC_MINT]: fakeUsdc,
+    [BONK_MINT]: realBonk,
+    [NEW_DOG_MINT]: newDogToken,
+};
+function bareEnriched(raw: import('@/lib/judgment/candidates').RawCandidate): EnrichedCandidate {
+    return {
+        ...raw,
+        top10HoldersPercent: null,
+        curatedListIds: [],
+        registry: null,
+        risk: null,
+        fillQuality: null,
+        tombstoned: false,
+        advisory: null,
+        dataAsOf: null,
+    };
+}
 mock.module('@/lib/judgment/candidates', () => ({
+    ...realCandidates,
+    enrichCandidates: (raws: import('@/lib/judgment/candidates').RawCandidate[]) => {
+        enrichCalls += 1;
+        return Effect.succeed(raws.map(raw => FIXTURE_BY_MINT[raw.mint]?.() ?? bareEnriched(raw)));
+    },
     gatherCandidates: (
         _query: string,
         _interpretation: unknown,
@@ -56,6 +83,7 @@ const { resetEnvForTests } = await import('@/lib/env');
 const { signPlaygroundProxyAuthPayload } = await import('@/effect/playground-proxy-auth');
 const { GET: searchGet } = await import('./search/route');
 const { GET: resolveGet } = await import('./resolve/route');
+const { POST: judgePost } = await import('./judge/route');
 
 const ORIGINAL_FETCH = globalThis.fetch;
 const ORIGINAL_LOG = console.log;
@@ -95,6 +123,7 @@ beforeEach(() => {
     nextCandidates = [];
     gatherCalls = 0;
     budgetCalls = 0;
+    enrichCalls = 0;
 });
 
 afterEach(() => {
@@ -340,5 +369,186 @@ describe('GET /v2/resolve', () => {
         expect(relaxed.best?.mint).toBe(fixtures.LOW_LIQ_DOG_MINT);
         expect(relaxed.best?.verified).toBe(false);
         expect(relaxed.policy.overrides).toEqual(['minLiquidityUsd']);
+    });
+});
+
+function judgeRequest(body: unknown, headers: Record<string, string> = {}, raw = false): Request {
+    return new Request('https://api.example.test/api/v2/judge', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', ...headers },
+        body: raw ? (body as string) : JSON.stringify(body),
+    });
+}
+
+type JudgeBody = SearchBody & {
+    query: string | null;
+    sources: Record<string, string> & { caller: string };
+    results: Array<{ mint: string; verified: boolean; warnings: string[]; badges: string[]; reasons: string[] }>;
+};
+
+describe('POST /v2/judge', () => {
+    it('401 without credentials and never enriches', async () => {
+        const res = await judgePost(judgeRequest({ candidates: [{ mint: USDC_MINT }] }), {} as never);
+        expect(res.status).toBe(401);
+        expect(enrichCalls).toBe(0);
+    });
+
+    it('403 when the key lacks assets:read', async () => {
+        const res = await judgePost(
+            judgeRequest({ candidates: [{ mint: USDC_MINT }] }, await authHeader(['tokens:read'])),
+            {} as never,
+        );
+        expect(res.status).toBe(403);
+    });
+
+    it('400 on malformed JSON, a non-object body, and missing / empty / oversized candidates', async () => {
+        const auth = await authHeader();
+        const malformed = await judgePost(judgeRequest('{not json', auth, true), {} as never);
+        expect(malformed.status).toBe(400);
+
+        const list = await judgePost(judgeRequest([{ mint: USDC_MINT }], auth), {} as never);
+        expect(list.status).toBe(400);
+        expect(((await list.json()) as Envelope).error.details).toEqual({ code: 'invalid_body' });
+
+        const missing = await judgePost(judgeRequest({ q: 'USDC' }, auth), {} as never);
+        expect(missing.status).toBe(400);
+        expect(((await missing.json()) as Envelope).error.details).toEqual({ code: 'invalid_candidates' });
+
+        const empty = await judgePost(judgeRequest({ candidates: [] }, auth), {} as never);
+        expect(empty.status).toBe(400);
+        expect(((await empty.json()) as Envelope).error.details).toEqual({ code: 'invalid_candidates' });
+
+        const tooMany = await judgePost(
+            judgeRequest({ candidates: Array.from({ length: 41 }, () => ({ mint: USDC_MINT })) }, auth),
+            {} as never,
+        );
+        expect(tooMany.status).toBe(400);
+        const tooManyBody = (await tooMany.json()) as Envelope;
+        expect(tooManyBody.error.details).toEqual({ code: 'too_many_candidates', max: 40, received: 41 });
+        expect(enrichCalls).toBe(0);
+    });
+
+    it('400 on an invalid mint or a malformed market field', async () => {
+        const auth = await authHeader();
+        const badMint = await judgePost(judgeRequest({ candidates: [{ mint: '0xdeadbeef' }] }, auth), {} as never);
+        expect(badMint.status).toBe(400);
+        expect(((await badMint.json()) as Envelope).error.message).toContain('Invalid candidates');
+
+        const badField = await judgePost(
+            judgeRequest({ candidates: [{ mint: USDC_MINT, liquidityUsd: 'lots' }] }, auth),
+            {} as never,
+        );
+        expect(badField.status).toBe(400);
+    });
+
+    it('400 on a malformed gate override or policy in the body, with the same messages as the GET routes', async () => {
+        const auth = await authHeader();
+        const gate = await judgePost(
+            judgeRequest({ candidates: [{ mint: USDC_MINT }], minMarketScore: 'abc' }, auth),
+            {} as never,
+        );
+        expect(gate.status).toBe(400);
+        expect(((await gate.json()) as Envelope).error.message).toContain('Invalid minMarketScore');
+
+        const policy = await judgePost(
+            judgeRequest({ candidates: [{ mint: USDC_MINT }], policy: 'yolo' }, auth),
+            {} as never,
+        );
+        expect(policy.status).toBe(400);
+        expect(((await policy.json()) as Envelope).error.details).toEqual({ policies: ['strict', 'default', 'degen'] });
+        expect(enrichCalls).toBe(0);
+    });
+
+    it('200: judges caller candidates like search — the real token ranks, the impostor is suppressed, nothing is cached', async () => {
+        const res = await judgePost(
+            judgeRequest(
+                {
+                    q: 'USDC',
+                    candidates: [
+                        { mint: FAKE_USDC_MINT, symbol: 'USDC', name: 'USD Coin', liquidityUsd: 5000 },
+                        { mint: USDC_MINT, symbol: 'USDC' },
+                    ],
+                },
+                await authHeader(),
+            ),
+            {} as never,
+        );
+        expect(res.status).toBe(200);
+        expect(res.headers.get('cache-control')).toBe('no-store');
+        const body = (await res.json()) as JudgeBody;
+
+        expect(body.query).toBe('USDC');
+        expect(body.interpretation.intent).toBe('ticker');
+        expect(body.policy.id).toBe('default');
+        expect(body.sources).toEqual({ caller: 'ok', provider: 'disabled', db: 'ok', registry: 'ok', cache: 'bypass' });
+        expect(body.results.map(r => r.mint)).toEqual([USDC_MINT]);
+        expect(body.results[0]?.verified).toBe(true);
+        expect(body.results[0]?.reasons).toContain('exact_symbol_match');
+        expect(body.suppressed!.map(s => s.mint)).toEqual([FAKE_USDC_MINT]);
+        expect(body.suppressed![0]?.suppressedBy).toContain('gate_impersonation');
+        expect(enrichCalls).toBe(1);
+        expect(gatherCalls).toBe(0);
+        expect(budgetCalls).toBe(0);
+    });
+
+    it('200: without q nothing match-scores; ranking is credibility alone', async () => {
+        const res = await judgePost(
+            judgeRequest(
+                { candidates: [{ mint: NEW_DOG_MINT }, { mint: BONK_MINT }], policy: 'degen' },
+                await authHeader(),
+            ),
+            {} as never,
+        );
+        expect(res.status).toBe(200);
+        const body = (await res.json()) as JudgeBody;
+        expect(body.query).toBeNull();
+        expect(body.interpretation.intent).toBe('name');
+        expect(body.results.map(r => r.mint)).toEqual([BONK_MINT, NEW_DOG_MINT]);
+        for (const result of body.results) {
+            expect(result.reasons.some(reason => reason.endsWith('_match'))).toBe(false);
+        }
+    });
+
+    it('200: body overrides are applied and echoed; duplicates collapse; includeSuppressed=false omits the array', async () => {
+        const res = await judgePost(
+            judgeRequest(
+                {
+                    q: 'dog',
+                    policy: 'degen',
+                    minLiquidityUsd: 100000,
+                    verifiedOnly: true,
+                    includeSuppressed: false,
+                    candidates: [{ mint: NEW_DOG_MINT }, { mint: BONK_MINT }, { mint: BONK_MINT }],
+                },
+                await authHeader(),
+            ),
+            {} as never,
+        );
+        expect(res.status).toBe(200);
+        const body = (await res.json()) as JudgeBody;
+        expect(body.policy.id).toBe('degen');
+        expect(body.policy.gates.minLiquidityUsd).toBe(100_000);
+        expect(body.policy.overrides).toEqual(['minLiquidityUsd', 'requireRegistry']);
+        expect(body.results.map(r => r.mint)).toEqual([BONK_MINT]);
+        expect('suppressed' in body).toBe(false);
+    });
+
+    it('200: an unknown mint with bare claims is judged on them alone (unverified, no market data)', async () => {
+        const res = await judgePost(
+            judgeRequest(
+                {
+                    candidates: [{ mint: 'UnknownMintZz1111111111111111111111111111111', symbol: 'ZZZ' }],
+                    policy: 'degen',
+                },
+                await authHeader(),
+            ),
+            {} as never,
+        );
+        expect(res.status).toBe(200);
+        const body = (await res.json()) as JudgeBody;
+        expect(body.results.length).toBe(1);
+        expect(body.results[0]?.verified).toBe(false);
+        expect(body.results[0]?.warnings).toContain('unverified');
+        expect(body.results[0]?.warnings).toContain('no_market_data');
     });
 });

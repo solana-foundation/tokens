@@ -118,6 +118,39 @@ const apiProbes: Probe[] = [
         },
     },
     {
+        // Bring-your-own-candidates judgment: no provider call, no provider
+        // budget. The real USDC must rank and the impostor claiming its symbol
+        // must be suppressed by the protected-symbol gate.
+        name: 'v2-judge',
+        target: 'api',
+        method: 'POST',
+        path: '/api/v2/judge',
+        auth: true,
+        budgetMs: 5000,
+        body: {
+            q: 'USDC',
+            candidates: [
+                { mint: USDC_MINT },
+                { mint: 'FakeUSDCmint11111111111111111111111111111111', symbol: 'USDC', name: 'USD Coin' },
+            ],
+        },
+        assert: ({ json, status }) => {
+            assert(status === 200, `expected 200, got ${status}`);
+            assert(isObject(json) && Array.isArray(json.results), 'expected { results: [] }');
+            const results = json.results as Array<{ mint?: unknown }>;
+            assert(results[0]?.mint === USDC_MINT, 'judge must rank the real USDC first');
+            assert(Array.isArray(json.suppressed), 'expected suppressed[]');
+            const suppressed = json.suppressed as Array<{ mint?: unknown; suppressedBy?: unknown }>;
+            const fake = suppressed.find(row => row.mint === 'FakeUSDCmint11111111111111111111111111111111');
+            assert(fake !== undefined, 'the impostor must be suppressed');
+            assert(
+                Array.isArray(fake.suppressedBy) && fake.suppressedBy.includes('gate_impersonation'),
+                'the impostor must be suppressed by gate_impersonation',
+            );
+            assert(isObject(json.sources) && json.sources.caller === 'ok', 'expected sources.caller === "ok"');
+        },
+    },
+    {
         // Exercises the documented public path (`/v2/...` -> `/api/v2/...`
         // rewrite in next.config.ts); the probe above uses the internal path.
         name: 'v2-resolve-public-path',
@@ -145,7 +178,10 @@ const apiProbes: Probe[] = [
         assert: ({ json, status }) => {
             assert(status === 200, `expected 200, got ${status}`);
             assert(isObject(json) && Array.isArray(json.chains), 'expected { chains: [] }');
-            assert((json.chains as unknown[]).length === 6, `expected exactly 6 chains, got ${(json.chains as unknown[]).length}`);
+            assert(
+                (json.chains as unknown[]).length === 6,
+                `expected exactly 6 chains, got ${(json.chains as unknown[]).length}`,
+            );
         },
     },
     {
@@ -194,7 +230,10 @@ const apiProbes: Probe[] = [
         assert: ({ json, status }) => {
             assert(status === 200, `expected 200, got ${status}`);
             assert(isObject(json) && Array.isArray(json.variants), 'expected { variants: [] }');
-            assert((json.variants as unknown[]).length === 1, `expected exactly 1 variant for wrapped SOL, got ${(json.variants as unknown[]).length}`);
+            assert(
+                (json.variants as unknown[]).length === 1,
+                `expected exactly 1 variant for wrapped SOL, got ${(json.variants as unknown[]).length}`,
+            );
         },
     },
     {
@@ -385,11 +424,7 @@ const webProbes: Probe[] = [
     },
 ];
 
-const probes: Probe[] = [
-    ...apiProbes,
-    ...(appBaseUrl ? appProbes : []),
-    ...(webBaseUrl ? webProbes : []),
-];
+const probes: Probe[] = [...apiProbes, ...(appBaseUrl ? appProbes : []), ...(webBaseUrl ? webProbes : [])];
 
 function probeBaseUrl(probe: Probe): string {
     if (probe.target === 'app') return appBaseUrl;
@@ -503,7 +538,10 @@ async function v2AssetsSkipReason(): Promise<string | null> {
         const controller = new AbortController();
         const timer = setTimeout(() => controller.abort(), timeoutMs);
         try {
-            const res = await fetch(`${apiBaseUrl}${path}`, { headers: { 'x-api-key': apiKey }, signal: controller.signal });
+            const res = await fetch(`${apiBaseUrl}${path}`, {
+                headers: { 'x-api-key': apiKey },
+                signal: controller.signal,
+            });
             const text = await res.text();
             let json: unknown = null;
             try {
@@ -580,9 +618,7 @@ async function main(): Promise<void> {
         console.log(
             `[${tag}] [${result.target}] ${result.name} ${result.method} ${result.path} status=${statusStr} duration=${result.durationMs}ms${retryNote}${
                 result.error ? ` error="${result.error}"` : ''
-            }${
-                result.skipped ? ` skipped="${result.skipped}"` : ''
-            }`,
+            }${result.skipped ? ` skipped="${result.skipped}"` : ''}`,
         );
     }
 

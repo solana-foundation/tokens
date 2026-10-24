@@ -7,14 +7,18 @@
  * - The pipeline stages (intent → gates → score → explain → resolve) are pure
  *   functions over `EnrichedCandidate` so they can be tested offline.
  * - Provider names are never leaked into the public contract; candidate
- *   sources are reported as `provider` / `db` / `registry`.
+ *   sources are reported as `provider` / `db` / `registry` / `caller`.
  */
 
 import type { VariantAdvisory } from '@tokens/asset-registry';
 
 export const SCORING_VERSION = 'v2-scoring-2026-09-27.1' as const;
 
-export type CandidateSource = 'provider' | 'db' | 'registry';
+/**
+ * Where a candidate was found. `caller` = supplied in the body of
+ * `POST /v2/judge` (claims with the same trust as the live provider's).
+ */
+export type CandidateSource = 'provider' | 'db' | 'registry' | 'caller';
 
 /** A fully-enriched candidate token: input to the pure judgment pipeline. */
 export interface EnrichedCandidate {
@@ -141,13 +145,7 @@ export interface Attestation {
 // Scoring output
 // -----------------------------------------------------------------------------
 
-export type ScoreComponentKey =
-    | 'matchQuality'
-    | 'claimCredibility'
-    | 'liquidity'
-    | 'activity'
-    | 'risk'
-    | 'freshness';
+export type ScoreComponentKey = 'matchQuality' | 'claimCredibility' | 'liquidity' | 'activity' | 'risk' | 'freshness';
 
 export type ScoreComponents = Record<ScoreComponentKey, number>;
 

@@ -1,6 +1,6 @@
 ---
-title: Search & Resolve
-description: Risk-aware token search with tunable policy gates, and a resolve endpoint that answers with confidence or refuses.
+title: Search, Resolve & Judge
+description: Risk-aware token search with tunable policy gates, a resolve endpoint that answers with confidence or refuses, and a judge endpoint for candidates you already have.
 ---
 
 All endpoints below use `https://api.tokens.xyz/v2` with an `x-api-key` header; see
@@ -8,10 +8,11 @@ All endpoints below use `https://api.tokens.xyz/v2` with an `x-api-key` header; 
 `reasons`, `warnings` and `suppressedBy` code are on
 [Risk-aware search](/v2/concepts/risk-aware-search).
 
-Both routes share the per-key `search` provider budget (120 calls per 10 minutes by default) with
+`GET /v2/search` and `GET /v2/resolve` share the per-key `search` provider budget (120 calls per 10 minutes by default) with
 `GET /v2/lists/search-tokens`. The budget is charged only when a query's candidate set is not already
 in the server-side cache (about 45 seconds per normalized query), so repeating or refining a query is
-free; see [Provider lookup budget](/v2/errors-and-limits#provider-lookup-budget).
+free; see [Provider lookup budget](/v2/errors-and-limits#provider-lookup-budget). `POST /v2/judge` never
+reaches the provider and draws no budget.
 
 ## `GET /v2/search`
 
@@ -172,3 +173,79 @@ curl -sS "$API_BASE_URL/v2/resolve?q=USDC" -H "x-api-key: $API_KEY"
 - Each policy has its own refusal bar: `strict` refuses most readily, `degen` least.
 - Shares the search candidate cache: a query resolved or searched in the last ~45 seconds is served
   from it (`sources.cache: 'hit'`) and does not count against the budget.
+
+## `POST /v2/judge`
+
+Bring your own candidates. You already have a search (Birdeye, Jupiter, your own index, a
+watchlist); send the mints it returned and get the same judged response as `GET /v2/search`: hard
+gates under a policy, weighted score, `reasons`/`warnings`/`badges`, and the suppressed rows with
+the gate that fired. Nothing is looked up at the live provider, so the call draws **no provider
+budget** (only the standard rate limit applies) and its latency is our own enrichment plus the
+pipeline.
+
+**Auth**: `x-api-key`, scope `assets:read`. Not cached (`Cache-Control: no-store`).
+
+### Body
+
+```ts
+interface JudgeRequest {
+    q?: string;              // optional; enables match scoring (exact_symbol_match, …). Max 100 chars
+    policy?: 'strict' | 'default' | 'degen';
+    // the same gate overrides as GET /v2/search, as JSON values or strings:
+    minLiquidityUsd?: number | 'none'; minAgeDays?: number | 'none'; minMarketScore?: number | 'none';
+    requireMarketData?: boolean; suppressImpersonation?: boolean; verifiedOnly?: boolean;
+    limit?: number;          // 1–50, default 10 (ranked results only)
+    includeSuppressed?: boolean; // default true
+    candidates: Array<{      // 1–40, deduped by mint (first occurrence wins, your order is kept)
+        mint: string;        // required, Solana base58
+        symbol?: string | null; name?: string | null; decimals?: number | null; logoURI?: string | null;
+        price?: number | null; liquidityUsd?: number | null; volume24hUsd?: number | null;
+        marketCapUsd?: number | null; priceChange24hPercent?: number | null; holderCount?: number | null;
+        createdAt?: string | number | null; // ISO 8601 or epoch (s or ms)
+    }>;
+}
+```
+
+Everything except `candidates[].mint` is optional. Caller fields are **claims** with the same trust
+as a live-provider hit: symbol and name are checked against the protected-symbol index, and
+market fields are overlaid by our own snapshots wherever we have them (ours win). A mint we know
+nothing about, sent bare, is judged on your claims alone and comes back `unverified` with
+`no_market_data`, which is the honest answer.
+
+### Response
+
+The [`SearchResponse`](#response) shape, with:
+
+- `query`: the `q` you sent, or `null`. Without `q` no candidate can match-score, so ranking is
+  credibility alone (curation, registry, market depth, age); send `q` when you have the user's
+  input.
+- `sources`: `{ caller: 'ok', provider: 'disabled', db: 'ok', registry: 'ok', cache: 'bypass' }`.
+  Each result's attestations may name `caller` as a candidate source.
+
+### Errors
+
+| `details.code` | Status | Meaning |
+|---|---|---|
+| `invalid_body` | 400 | Body is not a JSON object |
+| `invalid_candidates` | 400 | `candidates` missing, not an array, or empty |
+| `too_many_candidates` | 400 | More than 40 candidates (`details.max`, `details.received`) |
+| — | 400 | A candidate has no valid Solana mint or a non-numeric market field; a malformed `policy` or gate override (same messages as `GET /v2/search`) |
+
+### Examples
+
+```bash
+# Judge the hits your own search returned, with the user's query for match scoring
+curl -sS -X POST "$API_BASE_URL/v2/judge" -H "x-api-key: $API_KEY" -H "content-type: application/json" -d '{
+  "q": "USDC",
+  "candidates": [
+    { "mint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", "symbol": "USDC", "name": "USD Coin", "liquidityUsd": 125000000 },
+    { "mint": "FakeUSDCmint11111111111111111111111111111111", "symbol": "USDC", "name": "USD Coin", "liquidityUsd": 4000 }
+  ]
+}'
+
+# A bare watchlist, strict policy, no suppressed rows
+curl -sS -X POST "$API_BASE_URL/v2/judge" -H "x-api-key: $API_KEY" -H "content-type: application/json" -d '{
+  "policy": "strict", "includeSuppressed": false,
+  "candidates": [{ "mint": "So11111111111111111111111111111111111111112" }, { "mint": "DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263" }]
+}'
+```

@@ -1,16 +1,16 @@
 ---
 title: Risk-aware search
-description: The judgment pipeline behind /v2/search and /v2/resolve — policies, gate overrides, and the reasons, warnings and suppressedBy codes that explain every result.
+description: The judgment pipeline behind /v2/search, /v2/resolve and /v2/judge — policies, gate overrides, and the reasons, warnings and suppressedBy codes that explain every result.
 ---
 
-`GET /v2/search` and `GET /v2/resolve` share one pipeline. This page explains how it judges; the
-routes are on [Search & Resolve](/v2/endpoints/search).
+`GET /v2/search`, `GET /v2/resolve` and `POST /v2/judge` share one pipeline. This page explains how it
+judges; the routes are on [Search, Resolve & Judge](/v2/endpoints/search).
 
 ## The judgment pipeline
 
 Candidates come from three sources, merged and deduped by mint: a live market-data provider for
-long-tail coverage, the token index, and the curated asset registry. Each candidate then passes
-through four stages:
+long-tail coverage, the token index, and the curated asset registry — or, on `POST /v2/judge`, from
+the caller (`caller`). Each candidate then passes through four stages:
 
 1. **Intent classification** — is the query a mint address, a ticker or a name?
    (`interpretation.intent`). A mint address is a lookup, never fuzzy.
@@ -19,6 +19,15 @@ through four stages:
 3. **Weighted score** — the survivors are ranked (`score.total`, `score.components`).
 4. **Explanations** — every ranked result carries `reasons`, `warnings` and `badges`; every
    suppressed row carries `suppressedBy`.
+
+### Bring your own candidates
+
+`POST /v2/judge` skips candidate gathering: you send the mints your own search returned (optionally
+with the symbol, name and market fields it gave you) and the pipeline runs from the enrichment step.
+Caller fields are claims with the same trust as a live-provider hit — the protected-symbol index,
+dynamic dominance and attestations evaluate them against the registry and our snapshots, and our
+market data wins wherever we have it. Nothing is looked up at the live provider, so the call draws
+no provider budget. Without `q` no candidate can match-score and ranking is credibility alone.
 
 ### Provider deadline
 
