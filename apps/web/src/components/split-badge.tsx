@@ -17,6 +17,14 @@ export function SplitBadge({
     title?: string;
 }) {
     if (segments.length === 0) return null;
+    // Keys from the segment text, disambiguated when a pair repeats ("Real Estate › Real Estate").
+    const seen = new Map<string, number>();
+    const keys = segments.map(segment => {
+        const text = typeof segment === 'string' || typeof segment === 'number' ? String(segment) : 'node';
+        const count = seen.get(text) ?? 0;
+        seen.set(text, count + 1);
+        return count === 0 ? text : `${text}#${count}`;
+    });
     return (
         <span
             className={cn(
@@ -26,7 +34,7 @@ export function SplitBadge({
             title={title}
         >
             {segments.map((segment, index) => (
-                <span key={typeof segment === 'string' ? `${index}:${segment}` : `segment-${index}`} className="contents">
+                <span key={keys[index]} className="contents">
                     {index > 0 ? (
                         <span
                             aria-hidden
