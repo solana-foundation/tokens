@@ -70,8 +70,9 @@ interface V2Market {
     priceChange1hPercent: number | null;
     priceChange24hPercent: number | null;
     lastTradeAt: number | null;
-    asOf: number | null;          // provider timestamp
-    lastFetchedAt: number | null; // our fetch
+    asOf: number | null;          // provider timestamp; only set for trade-sourced Solana rows
+    lastFetchedAt: number | null; // our last successful provider write
+    quality: { included: boolean; reasons: Array<'stale' | 'dust' | 'price_outlier'> }; // did this row enter the sums
 }
 
 interface V2Advisory {
@@ -145,7 +146,7 @@ interface V2Variant extends V2VariantEnrichments {
     assetId: string;
     variantId: string;
     kind: VariantKind;
-    issuance: 'native' | 'bridged' | 'wrapped'; // drives supply / market-cap counting
+    issuance: 'native' | 'bridged' | 'wrapped' | 'derivative'; // drives supply / market-cap counting
     symbol: string | null;
     name: string | null;
     label: string | null;
@@ -161,22 +162,31 @@ interface V2Variant extends V2VariantEnrichments {
     rank: number | null;      // 0-based liquidity rank within the asset across chains; null in batch lookups
     explorerUrl: string;
     market: V2Market | null;
+    coingeckoId: string | null;          // the CoinGecko coin this deployment is (issuer, LST or wrapper); null when unlinked
+    reference: V2ReferenceMarket | null; // that coin's CoinGecko figures (source 'coingecko'); detail surfaces only
 }
 
 interface V2ChainStats {
-    liquidity: number | null;         // summed over every variant on the chain
-    volume24hUSD: number | null;      // summed over every variant on the chain
-    trade24h: number | null;          // 24h trade count, summed over every variant on the chain
+    price: number | null;             // liquidity-weighted average over the chain's included rows
+    priceChange24hPercent: number | null;
+    priceChange1hPercent: number | null;
+    liquidity: number | null;         // summed over every included variant on the chain
+    volume24hUSD: number | null;      // summed over every included variant on the chain
+    trade24h: number | null;          // 24h trade count, summed over every included variant on the chain
     marketCap: number | null;         // summed over issued (native) variants only
     fdv: number | null;
     circulatingSupply: number | null; // issued variants only
+    totalSupply: number | null;       // issued variants only
     variantCount: number;
     issuedVariantCount: number;       // variants counted toward supply / market cap
+    excludedByIssuance: { bridged: number; wrapped: number; derivative: number };
+    excludedCount: number;            // rows that failed the quality guard and left every sum
+    excludedByQuality: { stale: number; dust: number; priceOutlier: number };
 }
 
 interface V2Aggregate extends V2ChainStats {
     chainCount: number;
-    excludedFromSupplyCount: number; // bridged / wrapped variants left out of supply and market cap
+    excludedFromSupplyCount: number; // bridged / wrapped / derivative variants left out of supply and market cap
 }
 
 type V2ReferenceMarket =
@@ -223,13 +233,15 @@ interface V2AssetStats {
     price: number | null;
     liquidity: number | null;      // = aggregate.liquidity
     volume24hUSD: number | null;
-    volume30dUSD: number | null;   // Solana rolling 30d, null elsewhere
+    volume30dUSD: number | null;   // sum over the chains in the window once each has a complete one, else null
     marketCap: number | null;
     fdv: number | null;
     priceChange24hPercent: number | null;
     priceChange1hPercent: number | null;
     totalSupply: number | null;
     circulatingSupply: number | null;
+    source: Partial<Record<string, 'coingecko' | 'stock' | 'onchain'>>; // provenance per figure above
+    volume30dScope: 'all' | 'solana' | null; // what volume30dUSD covers; null while an EVM window is still accruing
 }
 
 interface V2AssetAdvisory extends V2Advisory {

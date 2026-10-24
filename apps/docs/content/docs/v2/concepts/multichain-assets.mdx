@@ -93,21 +93,41 @@ chains.
 
 ## Per-chain stats, aggregate and reference market
 
-- `chainStats.<chain>` is that chain's on-chain view. Liquidity, 24h volume and 24h trade count
-  are summed over every variant on the chain (pools are distinct). Market cap, FDV and
-  circulating supply are summed only over variants whose `issuance` is `native`: a bridged or
-  wrapped token is a claim on supply issued elsewhere, and `excludedFromSupplyCount` tells you how
-  many were left out. `chainStats.solana` is the number v1 reported.
-- `aggregate` is the sum of `chainStats` across chains, plus `chainCount` and
-  `excludedFromSupplyCount`.
-- `referenceMarket` is the off-chain reference (v1's `canonicalMarket`): CoinGecko for crypto
-  (`source: "coingecko"`), the stock benchmark for mapped public equities (`source: "stock"`), the
-  PreStocks mark for tokenized pre-IPO equities (`source: "prestocks"`). Keep a default branch in
-  any exhaustive `switch (source)`.
-- `stats` is the headline view: price, market cap and supply come from `referenceMarket` when
-  there is one, with on-chain liquidity and volume from `aggregate`. `volume30dUSD` is a Solana
-  rolling 30-day figure and `null` elsewhere.
-- Liquidity is provider-reported per chain, so treat cross-chain comparisons as approximate.
+- `chainStats.<chain>` is that chain's on-chain view. Liquidity, 24h volume and trade count are
+  summed over every variant that passes the quality guard; market cap, FDV and supply only over
+  variants whose `issuance` is `native`. A bridged or wrapped token is a claim on supply issued
+  elsewhere, and a derivative (liquid staking token, ETF share, leveraged or basket product) is
+  exposure to the asset rather than its supply. `excludedFromSupplyCount` says how many were left
+  out and `excludedByIssuance` why. Issuance comes from an explicit tag, else a curated
+  per-deployment override, else the variant kind. A derivative kind only means "derivative of this
+  asset" when the asset has some other deployment: when every variant is a yield, ETF, leveraged or
+  basket token (a standalone treasury fund, say) those variants are the asset and count as `native`.
+  Commodities are the exception, since an ETF share is never the metal.
+- **The quality guard.** Before a market row enters any sum it must be fresh (a successful provider
+  write within 2 h on Solana, 3 h on EVM), not dust (liquidity and 24h volume both under $1k, unless
+  nothing else survives), and priced within 25% of the reference price, or without one, of the
+  surviving rows' liquidity-weighted median. Derivatives skip the price check because they are not
+  priced in the asset's units. A failing row leaves every sum and average, including market cap and
+  supply, and says so in `market.quality`; `excludedCount` and `excludedByQuality` count them per
+  chain and in aggregate.
+- `aggregate` is the sum of `chainStats` across chains, with averages weighted by chain liquidity,
+  plus `chainCount` and `excludedFromSupplyCount`: the one guarded, issuance-aware on-chain figure.
+- `referenceMarket` is the off-chain reference (v1's `canonicalMarket`): CoinGecko for crypto, the
+  stock feed for one-share-per-token equities and ETFs (`source: "stock"` replaces v1's
+  `clickhouse_stock`), the PreStocks mark for pre-IPO equities. Keep a default branch when you
+  switch on `source`.
+- `stats` is the reference-first headline. Price, market cap, FDV, 24h change and supply come from
+  `referenceMarket` when there is one; liquidity, DEX volume, trades and the 1h change from
+  `aggregate`; anything the reference lacks falls through to `aggregate`. For an equity the market
+  cap is the company's and `fdv` is `null` (the tokenized float is `aggregate.marketCap`), and
+  supply is the tokenized issued supply. `stats.source` says where each figure came from. A native
+  coin's home-chain row (ETH on Ethereum) has no pool and carries the reference's supply, so
+  `chainStats.ethereum` is not empty.
+- `volume30dUSD` sums each chain's 30-day DEX volume over the chains in the window (traded in the
+  last 24h, or with accepted volume in the window). It is `null` until every such chain has at
+  least 28 sampled days for each variant that matters to its total, refreshed within 48 h; rows the
+  quality guard rejects are left out. `volume30dScope` says whether it covers every chain or Solana
+  alone.
 
 ## Primary variant and `primaryScope`
 
@@ -128,7 +148,7 @@ executable pools and gives the cross-chain liquidity winner.
 Inside the pool the applied `primaryVariantStrategy` ranks: `liquidity` by default,
 `stock_redeemability` for equities (redeemable tiers first, then liquidity), or
 `execution_quality`. A variant with no market data never outranks one that trades, and
-`compromised` or `blocked` variants are never chosen. `primaryVariantSelection` reports the pool
+`compromised` or `blocked` variants are skipped while a safe sibling exists; when every candidate is flagged, the least-bad flagged variant is returned rather than none. `primaryVariantSelection` reports the pool
 and the deciding rule so the choice is reproducible, and `primaryVariantByChain` runs the same
 ranking inside each chain.
 
