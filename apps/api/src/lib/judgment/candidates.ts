@@ -45,6 +45,7 @@ import {
     candidateCacheEnabled,
     rawCandidateCacheKey,
     readRawCandidates,
+    sourceQueryFor,
     storeRawCandidates,
     type CandidateCacheOptions,
     type RawCandidate,
@@ -174,11 +175,13 @@ export function collectRawCandidates(
 ): Effect.Effect<RawCandidates, never> {
     return Effect.gen(function* () {
         const providerConfigured = Boolean((process.env.BIRDEYE_API_KEY ?? '').trim());
+        // What the sources are asked must match what the cache key describes.
+        const source = sourceQueryFor(query, interpretation);
 
         const [providerResult, dbResult] = yield* Effect.all(
             [
                 providerConfigured
-                    ? searchProviderTokens(query, { limit: 20 }).pipe(
+                    ? searchProviderTokens(source, { limit: 20 }).pipe(
                           Effect.map(tokens => ({ ok: true as const, tokens })),
                           tapErrorAndDefault(
                               'v2.lists.searchTokens.provider',
@@ -187,7 +190,7 @@ export function collectRawCandidates(
                           ),
                       )
                     : Effect.succeed({ ok: false as const, tokens: [] as ProviderSearchToken[] }),
-                tokensSearchTokens({ query, limit: 20 }).pipe(
+                tokensSearchTokens({ query: source, limit: 20 }).pipe(
                     Effect.map(tokens => ({ ok: true as const, tokens: tokens as DbSearchToken[] })),
                     tapErrorAndDefault(
                         'v2.lists.searchTokens.db',
@@ -215,7 +218,7 @@ export function collectRawCandidates(
             byMint.set(token.address, candidate);
         }
 
-        for (const mint of registryCandidateMints(query, interpretation)) {
+        for (const mint of registryCandidateMints(source, interpretation)) {
             const candidate = byMint.get(mint) ?? newRawCandidate(mint);
             addSource(candidate, 'registry');
             byMint.set(mint, candidate);
@@ -236,7 +239,20 @@ export function collectRawCandidates(
  * and run concurrently; advisories and curated membership come from their
  * own in-process caches.
  */
-export function enrichCandidates(raws: readonly RawCandidate[]): Effect.Effect<EnrichedCandidate[], never> {
+export interface EnrichOptions {
+    /**
+     * When the raw set was collected. Provider-sourced market fields without a
+     * stored market row are stamped with this as `dataAsOf`, so a cache hit
+     * reports the price's real age instead of looking freshly fetched.
+     * Defaults to now (an uncached collect).
+     */
+    collectedAtMs?: number;
+}
+
+export function enrichCandidates(
+    raws: readonly RawCandidate[],
+    options: EnrichOptions = {},
+): Effect.Effect<EnrichedCandidate[], never> {
     return Effect.gen(function* () {
         const mints = raws.map(raw => raw.mint);
         if (mints.length === 0) return [];
@@ -305,10 +321,11 @@ export function enrichCandidates(raws: readonly RawCandidate[]): Effect.Effect<E
             }),
         );
 
-        // Live provider (Birdeye search) data was fetched seconds ago — a
-        // candidate served from it without a cached market row is the
-        // *freshest* data we have, not stale/unknown.
-        const enrichedAtMs = Date.now();
+        // Provider (Birdeye search) data is as old as the collect that
+        // produced it — fresh on a miss, `cachedAt` on a hit. A candidate
+        // served from it without a stored market row is still the freshest
+        // data we have, not unknown.
+        const enrichedAtMs = options.collectedAtMs ?? Date.now();
 
         return raws.map((raw): EnrichedCandidate => {
             const market = marketByMint.get(raw.mint) ?? null;
@@ -403,25 +420,30 @@ export function gatherCandidates<E = never>(
     options: GatherOptions<E> = {},
 ): Effect.Effect<GatheredCandidates, E> {
     return Effect.gen(function* () {
-        const key = rawCandidateCacheKey(interpretation);
+        const key = rawCandidateCacheKey(query, interpretation);
         const collectStart = Date.now();
 
         let cache: CandidateCacheStatus = candidateCacheEnabled() ? 'miss' : 'bypass';
         let raw: RawCandidates | null = null;
+        let collectedAtMs = collectStart;
 
         const cached = yield* readRawCandidates(key, options.cache);
         if (cached) {
             cache = 'hit';
             raw = { raws: cached.raws, sources: cached.sources };
+            collectedAtMs = cached.cachedAt;
         } else {
             if (options.budget) yield* options.budget;
             raw = yield* collectRawCandidates(query, interpretation);
-            storeRawCandidates(key, raw, options.cache);
+            // One timestamp for the stored entry and this request's dataAsOf,
+            // so a later hit reports exactly the age a miss would have.
+            collectedAtMs = Date.now();
+            storeRawCandidates(key, { ...raw, cachedAt: collectedAtMs }, options.cache);
         }
         const collectMs = Date.now() - collectStart;
 
         const enrichStart = Date.now();
-        const candidates = yield* enrichCandidates(raw.raws);
+        const candidates = yield* enrichCandidates(raw.raws, { collectedAtMs });
         const enrichMs = Date.now() - enrichStart;
 
         return {

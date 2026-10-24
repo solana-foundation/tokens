@@ -102,16 +102,28 @@ export function candidateCacheWindowSeconds(): number {
 }
 
 /**
- * Cache key for a query. Ticker/name queries are keyed on the homoglyph-
- * normalized, lowercased form the pipeline already derives; a mint query is
- * keyed on the exact address.
+ * The query the sources are asked: trimmed, with a decorative leading `$`
+ * removed (`$bonk` and `bonk` are the same question to every source). A mint
+ * address is passed through exactly. This is deliberately NOT the pipeline's
+ * homoglyph-normalized form: the cache key must describe what the sources
+ * were actually asked, so a lookalike spelling never fills the entry a clean
+ * spelling later reads.
  */
-export function rawCandidateCacheKey(interpretation: QueryInterpretation): string {
-    const query =
-        interpretation.intent === 'mint'
-            ? interpretation.normalizedQuery
-            : interpretation.normalizedQuery.toLowerCase();
-    return `${KEY_PREFIX}:${interpretation.intent}:${query}`;
+export function sourceQueryFor(query: string, interpretation: QueryInterpretation): string {
+    const trimmed = query.trim();
+    if (interpretation.intent === 'mint') return trimmed;
+    return trimmed.replace(/^\$+/, '').trim() || trimmed;
+}
+
+/**
+ * Cache key for a query: intent + the source query, lowercased for
+ * ticker/name intents (every source matches case-insensitively) and exact
+ * for a mint address.
+ */
+export function rawCandidateCacheKey(query: string, interpretation: QueryInterpretation): string {
+    const source = sourceQueryFor(query, interpretation);
+    const keyed = interpretation.intent === 'mint' ? source : source.toLowerCase();
+    return `${KEY_PREFIX}:${interpretation.intent}:${keyed}`;
 }
 
 function redisOrNull(getClient?: () => RedisClient): RedisClient | null {

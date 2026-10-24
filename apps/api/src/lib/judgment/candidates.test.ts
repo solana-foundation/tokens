@@ -28,6 +28,8 @@ let providerCalls = 0;
 let providerFails = false;
 let dbCalls = 0;
 let marketCalls = 0;
+let providerKeywords: string[] = [];
+let dbQueries: string[] = [];
 
 function json(body: unknown, status = 200): Response {
     return new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
@@ -68,6 +70,8 @@ beforeEach(() => {
     providerFails = false;
     dbCalls = 0;
     marketCalls = 0;
+    providerKeywords = [];
+    dbQueries = [];
     console.error = () => undefined;
     console.log = () => undefined;
 
@@ -75,6 +79,7 @@ beforeEach(() => {
         const url = String(input);
         if (url.includes('public-api.birdeye.so/defi/v3/search')) {
             providerCalls += 1;
+            providerKeywords.push(new URL(url).searchParams.get('keyword') ?? '');
             if (providerFails) return json({ success: false }, 503);
             return json({
                 success: true,
@@ -106,6 +111,7 @@ beforeEach(() => {
         switch (name) {
             case 'tokensSearchTokens':
                 dbCalls += 1;
+                dbQueries.push(String(body.query));
                 return json([
                     {
                         address: ZZ2_MINT,
@@ -239,6 +245,27 @@ describe('gatherCandidates', () => {
         expect(b.sources.cache).toBe('bypass');
         expect(charged).toBe(2);
         expect(providerCalls).toBe(2);
+    });
+
+    it('asks the sources the $-stripped query, so what is cached is what the key describes', async () => {
+        await gather(' $Zzqx ');
+        expect(providerKeywords).toEqual(['Zzqx']);
+        expect(dbQueries).toEqual(['Zzqx']);
+        // …and the plain spelling is the same entry.
+        const plain = await gather('zzqx');
+        expect(plain.sources.cache).toBe('hit');
+        expect(providerCalls).toBe(1);
+    });
+
+    it('a hit stamps provider-sourced prices with the collection time, not the request time', async () => {
+        const first = await gather('zzqx');
+        const providerCandidate = first.candidates.find(c => c.mint === ZZ_MINT);
+        expect(providerCandidate?.dataAsOf).not.toBeNull();
+        await new Promise(resolve => setTimeout(resolve, 15));
+        const hit = await gather('zzqx');
+        expect(hit.sources.cache).toBe('hit');
+        expect(hit.candidates.find(c => c.mint === ZZ_MINT)?.dataAsOf).toBe(providerCandidate!.dataAsOf);
+        expect(hit.candidates.find(c => c.mint === ZZ_MINT)!.dataAsOf!).toBeLessThan(Date.now() - 10);
     });
 
     it('a mint query is a direct lookup keyed on the exact address', async () => {

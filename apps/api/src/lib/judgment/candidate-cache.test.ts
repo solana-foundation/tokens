@@ -9,8 +9,11 @@ const {
     candidateCacheWindowSeconds,
     rawCandidateCacheKey,
     readRawCandidates,
+    sourceQueryFor,
     storeRawCandidates,
 } = await import('./candidate-cache');
+
+const keyFor = (q: string) => rawCandidateCacheKey(q, classifyQuery(q));
 const { classifyQuery } = await import('./intent');
 
 import type { RawCandidate } from './candidate-cache';
@@ -78,20 +81,36 @@ afterEach(() => {
 
 describe('rawCandidateCacheKey', () => {
     it('ticker and name queries share an entry across case and the $ prefix', () => {
-        const keys = ['bonk', 'BONK', '$bonk', ' Bonk '].map(q => rawCandidateCacheKey(classifyQuery(q)));
+        const keys = ['bonk', 'BONK', '$bonk', ' Bonk '].map(keyFor);
         expect(new Set(keys).size).toBe(1);
         expect(keys[0]).toBe('judged:raw:v1:ticker:bonk');
     });
 
+    it('a lookalike spelling gets its own key — it is a different question to the sources', () => {
+        // Cyrillic С normalizes to C in the pipeline, but the sources never saw a 'C'.
+        expect(keyFor('USD\u0421')).not.toBe(keyFor('USDC'));
+    });
+
     it('a mint address keeps its case and intent', () => {
-        expect(rawCandidateCacheKey(classifyQuery(USDC))).toBe(`judged:raw:v1:mint:${USDC}`);
-        expect(rawCandidateCacheKey(classifyQuery(USDC.toLowerCase()))).not.toBe(
-            rawCandidateCacheKey(classifyQuery(USDC)),
-        );
+        expect(keyFor(USDC)).toBe(`judged:raw:v1:mint:${USDC}`);
+        expect(keyFor(USDC.toLowerCase())).not.toBe(keyFor(USDC));
     });
 
     it('name intent is keyed separately from ticker intent', () => {
-        expect(rawCandidateCacheKey(classifyQuery('usd coin'))).toBe('judged:raw:v1:name:usd coin');
+        expect(keyFor('usd coin')).toBe('judged:raw:v1:name:usd coin');
+    });
+});
+
+describe('sourceQueryFor', () => {
+    it('strips a decorative leading $ and trims, keeps case, passes mints through', () => {
+        expect(sourceQueryFor(' $Bonk ', classifyQuery('$Bonk'))).toBe('Bonk');
+        expect(sourceQueryFor('$$wif', classifyQuery('$$wif'))).toBe('wif');
+        expect(sourceQueryFor('usd coin', classifyQuery('usd coin'))).toBe('usd coin');
+        expect(sourceQueryFor(` ${USDC} `, classifyQuery(USDC))).toBe(USDC);
+    });
+
+    it('a bare $ stays a $ rather than becoming an empty query', () => {
+        expect(sourceQueryFor('$', classifyQuery('$'))).toBe('$');
     });
 });
 
@@ -112,7 +131,7 @@ describe('read / store', () => {
         const redis = fakeRedis();
         let now = 1_000_000;
         const opts = { getClient: () => redis.client, scheduleWrite: inlineWrite, now: () => now };
-        const key = rawCandidateCacheKey(classifyQuery('USDC'));
+        const key = keyFor('USDC');
 
         expect(await Effect.runPromise(readRawCandidates(key, opts))).toBeNull();
 
