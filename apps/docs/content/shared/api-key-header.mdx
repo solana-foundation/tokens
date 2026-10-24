@@ -1,0 +1,7 @@
+Every endpoint on this page is authenticated with an API key in the `x-api-key` header (not `Authorization: Bearer`):
+
+```bash
+curl -sS "$API_BASE_URL/$PATH" -H "x-api-key: $API_KEY"
+```
+
+A missing key returns `401` with `message: "Missing API key"`; a key that is not active returns `401` with `message: "Invalid API key"`. A key without the required scope returns `403` with `details.required` and `details.granted`.

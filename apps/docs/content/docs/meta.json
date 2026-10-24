@@ -1,5 +1,4 @@
 {
   "title": "Docs",
-  "pages": ["./v1", "./v2"]
+  "pages": ["./v1", "./v2", "./registry"]
 }
-

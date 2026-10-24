@@ -31,7 +31,15 @@ const DOCS_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..
 
 export async function GET(request: Request): Promise<Response> {
     const url = new URL(request.url);
-    const slugPath = toSafeSlugPath(url.searchParams.get('slug'));
+    let slugPath: string;
+    try {
+        slugPath = toSafeSlugPath(url.searchParams.get('slug'));
+    } catch {
+        return NextResponse.json(
+            { error: { _tag: 'BadRequest', message: 'Invalid slug' } },
+            { status: 400, headers: { 'Cache-Control': 'no-store' } },
+        );
+    }
 
     const base = path.join(DOCS_ROOT, 'content', 'docs');
     const candidates = slugPath

@@ -1,4 +1,4 @@
-import { notFound, redirect } from 'next/navigation';
+import { notFound } from 'next/navigation';
 import type { Metadata } from 'next';
 import { createRelativeLink } from 'fumadocs-ui/mdx';
 import {
@@ -23,9 +23,7 @@ export default async function Page(props: PageProps) {
     const params = await props.params;
     const slug = params.slug ?? [];
 
-    // Treat the quickstart as the docs homepage.
-    if (slug.length === 0) redirect('/v1/quickstart');
-
+    // `/` is redirected to `/v1` in next.config.mjs.
     const page = source.getPage(slug);
     if (!page) notFound();
 
@@ -46,7 +44,7 @@ export default async function Page(props: PageProps) {
                 <MarkdownCopyButton markdownUrl={markdownUrl} />
                 <ViewOptionsPopover markdownUrl={markdownUrl} />
             </div>
-            <DocsBody className="[--tw-prose-size:0.9375]">
+            <DocsBody className="[--tw-prose-size:0.875]">
                 <MDX
                     components={getMDXComponents({
                         a: relativeLink,
@@ -65,8 +63,8 @@ export async function generateMetadata(props: PageProps): Promise<Metadata> {
     const params = await props.params;
     const slug = params.slug ?? [];
 
-    // Keep metadata stable for `/` (even though it redirects).
-    const page = slug.length === 0 ? source.getPage(['v1', 'quickstart']) : source.getPage(slug);
+    // `/` redirects to `/v1`; keep its metadata stable.
+    const page = slug.length === 0 ? source.getPage(['v1']) : source.getPage(slug);
     if (!page) notFound();
 
     return {

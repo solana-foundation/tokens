@@ -1,0 +1,273 @@
+---
+title: Variants and markets
+description: The variants of an asset, per-variant market snapshots, DEX markets and exchange tickers.
+---
+
+All endpoints below use `https://api.tokens.xyz/v1` with an `x-api-key` header and the `assets:read` scope; see [Authentication](/v1/authentication). `{assetId}` accepts an id, alias, mint or `solana-<mint>` and must resolve to a registered asset; see [Asset detail](/v1/endpoints/asset-detail#path).
+
+## `GET /v1/assets/{assetId}/variants`
+
+Every variant of the asset, each with its market snapshot, execution quality and advisory. This is a direct lookup, so flagged variants, including `blocked`, are returned.
+
+### Query params
+
+| Param              | Type                                                                                                | Default     | Notes                                                                                   |
+| ------------------ | --------------------------------------------------------------------------------------------------- | ----------- | --------------------------------------------------------------------------------------- |
+| `kind`             | `native`, `wrapped`, `bridged`, `spot`, `etf`, `yield`, `leveraged`, `basket`, `lst`, `stablecoin`, `tokenized_equity` |  |                                                                                         |
+| `liquidityTier`    | `tier1`, `tier2`, `tier3`                                                                           |             |                                                                                         |
+| `trustTier`        | `tier1`, `tier2`, `tier3`, `experimental`                                                           |             | Deprecated alias of `liquidityTier`; `experimental` means `tier3`.                      |
+| `stockVariantTier` | `share_redeemable`, `cash_redeemable`, `not_redeemable`                                             |             | Tokenized equities only.                                                                |
+| `sortBy`           | `liquidity`, `execution_quality`, `stock_redeemability`                                             | `liquidity` |                                                                                         |
+| `mint`             | Solana mint                                                                                         |             | Guarantees this variant is included even when the yield cap is active.                 |
+| `variantsMode`     | `all`                                                                                               |             | Lifts the cap on the `solana` asset's yield variants (default: at most 500 with at least $250k liquidity). |
+
+### Response
+
+```ts
+interface AssetVariantsResponse {
+  assetId: string;
+  sortBy: 'liquidity' | 'execution_quality' | 'stock_redeemability';
+  variants: Variant[];
+}
+```
+
+`Variant` is defined in [Assets and variants](/v1/concepts/assets-and-variants#variants).
+
+### Notes
+
+- Default order is market liquidity, then liquidity tier, then 24h volume. `sortBy=execution_quality` puts variants with cached execution quality first, then eligible rows, then higher `executionScore`. `sortBy=stock_redeemability` orders `share_redeemable` before `cash_redeemable` before `not_redeemable` with liquidity inside each tier.
+- When a mint has no cached market snapshot, `market` is derived from its best DEX pool and carries only `price`, `liquidity`, `volume24hUSD`, `decimals`, `logoURI` and `lastFetchedAt`; the other fields are `null`.
+- Cached for 30 seconds.
+
+### Example
+
+```bash
+curl -sS "$API_BASE_URL/v1/assets/spacex/variants?stockVariantTier=share_redeemable&sortBy=stock_redeemability" \
+  -H "x-api-key: $API_KEY"
+```
+
+## `GET /v1/assets/{assetId}/variant-market`
+
+The cached market snapshot for one variant mint.
+
+### Query params
+
+| Param  | Type        | Default              | Notes                                          |
+| ------ | ----------- | -------------------- | ---------------------------------------------- |
+| `mint` | Solana mint | the primary variant  | Must belong to the asset, otherwise `400`.     |
+
+### Response
+
+```ts
+interface VariantMarketResponse {
+  assetId: string;
+  mint: string;
+  market: {                          // null when no snapshot is cached
+    mint: string;
+    source: 'birdeye' | 'rwa_xyz' | 'clickhouse_trades';
+    metricsSource?: 'birdeye' | 'rwa_xyz' | 'clickhouse_trades';
+    symbol?: string;
+    name?: string;
+    decimals?: number;
+    logoURI?: string;
+    price?: number;
+    liquidity?: number;
+    volume1hUSD?: number;
+    volume24hUSD?: number;
+    trade1h?: number;
+    trade24h?: number;
+    uniqueWallet1h?: number;
+    uniqueWallet24h?: number;
+    marketCap?: number;
+    fdv?: number;
+    priceChange24hPercent?: number;
+    priceChange1hPercent?: number;
+    holder?: number;
+    totalSupply?: number;
+    circulatingSupply?: number;
+    lastTradeAt?: number;            // unix ms
+    asOf?: number;                   // unix seconds
+    extensions?: { coingeckoId?: string; website?: string; twitter?: string; discord?: string; telegram?: string; description?: string; github?: string };
+    lastFetchedAt: number;           // unix ms
+  } | null;
+  lastUpdatedAt: number | null;      // unix ms, same as market.lastFetchedAt
+}
+```
+
+Unlike the other snapshot shapes, missing fields are omitted here rather than set to `null`.
+
+### Example
+
+```bash
+curl -sS "$API_BASE_URL/v1/assets/usd/variant-market?mint=EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v" \
+  -H "x-api-key: $API_KEY"
+```
+
+## `GET /v1/assets/{assetId}/variant-top-markets`
+
+The best DEX market for each variant of the asset, in one call. Useful for a "where does each token trade" view.
+
+### Query params
+
+| Param          | Type             | Default | Notes                                                     |
+| -------------- | ---------------- | ------- | --------------------------------------------------------- |
+| `offset`       | integer          | `0`     |                                                           |
+| `limit`        | integer 1 to 100 | `50`    |                                                           |
+| `variantsMode` | `all`            |         | Lifts the cap on the `solana` asset's yield variants.     |
+
+### Response
+
+```ts
+interface VariantTopMarketsResponse {
+  assetId: string;
+  total: number;                     // variants that have a market, before paging
+  offset: number;
+  limit: number;
+  variants: Array<{
+    mint: string;
+    kind: string;
+    label?: string;
+    symbol?: string;
+    name?: string;
+    logoURI?: string;
+    stockVariantTier?: 'share_redeemable' | 'cash_redeemable' | 'not_redeemable';
+    liquidityTier: 'tier1' | 'tier2' | 'tier3';
+    trustTier: 'tier1' | 'tier2' | 'tier3';
+    advisory: VariantAdvisory | null;
+    topMarket: Market;               // includes the DEX name in `source`
+    protocolToken?: MarketToken;     // the DEX's own token, when the pool belongs to one
+    topMarkets?: Array<{ market: Market; protocolToken?: MarketToken }>; // up to 5, by 24h volume
+    marketsTotal: number | null;     // pools known for the mint
+    totalLiquidity: number | null;   // USD
+    lastFetchedAt: number | null;    // unix ms
+  }>;
+  lastUpdatedAt: number | null;      // unix ms
+}
+```
+
+### Notes
+
+- Variants without any cached market are omitted. Rows are ordered by the top market's 24h volume, then liquidity.
+- Pools with no liquidity and no volume are dropped, except for equities.
+- Cached for one minute.
+
+### Example
+
+```bash
+curl -sS "$API_BASE_URL/v1/assets/usd/variant-top-markets?limit=20" \
+  -H "x-api-key: $API_KEY"
+```
+
+## `GET /v1/assets/{assetId}/markets`
+
+Cached DEX markets (pools) for one mint of the asset.
+
+### Query params
+
+| Param    | Type            | Default              | Notes                                                                              |
+| -------- | --------------- | -------------------- | ---------------------------------------------------------------------------------- |
+| `mint`   | Solana mint     | the primary variant  | When the path itself is a mint reference, that mint is the default.                |
+| `offset` | integer         | `0`                  |                                                                                    |
+| `limit`  | integer 1 to 50 | `10`                 |                                                                                    |
+
+### Response
+
+```ts
+interface MarketToken {
+  address: string;
+  symbol?: string;
+  name?: string;
+  decimals?: number;
+  icon?: string;
+}
+
+interface Market {                   // one DEX pool
+  address: string;                   // pool address
+  name?: string;                     // e.g. "JitoSOL-SOL"
+  base?: MarketToken;
+  quote?: MarketToken;
+  source?: string;                   // DEX name; omitted on this route, present on others
+  createdAt?: string;
+  liquidity?: number;                // USD
+  volume24h?: number;                // USD
+  trade24h?: number;
+  trade24hChangePercent?: number;
+  uniqueWallet24h?: number;
+  uniqueWallet24hChangePercent?: number;
+  price?: number | null;             // USD
+}
+
+interface AssetMarketsResponse {
+  assetId: string;
+  mint: string;
+  markets: Market[];
+  protocolTokensByMarket: Record<string, MarketToken>; // pool address → the DEX's own token, for pools on Orca, Raydium, Meteora, Lifinity, Humidifi or Marinade
+  total?: number;                    // omitted when nothing is cached yet
+  offset: number;
+  limit: number;
+  lastUpdatedAt: number | null;      // unix ms
+}
+```
+
+### Notes
+
+- `protocolTokensByMarket` lets you label protocol-owned pools without a second lookup.
+- Cached for one minute. A mint you have never requested may come back empty while the cache warms; retry shortly.
+
+### Example
+
+```bash
+curl -sS "$API_BASE_URL/v1/assets/solana/markets?limit=20" \
+  -H "x-api-key: $API_KEY"
+```
+
+## `GET /v1/assets/{assetId}/tickers`
+
+Centralised exchange tickers for the asset, when it has an external listing.
+
+### Query params
+
+| Param    | Type            | Default       | Notes                                                                                  |
+| -------- | --------------- | ------------- | -------------------------------------------------------------------------------------- |
+| `offset` | integer         | `0`           |                                                                                        |
+| `limit`  | integer 1 to 50 | `50`          |                                                                                        |
+| `order`  | `volume_desc`   | `volume_desc` | Other orderings are not available yet and return `400`.                                |
+
+### Response
+
+```ts
+interface AssetTickersResponse {
+  assetId: string;
+  tickers: {
+    rows: Array<{
+      base: string;
+      target: string;
+      market: { name: string; identifier?: string; logo?: string; hasTradingIncentive: boolean };
+      priceUsd: number | null;
+      volume24hUsd: number | null;
+      spreadPercent: number | null;
+      tradeUrl: string | null;
+      trustScore: string | null;     // provider trust score, e.g. "green"
+      isAnomaly: boolean;
+      isStale: boolean;
+      timestamp: string | null;      // ISO 8601
+    }>;
+    total?: number;                  // may exceed the stored rows (at most 250 are kept)
+    offset: number;
+    limit: number;
+    lastUpdatedAt?: number | null;   // unix ms
+  };
+}
+```
+
+### Notes
+
+- An asset without an external listing returns `tickers: { rows: [], offset: 0, limit: 0 }`.
+- Cached for five minutes.
+
+### Example
+
+```bash
+curl -sS "$API_BASE_URL/v1/assets/bitcoin/tickers?limit=20" \
+  -H "x-api-key: $API_KEY"
+```

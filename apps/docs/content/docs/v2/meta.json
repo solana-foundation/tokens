@@ -4,10 +4,22 @@
   "icon": "Layers",
   "root": true,
   "pages": [
-    "overview",
+    "index",
     "quickstart",
-    "rate-limits-and-errors",
+    "authentication",
+    "errors-and-limits",
+    "---Concepts---",
+    "concepts/multichain-assets",
+    "concepts/token-lists",
+    "concepts/risk-aware-search",
+    "concepts/shared-shapes",
+    "---Guides---",
+    "migrating-from-v1",
     "---Reference---",
-    "./endpoints"
+    "endpoints/chains",
+    "endpoints/assets",
+    "endpoints/variants",
+    "endpoints/search",
+    "endpoints/lists"
   ]
 }

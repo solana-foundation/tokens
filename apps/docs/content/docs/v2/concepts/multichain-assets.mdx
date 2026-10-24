@@ -1,0 +1,146 @@
+---
+title: Multichain assets
+description: Assets and variants, chain ids and CAIP-2, <chain>:<address> keys, capability flags, primary variant selection, and how per-chain stats roll up.
+---
+
+The v2 asset surface is chain-native: the same curated assets as v1, with their tokens on Solana,
+Ethereum, Base, Arbitrum, Polygon and BNB. This page is the model; the routes are on
+[Chains](/v2/endpoints/chains), [Assets](/v2/endpoints/assets) and
+[Variants](/v2/endpoints/variants), and the TypeScript types are in
+[Shared shapes](/v2/concepts/shared-shapes).
+
+## Two nouns
+
+- An **asset** is the curated, chain-agnostic thing: `usd`, `bitcoin`, `tesla`. It lives under
+  `GET /v2/assets` and `GET /v2/assets/{assetId}`.
+- A **variant** is one token on one chain that represents an asset. It has exactly one identifier,
+  the key `<chain>:<address>` (`solana:EPjF…`, `base:0x8335…`), and lives under
+  `GET /v2/variants/{chain}/{address}` and the batch `GET /v2/variants?keys=`.
+
+Every v2 asset is curated. There are no synthetic per-mint assets: an address-shaped `{assetId}`
+is `400 invalid_asset_id`, and a token the registry does not know is `404 variant_not_found` (or
+`missing[]` in a batch). For unregistered Solana tokens use
+[token lists](/v2/concepts/token-lists) or [search](/v2/concepts/risk-aware-search).
+
+## Chains and CAIP-2 ids
+
+The chain list is compiled into the API, so adding a chain is a release, never a data change.
+Cache `GET /v2/chains` freely.
+
+| `id` | `caip2` | Family | Explorer |
+|---|---|---|---|
+| `solana` | `solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp` | `svm` | Solana Explorer |
+| `ethereum` | `eip155:1` | `evm` | Etherscan |
+| `base` | `eip155:8453` | `evm` | Basescan |
+| `arbitrum` | `eip155:42161` | `evm` | Arbiscan |
+| `polygon` | `eip155:137` | `evm` | Polygonscan |
+| `bnb` | `eip155:56` | `evm` | BscScan |
+
+The `id` column is the `chain` value on every variant and the value every `chain=` param and
+`<chain>:<address>` key accepts. Provider-side slugs (`polygon-pos`, `arbitrum-one`, `bsc`) are
+not accepted and return `400` with `details.code: "invalid_chain"`. Each chain also publishes a
+`caip2` id ([CAIP-2](https://chainagnostic.org/CAIPs/caip-2)), an `evmChainId` (`null` for
+Solana) and an explorer URL template with an `{address}` placeholder.
+
+## Variant keys
+
+A `0x` address is the same string on every EVM chain, so no v2 input is a bare address: the chain
+is a path segment (`/v2/variants/{chain}/{address}`) or the key prefix (`keys=base:0x…`).
+
+- **EVM** addresses are `0x` plus 40 hex characters. They are accepted in any casing and always
+  returned **lowercase**. Compare keys, not checksummed strings.
+- **Solana** addresses are case-sensitive base58, as in v1.
+- A malformed address is `400 invalid_address` with `details.expected` set to `base58` or
+  `0x40hex`.
+
+## Capabilities per chain
+
+`GET /v2/chains` publishes a capability flag set per chain. The flags are the contract for what
+the rest of the surface can return for a variant on that chain; gate your UI on them, not on
+`chain === 'solana'`.
+
+| Flag | Meaning |
+|---|---|
+| `markets` | Per-variant market snapshot (price, liquidity, volume) |
+| `dexMarkets` | Per-pool DEX market lists |
+| `ohlcv` | Candles |
+| `risk` | Risk summary and details; also required for `pegHealth` |
+| `executionQuality` | Fill-quality snapshots |
+| `swap` | Swap and trade links, execution routing; defines the "executable" pool below |
+| `firstPartyLogos` | tokens.xyz-hosted logo mirror |
+
+Solana has every capability. The EVM chains have `markets` only: no OHLCV, risk, DEX market
+lists, execution quality, swap routing or first-party logos. When an EVM capability is switched on
+it flips in `GET /v2/chains` first, so a client that gates on the flags needs no code change.
+
+What this means for variants: `market` is populated on every chain where a snapshot exists.
+Execution quality and peg health are opt-in on the asset detail
+(`GET /v2/assets/{assetId}?include=executionQuality,pegHealth`, plus `preStocks` for Solana
+PreStocks tokens) and are `null` on chains without the `executionQuality` or `risk` capability.
+OHLCV, risk, DEX market lists and swap routing are not exposed on v2 variants; use the v1 asset
+routes for Solana mints.
+
+## All chains by default
+
+An asset's `chains`, per-chain `chainStats`, cross-chain `aggregate`, `stats`, `primaryVariant`
+and `primaryVariantByChain` are always computed from its **full** variant set.
+
+`chain=` narrows what is **listed**, never what is **summed**. On `GET /v2/assets` it keeps only
+assets with at least one variant on that chain and, with `include=variants`, lists only that
+chain's variants. On `GET /v2/assets/{assetId}/variants` it filters the rows. The numbers above do
+not change, and each variant's `rank` stays its liquidity rank within the whole asset across
+chains.
+
+## Per-chain stats, aggregate and reference market
+
+- `chainStats.<chain>` is that chain's on-chain view. Liquidity, 24h volume and 24h trade count
+  are summed over every variant on the chain (pools are distinct). Market cap, FDV and
+  circulating supply are summed only over variants whose `issuance` is `native`: a bridged or
+  wrapped token is a claim on supply issued elsewhere, and `excludedFromSupplyCount` tells you how
+  many were left out. `chainStats.solana` is the number v1 reported.
+- `aggregate` is the sum of `chainStats` across chains, plus `chainCount` and
+  `excludedFromSupplyCount`.
+- `referenceMarket` is the off-chain reference (v1's `canonicalMarket`): CoinGecko for crypto
+  (`source: "coingecko"`), the stock benchmark for mapped public equities (`source: "stock"`), the
+  PreStocks mark for tokenized pre-IPO equities (`source: "prestocks"`). Keep a default branch in
+  any exhaustive `switch (source)`.
+- `stats` is the headline view: price, market cap and supply come from `referenceMarket` when
+  there is one, with on-chain liquidity and volume from `aggregate`. `volume30dUSD` is a Solana
+  rolling 30-day figure and `null` elsewhere.
+- Liquidity is provider-reported per chain, so treat cross-chain comparisons as approximate.
+
+## Primary variant and `primaryScope`
+
+`primaryVariant` is the variant to trade. Selection has two steps: pick a candidate pool, then
+rank inside it.
+
+With the default `primaryScope=executable`, candidates are drawn from chains whose `swap`
+capability is on (Solana), taking the first non-empty pool:
+
+1. `executable_active` — actively traded variants on executable chains
+2. `active` — actively traded variants on any chain
+3. `executable` — any variant on an executable chain
+4. `all` — everything
+
+"Actively traded" means at least $100 of 24h volume and 5 trades. `primaryScope=global` skips the
+executable pools and gives the cross-chain liquidity winner.
+
+Inside the pool the applied `primaryVariantStrategy` ranks: `liquidity` by default,
+`stock_redeemability` for equities (redeemable tiers first, then liquidity), or
+`execution_quality`. A variant with no market data never outranks one that trades, and
+`compromised` or `blocked` variants are never chosen. `primaryVariantSelection` reports the pool
+and the deciding rule so the choice is reproducible, and `primaryVariantByChain` runs the same
+ranking inside each chain.
+
+## Advisories
+
+Advisories are keyed by Solana mint, so EVM variants always carry `advisory: null`. An asset's
+`advisories[]` lists every flagged variant, most severe first, including `blocked` siblings that
+list surfaces hide.
+
+<include>../../../shared/advisory-statuses.mdx</include>
+
+On the v2 asset surface: `GET /v2/assets` omits `blocked` variants from every row and drops an
+asset whose variants are all blocked; `GET /v2/assets/{assetId}`, the `/variants` sub-route and
+the variant routes serve them with the advisory attached. The long form is in
+[Advisories](/v1/concepts/advisories).

@@ -1,83 +1,57 @@
 ---
-title: Authentication & Limits
-description: API keys, scopes, and request identity.
+title: Authentication
+description: API keys, scopes, key safety and request ids for API v1.
 ---
 
-## Platform API: `x-api-key`
+## API key
 
-Most v1 endpoints are Platform API endpoints and require an API key header:
+<include>../../shared/api-key-header.mdx</include>
 
-- `x-api-key: <your_api_key>`
+Keys are created and regenerated in the dashboard. A regenerated key replaces the previous one immediately. The dashboard playground runs with your active key, so its calls count towards the same usage and limits.
 
-If the key is missing or invalid, you’ll receive a `401` error.
+## Keep your API key server-side
 
-## Dashboard key reveal and Playground behavior
-
-Newly created or regenerated API keys can be revealed and copied from the API Manager because the raw key is stored encrypted for dashboard use. The public API still authenticates with `x-api-key`; encrypted storage only affects the dashboard reveal/copy experience.
-
-Older keys created before encrypted key storage may be legacy hash-only keys. These keys still authenticate API requests and can still power the API Manager Playground while active, but their raw value cannot be recovered or copied. Regenerate a legacy key once to create a new revealable encrypted key; regeneration deactivates the previous key.
-
-The API Manager Playground can run with the active project key even when the raw key is hidden. Treat Playground execution as equivalent to using that active key for usage, rate limits, and quotas.
-
-## Session-authenticated endpoint
-
-`GET /v1/whoami` is a first-party endpoint for authenticated Tokens apps. It uses a Clerk user session and does not accept `x-api-key`.
+<include>../../shared/key-safety.mdx</include>
 
 ## Scopes
 
-Most v1 endpoints currently require:
+Every v1 endpoint accepts the umbrella scope **`assets:read`**, which is on every key by default. Four fine-grained scopes exist for keys that should only read one kind of data:
 
-- `assets:read`
+| Scope                  | Grants                                                                                       |
+| ---------------------- | -------------------------------------------------------------------------------------------- |
+| `assets:read`          | Everything on this surface.                                                                  |
+| `assets:profile:read`  | `include=profile` on asset detail.                                                           |
+| `assets:risk:read`     | `include=risk` on asset detail and `GET /v1/assets/risk-summary`.                            |
+| `assets:ohlcv:read`    | `include=ohlcv` on asset detail.                                                             |
+| `assets:markets:read`  | `include=markets` on asset detail.                                                           |
 
-Some endpoints may accept a *fine-grained* scope in addition to `assets:read`. For example, `GET /v1/assets/risk-summary` accepts either `assets:read` or `assets:risk:read`.
-
-If your key doesn’t have the required scope, you’ll receive a `403` error.
+A request that asks for an include the key cannot read returns `403` with `details.required` and `details.granted`.
 
 ## Request IDs
 
-Platform endpoints include:
+<include>../../shared/request-ids.mdx</include>
 
-- `x-request-id` header on responses
-
-If you contact support, include the `x-request-id`.
-
-## Rate limits and errors
-
-For limit behavior, retry patterns, and common status codes, see:
-
-- [Rate Limits & Errors](/v1/rate-limits-and-errors)
-
-## Example (TypeScript + fetch)
+## Example client
 
 ```ts
 interface ApiErrorEnvelope {
-  error: {
-    _tag: string;
-    message: string;
-    details?: unknown;
-  };
+  error: { _tag: string; message: string; details?: Record<string, unknown> };
 }
 
-function isApiErrorEnvelope(value: unknown): value is ApiErrorEnvelope {
-  if (!value || typeof value !== "object") return false;
-  const error = (value as { error?: unknown }).error;
-  if (!error || typeof error !== "object") return false;
-  const e = error as { _tag?: unknown; message?: unknown };
-  return typeof e._tag === "string" && typeof e.message === "string";
+function isApiError(value: unknown): value is ApiErrorEnvelope {
+  const error = (value as { error?: { _tag?: unknown; message?: unknown } } | null)?.error;
+  return typeof error?._tag === "string" && typeof error.message === "string";
 }
 
 export async function getJson<T>(path: string, apiKey: string): Promise<T> {
-  const res = await fetch(path, {
+  const res = await fetch(`https://api.tokens.xyz${path}`, {
     headers: { "x-api-key": apiKey },
   });
-
   const json: unknown = await res.json().catch(() => null);
-
   if (!res.ok) {
-    if (isApiErrorEnvelope(json)) throw new Error(`${json.error._tag}: ${json.error.message}`);
+    if (isApiError(json)) throw new Error(`${json.error._tag}: ${json.error.message}`);
     throw new Error(`HTTP ${res.status}`);
   }
-
   return json as T;
 }
 ```

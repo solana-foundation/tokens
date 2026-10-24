@@ -1,0 +1,64 @@
+---
+title: Errors & limits
+description: The error envelope, status codes, the unregistered-asset 404, and how to retry.
+---
+
+## Error envelope
+
+<include>../../shared/error-envelope.mdx</include>
+
+## Status codes
+
+<include>../../shared/status-codes.mdx</include>
+
+## Unregistered assets
+
+v1 serves registered assets only. A mint that is not a variant of a registered asset returns `404` with `_tag: "NotFoundError"` and `details.code: "asset_not_registered"`:
+
+```json
+{
+  "error": {
+    "_tag": "NotFoundError",
+    "message": "Asset not registered",
+    "details": {
+      "code": "asset_not_registered",
+      "mint": "<mint>",
+      "hint": "v1 serves registered assets only. To track other tokens, add them to a token list (POST /v2/lists, then PUT /v2/lists/{slug}/members/{mint}) and read them with GET /v2/lists/tokens?lists={slug}."
+    }
+  }
+}
+```
+
+- Returned by `GET /v1/assets/resolve`, `GET /v1/assets/risk-summary`, `GET /v1/assets/search` filters, and `GET /v1/assets/{assetId}` with every route under it.
+- The batch endpoints never fail the request. `POST /v1/assets/market-snapshots` keeps the row as `{ address, token: null, hasMarket: false }` and `GET /v1/assets/variant-markets` keeps it with `assetId`, `chain`, `market` and `executionQuality` all `null`.
+- Do not retry. A mint does not become registered with time. Track the token with a [Token List](/v2/endpoints/lists) instead; see [Registered assets only](/v1/concepts/assets-and-variants#registered-assets-only) for what counts as registered.
+
+## Advisory refusals
+
+Read endpoints never refuse a flagged mint; they return it with its `advisory` so you can show the warning. The `AssetAdvisoryError` tag (`403`, `details.code` of `advisory_compromised` or `advisory_blocked`) is reserved for surfaces that would act on a token rather than describe it. Do not retry it: the flag is lifted by an operator, not by time. See [Advisories](/v1/concepts/advisories).
+
+## Rate limits and quotas
+
+Limits are enforced per API key:
+
+- a short burst window and a sustained window on request rate,
+- a monthly request quota,
+- on the live risk read behind `GET /v1/assets/risk-summary`, a per-key budget of live provider lookups per 10 minutes. When it is spent the endpoint still answers `200` with `hasInsufficientData: true` rather than failing.
+
+Exceeding a rate limit or the quota returns `429 RateLimitedError`. The API does not send rate-limit headers or `Retry-After`; back off exponentially with jitter and keep parallel fan-out bounded. Cached data (curated lists, charts, profiles) is safe to re-request; the response `Cache-Control` header tells you how long it stays fresh.
+
+## Retrying
+
+```ts
+export async function fetchWithRetry(url: string, init: RequestInit, maxRetries = 4): Promise<Response> {
+  for (let attempt = 0; ; attempt += 1) {
+    const res = await fetch(url, init);
+    const retryable = res.status === 429 || (res.status >= 500 && res.status < 600);
+    if (!retryable || attempt >= maxRetries) return res;
+    const delay = 250 * 2 ** attempt + Math.floor(Math.random() * 150);
+    await new Promise((resolve) => setTimeout(resolve, delay));
+  }
+}
+```
+
+Retry `429` and `5xx`. Never retry `400`, `401`, `403` or `404` without changing the request.

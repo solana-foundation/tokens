@@ -1,288 +1,83 @@
 ---
-title: Onboarding / Getting Started
-description: The first 15 minutes with Tokens API v1.
+title: Quickstart
+description: Your first calls to the Tokens API v1.
 ---
 
-Welcome aboard. You now have access to the **Tokens Assets API (v1)**: a JSON HTTP API for working with **canonical assets**, their **Solana mint variants**, and related **market, charting, and risk** data.
-
-This page is meant to be the “first 15 minutes” guide: how auth works, how to make your first calls, and which endpoints to start with.
-
-## Base URL + authentication
-
-- **Base URL**: `https://api.tokens.xyz/v1`
-- **Auth header**: `x-api-key: <YOUR_API_KEY>`
-- **Content type**: for `POST` requests send `Content-Type: application/json`
-
-Set these locally for the examples below:
+You need an API key from the dashboard. Keep it on your server; the examples below read it from an environment variable.
 
 ```bash
 export API_BASE_URL="https://api.tokens.xyz"
 export API_KEY="..."
 ```
 
-Most integrations should call Tokens servers directly. You do **not** deploy your own Tokens API.
+Every request sends the key in the `x-api-key` header. `POST` requests also send `Content-Type: application/json`.
 
-### Keep your API key server-side
+## 1. Check the API is up
 
-Treat your API key like a password:
-
-- Don’t ship it in frontend code or public repos
-- Prefer calling the API from your server (or an edge function) and proxying responses to the browser
-
-Newly created or regenerated keys can be revealed/copied from the API Manager because the dashboard stores the raw key encrypted. Older legacy hash-only keys may not be revealable, but they still work for API requests and Playground testing while active. Regenerate once to create a revealable key; the previous key is deactivated.
-
-## Key concepts
-
-### Canonical `assetId` vs Solana `mint`
-
-- **`assetId`**: a canonical identifier (for example: `solana`, `usd`, `tesla`) representing a real-world asset grouping.
-- **`mint`**: a Solana token address (base58).
-
-Known mints reverse-resolve into their canonical asset group. For example, the Solana USDC mint resolves to `usd`, and a Tesla xStock mint resolves to `tesla`.
-
-Many endpoints are asset-scoped but accept an optional `mint=` query param to target a specific token variant. If you provide `mint`, it must be a variant of that asset (otherwise you’ll get a `BadRequestError`). When you call an asset detail route with a known mint ref like `solana-<mint>`, that mint is used as the default variant for include computations. For mapped public equities, detail `include=ohlcv` uses canonical stock-market candles unless you pass `mint` explicitly.
-
-### Registered assets only
-
-v1 serves assets the Tokens team has registered: canonical asset groups and their mints, the compiled asset registry, Sanctum LST mints (which resolve to `solana`), and admin-approved launch coins. Some registered assets are exposed under a per-mint id of the form `solana-<mint>` (an approved launch coin, for example); that is the only place you will see such an id.
-
-A mint that is not a variant of a registered asset is not synthesized into an asset. `resolve`, `risk-summary`, and every `/v1/assets/:assetId` route return `404` with `details.code: "asset_not_registered"`, and the batch endpoints keep a `null` row for it (see [Unregistered assets](/docs/v1/rate-limits-and-errors#unregistered-assets)). To track tokens outside the registered set, create a [Token List](/docs/v2/endpoints/lists), add the mints as members, and read them with `GET /v2/lists/tokens?lists={slug}`.
-
-For wallet balances, use the resolved `assetId` as your grouping key:
+The health route needs no key:
 
 ```bash
-MINT="EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+curl -sS "$API_BASE_URL/v1/health"
+```
 
-curl -sS "$API_BASE_URL/v1/assets/resolve?mint=$MINT" \
-  -H "x-api-key: $API_KEY"
+```json
+{ "ok": true }
+```
 
-curl -sS "$API_BASE_URL/v1/assets/solana-$MINT" \
+## 2. Search for an asset
+
+```bash
+curl -sS "$API_BASE_URL/v1/assets/search?q=bitcoin&limit=5" \
   -H "x-api-key: $API_KEY"
 ```
 
-Both calls identify `usd` as the canonical asset group. Fetch `/v1/assets/usd/variants` when you need the other grouped mints.
+Each result is a canonical asset with its `assetId`, aggregate `stats`, and the `primaryVariant` (the Solana mint the API would route to). Reference: [Search and resolve](/v1/endpoints/search-and-resolve).
 
-When present, `asset.stats.volume30dUSD` gives you the rolling 30-day USD volume for the canonical group, so clients do not need to sum daily candles themselves.
+## 3. Resolve what the user gave you
 
-## Quick start (copy/paste)
+Start from an `assetId`, an alias or a raw mint and get back the registered asset:
 
 ```bash
-# Health check (no auth)
-curl -sS "$API_BASE_URL/v1/health"
-
-# Search assets
-curl -sS "$API_BASE_URL/v1/assets/search?q=bitcoin&limit=5" \
-  -H "x-api-key: $API_KEY"
-
-# Resolve user input -> registered assetId (404 asset_not_registered otherwise)
 curl -sS "$API_BASE_URL/v1/assets/resolve?ref=btc" \
   -H "x-api-key: $API_KEY"
 
-# Fetch the canonical asset (optionally request include blocks)
+MINT="EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+curl -sS "$API_BASE_URL/v1/assets/resolve?mint=$MINT" \
+  -H "x-api-key: $API_KEY"
+```
+
+The USDC mint resolves to `assetId: "usd"`. A mint that is not a variant of a registered asset returns `404` with `details.code: "asset_not_registered"`; see [Registered assets only](/v1/concepts/assets-and-variants#registered-assets-only).
+
+## 4. Read one asset with includes
+
+```bash
 curl -sS "$API_BASE_URL/v1/assets/btc?include=profile,risk,ohlcv,markets" \
   -H "x-api-key: $API_KEY"
 ```
 
-## Scopes (permissions)
+The response carries the `asset` and an `includes` map. Each include is best-effort: `{ ok: true, data }` or `{ ok: false, reason, message }`, so render what is available. Reference: [Asset detail](/v1/endpoints/asset-detail).
 
-Most endpoints require **`assets:read`**.
-
-The asset detail endpoint also supports fine-grained scopes for its include blocks:
-
-- **`assets:profile:read`**
-- **`assets:risk:read`**
-- **`assets:ohlcv:read`**
-- **`assets:markets:read`**
-
-`assets:read` is an umbrella scope that covers the entire assets surface.
-
-## Core endpoints (recommended flow)
-
-### 1) Search
-
-**`GET /v1/assets/search`**
-
-- **Query params**
-    - `q` (required): search text
-    - `limit` (optional, default 20, max 50)
-    - `category` (optional): filters by asset category (invalid values return a 400 with allowed categories)
-    - `region` / `industry` (optional): admin-curated segmentation tags, exact match and AND-combined (e.g. `region=asia&industry=manufacturing`); invalid values return a 400 with the allowed slugs
-    - `variants=all` (optional): include every known variant per returned canonical asset
-    - `primaryVariantStrategy` (optional): `liquidity` (default), `execution_quality`, or `stock_redeemability`
-
-Use this to power autocomplete and broad discovery.
-
-### 2) Resolve
-
-**`GET /v1/assets/resolve`**
-
-- Provide **either**
-    - `ref=<string>` (canonical id / alias / identifier)
-    - `mint=<solanaMint>` (Solana address)
-
-Returns a normalized `assetId` plus the best “primary” variant when available.
-
-### 3) Asset detail (+ includes)
-
-**`GET /v1/assets/:assetId`**
-
-- **Query params**
-    - `include=profile,risk,ohlcv,markets` (optional; comma-separated)
-    - `primaryVariantStrategy` (optional): `liquidity` (default), `execution_quality`, or `stock_redeemability`
-
-Returns:
-
-- `asset`: canonical identity + variants/groups + primary variant
-- `includes` (optional): best-effort include blocks with `{ ok: true, data }` or `{ ok: false, reason, message }`
-
-### 4) Variants
-
-**`GET /v1/assets/:assetId/variants`**
-
-- **Query params**
-    - `kind` (optional): `native|wrapped|bridged|etf|yield|leveraged|basket|lst|stablecoin|tokenized_equity`
-    - `liquidityTier` (optional): `tier1|tier2|tier3`
-    - `trustTier` (optional, deprecated alias): `tier1|tier2|tier3`
-    - `stockVariantTier` (optional): `share_redeemable|cash_redeemable|not_redeemable`
-    - `sortBy` (optional): `liquidity` (default), `execution_quality`, or `stock_redeemability`
-
-`experimental` is still accepted as a legacy alias for `tier3`.
-
-Returns variants sorted by market liquidity, then derived liquidity tier, then 24h volume by default. For stock-token variants, `stockVariantTier` is informational metadata for client routing/display and is not legal, tax, accounting, or investment advice.
-
-### 5) Markets (order book venues / pools; paginated)
-
-**`GET /v1/assets/:assetId/markets`**
-
-- **Query params**
-    - `mint` (optional): choose a specific variant mint
-    - `offset` (optional, default 0)
-    - `limit` (optional, default 10, max 50)
-
-### 6) OHLCV candles (mint-scoped)
-
-**`GET /v1/assets/:assetId/ohlcv`**
-
-- **Query params**
-    - `mint` (optional): choose a specific variant mint
-    - `interval` (optional, default `1H`): `1m|5m|15m|1H|4H|1D|1W`
-    - `from` (optional, unix seconds; default is ~7d ago)
-    - `to` (optional, unix seconds; default is now)
-
-### 7) Price chart (canonical-first, with mint fallback)
-
-**`GET /v1/assets/:assetId/price-chart`**
-
-Same query params as OHLCV (`interval`, `from`, `to`, optional `mint`).
-
-If a canonical source exists for the asset, this endpoint prefers it; otherwise it falls back to mint candles.
-
-### 8) Risk
-
-- **Asset-scoped**
-    - **`GET /v1/assets/:assetId/risk-summary`**
-    - **`GET /v1/assets/:assetId/risk-details`**
-    - Optional `mint` to target a specific variant
-
-- **Mint-scoped quick score**
-    - **`GET /v1/assets/risk-summary?mint=<solanaMint>`**
-    - Requires either `assets:read` or `assets:risk:read`
-    - `404` `asset_not_registered` when the mint is not a variant of a registered asset
-
-## Curated lists + batch endpoints
-
-### Curated lists
-
-**`GET /v1/assets/curated`**
-
-- **Query params**
-    - `list`: `all|majors|lsts|currencies|rwas|etfs|metals|stocks`
-    - `groupBy`: `asset` (default) or `mint`
-    - `limit`: opt into pagination with this page size (default `250` when `offset` is provided, max `500`)
-    - `offset`: opt into pagination from this zero-based result offset
-    - `variantsMode=all`: disable the default Solana LST liquidity filter for `groupBy=mint`
-    - `primaryVariantStrategy` (optional): `liquidity` (default), `execution_quality`, or `stock_redeemability`
-
-`list=lsts` is backed by the same dynamic, capped Solana yield-variant set used by the variants API, rather than a fixed static mint list. `list=all` includes that same dynamic LST membership.
-
-Curated list pagination is opt-in. If you pass `limit` or `offset`, follow `pagination.nextOffset` to fetch subsequent pages. For `groupBy=mint`, low-liquidity Solana LST rows are filtered by default; pass `variantsMode=all` if you need every active LST row.
-
-### Trending assets
-
-**`GET /v1/assets/trending`**
-
-- Returns the cached top 50 trending Solana mints.
-- Reads from Convex/cache only; API routes do not query ClickHouse.
-- Ranking uses direct USD-stable Solana trades and short-window momentum (`5m`, `15m`, `1h`) plus trade/wallet activity.
-- Native/wrapped SOL and stablecoin assets are excluded from the trending set.
-- Query params:
-    - `category`: optional category filter such as `crypto`, `equity`, `etf`, or `rwa`
-    - `limit`: default `50`, max `50`
-    - `offset`: default `0`
+## 5. List the asset's variants
 
 ```bash
-curl -sS "$API_BASE_URL/v1/assets/trending?limit=10" \
+curl -sS "$API_BASE_URL/v1/assets/usd/variants" \
   -H "x-api-key: $API_KEY"
 ```
 
-### Batch market snapshots (POST)
+Every Solana mint that represents the asset, each with its own `market` snapshot and `advisory`. Reference: [Variants and markets](/v1/endpoints/variants-and-markets).
 
-**`POST /v1/assets/market-snapshots`**
+## 6. Score a mint
 
-Body:
-
-```json
-{ "mints": ["<solanaMint1>", "<solanaMint2>"] }
+```bash
+curl -sS "$API_BASE_URL/v1/assets/risk-summary?mint=$MINT" \
+  -H "x-api-key: $API_KEY"
 ```
 
-Supports `mints` or `addresses` and dedupes automatically (max 250).
+Check `hasInsufficientData` before you show the grade. Reference: [Risk](/v1/endpoints/risk).
 
-### Batch variant market snapshots (GET)
+## Next
 
-**`GET /v1/assets/variant-markets?mints=<comma,separated>`**
-
-Supports `mints` or `addresses` (max 50).
-
-## Error handling + debugging
-
-### Standard error envelope
-
-Non-2xx responses return JSON:
-
-```json
-{ "error": { "_tag": "BadRequestError", "message": "…", "details": "…" } }
-```
-
-### Common status codes
-
-- **400** `BadRequestError` (invalid params / invalid mint / invalid include)
-- **401** `UnauthorizedError` (missing or invalid `x-api-key`)
-- **403** `ForbiddenError` (insufficient scope)
-- **404** `NotFoundError`
-- **429** `RateLimitedError`
-
-### Request IDs
-
-Every response includes an **`x-request-id`** header. If you need help debugging an issue, send us:
-
-- the request URL
-- the response body (redact your API key)
-- the `x-request-id`
-- the timestamp (UTC if possible)
-
-## Rate limits, quotas, and freshness
-
-- Rate limits and monthly quotas are enforced **per API key**.
-- Some endpoints are cached; if data is stale or missing, your request may trigger background refresh and you may need to retry shortly after.
-- If you see `429`, implement exponential backoff and retry.
-
-## Support
-
-If you hit anything unexpected (auth, scopes, shape mismatches, data freshness), reply to the access email with the `x-request-id` and we’ll dig in quickly.
-
-## Next steps
-
-- Browse the [Assets endpoints](/v1/endpoints/assets)
-- Browse the [Asset-by-id endpoints](/v1/endpoints/asset-by-id)
-- Learn [Authentication](/v1/authentication)
-- Learn [Rate Limits & Errors](/v1/rate-limits-and-errors)
+- [Assets and variants](/v1/concepts/assets-and-variants) explains the two ids you just used.
+- [Workflows](/v1/workflows) chains these calls into search pages, wallet grouping and watchlists.
+- [Authentication](/v1/authentication) covers scopes and key safety.
+- [Errors and limits](/v1/errors-and-limits) covers the error envelope and retries.

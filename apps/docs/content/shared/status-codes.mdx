@@ -1,0 +1,12 @@
+| Status | `_tag`                          | When                                                                  |
+| ------ | ------------------------------- | --------------------------------------------------------------------- |
+| `400`  | `BadRequestError`               | Invalid query, body or path parameter. `details` often lists allowed values. |
+| `401`  | `UnauthorizedError`             | Missing or inactive API key.                                          |
+| `403`  | `ForbiddenError`                | The key lacks a required scope (`details.required`, `details.granted`). |
+| `403`  | `AssetAdvisoryError`            | The requested token carries a `compromised` or `blocked` advisory where that is refused. |
+| `404`  | `NotFoundError`                 | Unknown resource. v1 also uses it for unregistered mints (`details.code: "asset_not_registered"`). |
+| `429`  | `RateLimitedError`              | Per-key rate limit, monthly quota, or a provider lookup budget was exceeded. |
+| `500`  | `UpstreamHttpError` and others  | An upstream provider or internal error. Retry with backoff.           |
+| `504`  | `CloudRunTimeoutError`          | A backend call timed out. Retry with backoff.                         |
+
+The API sends no rate-limit headers and no `Retry-After`. On `429` and `5xx`, back off exponentially with jitter (for example 250 ms, 500 ms, 1 s, 2 s, each plus up to 150 ms of jitter) and cap the attempts. Never retry `400`, `401`, `403` or `404` without changing the request.

@@ -1,0 +1,71 @@
+---
+title: Advisories
+description: Operator flags on variant mints, what each status means, and the guarantees the API makes about flagged tokens.
+---
+
+An advisory is an operator-set flag on a **variant mint**, never on the canonical asset. It covers situations such as an issuer exploit, a depegged wrapper, or a contract the issuer has told holders not to interact with. It is stored server-side and takes effect across the API without a deploy, so read it from the payload you already fetch rather than maintaining your own denylist.
+
+## Statuses
+
+<include>../../../shared/advisory-statuses.mdx</include>
+
+## Shapes
+
+```ts
+type AdvisoryStatus = 'caution' | 'compromised' | 'blocked';
+type AdvisorySource = 'admin' | 'webacy_depeg' | 'peg_guard';
+
+// On every variant object: asset.primaryVariant, asset.variantGroups.*[],
+// /variants rows, /variant-markets rows and launches.
+type VariantAdvisory = {
+  status: AdvisoryStatus;
+  reason: string;        // safe to show verbatim
+  url: string | null;    // issuer statement or other source, when available
+  since: number;         // unix ms the current status was set
+  source: AdvisorySource;
+} | null;
+
+// asset.advisories[] and the advisories[] of every search or curated row:
+// one entry per flagged variant, [] when none.
+interface AssetAdvisoryEntry {
+  mint: string;
+  variantId: string;
+  status: AdvisoryStatus;
+  reason: string;
+  url: string | null;
+  since: number;
+  source: AdvisorySource;
+}
+```
+
+`advisory` is always present on a variant object; `null` means the mint is not flagged. `advisories` is always present on an asset row and lists flagged variants even when a list surface hid them, so a page can show a "sibling flagged" notice while the primary variant is fine.
+
+## Sources
+
+- `admin`: a human operator. Any status.
+- `webacy_depeg`: set automatically when the Webacy depeg monitor rates a stablecoin mint `warning` or `critical`.
+- `peg_guard`: set automatically by the tokens.xyz peg monitor, which prices every curated stablecoin from DEX prices and rates its below-peg deviation. USD pegs only; used where Webacy has no fresh observation.
+
+System sources only ever set `caution`. Escalation to `compromised` or `blocked` is a human decision and flips `source` to `admin`. Each monitor clears only its own rows after the peg has recovered for a cooldown. A system `reason` follows a fixed template and is not refreshed with live prices; read live numbers from `pegHealth` (see [Stablecoin health](/v1/concepts/stablecoin-health)). `url` is `null` on system rows.
+
+Treat `source` as attribution and keep branching on `status`.
+
+## Where each status takes effect
+
+| Surface                                             | `caution` | `compromised`                       | `blocked`                                        |
+| --------------------------------------------------- | --------- | ----------------------------------- | ------------------------------------------------ |
+| `GET /v1/assets/{assetId}` and `/variants`          | served    | served, never `primaryVariant`      | served, never `primaryVariant`                   |
+| `GET /v1/assets/search`, `/curated`                 | served    | served, never `primaryVariant`      | omitted (an asset whose only variant is blocked disappears) |
+| `GET /v1/assets/trending`                           | served    | omitted                             | omitted                                          |
+| `GET /v1/assets/{assetId}/launches`                 | served    | served                              | omitted                                          |
+| API v2 list hydration                               | served    | served                              | omitted                                          |
+
+## Guarantees
+
+- **Direct lookups never 404 a registered flagged mint.** `GET /v1/assets/{assetId}`, the same route with `?mint=<flagged>`, `GET /v1/assets/solana-<flagged>` and `/variants` keep returning `blocked` and `compromised` variants with `advisory` populated, so a shared link lands on the warning rather than on "not found". Only hard removals (inactive variants, deletion tombstones) and unregistered mints return `404`.
+- A `compromised` or `blocked` variant is never chosen as `primaryVariant` while another eligible variant exists. When every variant is flagged, the API falls back to the normal ranking instead of returning `null`, and `primaryVariant.advisory` tells you why you should not use it.
+- Changes propagate to asset detail within about a minute; curated and trending are similar or faster.
+
+## Guidance
+
+Treat `compromised` and `blocked` as **do-not-trade**: disable buy, sell and swap for that mint, surface `reason`, and link to `url` when present. `caution` is display-only. Branch on `status`, never on `reason` text, and add a default arm so a future status degrades to a warning rather than to silence.

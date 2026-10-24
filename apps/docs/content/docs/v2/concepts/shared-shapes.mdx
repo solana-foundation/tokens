@@ -1,0 +1,269 @@
+---
+title: Shared shapes
+description: The TypeScript catalogue of every type the v2 asset, variant and chain routes return.
+---
+
+Every response on [Chains](/v2/endpoints/chains), [Assets](/v2/endpoints/assets) and
+[Variants](/v2/endpoints/variants) is built from the types below. The reference pages name the
+top-level response type for each route and link here for the rest. How to read the numbers is
+on [Multichain assets](/v2/concepts/multichain-assets).
+
+Conventions:
+
+- Every documented key is always present; `null` means unknown or not applicable. v2 does not use
+  optional keys for unknown values the way v1 does for `symbol`, `name` and `issuer`.
+- Timestamps (`*At`, `since`) are unix milliseconds.
+- `VariantKey` is `<chain>:<address>`; EVM addresses are lowercase, Solana addresses are base58.
+
+## Shared shapes
+
+```ts
+type ChainId = 'solana' | 'ethereum' | 'base' | 'arbitrum' | 'polygon' | 'bnb';
+type VariantKey = string; // `<chain>:<address>` — EVM lowercase, Solana base58
+
+type AssetCategory = 'crypto' | 'stablecoin' | 'lst' | 'rwa' | 'commodity' | 'equity' | 'etf' | 'index';
+type VariantKind =
+    | 'native' | 'wrapped' | 'bridged' | 'spot' | 'etf' | 'yield' | 'leveraged'
+    | 'basket' | 'lst' | 'stablecoin' | 'tokenized_equity';
+type LiquidityTier = 'tier1' | 'tier2' | 'tier3';
+type StockVariantTier = 'share_redeemable' | 'cash_redeemable' | 'not_redeemable';
+type PrimaryVariantStrategy = 'liquidity' | 'execution_quality' | 'stock_redeemability';
+
+interface ChainCapabilities {
+    markets: boolean;          // per-variant market snapshot (price, liquidity, volume)
+    dexMarkets: boolean;       // per-pool DEX market lists
+    ohlcv: boolean;
+    risk: boolean;             // risk summary / details
+    executionQuality: boolean; // fill-quality snapshots
+    swap: boolean;             // swap / trade links and execution routing
+    firstPartyLogos: boolean;  // tokens.xyz-hosted logo mirror
+}
+
+interface V2Chain {
+    id: ChainId;
+    caip2: string;                 // https://chainagnostic.org/CAIPs/caip-2
+    family: 'svm' | 'evm';
+    evmChainId: number | null;     // null for solana
+    label: string;                 // "Solana", "Arbitrum", "BNB", …
+    explorer: { name: string; tokenUrlTemplate: string }; // "{address}" placeholder
+    capabilities: ChainCapabilities;
+    variantCount: number | null;   // active variants on the chain; null when the data layer is unreachable
+    assetCount: number | null;     // assets with ≥ 1 active variant on the chain; null as above
+}
+
+interface V2Market {
+    source: 'birdeye' | 'rwa_xyz' | 'clickhouse_trades';
+    metricsSource: 'birdeye' | 'rwa_xyz' | 'clickhouse_trades' | null;
+    price: number | null;
+    liquidity: number | null;
+    volume1hUSD: number | null;
+    volume24hUSD: number | null;
+    trade1h: number | null;
+    trade24h: number | null;
+    uniqueWallet1h: number | null;
+    uniqueWallet24h: number | null;
+    marketCap: number | null;
+    fdv: number | null;
+    holder: number | null;
+    totalSupply: number | null;       // on this chain
+    circulatingSupply: number | null; // on this chain
+    priceChange1hPercent: number | null;
+    priceChange24hPercent: number | null;
+    lastTradeAt: number | null;
+    asOf: number | null;          // provider timestamp
+    lastFetchedAt: number | null; // our fetch
+}
+
+interface V2Advisory {
+    status: 'caution' | 'compromised' | 'blocked';
+    reason: string;
+    url: string | null;
+    since: number;
+    source: 'admin' | 'webacy_depeg' | 'peg_guard';
+}
+
+// Opt-in per-variant enrichments on `GET /v2/assets/{assetId}?include=…`.
+// A key is present on EVERY variant in the response (`variants[]`, `primaryVariant`,
+// `primaryVariantByChain.*`) when its include value was requested, and absent otherwise.
+// `null` means the chain lacks the capability or there is no data for that variant.
+
+// Fill-quality snapshot (24h window, 5s markout horizon); v1's `quoteMint` is `quoteKey` here.
+// Needs the chain's `executionQuality` capability.
+interface V2ExecutionQuality {
+    source: 'clickhouse_fill_quality';
+    range: '24h';
+    horizon: '5s';
+    quoteKey: VariantKey; // `solana:<mint>` of the quote token the fills were measured against
+    volume24hUSD: number;
+    trade24h: number;
+    botVolume24hUSD: number;
+    botTrade24h: number;
+    botVolumeRatio: number;
+    fee24hUSD: number;
+    feeBps: number;
+    flowSourceCount: number;
+    markoutPnl24hUSD: number | null;
+    markoutCount: number | null;
+    markoutBps: number | null;
+    executionScore: number;
+    isEligibleForPrimary: boolean;
+    asOf: number | null;
+    lastComputedAt: number;
+}
+
+// Compact peg status for stablecoin variants. Needs the chain's `risk` capability and a
+// `stablecoin`-category asset; `null` on every variant of a non-stablecoin asset.
+interface V2PegHealth {
+    provider: 'webacy' | 'tokens';
+    referenceKind: 'fixed' | 'fx' | 'high_water';
+    tier: 'ok' | 'watch' | 'warning' | 'critical' | 'premium';
+    deviationPct: number | null; // signed percent from peg; negative = below peg
+    updatedAt: number;
+    stale: boolean;
+}
+
+// PreStocks reference mark for a tokenized pre-IPO equity. Solana PreStocks tokens only.
+interface V2VariantPreStocks {
+    symbol: string;
+    markPriceUsd: number | null;
+    markValuationUsd: number | null;
+    impliedValuationUsd: number | null;  // from the variant's on-chain price
+    premiumToMarkPercent: number | null;
+    lastFetchedAt: number;
+}
+
+interface V2VariantEnrichments {
+    executionQuality?: V2ExecutionQuality | null; // with include=executionQuality
+    pegHealth?: V2PegHealth | null;               // with include=pegHealth
+    preStocks?: V2VariantPreStocks | null;        // with include=preStocks
+}
+
+interface V2Variant extends V2VariantEnrichments {
+    key: VariantKey;        // `${chain}:${address}`
+    chain: ChainId;
+    address: string;
+    assetId: string;
+    variantId: string;
+    kind: VariantKind;
+    issuance: 'native' | 'bridged' | 'wrapped'; // drives supply / market-cap counting
+    symbol: string | null;
+    name: string | null;
+    label: string | null;
+    decimals: number | null;
+    logoURI: string | null;
+    issuer: string | null;
+    issuerUrl: string | null;
+    trustTier: LiquidityTier; // mirrors liquidityTier; kept for v1 parity
+    liquidityTier: LiquidityTier;
+    stockVariantTier: StockVariantTier | null;
+    tags: string[];
+    advisory: V2Advisory | null;
+    rank: number | null;      // 0-based liquidity rank within the asset across chains; null in batch lookups
+    explorerUrl: string;
+    market: V2Market | null;
+}
+
+interface V2ChainStats {
+    liquidity: number | null;         // summed over every variant on the chain
+    volume24hUSD: number | null;      // summed over every variant on the chain
+    trade24h: number | null;          // 24h trade count, summed over every variant on the chain
+    marketCap: number | null;         // summed over issued (native) variants only
+    fdv: number | null;
+    circulatingSupply: number | null; // issued variants only
+    variantCount: number;
+    issuedVariantCount: number;       // variants counted toward supply / market cap
+}
+
+interface V2Aggregate extends V2ChainStats {
+    chainCount: number;
+    excludedFromSupplyCount: number; // bridged / wrapped variants left out of supply and market cap
+}
+
+type V2ReferenceMarket =
+    | {
+          source: 'coingecko';
+          coinId: string;
+          price: number | null;
+          marketCap: number | null;
+          volume24hUSD: number | null;
+          priceChange24hPercent: number | null;
+          circulatingSupply: number | null; // canonical cross-chain supply
+          totalSupply: number | null;
+          maxSupply: number | null;
+          asOf: number | null;
+          lastFetchedAt: number | null;
+      }
+    | {
+          source: 'stock'; // mapped public equities
+          symbol: string;
+          price: number | null;
+          marketCap: number | null; // underlying company valuation
+          volume24hUSD: number | null;
+          priceChange24hPercent: number | null;
+          asOf: number | null;
+          lastFetchedAt: number | null;
+      }
+    | {
+          source: 'prestocks'; // tokenized pre-IPO equities
+          symbol: string;
+          key: VariantKey; // the Solana variant the mark is derived from
+          price: number | null;
+          marketCap: number | null; // implied company valuation
+          markPriceUsd: number | null;
+          markValuationUsd: number | null;
+          impliedValuationUsd: number | null;
+          premiumToMarkPercent: number | null;
+          volume24hUSD: number | null;
+          priceChange24hPercent: number | null;
+          asOf: number | null;
+          lastFetchedAt: number | null;
+      };
+
+interface V2AssetStats {
+    price: number | null;
+    liquidity: number | null;      // = aggregate.liquidity
+    volume24hUSD: number | null;
+    volume30dUSD: number | null;   // Solana rolling 30d, null elsewhere
+    marketCap: number | null;
+    fdv: number | null;
+    priceChange24hPercent: number | null;
+    priceChange1hPercent: number | null;
+    totalSupply: number | null;
+    circulatingSupply: number | null;
+}
+
+interface V2AssetAdvisory extends V2Advisory {
+    key: VariantKey;
+    chain: ChainId;
+    address: string;
+    variantId: string;
+}
+
+interface V2Asset {
+    assetId: string;
+    name: string | null;
+    symbol: string | null;
+    description: string | null;
+    category: AssetCategory;
+    aliases: string[];
+    symbols: string[]; // canonical symbol first, then every variant symbol, deduped
+    imageUrl: string | null;
+    coingeckoId: string | null;
+    chains: ChainId[];                               // every chain with ≥ 1 variant, canonical order
+    stats: V2AssetStats | null;                      // headline numbers (reference market first, aggregate second)
+    chainStats: Partial<Record<ChainId, V2ChainStats>>; // one entry per chain in `chains`
+    aggregate: V2Aggregate;                          // sum over chainStats
+    referenceMarket: V2ReferenceMarket | null;
+    advisories: V2AssetAdvisory[];                   // most severe first; names hidden (blocked) siblings too
+    primaryVariantStrategy: PrimaryVariantStrategy;  // the strategy actually applied to this asset
+    primaryScope: 'executable' | 'global';           // the candidate scope applied
+    primaryVariantSelection: {                       // why primaryVariant won; null when there is none
+        pool: 'executable_active' | 'active' | 'executable' | 'all';
+        reason: string | null;                       // the deciding ranking rule, e.g. "liquidity"
+    } | null;
+    primaryVariant: V2Variant | null;
+    primaryVariantByChain: Partial<Record<ChainId, V2Variant>>;
+    rank: number | null;                             // 0-based position in the requested list; null outside a list
+    variants?: V2Variant[];                          // list: with include=variants; detail: always
+}
+```

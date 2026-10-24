@@ -4,13 +4,26 @@
   "icon": "Box",
   "root": true,
   "pages": [
-    "overview",
-    "endpoints-at-a-glance",
+    "index",
     "quickstart",
     "authentication",
-    "rate-limits-and-errors",
+    "errors-and-limits",
+    "---Concepts---",
+    "concepts/assets-and-variants",
+    "concepts/advisories",
+    "concepts/stablecoin-health",
+    "---Guides---",
     "workflows",
     "---Reference---",
-    "./endpoints"
+    "endpoints/search-and-resolve",
+    "endpoints/lists-and-trending",
+    "endpoints/batch-snapshots",
+    "endpoints/asset-detail",
+    "endpoints/variants-and-markets",
+    "endpoints/charts",
+    "endpoints/risk",
+    "endpoints/profile",
+    "endpoints/news",
+    "endpoints/health"
   ]
 }

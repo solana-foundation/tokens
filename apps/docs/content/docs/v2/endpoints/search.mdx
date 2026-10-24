@@ -3,36 +3,39 @@ title: Search & Resolve
 description: Risk-aware token search with tunable policy gates, and a resolve endpoint that answers with confidence or refuses.
 ---
 
-Both endpoints on this page are Platform API endpoints authenticated with `x-api-key` and
-require only the default `assets:read` scope (base URL `https://api.tokens.xyz/v2`; see the
-[Quickstart](/docs/v2/quickstart)).
+All endpoints below use `https://api.tokens.xyz/v2` with an `x-api-key` header; see
+[Authentication](/v2/authentication). How the pipeline judges, the policy presets, and every
+`reasons`, `warnings` and `suppressedBy` code are on
+[Risk-aware search](/v2/concepts/risk-aware-search).
 
-Candidates come from three sources merged and deduped by mint — a live market-data provider
-(broad long-tail coverage), our token index, and the canonical asset registry — then run
-through a **judgment pipeline**: intent classification → hard gates → weighted score →
-explanations. A **policy** decides what is *suppressed* (returned with the gate that fired)
-versus *ranked*. You pick a preset and optionally override individual gates.
+Both routes share the per-key `search` provider budget (120 calls per 10 minutes by default) with
+`GET /v2/lists/search-tokens`; see
+[Provider lookup budget](/v2/errors-and-limits#provider-lookup-budget).
 
 ## `GET /v2/search`
 
-- **Scope**: `assets:read`
-- **Query params**:
-  - `q` (**required**): symbol, name, or mint address (max 100 chars)
-  - `policy` (optional): `strict`, `default` (default), or `degen` — see [Policies](#policies-and-overrides)
-  - Gate overrides (optional, each layered on the preset):
-    - `minLiquidityUsd` — number ≥ 0, or `none` to disable the gate
-    - `minAgeDays` — integer ≥ 0, or `none`
-    - `minMarketScore` — integer 0–100, or `none`. Only gates tokens whose score is *known*
-    - `requireMarketData` — `true` | `false`
-    - `suppressImpersonation` — `true` | `false`
-    - `verifiedOnly` — `true` | `false`; when `true`, mints without a canonical-registry variant
-      are suppressed with `gate_unverified`
-  - `limit` (1–50, default 10) — ranked results only; `suppressed` is never truncated
-  - `includeSuppressed` (`true` | `false`, default `true`) — `false` omits the `suppressed` array
+Ranked results under a policy, with the suppressed candidates and the gate that removed each.
 
-  Parsing rules: `none`, `null` and `off` all disable a numeric gate; booleans also accept `1`/`0`
-  and `yes`/`no`. Out-of-range numbers and unknown `policy` values are `400`s — an invalid `policy`
-  echoes the valid ids in `details.policies`. A `limit` above the maximum is clamped, not rejected.
+**Auth**: `x-api-key`, scope `assets:read`.
+
+### Query params
+
+- `q` (**required**): symbol, name or mint address, max 100 chars (`invalid_query` above that).
+- `policy` (optional): `strict`, `default` (default) or `degen`. See
+  [Policies and overrides](/v2/concepts/risk-aware-search#policies-and-overrides).
+- Gate overrides (optional, each layered on the preset): `minLiquidityUsd` (number ≥ 0 or
+  `none`), `minAgeDays` (integer ≥ 0 or `none`), `minMarketScore` (integer 0–100 or `none`; only
+  gates tokens whose score is known), `requireMarketData`, `suppressImpersonation`,
+  `verifiedOnly` (booleans). `none`, `null` and `off` disable a numeric gate; booleans also
+  accept `1`/`0` and `yes`/`no`.
+- `limit` (1–50, default 10): ranked results only; `suppressed` is never truncated. Values above
+  the max are clamped.
+- `includeSuppressed` (`true` | `false`, default `true`): `false` omits the `suppressed` array.
+
+Out-of-range numbers and unknown `policy` values are `400`; an invalid `policy` echoes the valid
+ids in `details.policies`.
+
+### Response
 
 ```ts
 interface SearchResponse {
@@ -72,7 +75,7 @@ interface SearchResponse {
         reasons: string[];   // why it ranks: exact_symbol_match, curated_list_member, deep_liquidity, …
         warnings: string[];  // caution signals: possible_impersonation, new_token, unverified, weak_market_score, …
         badges: string[];    // curated:<list>, tier1|tier2|tier3, grade:A|B|C, advisory:<status>
-        verified: boolean;   // a canonical-registry variant exists for this mint
+        verified: boolean;   // a curated-registry variant exists for this mint
     }>;
     suppressed?: Array<{
         mint: string;
@@ -85,46 +88,43 @@ interface SearchResponse {
 }
 ```
 
-Example — a swap UI that only wants registry-attested tokens with real depth, and doesn't
-need the suppressed rows:
+### Example
 
-```
-GET /v2/search?q=bonk&verifiedOnly=true&minLiquidityUsd=250000&includeSuppressed=false
-```
+```bash
+# A swap UI: registry-attested tokens with real depth, no suppressed rows
+curl -sS "$API_BASE_URL/v2/search?q=bonk&verifiedOnly=true&minLiquidityUsd=250000&includeSuppressed=false" \
+  -H "x-api-key: $API_KEY"
 
-Example — a research tool that wants everything, with the warnings doing the talking:
-
-```
-GET /v2/search?q=dog&policy=degen&limit=50
+# A research tool: everything, with the warnings doing the talking
+curl -sS "$API_BASE_URL/v2/search?q=dog&policy=degen&limit=50" -H "x-api-key: $API_KEY"
 ```
 
-### Reading the output
+### Notes
 
-- **`reasons`** explain rank; **`warnings`** are caution signals on a token that is still ranked;
-  **`suppressed[].suppressedBy`** names the gate that removed a candidate. All three vocabularies
-  are enumerated under [Explanation codes](#explanation-codes) and are a stable contract — new
-  codes may be added, existing ones are not renamed.
-- **`suppressed`** rows are never truncated by `limit`. Loosen the gate (or switch to `degen`) to
-  see them ranked instead.
-- **`badges`** are free-form labels: `curated:<list>` for curated membership, `tier1|tier2|tier3`,
-  `grade:A|B|C` (the same market grade v1 exposes, computed from the token's own liquidity, market
-  cap, holders, volume and age) and `advisory:<status>`. A token with too little market data to
-  score carries no `grade:` badge. Since scoring version `v2-scoring-2026-09-27.1` trading activity
-  is scored from 24h volume, as in v1; earlier versions scored it as zero, which capped grades at B.
-- **`claims.attestations`** are the evidence behind claim credibility: `curated_list`,
-  `registry_variant`, `market_dominance`, `deep_liquidity`, `sustained_activity`, `established_age`,
-  `broad_holder_base`, each with a human-readable `detail`.
+- `policy.gates` is the effective gate document and `policy.overrides` lists what you changed,
+  so any result is reproducible from its own envelope.
+- Advisory gates (`gate_advisory_blocked`, `gate_advisory_compromised`) and tombstones fire under
+  every policy and cannot be overridden.
+- The vocabularies for `reasons`, `warnings`, `badges`, `claims.attestations` and `suppressedBy`
+  are listed under [Explanation codes](/v2/concepts/risk-aware-search#explanation-codes).
+- Cached for 30 s; identical queries inside the window do not count against the budget.
 
 ## `GET /v2/resolve`
 
-One answer with confidence — or an explicit refusal. A confident-looking wrong answer to
-`resolve("USDC")` is the worst possible output, so "I don't know" is a first-class response.
+One answer with confidence, or an explicit refusal.
 
-- **Scope**: `assets:read`
-- **Query params**: `q` (**required**), `policy`, and the same gate overrides as `/v2/search`.
-  `includeSuppressed` is ignored. `limit` is validated (so `limit=0` is a `400`) but otherwise
-  ignored: resolve always judges a fixed candidate window and returns at most 5 `candidates`.
-- **Always HTTP 200** when the request is valid; read `status`.
+**Auth**: `x-api-key`, scope `assets:read`.
+
+### Query params
+
+- `q` (**required**), `policy`, and the same gate overrides as `/v2/search`.
+- `limit` is validated (`limit=0` is a `400`) but otherwise ignored: resolve always judges a fixed
+  candidate window and returns at most 5 `candidates`.
+- `includeSuppressed` is not accepted here.
+
+### Response
+
+Always HTTP `200` when the request is valid; read `status`.
 
 ```ts
 interface ResolveResponse {
@@ -143,97 +143,17 @@ interface ResolveResponse {
 }
 ```
 
-- A **mint address** query is a lookup, never fuzzy: the exact mint or `no_confident_match`.
-- **`resolved`** requires the best candidate to clear the policy's refusal bar *and* beat the
-  runner-up by a margin; **`ambiguous`** means several credible claimers exist (typical for an
-  unprotected symbol shared by unrelated tokens) — show `candidates` and let the user pick.
+### Example
+
+```bash
+curl -sS "$API_BASE_URL/v2/resolve?q=USDC" -H "x-api-key: $API_KEY"
+```
+
+### Notes
+
+- A mint-address query is a lookup, never fuzzy: the exact mint or `no_confident_match`.
+- `resolved` requires the best candidate to clear the policy's refusal bar and beat the runner-up
+  by a margin; `ambiguous` means several credible claimers exist, so show `candidates` and let the
+  user pick. See [Resolve: confidence or refusal](/v2/concepts/risk-aware-search#resolve-confidence-or-refusal).
 - Each policy has its own refusal bar: `strict` refuses most readily, `degen` least.
-
-## Explanation codes
-
-### `reasons`
-
-| Code | Meaning |
-|---|---|
-| `mint_match` | Query was this exact mint address |
-| `exact_symbol_match` | Symbol equals the normalized query |
-| `exact_name_match` | Name equals the normalized query |
-| `symbol_prefix_match` | Symbol starts with the query |
-| `name_match` | Name contains the query |
-| `alias_match` | Reserved for alias matches; not emitted today |
-| `curated_list_member` | Mint is in one of our curated lists |
-| `registry_variant` | Mint is a canonical-registry variant |
-| `market_leader` | Dominant market among the candidates claiming this symbol |
-| `deep_liquidity` | Liquidity ≥ $1M |
-| `high_activity` | 24h volume ≥ $250k |
-| `established_token` | First seen ≥ 90 days ago |
-| `strong_execution_quality` | Execution-quality score ≥ 70 (tight, deep markets) |
-
-### `warnings`
-
-| Code | Meaning |
-|---|---|
-| `low_liquidity` | Liquidity below $10k (still ranked, e.g. because the mint is registry-attested or the gate is off) |
-| `no_market_data` | No market snapshot available |
-| `possible_impersonation` | Claims a protected symbol, is not the protected holder, is not registry-attested, and is young or shallow |
-| `symbol_collision` | Claims a protected symbol without being its holder, but is established enough not to look like an impersonator |
-| `suspicious_characters` | Homoglyphs or invisible characters in the symbol or name |
-| `new_token` | Younger than 7 days |
-| `stale_data` | Market data older than 30 minutes |
-| `high_bot_volume` | More than 60% of volume attributed to bots |
-| `concentrated_holders` | Top-10 holders own more than 50% of supply (registry-attested mints exempt) |
-| `unverified` | No canonical-registry variant for this mint |
-| `weak_market_score` | Known market score below 40 |
-| `advisory_caution` | An operator attached a `caution` advisory; see [Advisories](/docs/v1/endpoints/asset-by-id#advisories) |
-
-### `suppressedBy`
-
-| Code | Gate | Overridable |
-|---|---|---|
-| `gate_tombstoned` | Mint editorially deleted from the corpus | no |
-| `gate_advisory_blocked` | Mint carries a `blocked` advisory | no |
-| `gate_advisory_compromised` | Mint carries a `compromised` advisory | no |
-| `gate_min_liquidity` | Below `minLiquidityUsd` (registry-attested mints exempt) | `minLiquidityUsd` |
-| `gate_no_market_data` | No market snapshot and `requireMarketData` is on | `requireMarketData` |
-| `gate_impersonation` | Likely impersonator of a protected symbol | `suppressImpersonation` |
-| `gate_min_market_score` | Known market score below `minMarketScore` | `minMarketScore` |
-| `gate_new_token` | Younger than `minAgeDays` | `minAgeDays` |
-| `gate_unverified` | Not in the canonical registry and `verifiedOnly=true` | `verifiedOnly` |
-
-## Policies and overrides
-
-A policy is a declarative bundle of hard gates, score weights and a refusal bar. Presets:
-
-| Gate | `strict` | `default` | `degen` |
-|---|---|---|---|
-| `minLiquidityUsd` | 10 000 | 1 000 | none |
-| `requireMarketData` | true | false | false |
-| `suppressImpersonation` | true | true | false |
-| `minMarketScore` | none | none | none |
-| `minAgeDays` | 1 | none | none |
-| `requireRegistry` (`verifiedOnly`) | false | false | false |
-
-Overrides change only the gate you name; score weights and the refusal bar always come from the
-preset. The response's `policy.gates` is the effective document and `policy.overrides` lists
-what you changed, so any result is reproducible from its own envelope.
-
-Two rules are **not** overridable, under any preset:
-
-- **Advisory gates**: mints carrying a `blocked` or `compromised` operator advisory are always
-  suppressed (`gate_advisory_blocked` / `gate_advisory_compromised`). A `caution` advisory is a
-  warning, not a gate. See [Asset by ID → Advisories](/docs/v1/endpoints/asset-by-id#advisories).
-- **Tombstones**: mints editorially deleted from the corpus are always suppressed
-  (`gate_tombstoned`).
-
-Registry-attested assets bypass the liquidity gate: it exists to filter scams and unknowns, not
-to hide verified assets that settle off-AMM (RFQ / primary-issuance tokenized stocks and funds).
-Thin tradability on those shows as a `low_liquidity` warning instead.
-
-## Limits
-
-Beyond the standard per-key rate limits, `/v2/search`, `/v2/resolve` and the curator search
-`/v2/lists/search-tokens` share one per-key **provider lookup budget** (120 calls per 10 minutes
-by default) because unique queries reach the live provider. Exhausting it returns `429` with the
-usual envelope; identical queries within the 30-second cache window are served
-from cache and don't count. Details, including how the budget degrades when its store is
-unavailable, are on [Rate limits & errors](/docs/v2/rate-limits-and-errors#provider-lookup-budget).
+- Cached for 30 s.

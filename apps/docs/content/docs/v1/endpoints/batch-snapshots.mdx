@@ -1,0 +1,163 @@
+---
+title: Batch snapshots
+description: Market snapshots for many Solana mints in one request.
+---
+
+Both endpoints use `https://api.tokens.xyz/v1` with an `x-api-key` header and the `assets:read` scope; see [Authentication](/v1/authentication).
+
+Both return **one row per input mint, in input order**, and never fail the request for an unregistered mint; the row is kept with `null` data. Both describe one on-chain token each. Canonical figures for the asset as a whole live on [Asset detail](/v1/endpoints/asset-detail).
+
+## `POST /v1/assets/market-snapshots`
+
+Cached market snapshots for up to 250 mints.
+
+### Body
+
+```json
+{ "mints": ["So11111111111111111111111111111111111111112", "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"] }
+```
+
+`mints` or `addresses` (treated the same). Input is de-duplicated and capped at 250.
+
+### Response
+
+```ts
+type AssetsMarketSnapshotsResponse = Array<{
+  address: string;
+  token: {
+    address: string;
+    symbol: string;
+    name: string;
+    decimals: number;
+    logoURI?: string;
+    price: number;
+    liquidity: number;
+    volume24hUSD: number;
+    marketCap: number;
+    priceChange24hPercent: number;
+    priceChange1hPercent?: number;
+    source?: 'birdeye' | 'rwa_xyz' | 'clickhouse_trades';
+    metricsSource?: 'birdeye' | 'rwa_xyz' | 'clickhouse_trades';
+    fdv?: number;
+    holder?: number;
+    totalSupply?: number;        // on-chain supply of this mint
+    circulatingSupply?: number;  // on-chain supply of this mint
+    volume1hUSD?: number;
+    trade1h?: number;
+    trade24h?: number;
+    uniqueWallet1h?: number;
+    uniqueWallet24h?: number;
+    lastTradeAt?: number;        // unix seconds
+    asOf?: number;               // unix seconds
+    lastFetchedAt?: number;      // unix ms
+  } | null;
+  hasMarket: boolean;
+}>;
+```
+
+### Notes
+
+- `hasMarket` is `true` only when the row has a positive `price`, a `volume24hUSD` and a `priceChange24hPercent`. With `hasMarket: false` and a non-null `token`, treat the numeric fields as unknown, not zero; they default to `0` when the source has no value.
+- `token: null` means the mint is unregistered, or registered but not cached yet.
+- Cached for one minute.
+
+### Example
+
+```bash
+curl -sS "$API_BASE_URL/v1/assets/market-snapshots" \
+  -H "x-api-key: $API_KEY" \
+  -H "content-type: application/json" \
+  -d '{"mints":["So11111111111111111111111111111111111111112"]}'
+```
+
+## `GET /v1/assets/variant-markets`
+
+Per-mint variant market snapshots, with execution quality, for up to 50 mints in the query string.
+
+### Query params
+
+| Param                | Type                        | Notes                 |
+| -------------------- | --------------------------- | --------------------- |
+| `mints` or `addresses` | comma-separated mints     | Required. Max 50.     |
+
+### Response
+
+```ts
+interface AssetsVariantMarketsResponse {
+  variants: Array<{
+    mint: string;
+    assetId: string | null;             // null when the mint is unregistered
+    chain: 'solana' | null;
+    market: VariantMarket | null;       // see Assets and variants
+    executionQuality: VariantExecutionQuality | null;
+  }>;
+}
+```
+
+`VariantMarket` and `VariantExecutionQuality` are defined in [Assets and variants](/v1/concepts/assets-and-variants#variants).
+
+```json
+{
+  "variants": [
+    {
+      "mint": "So11111111111111111111111111111111111111112",
+      "assetId": "solana",
+      "chain": "solana",
+      "market": {
+        "symbol": "SOL",
+        "name": "Solana",
+        "decimals": 9,
+        "price": 142.31,
+        "liquidity": 410000000,
+        "metricsSource": "clickhouse_trades",
+        "volume1hUSD": 35000000,
+        "volume24hUSD": 855000000,
+        "trade1h": 70000,
+        "trade24h": 1660656,
+        "uniqueWallet1h": 9000,
+        "uniqueWallet24h": 120000,
+        "marketCap": 68000000000,
+        "priceChange24hPercent": 1.8,
+        "priceChange1hPercent": 0.2,
+        "lastTradeAt": 1780358399,
+        "asOf": 1780358399,
+        "lastFetchedAt": 1780360200000
+      },
+      "executionQuality": {
+        "source": "clickhouse_fill_quality",
+        "range": "24h",
+        "horizon": "5s",
+        "quoteMint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+        "volume24hUSD": 855000000,
+        "trade24h": 1660656,
+        "botVolume24hUSD": 718000000,
+        "botTrade24h": 1200000,
+        "botVolumeRatio": 0.84,
+        "fee24hUSD": 1000,
+        "feeBps": 0.0117,
+        "flowSourceCount": 22,
+        "markoutPnl24hUSD": -350000,
+        "markoutCount": 100000,
+        "markoutBps": -4.09,
+        "executionScore": 83.25,
+        "isEligibleForPrimary": true,
+        "asOf": 1780358399,
+        "lastComputedAt": 1780360200000
+      }
+    }
+  ]
+}
+```
+
+### Notes
+
+- An unregistered mint keeps its row as `{ mint, assetId: null, chain: null, market: null, executionQuality: null }`.
+- `market` is `null` for a registered mint that has no cached snapshot yet.
+- Cached for one minute.
+
+### Example
+
+```bash
+curl -sS "$API_BASE_URL/v1/assets/variant-markets?mints=$MINT1,$MINT2" \
+  -H "x-api-key: $API_KEY"
+```

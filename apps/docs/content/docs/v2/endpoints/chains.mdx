@@ -3,72 +3,32 @@ title: Chains
 description: The chains the multichain asset surface covers, with CAIP-2 ids, explorer templates and per-chain capability flags.
 ---
 
-This endpoint is a Platform API endpoint authenticated with `x-api-key` and requires only the
-default `assets:read` scope (base URL `https://api.tokens.xyz/v2`; see the
-[Quickstart](/docs/v2/quickstart)).
-
-The chain list is compiled into the API — adding a chain is a release, never a data change — so
-it is safe to cache for a long time. The **capability flags** are the contract for what the rest of
-the v2 asset surface can return for a variant on that chain; check them instead of hard-coding
-`chain === 'solana'`.
-
-| `id` | `caip2` | Family | Explorer |
-|---|---|---|---|
-| `solana` | `solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp` | `svm` | Solana Explorer |
-| `ethereum` | `eip155:1` | `evm` | Etherscan |
-| `base` | `eip155:8453` | `evm` | Basescan |
-| `arbitrum` | `eip155:42161` | `evm` | Arbiscan |
-| `polygon` | `eip155:137` | `evm` | Polygonscan |
-| `bnb` | `eip155:56` | `evm` | BscScan |
-
-The `id` column is the `chain` value on every variant and the value every `chain=` param and
-`<chain>:<address>` key accepts. Provider-side slugs (`polygon-pos`, `arbitrum-one`, `bsc`) are
-not accepted and return `400` with `details.code: "invalid_chain"`.
+All endpoints below use `https://api.tokens.xyz/v2` with an `x-api-key` header; see
+[Authentication](/v2/authentication). The chain table, CAIP-2 ids and what each capability flag
+means are on [Multichain assets](/v2/concepts/multichain-assets#chains-and-caip-2-ids); the types
+are in [Shared shapes](/v2/concepts/shared-shapes).
 
 ## `GET /v2/chains`
 
-Every supported chain, in canonical order, with live variant / asset counts.
+Every supported chain, in canonical order, with its capability flags and live variant and asset
+counts.
 
-- **Scope**: `assets:read`
-- **Query params**: none
+**Auth**: `x-api-key`, scope `assets:read`.
+
+### Query params
+
+None.
+
+### Response
 
 ```ts
-type ChainId = 'solana' | 'ethereum' | 'base' | 'arbitrum' | 'polygon' | 'bnb';
-
-interface ChainCapabilities {
-    markets: boolean;          // per-variant market snapshot (price, liquidity, volume)
-    dexMarkets: boolean;       // per-pool DEX market lists
-    ohlcv: boolean;
-    risk: boolean;             // risk summary / details
-    executionQuality: boolean; // fill-quality snapshots
-    swap: boolean;             // swap / trade links and execution routing
-    firstPartyLogos: boolean;  // tokens.xyz-hosted logo mirror
-}
-
-interface V2Chain {
-    id: ChainId;
-    caip2: string;                 // https://chainagnostic.org/CAIPs/caip-2
-    family: 'svm' | 'evm';
-    evmChainId: number | null;     // null for solana
-    label: string;                 // "Solana", "Arbitrum", "BNB", …
-    explorer: { name: string; tokenUrlTemplate: string }; // "{address}" placeholder
-    capabilities: ChainCapabilities;
-    variantCount: number | null;   // active variants on the chain; null when the data layer is unreachable
-    assetCount: number | null;     // assets with ≥ 1 active variant on the chain; null as above
-}
-
 interface ChainsResponse {
     chains: V2Chain[]; // canonical order, always all six
     total: number;     // 6
 }
 ```
 
-Today `solana` has every capability; the EVM chains have `markets` only (no OHLCV, risk, DEX
-market lists, execution quality, swap routing or first-party logos yet). When an EVM capability is
-switched on it flips here first, so a client that gates its UI on these flags needs no code change.
-
-`variantCount` / `assetCount` come from the data layer and are `null`, not `0`, when it cannot be
-reached; the static metadata is still served with a `200`.
+`V2Chain` and `ChainCapabilities` are in [Shared shapes](/v2/concepts/shared-shapes#shared-shapes).
 
 ### Example
 
@@ -102,3 +62,14 @@ curl -sS "$API_BASE_URL/v2/chains" -H "x-api-key: $API_KEY"
   "total": 6
 }
 ```
+
+### Notes
+
+- The list is compiled into the API, so it is cached for an hour (`max-age` 3600 s,
+  `stale-while-revalidate` 86400 s) and safe to cache longer on your side.
+- `variantCount` and `assetCount` come from the data layer and are `null`, not `0`, when it cannot
+  be reached; the static metadata is still served with a `200`.
+- When a capability is switched on for a chain it flips here first. Gate your UI on
+  `capabilities`, not on `id === 'solana'`.
+- The `id` value is what every `chain=` param and `<chain>:<address>` key accepts. Provider slugs
+  (`polygon-pos`, `arbitrum-one`, `bsc`) are `400 invalid_chain`.
