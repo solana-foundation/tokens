@@ -308,4 +308,31 @@ describe('liveEnrich', () => {
         );
         expect(out.liveLookups).toBe(1);
     });
+
+    it('a slow Redis read for one mint never drops the hits already held for the others', async () => {
+        const redis = fakeRedis();
+        const after = scheduler();
+        const opts = { getRedis: () => Effect.succeed(redis.client), scheduleAfterResponse: after.schedule };
+        // MINT_A is warm in the process tier from a previous request.
+        await Effect.runPromise(liveEnrich([{ mint: MINT_A, market: true, security: true }], opts));
+        await after.run();
+        expect(overviewCalls).toEqual([MINT_A]);
+        // Redis now hangs on every read past the 500 ms leash.
+        const hanging = {
+            get: () => new Promise(() => undefined),
+            set: async () => 'OK' as const,
+        } as unknown as RedisClient;
+        const out = await Effect.runPromise(
+            liveEnrich(
+                [
+                    { mint: MINT_A, market: true, security: true },
+                    { mint: MINT_B, market: true, security: true },
+                ],
+                { getRedis: () => Effect.succeed(hanging), scheduleAfterResponse: after.schedule },
+            ),
+        );
+        expect(out.byMint.get(MINT_A)?.market?.liquidity).toBe(40_000);
+        expect(out.liveLookups).toBe(1);
+        expect(overviewCalls).toEqual([MINT_A, MINT_B]);
+    });
 });

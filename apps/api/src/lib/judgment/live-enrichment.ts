@@ -16,8 +16,9 @@
  * `judge-live:v1:<mint>` (hit 10 min, miss 15 min, error 60 s), a bounded
  * per-process tier, writes after the response. Entries carry their own
  * expiry so a process never keeps a short-lived error entry for the hit
- * window. Cache reads for a request run concurrently and are bounded by one
- * Redis timeout, not one per mint.
+ * window. Cache reads for a request run concurrently, each on its own Redis
+ * timeout, so the wait is one timeout per request and a slow read costs only
+ * its own mint.
  *
  * Deadline: lookups complete independently; whatever has landed when the
  * deadline passes is used now, the rest is judged on what we have
@@ -183,18 +184,25 @@ function readCache(deps: CacheDeps, mint: string): Effect.Effect<CachedFacts | n
             if (parsed.exp <= readAt) return null;
             rememberInProcess(mint, parsed, readAt);
             return parsed;
-        }).pipe(Effect.catch(() => Effect.succeed<CachedFacts | null>(null)));
+        }).pipe(
+            // Each read has its own leash; a slow read is a miss for that mint only.
+            Effect.timeout(REDIS_TIMEOUT),
+            Effect.catch(() => Effect.succeed<CachedFacts | null>(null)),
+        );
     });
 }
 
-/** All cache reads for a request at once, bounded by one Redis timeout. */
+/**
+ * All cache reads for a request at once. Reads run concurrently, so the wait
+ * is one Redis timeout for the whole request, and each read fails on its own:
+ * a slow read for one mint never drops the hits (process or Redis) of the
+ * others.
+ */
 function readCacheAll(deps: CacheDeps, mints: readonly string[]): Effect.Effect<Map<string, CachedFacts>, never> {
     return Effect.all(
         mints.map(mint => readCache(deps, mint).pipe(Effect.map(entry => [mint, entry] as const))),
         { concurrency: 'unbounded' },
     ).pipe(
-        Effect.timeout(REDIS_TIMEOUT),
-        Effect.catch(() => Effect.succeed([] as ReadonlyArray<readonly [string, CachedFacts | null]>)),
         Effect.map(pairs => {
             const out = new Map<string, CachedFacts>();
             for (const [mint, entry] of pairs) if (entry) out.set(mint, entry);
