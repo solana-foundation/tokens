@@ -3872,6 +3872,11 @@ export function makePostgresAssetRiskReadsRepo(sql: Sql): AssetRiskReadsRepo {
                            t.payload_json::jsonb #> '{details,token_info}',
                            t.payload_json::jsonb -> 'token_info'
                        ) END AS token_info,
+                       CASE WHEN t.ok THEN COALESCE(
+                           t.payload_json::jsonb #> '{risk,details,buy_sell_taxes}',
+                           t.payload_json::jsonb #> '{details,buy_sell_taxes}',
+                           t.payload_json::jsonb -> 'buy_sell_taxes'
+                       ) END AS buy_sell_taxes,
                        CASE WHEN l.ok THEN l.payload_json::jsonb END AS trading_lite
                 FROM asset_risk_latest r
                 LEFT JOIN webacy_token_latest t ON t.chain = 'sol' AND t.address = r.mint

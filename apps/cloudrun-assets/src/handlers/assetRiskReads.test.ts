@@ -18,13 +18,8 @@ function row(overrides: Partial<AssetRiskRow> = {}): AssetRiskRow {
         risk_score_10: 1,
         safety_score_10: 9,
         last_fetched_at: 1_700_000_000_000,
-        token_risk: {
-            is_mintable: true,
-            freezeable: true,
-            'mutable-metadata': false,
-            renounced: false,
-            buy_sell_taxes: { buy_tax: 0, sell_tax: 0 },
-        },
+        token_risk: { is_mintable: true, freezeable: true, 'mutable-metadata': false, renounced: false },
+        buy_sell_taxes: { has_buy_tax: false, has_sell_tax: false },
         token_info: { is_metadata_immutable: true },
         trading_lite: {
             DevHoldingPercentage: '3.5',
@@ -130,6 +125,22 @@ describe('securityFromPayloads', () => {
         expect(sec.freezable).toBe(true);
         expect(sec.transferTax).toBe(true);
         expect(sec.devHoldingPercent).toBe(100); // clamped
+    });
+
+    it('reads the sibling buy_sell_taxes object (risk.details) and prefers it over a legacy nested one', () => {
+        expect(securityFromPayloads({}, null, null, { has_buy_tax: false, has_sell_tax: true })!.transferTax).toBe(
+            true,
+        );
+        expect(securityFromPayloads({}, null, null, { has_buy_tax: false, has_sell_tax: false })!.transferTax).toBe(
+            false,
+        );
+        expect(securityFromPayloads(null, null, null, { has_sell_tax: true })?.transferTax).toBe(true);
+        expect(
+            securityFromPayloads({ buy_sell_taxes: { sell_tax: 5 } }, null, null, {
+                has_buy_tax: false,
+                has_sell_tax: false,
+            })!.transferTax,
+        ).toBe(false);
     });
 
     it('derives mutable metadata from token_info when token_risk lacks it', () => {

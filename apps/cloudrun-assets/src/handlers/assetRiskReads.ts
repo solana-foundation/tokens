@@ -28,6 +28,8 @@ export interface AssetRiskRow {
     token_risk: unknown;
     /** `webacy_token_latest.payload_json` → `token_info` object. */
     token_info: unknown;
+    /** `webacy_token_latest.payload_json` → `buy_sell_taxes` object (sibling of token_risk under risk.details). */
+    buy_sell_taxes: unknown;
     /** `webacy_trading_lite_latest.payload_json` (holder/sniper/bundler figures). */
     trading_lite: unknown;
 }
@@ -118,17 +120,22 @@ export function securityFromPayloads(
     tokenRisk: unknown,
     tokenInfo: unknown,
     tradingLite: unknown,
+    buySellTaxes: unknown = null,
 ): AssetSecurityDoc | null {
     const risk = asObject(tokenRisk);
     const info = asObject(tokenInfo);
     const trading = asObject(tradingLite);
-    if (!risk && !info && !trading) return null;
+    // `buy_sell_taxes` is a sibling of token_risk under risk.details; older
+    // payloads nested it inside token_risk.
+    const taxes = asObject(buySellTaxes) ?? asObject(risk?.buy_sell_taxes ?? info?.buy_sell_taxes);
+    if (!risk && !info && !trading && !taxes) return null;
 
-    const taxes = asObject(risk?.buy_sell_taxes ?? info?.buy_sell_taxes);
     const transferTax =
         taxes === null
             ? null
-            : (finite(taxes.buy_tax) ?? 0) > 0 ||
+            : bool(taxes.has_buy_tax) === true ||
+              bool(taxes.has_sell_tax) === true ||
+              (finite(taxes.buy_tax) ?? 0) > 0 ||
               (finite(taxes.sell_tax) ?? 0) > 0 ||
               (finite(taxes.transfer_tax) ?? 0) > 0;
 
@@ -159,7 +166,7 @@ function rowToDoc(row: AssetRiskRow): AssetRiskDoc | null {
         riskScore10: finite(row.risk_score_10),
         safetyScore10: finite(row.safety_score_10),
         tags: tagKeys(row.tags),
-        security: securityFromPayloads(row.token_risk, row.token_info, row.trading_lite),
+        security: securityFromPayloads(row.token_risk, row.token_info, row.trading_lite, row.buy_sell_taxes),
         lastFetchedAt: row.last_fetched_at,
     };
 }
