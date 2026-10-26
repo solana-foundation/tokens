@@ -26,8 +26,35 @@ the caller (`caller`). Each candidate then passes through four stages:
 with the symbol, name and market fields it gave you) and the pipeline runs from the enrichment step.
 Caller fields are claims with the same trust as a live-provider hit — the protected-symbol index,
 dynamic dominance and attestations evaluate them against the registry and our snapshots, and our
-market data wins wherever we have it. Nothing is looked up at the live provider, so the call draws
-no provider budget. Without `q` no candidate can match-score and ranking is credibility alone.
+data wins wherever we have it. Without `q` no candidate can match-score and ranking is credibility
+alone.
+
+### What every candidate is enriched with
+
+Any mint gets the same read-out. Each input is resolved in order: our stored snapshot (market rows,
+and the holder/authority facts we collect for curated and registry mints) → a live provider lookup
+when we hold no row (cached per mint for ten minutes) → the caller's claim. Every result carries
+`dataSources` saying which tier supplied its `market`, `holders` and `security` inputs
+(`snapshot` | `provider` | `caller` | `none`), so a verdict is never mistaken for one built on
+more data than it had.
+
+Beyond price, liquidity, volume and market cap, the pipeline reads: top-10 holder share and mint
+time (concentration warnings, age gates, the impersonation heuristic), distinct trading wallets
+(a wash-resistant activity signal), circulating vs. total supply, time of last trade, execution
+quality including how many venues contributed, and the authority facts — whether the supply can
+still be minted, accounts frozen or metadata rewritten, whether transfers are taxed, how much of
+the liquidity is locked, and how much the deployer, snipers and bundlers hold. Unknown is always
+`null` and never reads as "safe".
+
+### Category bands
+
+Registry-attested assets are judged on their category's scale rather than the AMM memecoin scale
+the absolute constants describe. Tokenized equities, ETFs and RWAs settle off-AMM and are thin by
+design (the curated median is ~24K of DEX liquidity); stablecoins are the opposite. A band changes
+the `low_liquidity` bar, the `deep_liquidity` / `sustained_activity` attestations and the
+"real standing" test the impersonation and dominance heuristics use. The `band:<category>` badge
+says which table applied. Unattested mints keep the default scale on purpose: an unknown token with
+24K of liquidity *is* thin.
 
 ### Provider deadline
 
@@ -51,6 +78,7 @@ A policy is a declarative bundle of hard gates, score weights and a refusal bar.
 | `minMarketScore` | none | none | none |
 | `minAgeDays` | 1 | none | none |
 | `requireRegistry` (`verifiedOnly`) | false | false | false |
+| `suppressUnsafeAuthorities` | true | false | false |
 
 `/v2/search` and `/v2/resolve` default to `default`; the curator search
 `GET /v2/lists/search-tokens` defaults to `strict`.
@@ -65,6 +93,7 @@ Each gate can be overridden per request:
 | `requireMarketData` | `true`, `false` | Suppress tokens with no market snapshot (`gate_no_market_data`) |
 | `suppressImpersonation` | `true`, `false` | Suppress likely impersonators of a protected symbol (`gate_impersonation`) |
 | `verifiedOnly` | `true`, `false` | Suppress mints without a curated-registry variant (`gate_unverified`) |
+| `suppressUnsafeAuthorities` | `true`, `false` | Suppress unattested mints whose supply can still be minted or whose accounts can be frozen (`gate_unsafe_authorities`). Registry and curated assets are exempt: stablecoin issuers and tokenized-stock issuers legitimately keep both |
 
 `none`, `null` and `off` all disable a numeric gate; booleans also accept `1`/`0` and `yes`/`no`.
 Out-of-range numbers and unknown `policy` values are `400`s; an invalid `policy` echoes the valid
@@ -167,6 +196,19 @@ three statuses, always with HTTP `200` when the request is valid:
   possible output, so "I don't know" is a first-class response.
 
 Each policy has its own refusal bar: `strict` refuses most readily, `degen` least.
+- `active_wallets` — at least 1,000 distinct wallets traded the token in the last 24 hours.
+- `locked_liquidity` — at least 80% of the liquidity is locked or burned.
+- `mint_authority_active` — the supply can still be minted (unattested mints only).
+- `freeze_authority_active` — token accounts can be frozen (unattested mints only).
+- `mutable_metadata` — the symbol/name/logo can still be rewritten (unattested mints only).
+- `transfer_tax` — transfers carry a fee (Token-2022 transfer fee or a buy/sell tax).
+- `low_lp_locked` — less than 50% of the liquidity is locked.
+- `dev_holding_high` — the deployer holds more than 10% of the supply.
+- `sniper_bundle_heavy` — snipers and bundlers together hold more than 20% of the supply.
+- `thin_float` — less than 10% of the total supply is circulating.
+- `no_recent_trades` — no trade observed in the last 24 hours.
+- `toxic_flow` — markouts show fills are consistently adverse (execution-quality data).
+- `gate_unsafe_authorities` — `suppressUnsafeAuthorities` is on and the unattested mint keeps a mint or freeze authority.
 
 ## Cost
 

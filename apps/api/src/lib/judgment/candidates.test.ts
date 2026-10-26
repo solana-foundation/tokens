@@ -12,7 +12,8 @@ import { Effect } from 'effect';
 
 mock.module('server-only', () => ({}));
 
-const { gatherCandidates } = await import('./candidates');
+const { gatherCandidates, enrichCandidates, enrichCandidatesDetailed, newRawCandidate } = await import('./candidates');
+const { __resetLiveEnrichmentForTesting } = await import('./live-enrichment');
 const { classifyQuery } = await import('./intent');
 const { __resetCandidateCacheForTesting } = await import('./candidate-cache');
 const { __resetCloudRunClientForTesting } = await import('@/lib/cloudrun/client');
@@ -31,6 +32,9 @@ let dbCalls = 0;
 let marketCalls = 0;
 let providerKeywords: string[] = [];
 let dbQueries: string[] = [];
+let riskRowMints: string[] = [];
+let marketRowMints: string[] = [];
+let liveCalls: string[] = [];
 
 function json(body: unknown, status = 200): Response {
     return new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
@@ -75,11 +79,42 @@ beforeEach(() => {
     marketCalls = 0;
     providerKeywords = [];
     dbQueries = [];
+    riskRowMints = [];
+    marketRowMints = [];
+    liveCalls = [];
+    __resetLiveEnrichmentForTesting();
     console.error = () => undefined;
     console.log = () => undefined;
 
     globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
         const url = String(input);
+        if (url.includes('public-api.birdeye.so/defi/token_overview')) {
+            liveCalls.push('overview');
+            return json({
+                success: true,
+                data: {
+                    liquidity: 77_000,
+                    marketCap: 2_000_000,
+                    holder: 800,
+                    v24hUSD: 9_000,
+                    uniqueWallet24h: 150,
+                    price: 1.5,
+                },
+            });
+        }
+        if (url.includes('public-api.birdeye.so/defi/token_security')) {
+            liveCalls.push('security');
+            return json({
+                success: true,
+                data: {
+                    top10HolderPercent: 0.7,
+                    creationTime: 1_690_000_000,
+                    ownerAddress: null,
+                    freezeable: false,
+                    mutableMetadata: false,
+                },
+            });
+        }
         if (url.includes('public-api.birdeye.so/defi/v3/search')) {
             providerCalls += 1;
             providerKeywords.push(new URL(url).searchParams.get('keyword') ?? '');
@@ -131,11 +166,61 @@ beforeEach(() => {
                 ]);
             case 'variantMarketsGetLatestByMints':
                 marketCalls += 1;
-                return json((body.mints as string[]).map(mint => ({ mint, market: null })));
+                return json(
+                    (body.mints as string[]).map(mint => ({
+                        mint,
+                        market: marketRowMints.includes(mint)
+                            ? {
+                                  liquidity: 500_000,
+                                  volume24hUSD: 100_000,
+                                  marketCap: 10_000_000,
+                                  holder: 20_000,
+                                  price: 2,
+                                  uniqueWallet24h: 3_000,
+                                  trade24h: 9_000,
+                                  fdv: 12_000_000,
+                                  totalSupply: 100,
+                                  circulatingSupply: 4,
+                                  lastTradeAt: Date.now() - 2 * 86_400_000,
+                                  lastFetchedAt: Date.now() - 60_000,
+                              }
+                            : null,
+                    })),
+                );
             case 'variantFillQualityGetLatestByMints':
                 return json((body.mints as string[]).map(mint => ({ mint, fillQuality: null })));
             case 'listDeletedRefs':
                 return json([]);
+            case 'assetRiskGetLatestByMints':
+                return json(
+                    (body.mints as string[]).map(mint => ({
+                        mint,
+                        risk: riskRowMints.includes(mint)
+                            ? {
+                                  mint,
+                                  assetId: 'zz',
+                                  top10HoldersPercent: 88,
+                                  holderCount: 4_200,
+                                  tokenMintTime: '2024-02-01T00:00:00.000Z',
+                                  lpLockedPercent: 30,
+                                  riskScore10: 3,
+                                  safetyScore10: 7,
+                                  tags: ['is_mintable'],
+                                  security: {
+                                      mintable: true,
+                                      freezable: false,
+                                      mutableMetadata: true,
+                                      renounced: false,
+                                      transferTax: false,
+                                      devHoldingPercent: 12,
+                                      sniperHoldingPercent: 5,
+                                      bundlerHoldingPercent: 4,
+                                  },
+                                  lastFetchedAt: Date.now() - 3_600_000,
+                              }
+                            : null,
+                    })),
+                );
             default:
                 throw new Error(`unexpected fetch: ${url}`);
         }
@@ -365,5 +450,89 @@ describe('gatherCandidates: provider deadline', () => {
         const out = await gather('zzqx');
         expect(out.providerOutcome).toBe('degraded');
         expect(out.sources.provider).toBe('degraded');
+    });
+});
+
+describe('enrichCandidates: stored risk row, market extras, live tier', () => {
+    const raw = (mint: string) => newRawCandidate(mint);
+
+    it('a stored risk row fills concentration, age, tags and security; dataSources says snapshot', async () => {
+        riskRowMints = [ZZ_MINT];
+        const [c] = await Effect.runPromise(enrichCandidates([raw(ZZ_MINT)]));
+        expect(c!.top10HoldersPercent).toBe(88);
+        expect(c!.tokenMintTime).toBe('2024-02-01T00:00:00.000Z');
+        expect(c!.holderCount).toBe(4_200);
+        expect(c!.risk?.webacyTags).toEqual(['is_mintable']);
+        expect(c!.security).toEqual({
+            mintable: true,
+            freezable: false,
+            mutableMetadata: true,
+            transferTax: false,
+            lpLockedPercent: 30,
+            devHoldingPercent: 12,
+            sniperHoldingPercent: 5,
+            bundlerHoldingPercent: 4,
+        });
+        expect(c!.dataSources).toEqual({ market: 'none', holders: 'snapshot', security: 'snapshot' });
+        expect(liveCalls).toEqual([]);
+    });
+
+    it("the caller's createdAt wins over the stored mint time; caller claims fill what no row covers", async () => {
+        riskRowMints = [ZZ_MINT];
+        const r = raw(ZZ_MINT);
+        r.tokenMintTime = '2023-01-01T00:00:00.000Z';
+        r.uniqueWallet24h = 42;
+        r.fdv = 5;
+        const [c] = await Effect.runPromise(enrichCandidates([r]));
+        expect(c!.tokenMintTime).toBe('2023-01-01T00:00:00.000Z');
+        expect(c!.uniqueWallet24h).toBe(42);
+        expect(c!.fdv).toBe(5);
+    });
+
+    it('market-row extras flow through (wallets, trades, supplies, last trade) and the row wins over claims', async () => {
+        marketRowMints = [ZZ_MINT];
+        const r = raw(ZZ_MINT);
+        r.uniqueWallet24h = 1;
+        const [c] = await Effect.runPromise(enrichCandidates([r]));
+        expect(c!.uniqueWallet24h).toBe(3_000);
+        expect(c!.trade24h).toBe(9_000);
+        expect(c!.circulatingSupply).toBe(4);
+        expect(c!.totalSupply).toBe(100);
+        expect(c!.lastTradeAt).not.toBeNull();
+        expect(c!.dataSources.market).toBe('snapshot');
+    });
+
+    it('without the live option an uncovered mint stays on claims (search path): no provider call', async () => {
+        const set = await Effect.runPromise(enrichCandidatesDetailed([raw(ZZ_MINT)]));
+        expect(set.live).toBe('none');
+        expect(liveCalls).toEqual([]);
+        expect(set.candidates[0]!.dataSources).toEqual({ market: 'none', holders: 'none', security: 'none' });
+    });
+
+    it('with the live option an uncovered mint gets provider market + security, budget charged once, covered mints skip it', async () => {
+        riskRowMints = [ZZ2_MINT];
+        marketRowMints = [ZZ2_MINT];
+        let charged = 0;
+        const set = await Effect.runPromise(
+            enrichCandidatesDetailed([raw(ZZ_MINT), raw(ZZ2_MINT)], {
+                live: {
+                    budget: Effect.sync(() => void (charged += 1)),
+                    getRedis: () => Effect.fail(new Error('no redis')),
+                    scheduleAfterResponse: () => undefined,
+                },
+            }),
+        );
+        expect(set.live).toBe('ok');
+        expect(set.liveLookups).toBe(1);
+        expect(charged).toBe(1);
+        expect(liveCalls.sort()).toEqual(['overview', 'security']);
+        const [a, b] = set.candidates;
+        expect(a!.liquidityUsd).toBe(77_000);
+        expect(a!.uniqueWallet24h).toBe(150);
+        expect(a!.top10HoldersPercent).toBe(70);
+        expect(a!.tokenMintTime).toBe(new Date(1_690_000_000 * 1000).toISOString());
+        expect(a!.security?.mintable).toBe(false);
+        expect(a!.dataSources).toEqual({ market: 'provider', holders: 'provider', security: 'provider' });
+        expect(b!.dataSources).toEqual({ market: 'snapshot', holders: 'snapshot', security: 'snapshot' });
     });
 });

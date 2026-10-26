@@ -88,8 +88,12 @@ export function computeComponents(
     const attestations = attestationsOverride ?? buildAttestations(candidate, nowMs);
 
     const volumeScore = logScale(candidate.volume24hUsd, 100, 50_000_000);
+    // Distinct wallets resist wash trading; when known they share the
+    // activity read with raw volume so a bot-only market cannot max it out.
+    const walletScore = candidate.uniqueWallet24h === null ? null : logScale(candidate.uniqueWallet24h, 10, 50_000);
+    const tradedScore = walletScore === null ? volumeScore : Math.round(0.6 * volumeScore + 0.4 * walletScore);
     const executionScore = candidate.fillQuality?.executionScore ?? null;
-    const activity = executionScore !== null ? Math.round(0.7 * volumeScore + 0.3 * executionScore) : volumeScore;
+    const activity = executionScore !== null ? Math.round(0.7 * tradedScore + 0.3 * executionScore) : tradedScore;
 
     return {
         matchQuality: MATCH_SCORES[interpretation.intent][match],

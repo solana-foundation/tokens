@@ -20,7 +20,7 @@ import { slidingWindowLimit } from './sliding-window-rate-limit';
  * cache outage degrades to the per-call caps rather than a hard 500/429.
  */
 
-export type ProviderBudgetKind = 'batch' | 'search' | 'risk';
+export type ProviderBudgetKind = 'batch' | 'search' | 'risk' | 'judge';
 
 function envInt(name: string, fallback: number): number {
     const value = Number(process.env[name]);
@@ -35,12 +35,16 @@ const DEFAULT_CALLS: Record<ProviderBudgetKind, number> = {
     // Live risk reads (snapshot misses) spend 1 provider lookup each. Its own
     // kind so risk lookups and search can't starve each other on a shared key.
     risk: 60,
+    // Judge calls that need ≥1 live lookup (mints without a stored snapshot):
+    // up to 40 mints × 2 provider endpoints per call, cached 10 min per mint.
+    judge: 60,
 };
 
 const CALLS_ENV: Record<ProviderBudgetKind, string> = {
     batch: 'TOKEN_LIST_PROVIDER_BATCH_CALLS_PER_WINDOW',
     search: 'TOKEN_LIST_PROVIDER_SEARCH_CALLS_PER_WINDOW',
     risk: 'TOKEN_RISK_PROVIDER_CALLS_PER_WINDOW',
+    judge: 'TOKEN_JUDGE_PROVIDER_CALLS_PER_WINDOW',
 };
 
 export function enforceProviderBudget(

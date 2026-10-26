@@ -35,6 +35,16 @@ export const JudgeCandidateSchema = Schema.Struct({
     holderCount: optionalNumber,
     /** ISO 8601 or epoch ms; unparseable values are treated as unknown. */
     createdAt: Schema.optional(Schema.NullOr(Schema.Union([Schema.String, Schema.Number]))),
+    // Further claims a caller on Birdeye / Jupiter / Webacy already has.
+    top10HoldersPercent: optionalNumber,
+    uniqueWallets24h: optionalNumber,
+    trades24h: optionalNumber,
+    fdv: optionalNumber,
+    circulatingSupply: optionalNumber,
+    totalSupply: optionalNumber,
+    mintable: Schema.optional(Schema.NullOr(Schema.Boolean)),
+    freezable: Schema.optional(Schema.NullOr(Schema.Boolean)),
+    lpLockedPercent: optionalNumber,
 });
 
 export type JudgeCandidateInput = typeof JudgeCandidateSchema.Type;
@@ -91,7 +101,20 @@ export function rawFromJudgeCandidate(input: JudgeCandidateInput): RawCandidate 
     raw.priceChange24hPercent = finite(input.priceChange24hPercent);
     raw.holderCount = finite(input.holderCount);
     raw.tokenMintTime = createdAtIso(input.createdAt);
+    raw.top10HoldersPercent = clampPercent(finite(input.top10HoldersPercent));
+    raw.uniqueWallet24h = finite(input.uniqueWallets24h);
+    raw.trade24h = finite(input.trades24h);
+    raw.fdv = finite(input.fdv);
+    raw.circulatingSupply = finite(input.circulatingSupply);
+    raw.totalSupply = finite(input.totalSupply);
+    raw.mintable = typeof input.mintable === 'boolean' ? input.mintable : null;
+    raw.freezable = typeof input.freezable === 'boolean' ? input.freezable : null;
+    raw.lpLockedPercent = clampPercent(finite(input.lpLockedPercent));
     return raw;
+}
+
+function clampPercent(value: number | null): number | null {
+    return value === null ? null : Math.max(0, Math.min(100, value));
 }
 
 /**

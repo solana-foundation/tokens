@@ -11,8 +11,8 @@ All endpoints below use `https://api.tokens.xyz/v2` with an `x-api-key` header; 
 `GET /v2/search` and `GET /v2/resolve` share the per-key `search` provider budget (120 calls per 10 minutes by default) with
 `GET /v2/lists/search-tokens`. The budget is charged only when a query's candidate set is not already
 in the server-side cache (about 45 seconds per normalized query), so repeating or refining a query is
-free; see [Provider lookup budget](/v2/errors-and-limits#provider-lookup-budget). `POST /v2/judge` never
-reaches the provider and draws no budget.
+free; see [Provider lookup budget](/v2/errors-and-limits#provider-lookup-budget). `POST /v2/judge` draws
+from its own `judge` budget only when a call needs a live lookup for a mint we hold no snapshot for.
 
 ## `GET /v2/search`
 
@@ -28,7 +28,7 @@ Ranked results under a policy, with the suppressed candidates and the gate that 
 - Gate overrides (optional, each layered on the preset): `minLiquidityUsd` (number ≥ 0 or
   `none`), `minAgeDays` (integer ≥ 0 or `none`), `minMarketScore` (integer 0–100 or `none`; only
   gates tokens whose score is known), `requireMarketData`, `suppressImpersonation`,
-  `verifiedOnly` (booleans). `none`, `null` and `off` disable a numeric gate; booleans also
+  `verifiedOnly`, `suppressUnsafeAuthorities` (booleans). `none`, `null` and `off` disable a numeric gate; booleans also
   accept `1`/`0` and `yes`/`no`.
 - `limit` (1–50, default 10): ranked results only; `suppressed` is never truncated. Values above
   the max are clamped.
@@ -52,6 +52,7 @@ interface SearchResponse {
             minMarketScore: number | null;
             minAgeDays: number | null;
             requireRegistry: boolean;
+            suppressUnsafeAuthorities: boolean;
         };
         overrides: string[]; // gate keys your request changed from the preset
     };
@@ -81,8 +82,9 @@ interface SearchResponse {
         score: { total: number; components: Record<string, number> };
         reasons: string[];   // why it ranks: exact_symbol_match, curated_list_member, deep_liquidity, …
         warnings: string[];  // caution signals: possible_impersonation, new_token, unverified, weak_market_score, …
-        badges: string[];    // curated:<list>, tier1|tier2|tier3, grade:A|B|C, advisory:<status>
+        badges: string[];    // curated:<list>, tier1|tier2|tier3, grade:A|B|C, advisory:<status>, band:<category>
         verified: boolean;   // a curated-registry variant exists for this mint
+        dataSources: { market: DataSource; holders: DataSource; security: DataSource }; // 'snapshot' | 'provider' | 'caller' | 'none'
     }>;
     suppressed?: Array<{
         mint: string;
@@ -179,9 +181,16 @@ curl -sS "$API_BASE_URL/v2/resolve?q=USDC" -H "x-api-key: $API_KEY"
 Bring your own candidates. You already have a search (Birdeye, Jupiter, your own index, a
 watchlist); send the mints it returned and get the same judged response as `GET /v2/search`: hard
 gates under a policy, weighted score, `reasons`/`warnings`/`badges`, and the suppressed rows with
-the gate that fired. Nothing is looked up at the live provider, so the call draws **no provider
-budget** (only the standard rate limit applies) and its latency is our own enrichment plus the
-pipeline.
+the gate that fired.
+
+**Any mint gets the same read-out.** A mint we hold a stored snapshot for is judged on it. A mint we
+do not is looked up live (market overview plus holder, age and authority facts), cached per mint
+for ten minutes, with one soft deadline (~1.5 s) for the whole request; a mint whose lookup misses
+the deadline is judged on what we have and `sources.live` reads `degraded`, and the late result
+still warms the cache for the next call. Only a call that needs at least one live lookup draws
+from the per-key `judge` provider budget (60 calls per 10 minutes by default); a fully covered or
+fully cached call costs no budget. See
+[What every candidate is enriched with](/v2/concepts/risk-aware-search#what-every-candidate-is-enriched-with).
 
 **Auth**: `x-api-key`, scope `assets:read`. Not cached (`Cache-Control: no-store`).
 
@@ -193,7 +202,7 @@ interface JudgeRequest {
     policy?: 'strict' | 'default' | 'degen';
     // the same gate overrides as GET /v2/search, as JSON values or strings:
     minLiquidityUsd?: number | 'none'; minAgeDays?: number | 'none'; minMarketScore?: number | 'none';
-    requireMarketData?: boolean; suppressImpersonation?: boolean; verifiedOnly?: boolean;
+    requireMarketData?: boolean; suppressImpersonation?: boolean; verifiedOnly?: boolean; suppressUnsafeAuthorities?: boolean;
     limit?: number;          // 1–50, default 10 (ranked results only)
     includeSuppressed?: boolean; // default true
     candidates: Array<{      // 1–40, deduped by mint (first occurrence wins, your order is kept)
@@ -202,15 +211,18 @@ interface JudgeRequest {
         price?: number | null; liquidityUsd?: number | null; volume24hUsd?: number | null;
         marketCapUsd?: number | null; priceChange24hPercent?: number | null; holderCount?: number | null;
         createdAt?: string | number | null; // ISO 8601 or epoch (s or ms)
+        // further claims your source may already have; used only where we hold nothing better
+        top10HoldersPercent?: number | null; uniqueWallets24h?: number | null; trades24h?: number | null;
+        fdv?: number | null; circulatingSupply?: number | null; totalSupply?: number | null;
+        mintable?: boolean | null; freezable?: boolean | null; lpLockedPercent?: number | null;
     }>;
 }
 ```
 
 Everything except `candidates[].mint` is optional. Caller fields are **claims** with the same trust
-as a live-provider hit: symbol and name are checked against the protected-symbol index, and
-market fields are overlaid by our own snapshots wherever we have them (ours win). A mint we know
-nothing about, sent bare, is judged on your claims alone and comes back `unverified` with
-`no_market_data`, which is the honest answer.
+as a live-provider hit: symbol and name are checked against the protected-symbol index, and every
+other field is used only where neither our snapshot nor the live lookup supplies it (ours win).
+`suppressUnsafeAuthorities` joins the gate overrides.
 
 ### Response
 
@@ -219,8 +231,12 @@ The [`SearchResponse`](#response) shape, with:
 - `query`: the `q` you sent, or `null`. Without `q` no candidate can match-score, so ranking is
   credibility alone (curation, registry, market depth, age); send `q` when you have the user's
   input.
-- `sources`: `{ caller: 'ok', provider: 'disabled', db: 'ok', registry: 'ok', cache: 'bypass' }`.
-  Each result's attestations may name `caller` as a candidate source.
+- `sources`: `{ caller: 'ok', provider, db: 'ok', registry: 'ok', cache: 'bypass', live }` where
+  `live` is `'none'` (every mint was covered by a snapshot), `'ok'`, `'degraded'` (a lookup missed
+  the deadline or failed; those mints were judged on what we had) or `'disabled'`; `provider`
+  mirrors it.
+- Every result carries `dataSources: { market, holders, security }`, each `'snapshot' |
+  'provider' | 'caller' | 'none'`.
 
 ### Errors
 

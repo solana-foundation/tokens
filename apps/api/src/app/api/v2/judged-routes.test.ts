@@ -31,7 +31,16 @@ const FIXTURE_BY_MINT: Record<string, () => EnrichedCandidate> = {
 function bareEnriched(raw: import('@/lib/judgment/candidates').RawCandidate): EnrichedCandidate {
     return {
         ...raw,
-        top10HoldersPercent: null,
+        top10HoldersPercent: raw.top10HoldersPercent ?? null,
+        uniqueWallet24h: raw.uniqueWallet24h ?? null,
+        trade24h: raw.trade24h ?? null,
+        fdv: raw.fdv ?? null,
+        circulatingSupply: raw.circulatingSupply ?? null,
+        totalSupply: raw.totalSupply ?? null,
+        lastTradeAt: null,
+        category: null,
+        security: null,
+        dataSources: { market: 'caller', holders: 'none', security: 'none' },
         curatedListIds: [],
         registry: null,
         risk: null,
@@ -46,6 +55,14 @@ mock.module('@/lib/judgment/candidates', () => ({
     enrichCandidates: (raws: import('@/lib/judgment/candidates').RawCandidate[]) => {
         enrichCalls += 1;
         return Effect.succeed(raws.map(raw => FIXTURE_BY_MINT[raw.mint]?.() ?? bareEnriched(raw)));
+    },
+    enrichCandidatesDetailed: (raws: import('@/lib/judgment/candidates').RawCandidate[]) => {
+        enrichCalls += 1;
+        return Effect.succeed({
+            candidates: raws.map(raw => FIXTURE_BY_MINT[raw.mint]?.() ?? bareEnriched(raw)),
+            live: 'none',
+            liveLookups: 0,
+        });
     },
     gatherCandidates: (
         _query: string,
@@ -496,10 +513,22 @@ describe('POST /v2/judge', () => {
         expect(body.query).toBe('USDC');
         expect(body.interpretation.intent).toBe('ticker');
         expect(body.policy.id).toBe('default');
-        expect(body.sources).toEqual({ caller: 'ok', provider: 'disabled', db: 'ok', registry: 'ok', cache: 'bypass' });
+        expect(body.sources).toEqual({
+            caller: 'ok',
+            provider: 'disabled',
+            db: 'ok',
+            registry: 'ok',
+            cache: 'bypass',
+            live: 'none',
+        });
         expect(body.results.map(r => r.mint)).toEqual([USDC_MINT]);
         expect(body.results[0]?.verified).toBe(true);
         expect(body.results[0]?.reasons).toContain('exact_symbol_match');
+        expect((body.results[0] as { dataSources?: unknown }).dataSources).toEqual({
+            market: 'snapshot',
+            holders: 'snapshot',
+            security: 'none',
+        });
         expect(body.suppressed!.map(s => s.mint)).toEqual([FAKE_USDC_MINT]);
         expect(body.suppressed![0]?.suppressedBy).toContain('gate_impersonation');
         expect(enrichCalls).toBe(1);

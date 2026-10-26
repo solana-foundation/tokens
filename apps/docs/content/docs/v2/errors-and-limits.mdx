@@ -88,7 +88,7 @@ they share a per-**key** budget on top of the standard rate limits:
 |---|---|---|
 | `search` | `GET /v2/search`, `GET /v2/resolve`, `GET /v2/lists/search-tokens` | 120 calls / 10 min |
 | `batch` | `POST /v2/lists/{slug}/members`, `PUT /v2/lists/{slug}/members/{mint}` | 30 calls / 10 min |
-| — | `POST /v2/judge` | not budgeted: the caller brings the candidates, nothing is looked up at the provider |
+| `judge` | `POST /v2/judge`, charged only by calls that need a live lookup for a mint with no stored snapshot (up to 40 mints, two provider endpoints each, cached 10 min per mint) | 60 calls / 10 min |
 
 - Every **call that misses the candidate cache** is charged, not every lookup; the API cannot know
   in advance how many mints will miss the local index. Within a batch call, at most about 50 unknown mints are resolved against

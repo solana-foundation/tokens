@@ -15,6 +15,26 @@ export interface ProviderMarketOverview {
     marketCap: number | null;
     holder: number | null;
     volume24hUSD: number | null;
+    // Optional extras (absent on cache entries written before they existed).
+    price?: number | null;
+    priceChange24hPercent?: number | null;
+    fdv?: number | null;
+    uniqueWallet24h?: number | null;
+    trade24h?: number | null;
+    totalSupply?: number | null;
+    circulatingSupply?: number | null;
+    /** ms epoch of the last trade the provider saw. */
+    lastTradeAt?: number | null;
+    symbol?: string | null;
+    name?: string | null;
+    decimals?: number | null;
+    logoURI?: string | null;
+}
+
+function toText(value: unknown): string | null {
+    if (typeof value !== 'string') return null;
+    const trimmed = value.trim();
+    return trimmed ? trimmed : null;
 }
 
 function toFinite(value: unknown): number | null {
@@ -38,11 +58,24 @@ export function normalizeProviderOverview(payload: unknown): ProviderMarketOverv
     const marketCap = toFinite(overview.marketCap);
     if (!((liquidity ?? 0) > 0) && !((marketCap ?? 0) > 0)) return null;
 
+    const lastTradeUnix = toFinite(overview.lastTradeUnixTime);
     return {
         liquidity,
         marketCap,
         holder: toFinite(overview.holder),
         volume24hUSD: toFinite(overview.v24hUSD),
+        price: toFinite(overview.price),
+        priceChange24hPercent: toFinite(overview.priceChange24hPercent),
+        fdv: toFinite(overview.fdv),
+        uniqueWallet24h: toFinite(overview.uniqueWallet24h),
+        trade24h: toFinite(overview.trade24h),
+        totalSupply: toFinite(overview.totalSupply),
+        circulatingSupply: toFinite(overview.circulatingSupply),
+        lastTradeAt: lastTradeUnix === null ? null : lastTradeUnix > 1e12 ? lastTradeUnix : lastTradeUnix * 1000,
+        symbol: toText(overview.symbol),
+        name: toText(overview.name),
+        decimals: toFinite(overview.decimals),
+        logoURI: toText(overview.logoURI),
     };
 }
 

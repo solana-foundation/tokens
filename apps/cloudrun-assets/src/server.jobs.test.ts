@@ -362,6 +362,7 @@ const baseDeps = {
     tokensReadsRepo: noopTokensReadsRepo,
     trendingReadsRepo: noopTrendingReadsRepo,
     fillQualityReadsRepo: noopFillQualityReadsRepo,
+    assetRiskReadsRepo: { findLatestByMints: async () => [] },
     assetCollectionsReadsRepo: noopAssetCollectionsReadsRepo,
     tokenListsReadsRepo: noopTokenListsReadsRepo,
     tokenListsMutationsDeps: noopTokenListsMutationsDeps,

@@ -70,6 +70,18 @@ export function evaluateGates(
         suppressions.push('gate_unverified');
     }
 
+    // Unattested mints with a live mint or freeze authority can have their
+    // supply inflated or their holders frozen at will. Registry/curated
+    // assets are exempt: issuers legitimately keep both.
+    if (
+        policy.gates.suppressUnsafeAuthorities &&
+        !candidate.registry &&
+        candidate.curatedListIds.length === 0 &&
+        (candidate.security?.mintable === true || candidate.security?.freezable === true)
+    ) {
+        suppressions.push('gate_unsafe_authorities');
+    }
+
     if (policy.gates.minAgeDays !== null) {
         const ageDays = tokenAgeDays(candidate, nowMs);
         // Unknown age is not "new" — only gate when the mint time is known.

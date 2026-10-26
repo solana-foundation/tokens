@@ -35,7 +35,13 @@ import { loadAdvisoriesOrEmpty } from '@/lib/advisories';
 import { getCuratedListSlugsByMint } from '@/lib/curated-membership';
 
 import { searchProviderTokens, type ProviderSearchToken } from '@/lib/birdeye-search';
-import { tokensSearchTokens, variantFillQualityGetLatestByMints, variantMarketsGetLatestByMints } from '@/lib/cloudrun';
+import {
+    assetRiskGetLatestByMints,
+    tokensSearchTokens,
+    variantFillQualityGetLatestByMints,
+    variantMarketsGetLatestByMints,
+    type AssetRiskDoc,
+} from '@/lib/cloudrun';
 import { listDeletedRefs } from '@/lib/deleted-refs';
 
 import {
@@ -53,9 +59,10 @@ import {
     type RawCandidate,
     type RawSourcesStatus,
 } from './candidate-cache';
+import { liveEnrich, type LiveEnrichmentOptions, type LiveOutcome } from './live-enrichment';
 import { registryClaimedSymbol } from './protected-symbols';
 import { riskFromMarket } from './risk';
-import type { CandidateSource, EnrichedCandidate, QueryInterpretation } from './types';
+import type { CandidateSource, DataSourceKind, EnrichedCandidate, QueryInterpretation } from './types';
 
 export type { RawCandidate } from './candidate-cache';
 
@@ -317,7 +324,7 @@ export function collectRawCandidates(
  * and run concurrently; advisories and curated membership come from their
  * own in-process caches.
  */
-export interface EnrichOptions {
+export interface EnrichOptions<E = never> {
     /**
      * When the raw set was collected. Provider-sourced market fields without a
      * stored market row are stamped with this as `dataAsOf`, so a cache hit
@@ -325,17 +332,43 @@ export interface EnrichOptions {
      * Defaults to now (an uncached collect).
      */
     collectedAtMs?: number;
+    /**
+     * Live tier: mints with no stored market row / risk row are looked up at
+     * the provider (cached), so every mint gets the same read-out. Off for the
+     * gathered routes today; `POST /v2/judge` passes its budget here.
+     */
+    live?: {
+        budget?: Effect.Effect<void, E>;
+        deadlineMs?: number;
+        /** Test seams. */
+        getRedis?: LiveEnrichmentOptions<E>['getRedis'];
+        scheduleAfterResponse?: LiveEnrichmentOptions<E>['scheduleAfterResponse'];
+        now?: () => number;
+    };
 }
 
-export function enrichCandidates(
+export interface EnrichedSet {
+    candidates: EnrichedCandidate[];
+    live: LiveOutcome;
+    liveLookups: number;
+}
+
+/**
+ * Overlay enrichment onto raw candidates. Best-effort throughout: absence
+ * means unknown, not bad. Resolution order per field is stored snapshot →
+ * live provider (when enabled for the route) → the raw candidate's claim.
+ * The four Cloud Run reads are independent and run concurrently; advisories
+ * and curated membership come from their own in-process caches.
+ */
+export function enrichCandidatesDetailed<E = never>(
     raws: readonly RawCandidate[],
-    options: EnrichOptions = {},
-): Effect.Effect<EnrichedCandidate[], never> {
+    options: EnrichOptions<E> = {},
+): Effect.Effect<EnrichedSet, E> {
     return Effect.gen(function* () {
         const mints = raws.map(raw => raw.mint);
-        if (mints.length === 0) return [];
+        if (mints.length === 0) return { candidates: [], live: 'none' as const, liveLookups: 0 };
 
-        const [marketRows, fillQualityRows, tombstonedList] = yield* Effect.all(
+        const [marketRows, fillQualityRows, tombstonedList, riskRows] = yield* Effect.all(
             [
                 Effect.all(
                     chunk(mints, CLOUDRUN_CHUNK).map(part =>
@@ -356,8 +389,16 @@ export function enrichCandidates(
                 listDeletedRefs({ refs: mints }).pipe(
                     tapErrorAndDefault('v2.lists.searchTokens.tombstones', [], { count: mints.length }),
                 ),
+                Effect.all(
+                    chunk(mints, CLOUDRUN_CHUNK).map(part =>
+                        assetRiskGetLatestByMints({ mints: part }).pipe(
+                            tapErrorAndDefault('v2.lists.searchTokens.assetRisk', [], { count: part.length }),
+                        ),
+                    ),
+                    { concurrency: 2 },
+                ).pipe(Effect.map(rows => rows.flat())),
             ],
-            { concurrency: 3 },
+            { concurrency: 4 },
         );
         const tombstonedRefs = new Set(tombstonedList);
 
@@ -376,7 +417,7 @@ export function enrichCandidates(
             marketAsOfByMint.set(row.mint, fields.lastFetchedAt as number);
         }
 
-        const fillQualityByMint = new Map<string, { executionScore: number; botVolumeRatio: number }>();
+        const fillQualityByMint = new Map<string, NonNullable<EnrichedCandidate['fillQuality']>>();
         for (const row of fillQualityRows) {
             const snapshot = executionQualitySnapshotFromConvexFillQuality(
                 (row as { fillQuality?: object | null }).fillQuality,
@@ -385,9 +426,35 @@ export function enrichCandidates(
                 fillQualityByMint.set((row as { mint: string }).mint, {
                     executionScore: snapshot.executionScore,
                     botVolumeRatio: snapshot.botVolumeRatio,
+                    flowSourceCount: snapshot.flowSourceCount,
+                    markoutBps: snapshot.markoutBps,
                 });
             }
         }
+
+        const riskByMint = new Map<string, AssetRiskDoc>();
+        for (const row of riskRows) {
+            const doc = (row as { mint: string; risk?: AssetRiskDoc | null }).risk;
+            if (doc) riskByMint.set(row.mint, doc);
+        }
+
+        // Live tier: only what no stored row covers.
+        const liveResult = options.live
+            ? yield* liveEnrich(
+                  raws.map(raw => ({
+                      mint: raw.mint,
+                      market: !marketByMint.has(raw.mint),
+                      security: !riskByMint.has(raw.mint),
+                  })),
+                  {
+                      budget: options.live.budget,
+                      deadlineMs: options.live.deadlineMs,
+                      getRedis: options.live.getRedis,
+                      scheduleAfterResponse: options.live.scheduleAfterResponse,
+                      now: options.live.now,
+                  },
+              )
+            : null;
 
         // DB-backed effective membership; a transient failure degrades to
         // no curated attestations for this request (last-good cache absorbs
@@ -405,37 +472,104 @@ export function enrichCandidates(
         // data we have, not unknown.
         const enrichedAtMs = options.collectedAtMs ?? Date.now();
 
-        return raws.map((raw): EnrichedCandidate => {
+        const candidates = raws.map((raw): EnrichedCandidate => {
             const market = marketByMint.get(raw.mint) ?? null;
             const registryMatch = getVariantByMint(raw.mint);
             const fillQuality = fillQualityByMint.get(raw.mint) ?? null;
+            const riskRow = riskByMint.get(raw.mint) ?? null;
+            const live = liveResult?.byMint.get(raw.mint);
+            const liveMarket = live?.market ?? null;
+            const liveSecurity = live?.security ?? null;
             // Outside the registry conditional: DB-only admin tokens get
             // curated attestations/badges too.
             const curatedListIds = curatedByMint.get(raw.mint) ?? [];
-            const liquidityUsd = market?.liquidity ?? raw.liquidityUsd;
-            const volume24hUsd = market?.volume24hUSD ?? raw.volume24hUsd;
-            const marketCapUsd = market?.marketCap ?? raw.marketCapUsd;
-            const holderCount = market?.holder ?? raw.holderCount;
-            // The asset-risk cache is not ported: holder concentration and
-            // Webacy tags are unknown here. The market score/grade is computed
-            // from the overlaid market fields so `minMarketScore`,
-            // `weak_market_score` and `grade:*` badges reflect real data.
-            const top10HoldersPercent = null;
+
+            // ---- market: snapshot → live → claim
+            const liquidityUsd = market?.liquidity ?? liveMarket?.liquidity ?? raw.liquidityUsd;
+            const volume24hUsd = market?.volume24hUSD ?? liveMarket?.volume24hUSD ?? raw.volume24hUsd;
+            const marketCapUsd = market?.marketCap ?? liveMarket?.marketCap ?? raw.marketCapUsd;
+            const holderCount = market?.holder ?? liveMarket?.holder ?? riskRow?.holderCount ?? raw.holderCount;
+            const marketSource: DataSourceKind = market
+                ? 'snapshot'
+                : liveMarket
+                  ? 'provider'
+                  : raw.price !== null || raw.liquidityUsd !== null || raw.volume24hUsd !== null
+                    ? 'caller'
+                    : 'none';
+
+            // ---- holders: stored risk row → live security → claim
+            const top10HoldersPercent =
+                riskRow?.top10HoldersPercent ?? liveSecurity?.top10HoldersPercent ?? raw.top10HoldersPercent ?? null;
+            const tokenMintTime = raw.tokenMintTime ?? riskRow?.tokenMintTime ?? liveSecurity?.tokenMintTime ?? null;
+            const holdersSource: DataSourceKind =
+                riskRow?.top10HoldersPercent != null || riskRow?.tokenMintTime
+                    ? 'snapshot'
+                    : liveSecurity?.top10HoldersPercent != null || liveSecurity?.tokenMintTime
+                      ? 'provider'
+                      : raw.top10HoldersPercent != null || raw.tokenMintTime
+                        ? 'caller'
+                        : 'none';
+
+            // ---- security: stored row → live → claim (per flag)
+            const storedSec = riskRow?.security ?? null;
+            const security: EnrichedCandidate['security'] =
+                storedSec ||
+                liveSecurity ||
+                raw.mintable != null ||
+                raw.freezable != null ||
+                raw.lpLockedPercent != null
+                    ? {
+                          mintable: storedSec?.mintable ?? liveSecurity?.mintable ?? raw.mintable ?? null,
+                          freezable: storedSec?.freezable ?? liveSecurity?.freezable ?? raw.freezable ?? null,
+                          mutableMetadata: storedSec?.mutableMetadata ?? liveSecurity?.mutableMetadata ?? null,
+                          transferTax: storedSec?.transferTax ?? liveSecurity?.transferTax ?? null,
+                          lpLockedPercent:
+                              riskRow?.lpLockedPercent ?? liveSecurity?.lpLockedPercent ?? raw.lpLockedPercent ?? null,
+                          devHoldingPercent: storedSec?.devHoldingPercent ?? null,
+                          sniperHoldingPercent: storedSec?.sniperHoldingPercent ?? null,
+                          bundlerHoldingPercent: storedSec?.bundlerHoldingPercent ?? null,
+                      }
+                    : null;
+            const securitySource: DataSourceKind = storedSec
+                ? 'snapshot'
+                : liveSecurity
+                  ? 'provider'
+                  : security
+                    ? 'caller'
+                    : 'none';
+
+            const dataAsOf =
+                marketAsOfByMint.get(raw.mint) ??
+                (liveMarket ? (live?.at ?? enrichedAtMs) : null) ??
+                (raw.sources.includes('provider') && raw.price !== null ? enrichedAtMs : null) ??
+                market?.lastTradeAt ??
+                null;
 
             return {
                 mint: raw.mint,
-                symbol: market?.symbol ?? raw.symbol,
-                name: market?.name ?? raw.name,
-                decimals: market?.decimals ?? raw.decimals,
-                logoURI: market?.logoURI ?? raw.logoURI,
-                price: market?.price ?? raw.price,
+                symbol: market?.symbol ?? liveMarket?.symbol ?? raw.symbol,
+                name: market?.name ?? liveMarket?.name ?? raw.name,
+                decimals: market?.decimals ?? liveMarket?.decimals ?? raw.decimals,
+                logoURI: market?.logoURI ?? liveMarket?.logoURI ?? raw.logoURI,
+                price: market?.price ?? liveMarket?.price ?? raw.price,
                 liquidityUsd,
                 volume24hUsd,
                 marketCapUsd,
-                priceChange24hPercent: market?.priceChange24hPercent ?? raw.priceChange24hPercent,
+                priceChange24hPercent:
+                    market?.priceChange24hPercent ?? liveMarket?.priceChange24hPercent ?? raw.priceChange24hPercent,
                 holderCount,
                 top10HoldersPercent,
-                tokenMintTime: raw.tokenMintTime,
+                tokenMintTime,
+                uniqueWallet24h: market?.uniqueWallet24h ?? liveMarket?.uniqueWallet24h ?? raw.uniqueWallet24h ?? null,
+                trade24h: market?.trade24h ?? liveMarket?.trade24h ?? raw.trade24h ?? null,
+                fdv: market?.fdv ?? liveMarket?.fdv ?? raw.fdv ?? null,
+                circulatingSupply:
+                    market?.circulatingSupply ?? liveMarket?.circulatingSupply ?? raw.circulatingSupply ?? null,
+                totalSupply: market?.totalSupply ?? liveMarket?.totalSupply ?? raw.totalSupply ?? null,
+                lastTradeAt: market?.lastTradeAt ?? liveMarket?.lastTradeAt ?? null,
+                category: registryMatch?.asset.category ?? null,
+                security,
+                dataSources: { market: marketSource, holders: holdersSource, security: securitySource },
                 sources: raw.sources.length > 0 ? [...raw.sources] : ['db'],
                 curatedListIds,
                 registry: registryMatch
@@ -449,25 +583,40 @@ export function enrichCandidates(
                           trustTier: registryMatch.variant.trustTier ?? null,
                       }
                     : null,
-                risk: riskFromMarket({
-                    mint: raw.mint,
-                    liquidityUsd,
-                    marketCapUsd,
-                    holderCount,
-                    top10HoldersPercent,
-                    volume24hUsd,
-                    tokenMintTime: raw.tokenMintTime,
-                    curatedListIds,
-                }),
+                risk: {
+                    ...riskFromMarket({
+                        mint: raw.mint,
+                        liquidityUsd,
+                        marketCapUsd,
+                        holderCount,
+                        top10HoldersPercent,
+                        volume24hUsd,
+                        tokenMintTime,
+                        curatedListIds,
+                    }),
+                    webacyTags: riskRow?.tags ?? [],
+                },
                 fillQuality,
                 tombstoned: tombstonedRefs.has(raw.mint.toLowerCase()) || tombstonedRefs.has(raw.mint),
                 advisory: advisoriesByMint.get(raw.mint) ?? null,
-                dataAsOf:
-                    marketAsOfByMint.get(raw.mint) ??
-                    (raw.sources.includes('provider') && raw.price !== null ? enrichedAtMs : null),
+                dataAsOf,
             };
         });
+
+        return {
+            candidates,
+            live: liveResult?.outcome ?? 'none',
+            liveLookups: liveResult?.liveLookups ?? 0,
+        };
     });
+}
+
+/** Enrichment without the live tier (the gathered routes). */
+export function enrichCandidates(
+    raws: readonly RawCandidate[],
+    options: Omit<EnrichOptions<never>, 'live'> = {},
+): Effect.Effect<EnrichedCandidate[], never> {
+    return enrichCandidatesDetailed(raws, options).pipe(Effect.map(set => set.candidates));
 }
 
 export interface GatherOptions<E> {

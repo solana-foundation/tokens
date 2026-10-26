@@ -1,10 +1,12 @@
 import { Effect } from 'effect';
 
 import { route, type PlatformAuthContext } from '@/effect/next-route';
+import { enforceProviderBudget } from '@/effect/provider-budget';
 import { emitEvent, readJsonBody } from '@tokens/effect';
 
-import { enrichCandidates, type CandidateSourcesStatus } from '@/lib/judgment/candidates';
+import { enrichCandidatesDetailed, type CandidateSourcesStatus } from '@/lib/judgment/candidates';
 import { classifyQuery } from '@/lib/judgment/intent';
+import type { LiveOutcome } from '@/lib/judgment/live-enrichment';
 import { POLICY_VERSION } from '@/lib/judgment/policies';
 import { SCORING_VERSION, type QueryInterpretation } from '@/lib/judgment/types';
 import {
@@ -27,11 +29,13 @@ const NO_QUERY: QueryInterpretation = { intent: 'name', normalizedQuery: '', had
  * gates under a policy, weighted score, reasons/warnings/badges, and the
  * suppressed rows with the gate that fired.
  *
- * What it does NOT do: call the live provider. There is no provider lookup,
- * so no provider budget is charged — only the standard rate limit applies —
- * and latency is enrichment (our own snapshots) plus the pure pipeline.
- * Mints we know nothing about are judged on the caller's claims alone and
- * come back `unverified` / `no_market_data`, which is the honest answer.
+ * Any mint gets the same read-out. Mints we hold a stored snapshot for are
+ * judged on it; mints we do not are looked up live at the provider (market
+ * overview + holder/authority facts), cached per mint, under one soft
+ * deadline for the whole request. Only requests that need at least one live
+ * lookup draw from the per-key `judge` provider budget; a fully covered or
+ * fully cached request costs no budget. Every result says where its inputs
+ * came from (`dataSources`), and `sources.live` reports the tier's outcome.
  *
  * `q` is optional and only sharpens match scoring (exact_symbol_match …);
  * `policy`, the gate overrides, `limit` and `includeSuppressed` are the same
@@ -52,7 +56,10 @@ export const POST = route(
             const interpretation = params.q ? classifyQuery(params.q) : NO_QUERY;
 
             const enrichStart = Date.now();
-            const candidates = yield* enrichCandidates(raws);
+            const enriched = yield* enrichCandidatesDetailed(raws, {
+                live: { budget: enforceProviderBudget(ctx.platformAuth, 'judge') },
+            });
+            const candidates = enriched.candidates;
             const enrichMs = Date.now() - enrichStart;
 
             const { results, suppressed } = yield* judgeEnriched(
@@ -62,12 +69,13 @@ export const POST = route(
                 params.limit,
             );
 
-            const sources: CandidateSourcesStatus & { caller: 'ok' } = {
+            const sources: CandidateSourcesStatus & { caller: 'ok'; live: LiveOutcome } = {
                 caller: 'ok',
-                provider: 'disabled',
+                provider: enriched.live === 'ok' ? 'ok' : enriched.live === 'degraded' ? 'degraded' : 'disabled',
                 db: 'ok',
                 registry: 'ok',
                 cache: 'bypass',
+                live: enriched.live,
             };
             const latencyMs = Date.now() - startedAt;
             emitEvent({
@@ -75,8 +83,9 @@ export const POST = route(
                 route: 'judge',
                 intent: params.q ? interpretation.intent : 'none',
                 cache: 'bypass',
-                provider: 'disabled',
-                provider_outcome: 'disabled',
+                provider: sources.provider,
+                provider_outcome: enriched.live,
+                live_lookups: enriched.liveLookups,
                 db: 'ok',
                 candidates: candidates.length,
                 results: results.length,

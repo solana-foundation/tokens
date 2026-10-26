@@ -4,6 +4,7 @@
  * golden-set tests feed it fixtures.
  */
 
+import { bandFor, isCategoryBand } from './bands';
 import { buildAttestations, normalizeClaim, tokenAgeDays } from './claims';
 import { dominanceDetail, withDynamicDominance, type DominanceEntry } from './dominance';
 import { evaluateGates, hasMarketData } from './gates';
@@ -21,6 +22,17 @@ import type {
 } from './types';
 
 const STALE_DATA_THRESHOLD_MS = 30 * 60_000;
+const NO_RECENT_TRADES_MS = 24 * 60 * 60_000;
+const THIN_FLOAT_MAX_RATIO = 0.1;
+const LOW_LP_LOCKED_MAX_PERCENT = 50;
+const DEV_HOLDING_MAX_PERCENT = 10;
+const SNIPER_BUNDLE_MAX_PERCENT = 20;
+const TOXIC_MARKOUT_BPS = 50;
+
+/** Registry/curated assets keep authorities legitimately (stablecoin issuers, tokenized stocks). */
+function authorityExempt(candidate: EnrichedCandidate): boolean {
+    return candidate.registry !== null || candidate.curatedListIds.length > 0;
+}
 
 function buildReasons(
     candidate: EnrichedCandidate,
@@ -29,6 +41,7 @@ function buildReasons(
     dominance?: DominanceEntry | null,
 ): ReasonCode[] {
     const reasons: ReasonCode[] = [];
+    const band = bandFor(candidate);
 
     switch (classifyMatch(candidate, interpretation)) {
         case 'mint':
@@ -55,27 +68,33 @@ function buildReasons(
         reasons.push('registry_variant');
     }
     if (dominance) reasons.push('market_leader');
-    if ((candidate.liquidityUsd ?? 0) >= 1_000_000) reasons.push('deep_liquidity');
-    if ((candidate.volume24hUsd ?? 0) >= 250_000) reasons.push('high_activity');
+    if ((candidate.liquidityUsd ?? 0) >= band.deepLiquidityUsd) reasons.push('deep_liquidity');
+    if ((candidate.volume24hUsd ?? 0) >= band.sustainedVolumeUsd) reasons.push('high_activity');
 
     const ageDays = tokenAgeDays(candidate, nowMs);
     if (ageDays !== null && ageDays >= 90) reasons.push('established_token');
 
-    if ((candidate.fillQuality?.executionScore ?? 0) >= 70) reasons.push('strong_execution_quality');
+    // Execution quality: a strong score, corroborated by several flow
+    // sources when that count is known (one venue can fake a score).
+    const executionScore = candidate.fillQuality?.executionScore ?? 0;
+    const flowSources = candidate.fillQuality?.flowSourceCount;
+    if (executionScore >= 70 && (flowSources === undefined || flowSources === null || flowSources >= 3)) {
+        reasons.push('strong_execution_quality');
+    }
+
+    if ((candidate.uniqueWallet24h ?? 0) >= 1_000) reasons.push('active_wallets');
+    if ((candidate.security?.lpLockedPercent ?? 0) >= 80) reasons.push('locked_liquidity');
 
     return reasons;
 }
 
-function buildWarnings(
-    candidate: EnrichedCandidate,
-    collision: CollisionVerdict,
-    nowMs: number,
-): WarningCode[] {
+function buildWarnings(candidate: EnrichedCandidate, collision: CollisionVerdict, nowMs: number): WarningCode[] {
     const warnings: WarningCode[] = [];
+    const band = bandFor(candidate);
 
     if (!hasMarketData(candidate)) {
         warnings.push('no_market_data');
-    } else if ((candidate.liquidityUsd ?? 0) < 10_000) {
+    } else if ((candidate.liquidityUsd ?? 0) < band.lowLiquidityUsd) {
         warnings.push('low_liquidity');
     }
 
@@ -111,6 +130,46 @@ function buildWarnings(
     // it is flagged. (compromised/blocked are gates, not warnings.)
     if (candidate.advisory?.status === 'caution') warnings.push('advisory_caution');
 
+    // Authority / launch hygiene. Unknown (`null`) never warns.
+    const security = candidate.security;
+    if (security && !authorityExempt(candidate)) {
+        if (security.mintable === true) warnings.push('mint_authority_active');
+        if (security.freezable === true) warnings.push('freeze_authority_active');
+        if (security.mutableMetadata === true) warnings.push('mutable_metadata');
+    }
+    if (security?.transferTax === true) warnings.push('transfer_tax');
+    if (
+        security?.lpLockedPercent !== null &&
+        security?.lpLockedPercent !== undefined &&
+        security.lpLockedPercent < LOW_LP_LOCKED_MAX_PERCENT &&
+        !candidate.registry
+    ) {
+        warnings.push('low_lp_locked');
+    }
+    if ((security?.devHoldingPercent ?? 0) > DEV_HOLDING_MAX_PERCENT && !candidate.registry) {
+        warnings.push('dev_holding_high');
+    }
+    if (
+        (security?.sniperHoldingPercent ?? 0) + (security?.bundlerHoldingPercent ?? 0) > SNIPER_BUNDLE_MAX_PERCENT &&
+        !candidate.registry
+    ) {
+        warnings.push('sniper_bundle_heavy');
+    }
+
+    // Supply and trade recency from the market row.
+    if (
+        candidate.circulatingSupply !== null &&
+        candidate.totalSupply !== null &&
+        candidate.totalSupply > 0 &&
+        candidate.circulatingSupply / candidate.totalSupply < THIN_FLOAT_MAX_RATIO
+    ) {
+        warnings.push('thin_float');
+    }
+    if (candidate.lastTradeAt !== null && nowMs - candidate.lastTradeAt > NO_RECENT_TRADES_MS) {
+        warnings.push('no_recent_trades');
+    }
+    if ((candidate.fillQuality?.markoutBps ?? 0) > TOXIC_MARKOUT_BPS) warnings.push('toxic_flow');
+
     return warnings;
 }
 
@@ -122,6 +181,8 @@ function buildBadges(candidate: EnrichedCandidate): string[] {
     }
     if (candidate.risk?.grade) badges.push(`grade:${candidate.risk.grade}`);
     if (candidate.advisory) badges.push(`advisory:${candidate.advisory.status}`);
+    const band = bandFor(candidate);
+    if (isCategoryBand(band)) badges.push(`band:${band.id}`);
     return badges;
 }
 
@@ -163,6 +224,7 @@ export function judgeCandidate(
         reasons: buildReasons(candidate, interpretation, nowMs, dominance),
         warnings: buildWarnings(candidate, collision, nowMs),
         badges: buildBadges(candidate),
+        dataSources: candidate.dataSources,
     };
 
     return { judged, suppressedBy };

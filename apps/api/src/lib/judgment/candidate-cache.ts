@@ -46,6 +46,16 @@ export interface RawCandidate {
     priceChange24hPercent: number | null;
     holderCount: number | null;
     tokenMintTime: string | null;
+    // Claims a caller may supply on /v2/judge (absent from provider/index hits).
+    top10HoldersPercent?: number | null;
+    uniqueWallet24h?: number | null;
+    trade24h?: number | null;
+    fdv?: number | null;
+    circulatingSupply?: number | null;
+    totalSupply?: number | null;
+    mintable?: boolean | null;
+    freezable?: boolean | null;
+    lpLockedPercent?: number | null;
     sources: CandidateSource[];
 }
 

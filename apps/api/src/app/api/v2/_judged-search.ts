@@ -80,6 +80,7 @@ export const JUDGED_PARAM_KEYS = [
     'requireMarketData',
     'suppressImpersonation',
     'verifiedOnly',
+    'suppressUnsafeAuthorities',
     'limit',
     'includeSuppressed',
 ] as const;
@@ -203,6 +204,8 @@ export function parseJudgedParams(
         if (suppressImpersonation !== undefined) overrides.suppressImpersonation = suppressImpersonation;
         const verifiedOnly = yield* parseBooleanParam(get, 'verifiedOnly');
         if (verifiedOnly !== undefined) overrides.requireRegistry = verifiedOnly;
+        const suppressUnsafeAuthorities = yield* parseBooleanParam(get, 'suppressUnsafeAuthorities');
+        if (suppressUnsafeAuthorities !== undefined) overrides.suppressUnsafeAuthorities = suppressUnsafeAuthorities;
 
         const limit = yield* decodeLimit(get('limit'), {
             defaultValue: DEFAULT_SEARCH_LIMIT,

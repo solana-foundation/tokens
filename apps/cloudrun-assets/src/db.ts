@@ -84,6 +84,7 @@ import type {
 } from './handlers/tokensReads';
 import type { TrendingMarketRow, FreshTrendingMarketRow, TrendingReadsRepo } from './handlers/trendingReads';
 import type { FillQualityRow, FillQualityReadsRepo } from './handlers/fillQualityReads';
+import type { AssetRiskReadsRepo, AssetRiskRow } from './handlers/assetRiskReads';
 import type { AssetCollectionMemberRow, AssetCollectionsReadsRepo } from './handlers/assetCollectionsReads';
 import type {
     TokenListMemberRow,
@@ -3844,6 +3845,30 @@ export function makePostgresTrendingReadsRepo(sql: Sql): TrendingReadsRepo {
                             AND adv.status IN ('compromised', 'blocked')
                       )
                 `;
+            return rows;
+        },
+    };
+}
+
+export function makePostgresAssetRiskReadsRepo(sql: Sql): AssetRiskReadsRepo {
+    return {
+        async findLatestByMints(mints) {
+            if (mints.length === 0) return [];
+            // The older webacy_*_latest caches key Solana rows by chain = 'sol'
+            // and address = mint. Only the objects the judge needs are lifted
+            // out of the stored payloads; the rest never leaves Postgres.
+            const rows = await sql<AssetRiskRow[]>`
+                SELECT r.mint, r.asset_id, r.ok, r.tags,
+                       r.lp_locked_percent, r.top_10_holders_percent, r.holder_count,
+                       r.token_mint_time, r.risk_score_10, r.safety_score_10, r.last_fetched_at,
+                       CASE WHEN t.ok THEN t.payload_json::jsonb -> 'token_risk' END AS token_risk,
+                       CASE WHEN t.ok THEN t.payload_json::jsonb -> 'token_info' END AS token_info,
+                       CASE WHEN l.ok THEN l.payload_json::jsonb END AS trading_lite
+                FROM asset_risk_latest r
+                LEFT JOIN webacy_token_latest t ON t.chain = 'sol' AND t.address = r.mint
+                LEFT JOIN webacy_trading_lite_latest l ON l.chain = 'sol' AND l.address = r.mint
+                WHERE r.mint IN ${sql(mints)}
+            `;
             return rows;
         },
     };
