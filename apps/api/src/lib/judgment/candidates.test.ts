@@ -535,4 +535,65 @@ describe('enrichCandidates: stored risk row, market extras, live tier', () => {
         expect(a!.dataSources).toEqual({ market: 'provider', holders: 'provider', security: 'provider' });
         expect(b!.dataSources).toEqual({ market: 'snapshot', holders: 'snapshot', security: 'snapshot' });
     });
+
+    it('a provider search hit is labelled provider, the token index snapshot, a judge body caller', async () => {
+        const provider = raw(ZZ_MINT);
+        provider.sources = ['provider'];
+        provider.price = 1;
+        provider.tokenMintTime = '2024-05-01T00:00:00.000Z';
+        const db = raw(ZZ2_MINT);
+        db.sources = ['db'];
+        db.price = 1;
+        const caller = raw('ZzqxMint333333333333333333333333333333333333');
+        caller.sources = ['caller'];
+        caller.price = 1;
+        const [a, b, c] = await Effect.runPromise(enrichCandidates([provider, db, caller]));
+        expect(a!.dataSources).toEqual({ market: 'provider', holders: 'provider', security: 'none' });
+        expect(b!.dataSources).toEqual({ market: 'snapshot', holders: 'none', security: 'none' });
+        expect(c!.dataSources).toEqual({ market: 'caller', holders: 'none', security: 'none' });
+    });
+
+    it('a stored risk row without a security block still triggers the live security lookup only', async () => {
+        riskRowMints = [ZZ_MINT];
+        marketRowMints = [ZZ_MINT];
+        const original = globalThis.fetch;
+        globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+            const url = String(input);
+            if (url.includes('/query/assetRiskGetLatestByMints')) {
+                const body = JSON.parse(String(init?.body)) as { mints: string[] };
+                return json(
+                    body.mints.map(mint => ({
+                        mint,
+                        risk: {
+                            mint,
+                            assetId: 'zz',
+                            top10HoldersPercent: 40,
+                            holderCount: 10,
+                            tokenMintTime: null,
+                            lpLockedPercent: null,
+                            riskScore10: null,
+                            safetyScore10: null,
+                            tags: [],
+                            security: null,
+                            lastFetchedAt: 1,
+                        },
+                    })),
+                );
+            }
+            return original(input, init);
+        }) as typeof fetch;
+        const set = await Effect.runPromise(
+            enrichCandidatesDetailed([raw(ZZ_MINT)], {
+                live: { getRedis: () => Effect.fail(new Error('no redis')), scheduleAfterResponse: () => undefined },
+            }),
+        );
+        expect(liveCalls).toEqual(['security']);
+        expect(set.candidates[0]!.top10HoldersPercent).toBe(40); // stored row wins
+        expect(set.candidates[0]!.security?.mintable).toBe(false); // live fills the gap
+        expect(set.candidates[0]!.dataSources).toEqual({
+            market: 'snapshot',
+            holders: 'snapshot',
+            security: 'provider',
+        });
+    });
 });

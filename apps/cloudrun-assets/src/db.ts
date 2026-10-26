@@ -3855,14 +3855,23 @@ export function makePostgresAssetRiskReadsRepo(sql: Sql): AssetRiskReadsRepo {
         async findLatestByMints(mints) {
             if (mints.length === 0) return [];
             // The older webacy_*_latest caches key Solana rows by chain = 'sol'
-            // and address = mint. Only the objects the judge needs are lifted
-            // out of the stored payloads; the rest never leaves Postgres.
+            // and address = mint. The /tokens payload keeps token_risk and
+            // token_info under risk.details (older rows at the root); only the
+            // objects the judge needs are lifted out, the rest never leaves Postgres.
             const rows = await sql<AssetRiskRow[]>`
                 SELECT r.mint, r.asset_id, r.ok, r.tags,
                        r.lp_locked_percent, r.top_10_holders_percent, r.holder_count,
                        r.token_mint_time, r.risk_score_10, r.safety_score_10, r.last_fetched_at,
-                       CASE WHEN t.ok THEN t.payload_json::jsonb -> 'token_risk' END AS token_risk,
-                       CASE WHEN t.ok THEN t.payload_json::jsonb -> 'token_info' END AS token_info,
+                       CASE WHEN t.ok THEN COALESCE(
+                           t.payload_json::jsonb #> '{risk,details,token_risk}',
+                           t.payload_json::jsonb #> '{details,token_risk}',
+                           t.payload_json::jsonb -> 'token_risk'
+                       ) END AS token_risk,
+                       CASE WHEN t.ok THEN COALESCE(
+                           t.payload_json::jsonb #> '{risk,details,token_info}',
+                           t.payload_json::jsonb #> '{details,token_info}',
+                           t.payload_json::jsonb -> 'token_info'
+                       ) END AS token_info,
                        CASE WHEN l.ok THEN l.payload_json::jsonb END AS trading_lite
                 FROM asset_risk_latest r
                 LEFT JOIN webacy_token_latest t ON t.chain = 'sol' AND t.address = r.mint

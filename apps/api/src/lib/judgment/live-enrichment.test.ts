@@ -48,6 +48,7 @@ function scheduler() {
 let overviewCalls: string[] = [];
 let securityCalls: string[] = [];
 let overviewDelayMs = 0;
+let overviewDelayFor: string | null = null;
 let overviewStatus = 200;
 let securityStatus = 200;
 
@@ -62,6 +63,7 @@ beforeEach(() => {
     overviewCalls = [];
     securityCalls = [];
     overviewDelayMs = 0;
+    overviewDelayFor = null;
     overviewStatus = 200;
     securityStatus = 200;
     console.log = () => undefined;
@@ -71,7 +73,9 @@ beforeEach(() => {
         const mint = new URL(url).searchParams.get('address') ?? '';
         if (url.includes('/defi/token_overview')) {
             overviewCalls.push(mint);
-            if (overviewDelayMs > 0) await new Promise(resolve => setTimeout(resolve, overviewDelayMs));
+            if (overviewDelayMs > 0 && (overviewDelayFor === null || overviewDelayFor === mint)) {
+                await new Promise(resolve => setTimeout(resolve, overviewDelayMs));
+            }
             if (overviewStatus !== 200) return json({ success: false }, overviewStatus);
             return json({
                 success: true,
@@ -153,7 +157,8 @@ describe('liveEnrich', () => {
         expect(facts.security?.tokenMintTime).toBe(new Date(1_700_000_000 * 1000).toISOString());
 
         await after.run();
-        expect(redis.store.get(`judge-live:v1:${MINT_A}`)?.ex).toBe(600);
+        expect(redis.store.get(`judge-live:v1:${MINT_A}`)?.ex).toBeGreaterThanOrEqual(599);
+        expect(redis.store.get(`judge-live:v1:${MINT_A}`)?.ex).toBeLessThanOrEqual(600);
 
         const second = await Effect.runPromise(liveEnrich([{ mint: MINT_A, market: true, security: true }], opts));
         expect(second.outcome).toBe('ok');
@@ -186,7 +191,8 @@ describe('liveEnrich', () => {
         expect(out.byMint.get(MINT_B)?.market).toBeNull();
         expect(out.byMint.get(MINT_B)?.security).toBeNull();
         await after.run();
-        expect(redis.store.get(`judge-live:v1:${MINT_B}`)?.ex).toBe(900);
+        expect(redis.store.get(`judge-live:v1:${MINT_B}`)?.ex).toBeGreaterThanOrEqual(899);
+        expect(redis.store.get(`judge-live:v1:${MINT_B}`)?.ex).toBeLessThanOrEqual(900);
         // Known-miss is served from cache: no second provider call.
         await Effect.runPromise(liveEnrich([{ mint: MINT_B, market: true, security: true }], opts));
         expect(overviewCalls.length).toBe(1);
@@ -238,5 +244,68 @@ describe('liveEnrich', () => {
         const b = await Effect.runPromise(liveEnrich([{ mint: MINT_A, market: true, security: true }]));
         expect(b.outcome).toBe('disabled');
         expect(overviewCalls.length).toBe(0);
+    });
+
+    it('one slow mint does not hide the others: finished lookups land now, only the slow one is pending', async () => {
+        overviewDelayMs = 120;
+        overviewDelayFor = MINT_A;
+        const redis = fakeRedis();
+        const after = scheduler();
+        const opts = {
+            getRedis: () => Effect.succeed(redis.client),
+            scheduleAfterResponse: after.schedule,
+            deadlineMs: 40,
+        };
+        const out = await Effect.runPromise(
+            liveEnrich(
+                [
+                    { mint: MINT_A, market: true, security: true },
+                    { mint: MINT_B, market: true, security: true },
+                ],
+                opts,
+            ),
+        );
+        expect(out.outcome).toBe('degraded');
+        expect(out.pending).toEqual([MINT_A]);
+        expect(out.byMint.get(MINT_B)?.market?.liquidity).toBe(40_000);
+        expect(out.byMint.has(MINT_A)).toBe(false);
+        await after.run();
+        expect(
+            (await Effect.runPromise(liveEnrich([{ mint: MINT_A, market: true, security: true }], opts))).liveLookups,
+        ).toBe(0);
+    });
+
+    it('an error entry read from Redis keeps its short expiry in the process tier', async () => {
+        const redis = fakeRedis();
+        let now = 5_000_000;
+        const opts = {
+            getRedis: () => Effect.succeed(redis.client),
+            scheduleAfterResponse: () => undefined,
+            now: () => now,
+        };
+        // Another instance cached a provider failure 50 s ago with a 60 s life.
+        redis.store.set(`judge-live:v1:${MINT_A}`, {
+            value: JSON.stringify({ v: 1, at: now - 50_000, exp: now + 10_000, market: null, security: null }),
+        });
+        const first = await Effect.runPromise(liveEnrich([{ mint: MINT_A, market: true, security: true }], opts));
+        expect(first.liveLookups).toBe(0);
+        // Past the entry\'s own expiry the process tier must not serve it; Redis has expired it too.
+        now += 11_000;
+        redis.store.delete(`judge-live:v1:${MINT_A}`);
+        const second = await Effect.runPromise(liveEnrich([{ mint: MINT_A, market: true, security: true }], opts));
+        expect(second.liveLookups).toBe(1);
+        expect(overviewCalls).toEqual([MINT_A]);
+    });
+
+    it('a legacy cache entry without an expiry is ignored', async () => {
+        const redis = fakeRedis();
+        redis.store.set(`judge-live:v1:${MINT_A}`, { value: JSON.stringify({ v: 1, at: Date.now(), market: null }) });
+        const out = await Effect.runPromise(
+            liveEnrich([{ mint: MINT_A, market: true, security: false }], {
+                getRedis: () => Effect.succeed(redis.client),
+                scheduleAfterResponse: () => undefined,
+            }),
+        );
+        expect(out.liveLookups).toBe(1);
     });
 });

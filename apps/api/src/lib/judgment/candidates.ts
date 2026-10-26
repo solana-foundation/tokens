@@ -444,7 +444,9 @@ export function enrichCandidatesDetailed<E = never>(
                   raws.map(raw => ({
                       mint: raw.mint,
                       market: !marketByMint.has(raw.mint),
-                      security: !riskByMint.has(raw.mint),
+                      // A stored risk row without a security block (older
+                      // cron rows) still needs the live authority facts.
+                      security: !riskByMint.get(raw.mint)?.security,
                   })),
                   {
                       budget: options.live.budget,
@@ -489,12 +491,13 @@ export function enrichCandidatesDetailed<E = never>(
             const volume24hUsd = market?.volume24hUSD ?? liveMarket?.volume24hUSD ?? raw.volume24hUsd;
             const marketCapUsd = market?.marketCap ?? liveMarket?.marketCap ?? raw.marketCapUsd;
             const holderCount = market?.holder ?? liveMarket?.holder ?? riskRow?.holderCount ?? raw.holderCount;
+            const rawLabel = rawSourceLabel(raw);
             const marketSource: DataSourceKind = market
                 ? 'snapshot'
                 : liveMarket
                   ? 'provider'
                   : raw.price !== null || raw.liquidityUsd !== null || raw.volume24hUsd !== null
-                    ? 'caller'
+                    ? rawLabel
                     : 'none';
 
             // ---- holders: stored risk row → live security → claim
@@ -507,7 +510,7 @@ export function enrichCandidatesDetailed<E = never>(
                     : liveSecurity?.top10HoldersPercent != null || liveSecurity?.tokenMintTime
                       ? 'provider'
                       : raw.top10HoldersPercent != null || raw.tokenMintTime
-                        ? 'caller'
+                        ? rawLabel
                         : 'none';
 
             // ---- security: stored row → live → claim (per flag)
@@ -535,7 +538,7 @@ export function enrichCandidatesDetailed<E = never>(
                 : liveSecurity
                   ? 'provider'
                   : security
-                    ? 'caller'
+                    ? rawLabel
                     : 'none';
 
             const dataAsOf =
@@ -708,6 +711,17 @@ export function gatherCandidates<E = never>(
             timing: { collectMs, enrichMs },
         };
     });
+}
+
+/**
+ * What a raw candidate's own fields count as: a judge body is the caller's
+ * claim; a Birdeye search hit is provider data; the token index / registry
+ * is our own snapshot.
+ */
+function rawSourceLabel(raw: RawCandidate): DataSourceKind {
+    if (raw.sources.includes('caller')) return 'caller';
+    if (raw.sources.includes('provider')) return 'provider';
+    return 'snapshot';
 }
 
 function chunk<T>(items: readonly T[], size: number): T[][] {
