@@ -14,11 +14,13 @@
  *
  * Cache: mirrors `app/api/v1/assets/_risk-live-fallback.ts` — Redis key
  * `judge-live:v1:<mint>` (hit 10 min, miss 15 min, error 60 s), a bounded
- * per-process tier, writes after the response. Entries carry their own
- * expiry so a process never keeps a short-lived error entry for the hit
- * window. Cache reads for a request run concurrently, each on its own Redis
- * timeout, so the wait is one timeout per request and a slow read costs only
- * its own mint.
+ * per-process tier, writes after the response. The two halves of an entry
+ * carry their own fetch time and expiry, so filling the missing half of a
+ * cached mint never re-stamps the half we already had (an old price must
+ * not look freshly fetched, and its cache life must not restart). Cache
+ * reads for a request run concurrently, each on its own Redis timeout, so
+ * the wait is one timeout per request and a slow read costs only its own
+ * mint.
  *
  * Deadline: lookups complete independently; whatever has landed when the
  * deadline passes is used now, the rest is judged on what we have
@@ -44,11 +46,13 @@ export interface LiveNeed {
 }
 
 export interface LiveFacts {
-    /** `undefined` = not requested; `null` = provider has nothing for the mint. */
+    /** `undefined` = not held; `null` = provider has nothing for the mint. */
     market?: ProviderMarketOverview | null;
+    /** ms epoch the market half was fetched. */
+    marketAt?: number;
     security?: ProviderSecurity | null;
-    /** ms epoch the entry was produced. */
-    at: number;
+    /** ms epoch the security half was fetched. */
+    securityAt?: number;
 }
 
 export type LiveOutcome = 'ok' | 'degraded' | 'disabled' | 'none';
@@ -80,13 +84,17 @@ const MAX_PROCESS_ENTRIES = 5_000;
 /** Provider calls in flight at once for one request (two endpoints per mint). */
 const PROVIDER_CONCURRENCY = 8;
 
-interface CachedFacts {
-    v: 1;
-    market?: ProviderMarketOverview | null;
-    security?: ProviderSecurity | null;
+/** One half of a cache entry: its verdict, when it was fetched, and when it stops being servable. */
+interface CachedHalf<T> {
+    value: T | null;
     at: number;
-    /** ms epoch after which the entry must not be served from any tier. */
     exp: number;
+}
+
+interface CachedFacts {
+    v: 2;
+    market?: CachedHalf<ProviderMarketOverview>;
+    security?: CachedHalf<ProviderSecurity>;
 }
 
 interface ProcessEntry {
@@ -112,14 +120,28 @@ function cacheKey(mint: string): string {
     return `judge-live:v1:${mint}`;
 }
 
+/** Latest expiry across the halves an entry holds (0 when it holds none). */
+function entryExpiry(entry: CachedFacts): number {
+    return Math.max(entry.market?.exp ?? 0, entry.security?.exp ?? 0);
+}
+
+/** Drop halves that are past their own expiry; `null` when nothing is left. */
+function pruneExpired(entry: CachedFacts, now: number): CachedFacts | null {
+    const out: CachedFacts = { v: 2 };
+    if (entry.market && entry.market.exp > now) out.market = entry.market;
+    if (entry.security && entry.security.exp > now) out.security = entry.security;
+    return out.market || out.security ? out : null;
+}
+
 function rememberInProcess(mint: string, entry: CachedFacts, now: number): void {
-    if (entry.exp <= now) return;
+    const expiresAt = entryExpiry(entry);
+    if (expiresAt <= now) return;
     processCache.delete(mint);
     if (processCache.size >= MAX_PROCESS_ENTRIES) {
         const oldest = processCache.keys().next().value;
         if (oldest !== undefined) processCache.delete(oldest);
     }
-    processCache.set(mint, { entry, expiresAt: entry.exp });
+    processCache.set(mint, { entry, expiresAt });
 }
 
 function readFromProcess(mint: string, now: number): CachedFacts | null {
@@ -129,14 +151,21 @@ function readFromProcess(mint: string, now: number): CachedFacts | null {
         processCache.delete(mint);
         return null;
     }
-    return hit.entry;
+    return pruneExpired(hit.entry, now);
 }
 
-function ttlSecondsFor(entry: Pick<CachedFacts, 'market' | 'security'>, ok: boolean): number {
+function ttlSecondsFor(hasFacts: boolean, ok: boolean): number {
     if (!ok) return ERROR_TTL_SECONDS;
-    // A full miss (provider knows nothing) stays longer than a hit.
-    const hasFacts = Boolean(entry.market) || Boolean(entry.security);
+    // A miss (provider knows nothing) stays longer than a hit.
     return hasFacts ? HIT_TTL_SECONDS : MISS_TTL_SECONDS;
+}
+
+function parseHalf<T>(raw: unknown): CachedHalf<T> | undefined {
+    if (!raw || typeof raw !== 'object') return undefined;
+    const half = raw as Partial<CachedHalf<T>>;
+    if (typeof half.at !== 'number' || typeof half.exp !== 'number') return undefined;
+    if (!('value' in half)) return undefined;
+    return { value: (half.value as T | null | undefined) ?? null, at: half.at, exp: half.exp };
 }
 
 function parseCached(raw: unknown): CachedFacts | null {
@@ -150,18 +179,28 @@ function parseCached(raw: unknown): CachedFacts | null {
     }
     if (!value || typeof value !== 'object') return null;
     const entry = value as Partial<CachedFacts>;
-    if (entry.v !== 1 || typeof entry.at !== 'number' || typeof entry.exp !== 'number') return null;
-    const out: CachedFacts = { v: 1, at: entry.at, exp: entry.exp };
-    if ('market' in entry) out.market = (entry.market as ProviderMarketOverview | null | undefined) ?? null;
-    if ('security' in entry) out.security = (entry.security as ProviderSecurity | null | undefined) ?? null;
-    return out;
+    // v1 entries (one timestamp for both halves) are ignored, not migrated.
+    if (entry.v !== 2) return null;
+    const out: CachedFacts = { v: 2 };
+    const market = parseHalf<ProviderMarketOverview>(entry.market);
+    const security = parseHalf<ProviderSecurity>(entry.security);
+    if (market) out.market = market;
+    if (security) out.security = security;
+    return out.market || out.security ? out : null;
 }
 
 /** An entry covers a need when it carries a verdict (facts or a provider miss) for that part. */
 function covers(entry: CachedFacts, need: LiveNeed): boolean {
-    if (need.market && entry.market === undefined) return false;
-    if (need.security && entry.security === undefined) return false;
+    if (need.market && !entry.market) return false;
+    if (need.security && !entry.security) return false;
     return true;
+}
+
+function toFacts(entry: CachedFacts): LiveFacts {
+    return {
+        ...(entry.market ? { market: entry.market.value, marketAt: entry.market.at } : {}),
+        ...(entry.security ? { security: entry.security.value, securityAt: entry.security.at } : {}),
+    };
 }
 
 type CacheDeps = {
@@ -181,9 +220,10 @@ function readCache(deps: CacheDeps, mint: string): Effect.Effect<CachedFacts | n
             const parsed = parseCached(raw);
             if (!parsed) return null;
             const readAt = deps.now();
-            if (parsed.exp <= readAt) return null;
-            rememberInProcess(mint, parsed, readAt);
-            return parsed;
+            const live = pruneExpired(parsed, readAt);
+            if (!live) return null;
+            rememberInProcess(mint, live, readAt);
+            return live;
         }).pipe(
             // Each read has its own leash; a slow read is a miss for that mint only.
             Effect.timeout(REDIS_TIMEOUT),
@@ -214,7 +254,7 @@ function readCacheAll(deps: CacheDeps, mints: readonly string[]): Effect.Effect<
 function writeCache(deps: CacheDeps, mint: string, entry: CachedFacts): void {
     const now = deps.now();
     rememberInProcess(mint, entry, now);
-    const ttlSeconds = Math.max(1, Math.ceil((entry.exp - now) / 1_000));
+    const ttlSeconds = Math.max(1, Math.ceil((entryExpiry(entry) - now) / 1_000));
     const persist = Effect.gen(function* () {
         const redis = yield* deps.getRedis();
         yield* Effect.tryPromise(() => redis.set(cacheKey(mint), JSON.stringify(entry), { ex: ttlSeconds }));
@@ -227,9 +267,8 @@ function writeCache(deps: CacheDeps, mint: string, entry: CachedFacts): void {
 
 type Fetched = {
     mint: string;
-    market?: ProviderMarketOverview | null;
-    security?: ProviderSecurity | null;
-    ok: boolean;
+    market?: { value: ProviderMarketOverview | null; ok: boolean };
+    security?: { value: ProviderSecurity | null; ok: boolean };
 };
 
 /**
@@ -241,24 +280,27 @@ type Fetched = {
 function fetchOne(need: LiveNeed, perCallDeadlineMs: number): Effect.Effect<Fetched, never> {
     const market = need.market
         ? Effect.suspend(() => fetchProviderMarketOverview(need.mint, { deadlineMs: perCallDeadlineMs })).pipe(
-              Effect.map(value => ({ ok: true as const, value })),
-              Effect.catch(() => Effect.succeed({ ok: false as const, value: null })),
+              Effect.map(value => ({ ok: true, value })),
+              Effect.catch(() => Effect.succeed({ ok: false, value: null })),
           )
-        : Effect.succeed({ ok: true as const, value: undefined });
+        : Effect.succeed(null);
     const security = need.security
         ? Effect.suspend(() => fetchProviderSecurity(need.mint, { deadlineMs: perCallDeadlineMs })).pipe(
-              Effect.map(value => ({ ok: true as const, value })),
-              Effect.catch(() => Effect.succeed({ ok: false as const, value: null })),
+              Effect.map(value => ({ ok: true, value })),
+              Effect.catch(() => Effect.succeed({ ok: false, value: null })),
           )
-        : Effect.succeed({ ok: true as const, value: undefined });
+        : Effect.succeed(null);
     return Effect.all([market, security], { concurrency: 2 }).pipe(
         Effect.map(([m, s]) => ({
             mint: need.mint,
-            ...(need.market ? { market: m.value as ProviderMarketOverview | null } : {}),
-            ...(need.security ? { security: s.value as ProviderSecurity | null } : {}),
-            ok: m.ok && s.ok,
+            ...(m ? { market: m } : {}),
+            ...(s ? { security: s } : {}),
         })),
     );
+}
+
+function fetchedOk(fetched: Fetched): boolean {
+    return (fetched.market?.ok ?? true) && (fetched.security?.ok ?? true);
 }
 
 /**
@@ -295,13 +337,13 @@ export function liveEnrich<E>(
         const misses: LiveNeed[] = [];
         for (const need of wanted) {
             const entry = cached.get(need.mint);
-            if (entry) byMint.set(need.mint, { market: entry.market, security: entry.security, at: entry.at });
+            if (entry) byMint.set(need.mint, toFacts(entry));
             if (entry && covers(entry, need)) continue;
             // Partial coverage: keep what we have, fetch only the gap.
             misses.push({
                 mint: need.mint,
-                market: need.market && entry?.market === undefined,
-                security: need.security && entry?.security === undefined,
+                market: need.market && !entry?.market,
+                security: need.security && !entry?.security,
             });
         }
         if (misses.length === 0) return { byMint, outcome: 'ok' as const, pending: [], liveLookups: 0 };
@@ -316,16 +358,30 @@ export function liveEnrich<E>(
         const absorb = (fetched: Fetched): void => {
             if (absorbed.has(fetched.mint)) return;
             absorbed.add(fetched.mint);
-            const prior = byMint.get(fetched.mint);
+            // The half we already held keeps its own fetch time and expiry;
+            // only the half fetched now is stamped with now.
+            const prior = cached.get(fetched.mint);
             const at = now();
-            const partial = {
-                ...(prior?.market !== undefined ? { market: prior.market } : {}),
-                ...(prior?.security !== undefined ? { security: prior.security } : {}),
-                ...('market' in fetched ? { market: fetched.market ?? null } : {}),
-                ...('security' in fetched ? { security: fetched.security ?? null } : {}),
-            };
-            const entry: CachedFacts = { v: 1, at, exp: at + ttlSecondsFor(partial, fetched.ok) * 1_000, ...partial };
-            byMint.set(fetched.mint, { market: entry.market, security: entry.security, at });
+            const entry: CachedFacts = { v: 2 };
+            if (fetched.market) {
+                entry.market = {
+                    value: fetched.market.value,
+                    at,
+                    exp: at + ttlSecondsFor(Boolean(fetched.market.value), fetched.market.ok) * 1_000,
+                };
+            } else if (prior?.market) {
+                entry.market = prior.market;
+            }
+            if (fetched.security) {
+                entry.security = {
+                    value: fetched.security.value,
+                    at,
+                    exp: at + ttlSecondsFor(Boolean(fetched.security.value), fetched.security.ok) * 1_000,
+                };
+            } else if (prior?.security) {
+                entry.security = prior.security;
+            }
+            byMint.set(fetched.mint, toFacts(entry));
             writeCache(deps, fetched.mint, entry);
         };
 
@@ -342,7 +398,7 @@ export function liveEnrich<E>(
         for (const fetched of completed.values()) absorb(fetched);
 
         if (Option.isSome(raced)) {
-            const failed = raced.value.filter(f => !f.ok).map(f => f.mint);
+            const failed = raced.value.filter(f => !fetchedOk(f)).map(f => f.mint);
             emitEvent({
                 event: 'judge_live_enrichment',
                 outcome: failed.length ? 'degraded' : 'ok',

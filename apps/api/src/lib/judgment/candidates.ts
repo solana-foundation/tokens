@@ -503,7 +503,9 @@ export function enrichCandidatesDetailed<E = never>(
             // ---- holders: stored risk row → live security → claim
             const top10HoldersPercent =
                 riskRow?.top10HoldersPercent ?? liveSecurity?.top10HoldersPercent ?? raw.top10HoldersPercent ?? null;
-            const tokenMintTime = raw.tokenMintTime ?? riskRow?.tokenMintTime ?? liveSecurity?.tokenMintTime ?? null;
+            // Age is ours to assert: the stored row, then the live provider, then
+            // the caller — a claim must not make a fresh mint look old.
+            const tokenMintTime = riskRow?.tokenMintTime ?? liveSecurity?.tokenMintTime ?? raw.tokenMintTime ?? null;
             const holdersSource: DataSourceKind =
                 riskRow?.top10HoldersPercent != null || riskRow?.tokenMintTime
                     ? 'snapshot'
@@ -543,7 +545,7 @@ export function enrichCandidatesDetailed<E = never>(
 
             const dataAsOf =
                 marketAsOfByMint.get(raw.mint) ??
-                (liveMarket ? (live?.at ?? enrichedAtMs) : null) ??
+                (liveMarket ? (live?.marketAt ?? enrichedAtMs) : null) ??
                 (raw.sources.includes('provider') && raw.price !== null ? enrichedAtMs : null) ??
                 market?.lastTradeAt ??
                 null;

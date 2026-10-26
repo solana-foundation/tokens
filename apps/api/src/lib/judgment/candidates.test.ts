@@ -477,16 +477,21 @@ describe('enrichCandidates: stored risk row, market extras, live tier', () => {
         expect(liveCalls).toEqual([]);
     });
 
-    it("the caller's createdAt wins over the stored mint time; caller claims fill what no row covers", async () => {
+    it("the stored mint time wins over the caller's createdAt; caller claims fill only what no row covers", async () => {
         riskRowMints = [ZZ_MINT];
         const r = raw(ZZ_MINT);
         r.tokenMintTime = '2023-01-01T00:00:00.000Z';
         r.uniqueWallet24h = 42;
         r.fdv = 5;
         const [c] = await Effect.runPromise(enrichCandidates([r]));
-        expect(c!.tokenMintTime).toBe('2023-01-01T00:00:00.000Z');
+        expect(c!.tokenMintTime).toBe('2024-02-01T00:00:00.000Z');
         expect(c!.uniqueWallet24h).toBe(42);
         expect(c!.fdv).toBe(5);
+        // With no row, the caller's createdAt is all we have.
+        const bare = raw(ZZ2_MINT);
+        bare.tokenMintTime = '2023-01-01T00:00:00.000Z';
+        const [d] = await Effect.runPromise(enrichCandidates([bare]));
+        expect(d!.tokenMintTime).toBe('2023-01-01T00:00:00.000Z');
     });
 
     it('market-row extras flow through (wallets, trades, supplies, last trade) and the row wins over claims', async () => {

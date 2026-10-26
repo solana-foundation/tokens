@@ -285,7 +285,11 @@ describe('liveEnrich', () => {
         };
         // Another instance cached a provider failure 50 s ago with a 60 s life.
         redis.store.set(`judge-live:v1:${MINT_A}`, {
-            value: JSON.stringify({ v: 1, at: now - 50_000, exp: now + 10_000, market: null, security: null }),
+            value: JSON.stringify({
+                v: 2,
+                market: { value: null, at: now - 50_000, exp: now + 10_000 },
+                security: { value: null, at: now - 50_000, exp: now + 10_000 },
+            }),
         });
         const first = await Effect.runPromise(liveEnrich([{ mint: MINT_A, market: true, security: true }], opts));
         expect(first.liveLookups).toBe(0);
@@ -297,7 +301,7 @@ describe('liveEnrich', () => {
         expect(overviewCalls).toEqual([MINT_A]);
     });
 
-    it('a legacy cache entry without an expiry is ignored', async () => {
+    it('a v1 cache entry (one timestamp for both halves) is ignored', async () => {
         const redis = fakeRedis();
         redis.store.set(`judge-live:v1:${MINT_A}`, { value: JSON.stringify({ v: 1, at: Date.now(), market: null }) });
         const out = await Effect.runPromise(
@@ -334,5 +338,49 @@ describe('liveEnrich', () => {
         expect(out.byMint.get(MINT_A)?.market?.liquidity).toBe(40_000);
         expect(out.liveLookups).toBe(1);
         expect(overviewCalls).toEqual([MINT_A, MINT_B]);
+    });
+
+    it("filling the missing half keeps the held half's own fetch time and expiry", async () => {
+        const redis = fakeRedis();
+        const after = scheduler();
+        let now = 7_000_000;
+        const opts = {
+            getRedis: () => Effect.succeed(redis.client),
+            scheduleAfterResponse: after.schedule,
+            now: () => now,
+        };
+        // Market facts cached 8 minutes ago (hit window is 10).
+        redis.store.set(`judge-live:v1:${MINT_A}`, {
+            value: JSON.stringify({
+                v: 2,
+                market: {
+                    value: { liquidity: 1, marketCap: 2, holder: 3, volume24hUSD: 4 },
+                    at: now - 480_000,
+                    exp: now + 120_000,
+                },
+            }),
+        });
+        const out = await Effect.runPromise(liveEnrich([{ mint: MINT_A, market: true, security: true }], opts));
+        expect(out.liveLookups).toBe(1);
+        expect(overviewCalls).toEqual([]);
+        expect(securityCalls).toEqual([MINT_A]);
+        const facts = out.byMint.get(MINT_A)!;
+        expect(facts.market?.liquidity).toBe(1);
+        expect(facts.marketAt).toBe(now - 480_000);
+        expect(facts.securityAt).toBe(now);
+        await after.run();
+        const stored = JSON.parse(redis.store.get(`judge-live:v1:${MINT_A}`)!.value) as {
+            market: { at: number; exp: number };
+            security: { at: number; exp: number };
+        };
+        expect(stored.market.at).toBe(now - 480_000);
+        expect(stored.market.exp).toBe(now + 120_000);
+        expect(stored.security.at).toBe(now);
+        // Two minutes later the market half has expired on its own clock; only it is refetched.
+        now += 130_000;
+        const again = await Effect.runPromise(liveEnrich([{ mint: MINT_A, market: true, security: true }], opts));
+        expect(again.liveLookups).toBe(1);
+        expect(overviewCalls).toEqual([MINT_A]);
+        expect(securityCalls).toEqual([MINT_A]);
     });
 });
