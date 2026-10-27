@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server';
+import { buildImageResponseHeaders } from '@/lib/image-response-headers';
 import { extractIpfsRef } from '@/lib/ipfs-ref';
 import { buildAllowedRemoteHosts, fetchWithValidatedRedirects, isAllowedRemoteHost } from '../_remote-asset-fetch';
 
@@ -152,13 +153,12 @@ export async function GET(request: Request): Promise<Response> {
 
         return new Response(bytes, {
             status: 200,
-            headers: {
-                'Content-Type': effectiveContentType,
-                'X-Content-Type-Options': 'nosniff',
-                'Cache-Control': fresh
+            headers: buildImageResponseHeaders(
+                effectiveContentType,
+                fresh
                     ? 'no-store, no-cache, must-revalidate'
                     : 'public, max-age=86400, s-maxage=86400, stale-while-revalidate=604800',
-            },
+            ),
         });
     } catch {
         return NextResponse.json({ error: 'Failed to proxy image' }, { status: 502 });
