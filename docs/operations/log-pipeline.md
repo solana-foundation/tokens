@@ -48,9 +48,14 @@ when everything else is queued.
   `assets-v2-evm-variants-sync-stale`, `assets-solana-data-sync-stale`,
   `stablecoin-depeg-sweep-stale`, `stablecoin-depeg-webhook-silent`,
   `external-provider-feed-stale`) carries query `D` = the same lag and only
-  fires while the lag is under 600 s. With no heartbeat data at all the guard
-  passes (fail-open). `api-smoke-canary-stale` is not guarded: the API logs
-  arrive through the Vercel drain, not this pipeline.
+  fires while the lag is under 600 s. Both the job query and the lag query
+  end in `or vector(0)`: Loki returns no series for a count of zero, and
+  Grafana's `replaceNN` reduce cannot invent a value for a missing series,
+  so without the fallback a silent job (or a missing heartbeat) would skip
+  the math condition and land in `noDataState` instead of being guarded.
+  With no heartbeat data at all the guard therefore passes (fail-open).
+  `api-smoke-canary-stale` is not guarded: the API logs arrive through the
+  Vercel drain, not this pipeline.
 
 A real outage that starts during a lag episode is therefore reported once
 the backlog drains, not before. The lag alert is the signal to go and look.

@@ -16,7 +16,7 @@
                 "to": 0
             },
             "model": {
-                "expr": "sum(count_over_time({service=~\"tokens-assets(-jobs)?-prd-us\"} | json | job=\"sync-v2-solana-variants\" | event=\"v2_solana_sync\" | ok=\"true\" [30m]))",
+                "expr": "sum(count_over_time({service=~\"tokens-assets(-jobs)?-prd-us\"} | json | job=\"sync-v2-solana-variants\" | event=\"v2_solana_sync\" | ok=\"true\" [30m])) or vector(0)",
                 "queryType": "range",
                 "refId": "A"
             }
@@ -49,7 +49,7 @@
                 "to": 0
             },
             "model": {
-                "expr": "max(max_over_time({service=\"tokens-logs-pipeline\", env=\"prd\"} | json | event=\"gcp_logs_push\" | unwrap lag_s [10m]))",
+                "expr": "max(max_over_time({service=\"tokens-logs-pipeline\", env=\"prd\"} | json | event=\"gcp_logs_push\" | unwrap lag_s [10m])) or vector(0)",
                 "queryType": "instant",
                 "instant": true,
                 "range": false,

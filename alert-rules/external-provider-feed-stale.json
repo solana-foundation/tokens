@@ -16,7 +16,7 @@
                 "to": 0
             },
             "model": {
-                "expr": "sum(rate({service=~\"tokens-.+\"} | json | event=\"external_call\" | provider!~\"logo_.*\" | ok=\"true\" [5m]))",
+                "expr": "sum(rate({service=~\"tokens-.+\"} | json | event=\"external_call\" | provider!~\"logo_.*\" | ok=\"true\" [5m])) or vector(0)",
                 "queryType": "range",
                 "refId": "A"
             }
@@ -49,7 +49,7 @@
                 "to": 0
             },
             "model": {
-                "expr": "max(max_over_time({service=\"tokens-logs-pipeline\", env=\"prd\"} | json | event=\"gcp_logs_push\" | unwrap lag_s [10m]))",
+                "expr": "max(max_over_time({service=\"tokens-logs-pipeline\", env=\"prd\"} | json | event=\"gcp_logs_push\" | unwrap lag_s [10m])) or vector(0)",
                 "queryType": "instant",
                 "instant": true,
                 "range": false,
