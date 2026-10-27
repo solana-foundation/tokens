@@ -18,7 +18,20 @@ export interface GcpLogsHookDeps {
     /** Env label attached to Loki streams. */
     envLabel?: string;
     fetchImpl?: typeof fetch;
+    /** Minimum spacing between pipeline heartbeats per instance (default 10 s). */
+    heartbeatIntervalMs?: number;
+    now?: () => number;
 }
+
+/**
+ * Stream the pipeline heartbeat is written to. It rides on a Loki push the
+ * hook is already making and never goes through Cloud Logging or Pub/Sub, so
+ * its timestamp is "now" even when everything else is queued: `lag_s` is how
+ * far behind the pipeline is, and the Grafana rule `tokens-logs-pipeline-lagging`
+ * (plus the lag guard on every Loki "silent/stale" rule) reads it.
+ */
+export const PIPELINE_HEARTBEAT_SERVICE = 'tokens-logs-pipeline';
+const DEFAULT_HEARTBEAT_INTERVAL_MS = 10_000;
 
 type LokiStream = {
     stream: Record<string, string>;
@@ -94,9 +107,30 @@ export async function pushToLoki(deps: GcpLogsHookDeps, streams: LokiStream[]): 
 const BATCH_WINDOW_MS = 250;
 const BATCH_MAX_ENTRIES = 500;
 
+function heartbeatStream(envLabel: string, nowMs: number, streams: LokiStream[]): LokiStream {
+    let oldestMs = nowMs;
+    let entries = 0;
+    for (const s of streams) {
+        for (const [ts] of s.values) {
+            entries += 1;
+            const ms = Number(BigInt(ts) / 1_000_000n);
+            if (ms < oldestMs) oldestMs = ms;
+        }
+    }
+    const lagS = Math.max(0, Math.round((nowMs - oldestMs) / 1000));
+    return {
+        stream: { service: PIPELINE_HEARTBEAT_SERVICE, env: envLabel, source: 'direct' },
+        values: [[tsNs(nowMs), JSON.stringify({ event: 'gcp_logs_push', lag_s: lagS, entries })]],
+    };
+}
+
 function createLokiBatcher(deps: GcpLogsHookDeps): (stream: LokiStream) => Promise<LokiPushResult> {
     let pending: Array<{ stream: LokiStream; resolve: (result: LokiPushResult) => void }> = [];
     let timer: ReturnType<typeof setTimeout> | undefined;
+    const envLabel = deps.envLabel ?? 'prd';
+    const heartbeatIntervalMs = deps.heartbeatIntervalMs ?? DEFAULT_HEARTBEAT_INTERVAL_MS;
+    const now = deps.now ?? Date.now;
+    let lastHeartbeatAt = -Infinity;
 
     const flush = async (): Promise<void> => {
         clearTimeout(timer);
@@ -105,14 +139,20 @@ function createLokiBatcher(deps: GcpLogsHookDeps): (stream: LokiStream) => Promi
         pending = [];
         if (batch.length === 0) return;
         try {
+            const streams = batch.map(p => p.stream);
+            const nowMs = now();
+            const withHeartbeat = nowMs - lastHeartbeatAt >= heartbeatIntervalMs;
             const result = await pushToLoki(
                 deps,
-                batch.map(p => p.stream),
+                withHeartbeat ? [...streams, heartbeatStream(envLabel, nowMs, streams)] : streams,
             );
+            if (withHeartbeat && result === 'pushed') lastHeartbeatAt = nowMs;
             if (result !== 'rejected' || batch.length === 1) {
                 for (const p of batch) p.resolve(result);
                 return;
             }
+            // Per-entry retries carry no heartbeat: the batch was rejected,
+            // nothing about the pipeline's lag is known to have landed.
             await Promise.all(batch.map(async p => p.resolve(await pushToLoki(deps, [p.stream]))));
         } catch (err) {
             console.error(`loki: batch flush threw ${err instanceof Error ? err.message : 'unknown'}`);
@@ -130,7 +170,7 @@ function createLokiBatcher(deps: GcpLogsHookDeps): (stream: LokiStream) => Promi
 
 export function registerGcpLogsRoute(app: Hono, deps: GcpLogsHookDeps): void {
     const envLabel = deps.envLabel ?? 'prd';
-    const pushBatched = createLokiBatcher(deps);
+    const pushBatched = createLokiBatcher({ ...deps, envLabel });
 
     app.post('/hooks/gcp-logs', async c => {
         const verify = deps.verifyGcpLogsOidc;

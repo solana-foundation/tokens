@@ -326,6 +326,13 @@ write; touches bump `overviewLastFetchedAt` only. The alert
 least one row in the 45 minutes before the evaluation. It is an instant
 Loki query on purpose: a range query would keep returning the last positive
 count from earlier in its window and delay the page by the window length.
+First check whether `tokens-logs-pipeline-lagging` is firing: the rule is
+guarded so it stays quiet while Cloud Logging → Loki ingestion is more than
+10 minutes behind, but on the edge of that (and before the guard existed,
+2026-10-24/26/27) the page meant "the summary has not reached Loki yet",
+not "the job stopped". Confirm the run in Cloud Logging
+(`jsonPayload.event="v2_evm_markets_refresh"` on `tokens-assets-jobs-prd-us`)
+before touching the worker; see `docs/operations/log-pipeline.md`.
 
 Result: `processed`, `refreshed`, `failed` (Birdeye empty + thrown),
 `noClient` (chain without a client), `byChain`

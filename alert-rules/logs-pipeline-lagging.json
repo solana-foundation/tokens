@@ -1,0 +1,97 @@
+{
+    "uid": "tokens-logs-pipeline-lagging",
+    "title": "tokens-logs: Cloud Logging → Loki pipeline lagging",
+    "ruleGroup": "tokens-logs-pipeline",
+    "folderUID": "tokens",
+    "noDataState": "Alerting",
+    "execErrState": "OK",
+    "for": "5m",
+    "data": [
+        {
+            "refId": "A",
+            "datasourceUid": "grafanacloud-logs",
+            "queryType": "instant",
+            "relativeTimeRange": {
+                "from": 300,
+                "to": 0
+            },
+            "model": {
+                "expr": "max(max_over_time({service=\"tokens-logs-pipeline\", env=\"prd\"} | json | event=\"gcp_logs_push\" | unwrap lag_s [5m]))",
+                "queryType": "instant",
+                "instant": true,
+                "range": false,
+                "refId": "A"
+            }
+        },
+        {
+            "refId": "B",
+            "datasourceUid": "__expr__",
+            "queryType": "",
+            "relativeTimeRange": {
+                "from": 0,
+                "to": 0
+            },
+            "model": {
+                "type": "reduce",
+                "refId": "B",
+                "expression": "A",
+                "reducer": "last",
+                "settings": {
+                    "mode": "replaceNN",
+                    "replaceWithValue": 0
+                }
+            }
+        },
+        {
+            "refId": "C",
+            "datasourceUid": "__expr__",
+            "queryType": "",
+            "relativeTimeRange": {
+                "from": 0,
+                "to": 0
+            },
+            "model": {
+                "type": "threshold",
+                "refId": "C",
+                "expression": "B",
+                "conditions": [
+                    {
+                        "evaluator": {
+                            "type": "gt",
+                            "params": [300]
+                        },
+                        "operator": {
+                            "type": "and"
+                        },
+                        "query": {
+                            "params": ["B"]
+                        },
+                        "reducer": {
+                            "type": "last",
+                            "params": []
+                        },
+                        "type": "query"
+                    }
+                ]
+            }
+        }
+    ],
+    "condition": "C",
+    "labels": {
+        "service": "tokens-logs",
+        "severity": "warning",
+        "slack": "true"
+    },
+    "notification_settings": {
+        "receiver": "tokens-slack",
+        "group_by": ["grafana_folder", "alertname"],
+        "group_wait": "30s",
+        "group_interval": "5m",
+        "repeat_interval": "4h"
+    },
+    "annotations": {
+        "summary": "Cloud Run logs are reaching Loki more than 5 minutes late (or the pipeline heartbeat has stopped)",
+        "description": "The admin service's /hooks/gcp-logs push writes a heartbeat straight to Loki with every push: lag_s is how old the oldest entry in that push was (Cloud Logging → sink → Pub/Sub → push → Loki). Above 300 s for 5 minutes, or no heartbeat at all for 5 minutes, means every Loki-based 'silent/stale' rule is looking at data that has not arrived yet; those rules carry a lag guard and stay quiet while this fires, so a real job outage during a lag episode surfaces only once the backlog drains. Cause so far (2026-10-24/26/27): a daily 400k–600k-entry Postgres NOTICE burst from tokens-assets-prd-us (fixed at the source) that backed up tokens-logs-to-grafana-prd behind the admin service's 10-instance ceiling. Check: Pub/Sub num_undelivered_messages / oldest_unacked_message_age on tokens-logs-to-grafana-prd, admin 429 'no available instance' counts, then log_entry_count by service+severity to find the burst source. Recipe in docs/operations/log-pipeline.md.",
+        "runbook_url": "https://github.com/solana-foundation/tokens/blob/main/docs/operations/log-pipeline.md"
+    }
+}

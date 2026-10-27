@@ -41,6 +41,41 @@
             }
         },
         {
+            "refId": "D",
+            "datasourceUid": "grafanacloud-logs",
+            "queryType": "instant",
+            "relativeTimeRange": {
+                "from": 600,
+                "to": 0
+            },
+            "model": {
+                "expr": "max(max_over_time({service=\"tokens-logs-pipeline\", env=\"prd\"} | json | event=\"gcp_logs_push\" | unwrap lag_s [10m]))",
+                "queryType": "instant",
+                "instant": true,
+                "range": false,
+                "refId": "D"
+            }
+        },
+        {
+            "refId": "E",
+            "datasourceUid": "__expr__",
+            "queryType": "",
+            "relativeTimeRange": {
+                "from": 0,
+                "to": 0
+            },
+            "model": {
+                "type": "reduce",
+                "refId": "E",
+                "expression": "D",
+                "reducer": "last",
+                "settings": {
+                    "mode": "replaceNN",
+                    "replaceWithValue": 0
+                }
+            }
+        },
+        {
             "refId": "C",
             "datasourceUid": "__expr__",
             "queryType": "",
@@ -49,28 +84,9 @@
                 "to": 0
             },
             "model": {
-                "type": "threshold",
+                "type": "math",
                 "refId": "C",
-                "expression": "B",
-                "conditions": [
-                    {
-                        "evaluator": {
-                            "type": "lt",
-                            "params": [1]
-                        },
-                        "operator": {
-                            "type": "and"
-                        },
-                        "query": {
-                            "params": ["B"]
-                        },
-                        "reducer": {
-                            "type": "last",
-                            "params": []
-                        },
-                        "type": "query"
-                    }
-                ]
+                "expression": "$B < 1 && $E < 600"
             }
         }
     ],
@@ -89,7 +105,7 @@
     },
     "annotations": {
         "summary": "The v2 EVM variant derivation (sync-v2-evm-variants) has not completed in 26 hours",
-        "description": "No v2_evm_variants_sync summary from sync-v2-evm-variants in 26 hours (the job runs daily at 06:10 UTC with one retry). The job derives EVM variants from coingecko_coins.platforms and the registry's native-coin table; identity only, markets are refreshed separately. Either the Cloud Scheduler job is failing (404 v2_assets_jobs_disabled means BIRDEYE_API_KEY is missing on the worker; 500 means the derivation threw before its summary, usually a DB timeout), or the worker is down. Existing v2_asset_variants rows keep being served, so new EVM deployments are simply not picked up until the next successful run; nothing is deactivated by a missed run.",
+        "description": "No v2_evm_variants_sync summary from sync-v2-evm-variants in 26 hours (the job runs daily at 06:10 UTC with one retry). The job derives EVM variants from coingecko_coins.platforms and the registry's native-coin table; identity only, markets are refreshed separately. Either the Cloud Scheduler job is failing (404 v2_assets_jobs_disabled means BIRDEYE_API_KEY is missing on the worker; 500 means the derivation threw before its summary, usually a DB timeout), or the worker is down. Existing v2_asset_variants rows keep being served, so new EVM deployments are simply not picked up until the next successful run; nothing is deactivated by a missed run. Suppressed while tokens-logs-pipeline-lagging fires (Cloud Logging → Loki ingestion more than 10 minutes behind): the lines may simply not have reached Loki yet; confirm the run in Cloud Logging before treating this as a job outage.",
         "runbook_url": "https://github.com/solana-foundation/tokens/blob/main/docs/operations/v2-multichain-assets.md"
     }
 }

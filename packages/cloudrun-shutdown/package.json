@@ -12,7 +12,8 @@
   "exports": {
     ".": "./src/index.ts",
     "./http-errors": "./src/http-errors.ts",
-    "./identity": "./src/identity.ts"
+    "./identity": "./src/identity.ts",
+    "./postgres-notice": "./src/postgres-notice.ts"
   },
   "files": [
     "src"
