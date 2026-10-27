@@ -394,6 +394,7 @@ function deps(overrides: Partial<ServerDeps> = {}): ServerDeps {
         tokensReadsRepo: overrides.tokensReadsRepo ?? emptyTokensReadsRepo(),
         trendingReadsRepo: overrides.trendingReadsRepo ?? emptyTrendingReadsRepo(),
         fillQualityReadsRepo: overrides.fillQualityReadsRepo ?? emptyFillQualityReadsRepo(),
+        assetRiskReadsRepo: { findLatestByMints: async () => [] },
         assetCollectionsReadsRepo: overrides.assetCollectionsReadsRepo ?? emptyAssetCollectionsReadsRepo(),
         tokenListsReadsRepo: overrides.tokenListsReadsRepo ?? emptyTokenListsReadsRepo(),
         tokenListsMutationsDeps: overrides.tokenListsMutationsDeps ?? emptyTokenListsMutationsDeps(),

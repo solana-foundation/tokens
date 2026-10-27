@@ -22,12 +22,10 @@ const FULL_PAYLOAD = {
 
 describe('normalizeProviderOverview', () => {
     it('maps the scoring fields', () => {
-        expect(normalizeProviderOverview(FULL_PAYLOAD)).toEqual({
-            liquidity: 11_000_000,
-            marketCap: 1_200_000_000,
-            holder: 850_000,
-            volume24hUSD: 14_500_000,
-        });
+        const overview = normalizeProviderOverview(FULL_PAYLOAD)!;
+        expect([overview.liquidity, overview.marketCap, overview.holder, overview.volume24hUSD]).toEqual([
+            11_000_000, 1_200_000_000, 850_000, 14_500_000,
+        ]);
     });
 
     it('does not fall back to fdv for market cap', () => {
@@ -35,7 +33,14 @@ describe('normalizeProviderOverview', () => {
             success: true,
             data: { liquidity: 50_000, fdv: 9_000_000 },
         });
-        expect(overview).toEqual({ liquidity: 50_000, marketCap: null, holder: null, volume24hUSD: null });
+        expect([overview?.liquidity, overview?.marketCap, overview?.holder, overview?.volume24hUSD]).toEqual([
+            50_000,
+            null,
+            null,
+            null,
+        ]);
+        // The widened extras (fdv etc.) ride along but never feed market cap.
+        expect(overview?.fdv).toBe(9_000_000);
     });
 
     it('keeps an overview that has only one of liquidity / market cap', () => {
@@ -109,10 +114,20 @@ describe('fetchProviderMarketOverview', () => {
         stubFetch(() => json(FULL_PAYLOAD));
         const result = await run(JUP_MINT);
 
-        expect(result).toEqual({
-            ok: true,
-            overview: { liquidity: 11_000_000, marketCap: 1_200_000_000, holder: 850_000, volume24hUSD: 14_500_000 },
-        });
+        expect(result.ok).toBe(true);
+        const o = (
+            result as {
+                overview?: {
+                    liquidity: number | null;
+                    marketCap: number | null;
+                    holder: number | null;
+                    volume24hUSD: number | null;
+                } | null;
+            }
+        ).overview;
+        expect([o?.liquidity, o?.marketCap, o?.holder, o?.volume24hUSD]).toEqual([
+            11_000_000, 1_200_000_000, 850_000, 14_500_000,
+        ]);
         expect(calls.length).toBe(1);
         expect(calls[0]!.url).toBe(`https://public-api.birdeye.so/defi/token_overview?address=${JUP_MINT}`);
         expect(calls[0]!.init?.cache).toBe('no-store');

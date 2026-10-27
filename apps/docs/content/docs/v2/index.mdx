@@ -37,8 +37,11 @@ comes back in `suppressed[]` with the gate that fired, so nothing is silently hi
 `GET /v2/resolve` answers "which mint is *USDC*?" with one confident result, or refuses
 explicitly (`ambiguous`, `no_confident_match`) rather than guessing.
 
+`POST /v2/judge` runs the same judgment over candidates you already have — from your own search,
+another provider, or a watchlist — with no provider lookup and no provider budget.
+
 Read [Risk-aware search](/v2/concepts/risk-aware-search) for policies and codes and
-[Search & Resolve](/v2/endpoints/search) for the reference.
+[Search, Resolve & Judge](/v2/endpoints/search) for the reference.
 
 ## Multichain assets
 
@@ -64,7 +67,7 @@ Read [Multichain assets](/v2/concepts/multichain-assets) for the rules and
 | Chains | `GET /v2/chains` | [Chains](/v2/endpoints/chains) |
 | Assets | `GET /v2/assets`, `GET /v2/assets/{assetId}`, `GET /v2/assets/{assetId}/variants` | [Assets](/v2/endpoints/assets) |
 | Variants | `GET /v2/variants/{chain}/{address}`, `GET /v2/variants?keys=` | [Variants](/v2/endpoints/variants) |
-| Search | `GET /v2/search`, `GET /v2/resolve` | [Search & Resolve](/v2/endpoints/search) |
+| Search | `GET /v2/search`, `GET /v2/resolve`, `POST /v2/judge` | [Search, Resolve & Judge](/v2/endpoints/search) |
 | Lists: read | `GET /v2/lists`, `GET /v2/lists/{slug}`, `GET /v2/lists/tokens` | [Lists](/v2/endpoints/lists) |
 | Lists: manage | `GET /v2/lists/check-slug`, `POST /v2/lists`, `PATCH /v2/lists/{slug}`, `DELETE /v2/lists/{slug}`, `POST /v2/lists/{slug}/members`, `PUT /v2/lists/{slug}/members/{mint}`, `DELETE /v2/lists/{slug}/members/{mint}` | [Lists → Managing lists](/v2/endpoints/lists#managing-lists) |
 | Lists: curator search | `GET /v2/lists/search-tokens` | [Lists](/v2/endpoints/lists#get-v2listssearch-tokens) |

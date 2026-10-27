@@ -12,6 +12,7 @@ import { getVariantByMint, listAssets } from '@tokens/asset-registry';
 import { getCuratedMembershipSnapshot } from '@/lib/curated-membership';
 import type { CuratedMembershipSnapshot } from '@/lib/cloudrun';
 
+import { bandFor } from './bands';
 import { normalizeClaim, tokenAgeDays } from './claims';
 import type { EnrichedCandidate } from './types';
 
@@ -23,14 +24,7 @@ export interface ProtectedSymbolEntry {
 }
 
 /** Variant kinds that are derivatives of the asset, not the asset itself. */
-const DERIVATIVE_VARIANT_KINDS = new Set([
-    'yield',
-    'lst',
-    'etf',
-    'leveraged',
-    'basket',
-    'tokenized_equity',
-]);
+const DERIVATIVE_VARIANT_KINDS = new Set(['yield', 'lst', 'etf', 'leveraged', 'basket', 'tokenized_equity']);
 
 /**
  * The symbol a registry variant legitimately claims. A derivative variant
@@ -68,7 +62,12 @@ export function registryProtectedSymbols(
 
 export type ProtectedSymbolIndex = Map<string, ProtectedSymbolEntry>;
 
-function addEntry(index: ProtectedSymbolIndex, symbol: string | null | undefined, mint: string | null, source: string): void {
+function addEntry(
+    index: ProtectedSymbolIndex,
+    symbol: string | null | undefined,
+    mint: string | null,
+    source: string,
+): void {
     const { normalized } = normalizeClaim(symbol);
     if (!normalized) return;
 
@@ -164,7 +163,6 @@ export type CollisionVerdict =
     | { kind: 'impersonation'; protectedBy: string[] };
 
 const IMPERSONATION_MAX_AGE_DAYS = 90;
-const IMPERSONATION_MAX_LIQUIDITY_USD = 250_000;
 
 /**
  * Verdict for a candidate whose (normalized) symbol claim matches a protected
@@ -189,7 +187,9 @@ export function checkSymbolCollision(
     const ageDays = tokenAgeDays(candidate, nowMs);
     const liquidity = candidate.liquidityUsd ?? 0;
     const young = ageDays === null || ageDays < IMPERSONATION_MAX_AGE_DAYS;
-    const shallow = liquidity < IMPERSONATION_MAX_LIQUIDITY_USD;
+    // "Real standing" is judged on the candidate's band: a registry equity
+    // with 150K liquidity is not shallow for its market.
+    const shallow = liquidity < bandFor(candidate).standingLiquidityUsd;
     const unattested = !candidate.registry;
 
     if (unattested && (young || shallow)) {

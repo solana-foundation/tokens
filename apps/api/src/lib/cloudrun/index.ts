@@ -70,11 +70,7 @@ export { listDeletedRefs, type ListDeletedRefsArgs, type ListDeletedRefsResult }
 
 export { listAssetIdRenames, type AssetIdRename, type ListAssetIdRenamesResult } from './assetIdRenames';
 
-export {
-    assetAdvisoriesList,
-    type AssetAdvisoriesListResult,
-    type AssetAdvisoryRow,
-} from './assetAdvisories';
+export { assetAdvisoriesList, type AssetAdvisoriesListResult, type AssetAdvisoryRow } from './assetAdvisories';
 
 export {
     listActive as sanctumListActive,
@@ -307,3 +303,10 @@ export {
     type V2VariantResult,
     type V2VariantsByAssetIdsEntry,
 } from './v2AssetsReads';
+export {
+    assetRiskGetLatestByMints,
+    type AssetRiskDoc,
+    type AssetSecurityDoc,
+    type AssetRiskGetLatestByMintsArgs,
+    type AssetRiskGetLatestByMintsResult,
+} from './assetRiskReads';

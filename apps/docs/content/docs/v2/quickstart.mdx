@@ -38,9 +38,10 @@ curl -sS "$API_BASE_URL/v2/lists/tokens?lists=majors,currencies" -H "x-api-key: 
 
 Reference: [Lists](/v2/endpoints/lists). Model: [Token lists](/v2/concepts/token-lists).
 
-## Search and resolve
+## Search, resolve and judge
 
-`/v2/search` ranks candidates through a policy; `/v2/resolve` returns one answer or refuses.
+`/v2/search` ranks candidates through a policy; `/v2/resolve` returns one answer or refuses;
+`/v2/judge` judges candidates you already have, with no provider budget.
 
 ```bash
 # Ranked results under the default policy, suppressed rows included
@@ -52,9 +53,13 @@ curl -sS "$API_BASE_URL/v2/search?q=bonk&verifiedOnly=true&minLiquidityUsd=25000
 
 # One confident answer, or status: ambiguous | no_confident_match
 curl -sS "$API_BASE_URL/v2/resolve?q=USDC" -H "x-api-key: $API_KEY"
+
+# Judge mints your own search returned (no provider lookup, no provider budget)
+curl -sS -X POST "$API_BASE_URL/v2/judge" -H "x-api-key: $API_KEY" -H "content-type: application/json" \
+  -d '{ "q": "USDC", "candidates": [{ "mint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", "symbol": "USDC" }] }'
 ```
 
-Reference: [Search & Resolve](/v2/endpoints/search). Model:
+Reference: [Search, Resolve & Judge](/v2/endpoints/search). Model:
 [Risk-aware search](/v2/concepts/risk-aware-search).
 
 ## Chains

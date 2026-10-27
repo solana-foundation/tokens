@@ -7,6 +7,7 @@
  * NFKC → strip invisibles → map confusables to Latin → uppercase.
  */
 
+import { bandFor } from './bands';
 import type { Attestation, EnrichedCandidate } from './types';
 
 // Zero-width and invisible formatting characters commonly used in spoofing.
@@ -16,16 +17,59 @@ const INVISIBLE_CHARS = /[\u200B-\u200F\u202A-\u202E\u2060-\u2064\uFEFF]/g;
 // NFKC handles fullwidth/compatibility forms separately).
 const CONFUSABLES: Record<string, string> = {
     // Cyrillic uppercase
-    А: 'A', В: 'B', Е: 'E', Ѕ: 'S', І: 'I', Ј: 'J', К: 'K', М: 'M',
-    Н: 'H', О: 'O', Р: 'P', С: 'C', Т: 'T', У: 'Y', Х: 'X', Ь: 'B',
+    А: 'A',
+    В: 'B',
+    Е: 'E',
+    Ѕ: 'S',
+    І: 'I',
+    Ј: 'J',
+    К: 'K',
+    М: 'M',
+    Н: 'H',
+    О: 'O',
+    Р: 'P',
+    С: 'C',
+    Т: 'T',
+    У: 'Y',
+    Х: 'X',
+    Ь: 'B',
     // Cyrillic lowercase
-    а: 'a', е: 'e', ѕ: 's', і: 'i', ј: 'j', к: 'k', м: 'm', н: 'h',
-    о: 'o', р: 'p', с: 'c', т: 't', у: 'y', х: 'x',
+    а: 'a',
+    е: 'e',
+    ѕ: 's',
+    і: 'i',
+    ј: 'j',
+    к: 'k',
+    м: 'm',
+    н: 'h',
+    о: 'o',
+    р: 'p',
+    с: 'c',
+    т: 't',
+    у: 'y',
+    х: 'x',
     // Greek uppercase
-    Α: 'A', Β: 'B', Ε: 'E', Ζ: 'Z', Η: 'H', Ι: 'I', Κ: 'K', Μ: 'M',
-    Ν: 'N', Ο: 'O', Ρ: 'P', Τ: 'T', Υ: 'Y', Χ: 'X',
+    Α: 'A',
+    Β: 'B',
+    Ε: 'E',
+    Ζ: 'Z',
+    Η: 'H',
+    Ι: 'I',
+    Κ: 'K',
+    Μ: 'M',
+    Ν: 'N',
+    Ο: 'O',
+    Ρ: 'P',
+    Τ: 'T',
+    Υ: 'Y',
+    Χ: 'X',
     // Greek lowercase
-    α: 'a', ο: 'o', ρ: 'p', τ: 't', υ: 'u', ν: 'v',
+    α: 'a',
+    ο: 'o',
+    ρ: 'p',
+    τ: 't',
+    υ: 'u',
+    ν: 'v',
 };
 
 const CONFUSABLE_PATTERN = new RegExp(`[${Object.keys(CONFUSABLES).join('')}]`, 'g');
@@ -45,8 +89,7 @@ export function normalizeClaim(raw: string | null | undefined): NormalizedClaim 
     const withoutInvisibles = nfkc.replace(INVISIBLE_CHARS, '');
     const deconfused = withoutInvisibles.replace(CONFUSABLE_PATTERN, ch => CONFUSABLES[ch] ?? ch);
 
-    const hadSuspiciousCharacters =
-        withoutInvisibles !== nfkc || deconfused !== withoutInvisibles || nfkc !== value;
+    const hadSuspiciousCharacters = withoutInvisibles !== nfkc || deconfused !== withoutInvisibles || nfkc !== value;
 
     // `$WIF` and `WIF` are the same claim: strip decorative dollar prefixes so
     // exact-symbol matching and collision detection treat them as equivalent.
@@ -81,6 +124,7 @@ export function buildAttestations(
     extras?: { marketDominanceDetail?: string },
 ): Attestation[] {
     const attestations: Attestation[] = [];
+    const band = bandFor(candidate);
 
     if (candidate.curatedListIds.length > 0) {
         attestations.push({
@@ -103,17 +147,17 @@ export function buildAttestations(
         });
     }
 
-    if ((candidate.liquidityUsd ?? 0) >= 1_000_000) {
+    if ((candidate.liquidityUsd ?? 0) >= band.deepLiquidityUsd) {
         attestations.push({
             code: 'deep_liquidity',
-            detail: `liquidity ≥ $1M`,
+            detail: `liquidity ≥ $${formatUsd(band.deepLiquidityUsd)}${band.id === 'default' ? '' : ` (${band.id} band)`}`,
         });
     }
 
-    if ((candidate.volume24hUsd ?? 0) >= 250_000) {
+    if ((candidate.volume24hUsd ?? 0) >= band.sustainedVolumeUsd) {
         attestations.push({
             code: 'sustained_activity',
-            detail: `24h volume ≥ $250K`,
+            detail: `24h volume ≥ $${formatUsd(band.sustainedVolumeUsd)}${band.id === 'default' ? '' : ` (${band.id} band)`}`,
         });
     }
 
@@ -132,7 +176,31 @@ export function buildAttestations(
         });
     }
 
+    // Distinct trading wallets are the wash-resistant twin of volume.
+    if ((candidate.uniqueWallet24h ?? 0) >= ACTIVE_WALLETS_MIN) {
+        attestations.push({
+            code: 'active_wallets',
+            detail: `≥ ${ACTIVE_WALLETS_MIN.toLocaleString('en-US')} distinct wallets traded in 24h`,
+        });
+    }
+
+    if ((candidate.security?.lpLockedPercent ?? 0) >= LOCKED_LIQUIDITY_MIN_PERCENT) {
+        attestations.push({
+            code: 'locked_liquidity',
+            detail: `≥ ${LOCKED_LIQUIDITY_MIN_PERCENT}% of liquidity locked or burned`,
+        });
+    }
+
     return attestations;
+}
+
+export const ACTIVE_WALLETS_MIN = 1_000;
+export const LOCKED_LIQUIDITY_MIN_PERCENT = 80;
+
+function formatUsd(value: number): string {
+    if (value >= 1_000_000) return `${value / 1_000_000}M`;
+    if (value >= 1_000) return `${value / 1_000}K`;
+    return String(value);
 }
 
 /** 0–100: how much independent evidence backs this candidate's claims. */
@@ -145,6 +213,8 @@ export function claimCredibilityScore(attestations: Attestation[]): number {
         sustained_activity: 10,
         established_age: 10,
         broad_holder_base: 5,
+        active_wallets: 10,
+        locked_liquidity: 10,
     };
     let score = 0;
     for (const attestation of attestations) score += WEIGHTS[attestation.code] ?? 0;

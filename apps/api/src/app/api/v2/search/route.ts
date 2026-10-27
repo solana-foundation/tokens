@@ -19,19 +19,20 @@ import { parseJudgedSearchParams, policyEnvelope, runJudgedSearch, withVerified 
 export const GET = route(
     (request: Request, ctx: { platformAuth: PlatformAuthContext }) =>
         Effect.gen(function* () {
-            // Unique-q searches bypass the 30s response cache; the per-key
-            // window budget bounds sustained provider spend.
-            yield* enforceProviderBudget(ctx.platformAuth, 'search');
             const url = new URL(request.url);
             const params = yield* parseJudgedSearchParams(url, {
                 defaultPolicy: 'default',
                 allowIncludeSuppressed: true,
             });
 
+            // The per-key window budget bounds sustained provider spend. It is
+            // charged only when the query's candidate set is not in the cache.
             const { interpretation, candidates, sources, results, suppressed, latencyMs } = yield* runJudgedSearch({
+                route: 'search',
                 q: params.q,
                 policy: params.policy,
                 limit: params.limit,
+                budget: enforceProviderBudget(ctx.platformAuth, 'search'),
             });
 
             return {

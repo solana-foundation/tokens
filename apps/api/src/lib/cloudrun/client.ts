@@ -91,6 +91,7 @@ export const MEMOISABLE_QUERY_NAMES: ReadonlySet<string> = new Set([
     'tokenMarketsGetLatestByMints',
     'tokenMarketsGetTopMarketsByMints',
     'variantFillQualityGetLatestByMints',
+    'assetRiskGetLatestByMints',
     'assetMarketsGetLatestByAssetId',
     'stockPricesGetLatestByAssetId',
     'coingeckoReadsGetCoinById',

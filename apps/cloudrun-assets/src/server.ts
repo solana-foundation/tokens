@@ -37,6 +37,7 @@ import {
     type AssetMarketsRepo,
 } from './handlers/assetMarkets';
 import { getLatestByMints as variantMarketsGetLatestByMints, type VariantMarketsRepo } from './handlers/variantMarkets';
+import { getLatestByMints as assetRiskGetLatestByMints, type AssetRiskReadsRepo } from './handlers/assetRiskReads';
 import {
     getByMint as assetVariantsGetByMint,
     getSolanaDefaultVariantsViewForApi,
@@ -221,6 +222,7 @@ export interface ServerDeps {
     tokensReadsRepo: TokensReadsRepo;
     trendingReadsRepo: TrendingReadsRepo;
     fillQualityReadsRepo: FillQualityReadsRepo;
+    assetRiskReadsRepo: AssetRiskReadsRepo;
     assetCollectionsReadsRepo: AssetCollectionsReadsRepo;
     curatedMembershipSource: CuratedMembershipSource;
     tokenListsReadsRepo: TokenListsReadsRepo;
@@ -326,6 +328,7 @@ const ATOMIC_RETRY_QUERY_NAMES = new Set([
     'trendingMarketsList',
     'freshTrendingMarketsList',
     'variantFillQualityGetLatestByMints',
+    'assetRiskGetLatestByMints',
     'assetCollectionsGetMembers',
     'assetCollectionsGetMemberMints',
     'assetCollectionsGetSummaries',
@@ -573,6 +576,7 @@ export function createApp(deps: ServerDeps) {
     queries.freshTrendingMarketsList = args => freshTrendingMarketsList(deps.trendingReadsRepo, args);
     queries.variantFillQualityGetLatestByMints = args =>
         variantFillQualityGetLatestByMints(deps.fillQualityReadsRepo, args);
+    queries.assetRiskGetLatestByMints = args => assetRiskGetLatestByMints(deps.assetRiskReadsRepo, args);
     queries.assetCollectionsGetMembers = args => assetCollectionsGetMembers(deps.assetCollectionsReadsRepo, args);
     queries.assetCollectionsGetMemberMints = args =>
         assetCollectionsGetMemberMints(deps.assetCollectionsReadsRepo, args);

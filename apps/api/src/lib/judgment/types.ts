@@ -7,14 +7,18 @@
  * - The pipeline stages (intent → gates → score → explain → resolve) are pure
  *   functions over `EnrichedCandidate` so they can be tested offline.
  * - Provider names are never leaked into the public contract; candidate
- *   sources are reported as `provider` / `db` / `registry`.
+ *   sources are reported as `provider` / `db` / `registry` / `caller`.
  */
 
 import type { VariantAdvisory } from '@tokens/asset-registry';
 
-export const SCORING_VERSION = 'v2-scoring-2026-09-27.1' as const;
+export const SCORING_VERSION = 'v2-scoring-2026-10-26.1' as const;
 
-export type CandidateSource = 'provider' | 'db' | 'registry';
+/**
+ * Where a candidate was found. `caller` = supplied in the body of
+ * `POST /v2/judge` (claims with the same trust as the live provider's).
+ */
+export type CandidateSource = 'provider' | 'db' | 'registry' | 'caller';
 
 /** A fully-enriched candidate token: input to the pure judgment pipeline. */
 export interface EnrichedCandidate {
@@ -34,6 +38,32 @@ export interface EnrichedCandidate {
     top10HoldersPercent: number | null;
     /** Token mint (creation) time, ISO string, when known. */
     tokenMintTime: string | null;
+    /** Distinct wallets that traded in the last 24h (wash-resistant activity). */
+    uniqueWallet24h: number | null;
+    trade24h: number | null;
+    fdv: number | null;
+    circulatingSupply: number | null;
+    totalSupply: number | null;
+    /** ms epoch of the last observed trade. */
+    lastTradeAt: number | null;
+    /** Registry asset category (`stablecoin`, `equity`, …) when registry-attested; selects the band. */
+    category: string | null;
+    /**
+     * Authority / launch-hygiene facts. `null` = unknown. Each flag is
+     * independently nullable: absence is never read as "safe".
+     */
+    security: {
+        mintable: boolean | null;
+        freezable: boolean | null;
+        mutableMetadata: boolean | null;
+        transferTax: boolean | null;
+        lpLockedPercent: number | null;
+        devHoldingPercent: number | null;
+        sniperHoldingPercent: number | null;
+        bundlerHoldingPercent: number | null;
+    } | null;
+    /** Where each judgment input came from (echoed on every result). */
+    dataSources: DataSources;
     /** Where this candidate was found. */
     sources: CandidateSource[];
     /**
@@ -60,6 +90,8 @@ export interface EnrichedCandidate {
     fillQuality: {
         executionScore: number | null;
         botVolumeRatio: number | null;
+        flowSourceCount?: number | null;
+        markoutBps?: number | null;
     } | null;
     /** Mint (or its refs) has an explicit deletion tombstone. */
     tombstoned: boolean;
@@ -71,6 +103,20 @@ export interface EnrichedCandidate {
     /** Millis timestamp of the freshest market data backing this candidate. */
     dataAsOf: number | null;
 }
+
+/** Origin of a judgment input: our stored snapshot, a live provider lookup, the caller's claim, or nothing. */
+export type DataSourceKind = 'snapshot' | 'provider' | 'caller' | 'none';
+
+export interface DataSources {
+    /** price / liquidity / volume / market cap / holders */
+    market: DataSourceKind;
+    /** top-10 holder share and mint time */
+    holders: DataSourceKind;
+    /** authority flags, LP lock, launch hygiene */
+    security: DataSourceKind;
+}
+
+export const NO_DATA_SOURCES: DataSources = { market: 'none', holders: 'none', security: 'none' };
 
 // -----------------------------------------------------------------------------
 // Explanation codes (public contract — documented, typed, stable)
@@ -90,6 +136,8 @@ export const REASON_CODES = [
     'high_activity',
     'established_token',
     'strong_execution_quality',
+    'active_wallets',
+    'locked_liquidity',
 ] as const;
 export type ReasonCode = (typeof REASON_CODES)[number];
 
@@ -106,6 +154,16 @@ export const WARNING_CODES = [
     'unverified',
     'weak_market_score',
     'advisory_caution',
+    'mint_authority_active',
+    'freeze_authority_active',
+    'mutable_metadata',
+    'transfer_tax',
+    'low_lp_locked',
+    'dev_holding_high',
+    'sniper_bundle_heavy',
+    'thin_float',
+    'no_recent_trades',
+    'toxic_flow',
 ] as const;
 export type WarningCode = (typeof WARNING_CODES)[number];
 
@@ -119,6 +177,7 @@ export const SUPPRESSION_CODES = [
     'gate_min_market_score',
     'gate_new_token',
     'gate_unverified',
+    'gate_unsafe_authorities',
 ] as const;
 export type SuppressionCode = (typeof SUPPRESSION_CODES)[number];
 
@@ -129,7 +188,9 @@ export type AttestationCode =
     | 'deep_liquidity'
     | 'sustained_activity'
     | 'established_age'
-    | 'broad_holder_base';
+    | 'broad_holder_base'
+    | 'active_wallets'
+    | 'locked_liquidity';
 
 export interface Attestation {
     code: AttestationCode;
@@ -141,13 +202,7 @@ export interface Attestation {
 // Scoring output
 // -----------------------------------------------------------------------------
 
-export type ScoreComponentKey =
-    | 'matchQuality'
-    | 'claimCredibility'
-    | 'liquidity'
-    | 'activity'
-    | 'risk'
-    | 'freshness';
+export type ScoreComponentKey = 'matchQuality' | 'claimCredibility' | 'liquidity' | 'activity' | 'risk' | 'freshness';
 
 export type ScoreComponents = Record<ScoreComponentKey, number>;
 
@@ -176,6 +231,8 @@ export interface JudgedToken {
     reasons: ReasonCode[];
     warnings: WarningCode[];
     badges: string[];
+    /** Where this result's market, holder and security inputs came from. */
+    dataSources: DataSources;
 }
 
 export interface SuppressedToken {
