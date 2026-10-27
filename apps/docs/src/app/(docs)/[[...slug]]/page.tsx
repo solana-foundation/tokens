@@ -11,7 +11,7 @@ import {
 } from 'fumadocs-ui/layouts/spacious/page';
 
 import { getMDXComponents } from '@/mdx-components';
-import { source } from '@/lib/source';
+import { getPageMarkdownUrl, source } from '@/lib/source';
 
 interface PageProps {
     params: Promise<{
@@ -28,13 +28,12 @@ export default async function Page(props: PageProps) {
     if (!page) notFound();
 
     const MDX = page.data.body;
-    const slugPath = slug.join('/');
     const relativeLink = createRelativeLink(
         source as unknown as Parameters<typeof createRelativeLink>[0],
         page as unknown as Parameters<typeof createRelativeLink>[1],
     );
 
-    const markdownUrl = `/api/page-markdown?slug=${encodeURIComponent(slugPath)}`;
+    const markdownUrl = getPageMarkdownUrl(page);
 
     return (
         <DocsPage toc={page.data.toc} full={page.data.full}>
