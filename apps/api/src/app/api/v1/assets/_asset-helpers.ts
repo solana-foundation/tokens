@@ -431,6 +431,7 @@ export function assessTokenMarkets(
             liquidity: token.liquidity,
             volume24hUSD: token.volume24hUSD,
             lastFetchedAt: token.lastFetchedAt ?? null,
+            lastTradeAt: token.lastTradeAt ?? null,
             priceChecked: issuance[index] !== 'derivative',
         });
     });

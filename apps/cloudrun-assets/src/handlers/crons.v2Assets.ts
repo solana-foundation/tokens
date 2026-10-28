@@ -399,7 +399,9 @@ export function deriveVariantKindForChain(args: {
     /** Kind of the variant whose coin is being derived (an Ondo equity mint's EVM deployments are equity too). */
     sourceKind?: string | null;
 }): string {
-    if (args.sourceKind === 'tokenized_equity' || args.sourceKind === 'stablecoin') return args.sourceKind;
+    if (args.sourceKind === 'tokenized_equity' || args.sourceKind === 'stablecoin' || args.sourceKind === 'etf') {
+        return args.sourceKind;
+    }
     switch (args.category) {
         case 'stablecoin':
             return 'stablecoin';
@@ -407,6 +409,12 @@ export function deriveVariantKindForChain(args: {
             return 'lst';
         case 'equity':
             return 'tokenized_equity';
+        case 'etf':
+            // Every deployment of an exchange-traded fund token is a fund share,
+            // wherever CoinGecko says the coin lives: the issuance resolver then
+            // treats them all alike (and promotes them together to the asset's own
+            // supply), instead of calling one chain native and the rest bridged.
+            return 'etf';
         default: {
             const homePlatform = CHAINS[args.chain].providers.coingeckoPlatform;
             if (args.assetPlatformId !== null) return args.assetPlatformId === homePlatform ? 'native' : 'bridged';

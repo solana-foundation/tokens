@@ -149,6 +149,21 @@ describe('deriveVariantKindForChain', () => {
         ).toBe('native');
     });
 
+    test('an ETF is a fund share on every chain, whatever CoinGecko calls its home', () => {
+        // nasdaq-xstock: home arbitrum-one, deployed on Solana, Ethereum, Arbitrum and BNB.
+        for (const chain of ['ethereum', 'arbitrum', 'bnb'] as const) {
+            expect(deriveVariantKindForChain({ category: 'etf', assetPlatformId: 'arbitrum-one', chain })).toBe('etf');
+        }
+        expect(
+            deriveVariantKindForChain({
+                category: 'crypto',
+                assetPlatformId: 'ethereum',
+                chain: 'bnb',
+                sourceKind: 'etf',
+            }),
+        ).toBe('etf');
+    });
+
     test('an equity or stablecoin source variant pins the kind regardless of category', () => {
         expect(
             deriveVariantKindForChain({ category: 'equity', assetPlatformId: null, chain: 'bnb', sourceKind: 'tokenized_equity' }),

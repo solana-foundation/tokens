@@ -42,6 +42,9 @@ const COMMODITY_ASSETS_RAW: CanonicalAsset[] = [
         name: 'Gold',
         symbol: 'GLD',
         category: 'commodity',
+        // Per-ounce reference: the asset is the metal, so its price anchor is a
+        // gold-backed token, never a fund share (GLDx trades at a tenth of an ounce).
+        coingeckoId: 'pax-gold',
         aliases: [
             'gold',
             'gld',

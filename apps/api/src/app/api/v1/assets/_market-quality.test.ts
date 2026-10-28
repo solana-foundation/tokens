@@ -1,6 +1,12 @@
 import { describe, expect, test } from 'bun:test';
 
-import { assessMarkets, weightedMedian, type MarketQualityInput } from './_market-quality';
+import {
+    assessMarkets,
+    countExcludedReasons,
+    emptyExcludedByQuality,
+    weightedMedian,
+    type MarketQualityInput,
+} from './_market-quality';
 
 const NOW = 1_800_000_000_000;
 const HOUR = 60 * 60 * 1000;
@@ -39,6 +45,40 @@ describe('assessMarkets', () => {
         expect(out.get('sol')?.reasons).toEqual(['stale']);
         expect(out.get('eth')?.included).toBe(true);
         expect(out.get('fresh')?.included).toBe(true);
+    });
+
+    test('a pool untraded for a week is inactive whatever liquidity the provider reports (sp500 Arbitrum)', () => {
+        const out = assessMarkets(
+            [
+                row('spy-arb', {
+                    chain: 'arbitrum',
+                    price: 776,
+                    liquidity: 2_435_766_398,
+                    volume24hUSD: 0,
+                    lastTradeAt: NOW - 73 * DAY,
+                }),
+                row('spy-sol', { price: 775, lastTradeAt: NOW - 3 * DAY }),
+                // No last-trade time: not judged.
+                row('spy-rollup', { price: 775, lastTradeAt: null }),
+            ],
+            { priceUsd: 775 },
+            NOW,
+        );
+        expect(out.get('spy-arb')).toEqual({ included: false, reasons: ['inactive'] });
+        expect(out.get('spy-sol')?.included).toBe(true);
+        expect(out.get('spy-rollup')?.included).toBe(true);
+    });
+
+    test('an inactive dust row is not restored as the only market, and inactive is counted on its own', () => {
+        const out = assessMarkets(
+            [row('dead', { liquidity: 0, volume24hUSD: 0, lastTradeAt: NOW - 106 * DAY })],
+            null,
+            NOW,
+        );
+        expect(out.get('dead')?.reasons).toEqual(['inactive', 'dust']);
+        const counts = emptyExcludedByQuality();
+        countExcludedReasons(counts, out.get('dead')!);
+        expect(counts).toEqual({ stale: 0, inactive: 1, dust: 1, priceOutlier: 0 });
     });
 
     test('an $11-liquidity, no-volume row is dust and its $15,192 price never enters the pool', () => {

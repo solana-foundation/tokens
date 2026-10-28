@@ -103,19 +103,23 @@ chains.
   asset" when the asset has some other deployment: when every variant is a yield, ETF, leveraged or
   basket token (a standalone treasury fund, say) those variants are the asset and count as `native`.
   Commodities are the exception, since an ETF share is never the metal.
-- **The quality guard.** Before a market row enters any sum it must be fresh (a successful provider
-  write within 2 h on Solana, 3 h on EVM), not dust (liquidity and 24h volume both under $1k, unless
-  nothing else survives), and priced within 25% of the reference price, or without one, of the
-  surviving rows' liquidity-weighted median. Derivatives skip the price check because they are not
-  priced in the asset's units. A failing row leaves every sum and average, including market cap and
-  supply, and says so in `market.quality`; `excludedCount` and `excludedByQuality` count them per
-  chain and in aggregate.
+- **The quality guard.** Before a market row enters a market sum it must be fresh (a successful
+  provider write within 2 h on Solana, 3 h on EVM), active (a trade within the last 7 days, when the
+  provider reports one), not dust (liquidity and 24h volume both under $1k, unless nothing else
+  survives), and priced within 25% of the reference price, or without one, of the surviving rows'
+  liquidity-weighted median. Derivatives skip the price check because they are not priced in the
+  asset's units. A failing row leaves liquidity, volume, trades and the price average and says so in
+  `market.quality`; its issued supply still counts (valued at the reference price when the row's own
+  price is what failed), because the tokens exist whether or not the pool is a market.
+  `excludedCount` and `excludedByQuality` count failing rows per chain and in aggregate.
 - `aggregate` is the sum of `chainStats` across chains, with averages weighted by chain liquidity,
   plus `chainCount` and `excludedFromSupplyCount`: the one guarded, issuance-aware on-chain figure.
 - `referenceMarket` is the off-chain reference (v1's `canonicalMarket`): CoinGecko for crypto, the
   stock feed for one-share-per-token equities and ETFs (`source: "stock"` replaces v1's
-  `clickhouse_stock`), the PreStocks mark for pre-IPO equities. Keep a default branch when you
-  switch on `source`.
+  `clickhouse_stock`), the PreStocks mark for pre-IPO equities. An equity or ETF the stock feed
+  does not carry falls back to the CoinGecko reference of its token (`source: "coingecko"`), so
+  the headline never goes empty for want of an instrument. Keep a default branch when you switch
+  on `source`.
 - `stats` is the reference-first headline. Price, market cap, FDV, 24h change and supply come from
   `referenceMarket` when there is one; liquidity, DEX volume, trades and the 1h change from
   `aggregate`; anything the reference lacks falls through to `aggregate`. For an equity the market

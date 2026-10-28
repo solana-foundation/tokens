@@ -72,7 +72,7 @@ interface V2Market {
     lastTradeAt: number | null;
     asOf: number | null;          // provider timestamp; only set for trade-sourced Solana rows
     lastFetchedAt: number | null; // our last successful provider write
-    quality: { included: boolean; reasons: Array<'stale' | 'dust' | 'price_outlier'> }; // did this row enter the sums
+    quality: { included: boolean; reasons: Array<'stale' | 'inactive' | 'dust' | 'price_outlier'> }; // did this row enter the market sums (issued supply still counts)
 }
 
 interface V2Advisory {
@@ -180,8 +180,8 @@ interface V2ChainStats {
     variantCount: number;
     issuedVariantCount: number;       // variants counted toward supply / market cap
     excludedByIssuance: { bridged: number; wrapped: number; derivative: number };
-    excludedCount: number;            // rows that failed the quality guard and left every sum
-    excludedByQuality: { stale: number; dust: number; priceOutlier: number };
+    excludedCount: number;            // rows that failed the quality guard and left the market sums (issued supply still counts)
+    excludedByQuality: { stale: number; inactive: number; dust: number; priceOutlier: number };
 }
 
 interface V2Aggregate extends V2ChainStats {

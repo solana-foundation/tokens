@@ -66,6 +66,45 @@ describe('resolveVariantIssuance', () => {
         expect(resolveAssetIssuance([])).toEqual([]);
     });
 
+    test('an ETF deployed on several chains is the fund on every chain: all promoted together', () => {
+        // nasdaq-xstock (QQQx): Solana SPL plus the same contract on three EVM chains.
+        const deployments = [
+            {
+                chain: 'solana' as const,
+                address: 'Xs8S1uUs1zvS2p7iwtsG3b6fkhpvmwz4GYU3gWAmWHZ',
+                kind: 'etf',
+                tags: ['curated:etfs'],
+            },
+            {
+                chain: 'ethereum' as const,
+                address: '0xa753a7395cae905cd615da0b82a53e0560f250af',
+                kind: 'etf',
+                tags: ['coingecko-derived'],
+            },
+            {
+                chain: 'arbitrum' as const,
+                address: '0xa753a7395cae905cd615da0b82a53e0560f250af',
+                kind: 'etf',
+                tags: ['coingecko-derived'],
+            },
+            {
+                chain: 'bnb' as const,
+                address: '0xa753a7395cae905cd615da0b82a53e0560f250af',
+                kind: 'etf',
+                tags: ['coingecko-derived'],
+            },
+        ];
+        expect(resolveAssetIssuance(deployments, { category: 'etf' })).toEqual([
+            'native',
+            'native',
+            'native',
+            'native',
+        ]);
+        // One deployment classified native by its home platform used to pin the rest as derivative.
+        const mixed = [deployments[0]!, { ...deployments[2]!, kind: 'native' }];
+        expect(resolveAssetIssuance(mixed, { category: 'etf' })).toEqual(['derivative', 'native']);
+    });
+
     test("a commodity's ETF-share token is never promoted: the asset is the metal, not the fund", () => {
         const slv = { chain: 'solana' as const, address: 'SilverEtfMint11111111111111111111111111111111', kind: 'etf', tags: [] };
         expect(resolveAssetIssuance([slv], { category: 'commodity' })).toEqual(['derivative']);

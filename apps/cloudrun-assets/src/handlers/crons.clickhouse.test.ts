@@ -257,6 +257,28 @@ describe('syncClickhouseStockMappings', () => {
         expect(state.upsertedInstruments).toHaveLength(0);
     });
 
+    it('maps an ETF asset by its own ticker while a pre-IPO fund stays unmapped', async () => {
+        const { deps, state } = makeDeps({
+            state: {
+                mappableAssets: [
+                    // The ETF-name blocklist is for equities; a fund maps by its ticker.
+                    { assetId: 'nasdaq', category: 'etf', name: 'Nasdaq', symbol: 'QQQ', aliases: ['nasdaq-xstock'] },
+                    { assetId: 'pre-fund', category: 'etf', name: 'Private Fund (PreStocks)', symbol: 'PFND' },
+                ],
+            },
+            clickhouse: {
+                instruments: [
+                    { symbol: 'QQQ', name: null, assetId: null, instrumentId: 40, dataset: null },
+                    { symbol: 'PFND', name: null, assetId: null, instrumentId: 41, dataset: null },
+                ],
+            },
+        });
+
+        const res = await syncClickhouseStockMappings(deps, { limit: 1000 });
+        expect(res.matched).toBe(1);
+        expect((state.upsertedInstruments ?? []).map(row => [row.assetId, row.symbol])).toEqual([['nasdaq', 'QQQ']]);
+    });
+
     it('exits early with skipped=disabled when env gate is off', async () => {
         const { deps, state } = makeDeps({
             env: { CLICKHOUSE_STOCK_REFRESH_ENABLED: 'false' },

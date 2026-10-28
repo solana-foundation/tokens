@@ -140,7 +140,7 @@ export function AssetStatsSection({
 
     const statsSource: V2AssetStats['source'] = market?.statsSource ?? {};
     const onChain = (what: string) =>
-        `${what} aggregated across ${chainList} on-chain markets, leaving out stale, dust and outlier rows.`;
+        `${what} aggregated across ${chainList} on-chain markets, leaving out stale, inactive, dust and outlier rows.`;
     const fromSource = (what: string, key: keyof V2AssetStats['source'], fallbackCopy: string) => {
         const kind = statsSource[key];
         if (kind === 'coingecko') return `${what} from CoinGecko (global, all venues).`;

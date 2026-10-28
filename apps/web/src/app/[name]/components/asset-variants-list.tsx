@@ -11,11 +11,13 @@ import type { VariantKind } from '@tokens/asset-registry';
 import { CHAIN_KINDS, CHAINS, chainSupports, type ChainKind } from '@tokens/asset-registry/chains';
 import { AssetAdvisoryBadge } from '@/components/asset-advisory-badge';
 import { ChainLogo } from '@/components/chain-logo';
+import { MarketQualityPill } from '@/components/market-quality-pill';
 import { PegStatusPill } from '@/components/peg-status-pill';
 import { isTradeBlocked } from '@/lib/asset-advisory';
 import type { AssetPageVariantLite } from '@/lib/asset-page-variant';
 import { buildVariantHref } from '@/lib/coin-href';
 import { formatLargeNumber } from '@/lib/format';
+import { compareMarketInclusion, isMarketIncluded, marketQualityVerdict } from '@/lib/market-quality-label';
 import {
     chainDisplayLabel,
     groupAssetVariantsByDisplayCategory,
@@ -106,12 +108,15 @@ export function AssetVariantsList({
         [activeChain, showChainTabs, variants],
     );
 
+    // Rows the quality guard left out of the totals sort last: a dead pool's
+    // reported liquidity must not put it ahead of the pools people trade on.
     const sortedRows = React.useMemo(
         () =>
             tabVariants
                 .slice()
                 .sort(
                     (a, b) =>
+                        compareMarketInclusion(a, b) ||
                         (b.market?.liquidity ?? 0) - (a.market?.liquidity ?? 0) ||
                         (b.market?.volume24hUSD ?? 0) - (a.market?.volume24hUSD ?? 0),
                 ),
@@ -297,6 +302,12 @@ function AssetVariantCard({
     const fallbackSymbol = symbol || formatCompactAddress(variant.address);
     const name = (variant.displayName ?? '').trim() || fallbackSymbol;
     const href = buildVariantHref(canonicalAssetId, variant);
+    const marketIncluded = isMarketIncluded(variant.market);
+    const marketVerdict = marketIncluded ? null : marketQualityVerdict(variant.market?.quality.reasons ?? []);
+    const metricClassName = cn(
+        'mt-0.5 text-[12px] tabular-nums',
+        marketIncluded ? 'text-text-extra-high' : 'text-text-extra-low',
+    );
     const logoURI = normalizeLogoSrc(normalizeOptionalText(variant.logoURI) || undefined);
     const textureLogoURI = logoURI ?? null;
     const showTradeCount = typeof variant.market?.trade24h === 'number';
@@ -380,6 +391,7 @@ function AssetVariantCard({
                                 </span>
                                 <AssetAdvisoryBadge advisory={advisory} size="sm" />
                                 <PegStatusPill pegHealth={variant.pegHealth} size="sm" />
+                                <MarketQualityPill market={variant.market} size="sm" />
                             </div>
                         </div>
                     </div>
@@ -387,13 +399,13 @@ function AssetVariantCard({
                     <div className="mt-auto grid grid-cols-3 gap-2 pt-2">
                         <div>
                             <div className="text-[9px] text-text-extra-low">Liquidity</div>
-                            <div className="mt-0.5 text-[12px] text-text-extra-high tabular-nums">
+                            <div className={metricClassName} title={marketVerdict?.detail}>
                                 {variant.market ? formatLargeNumber(variant.market.liquidity) : '—'}
                             </div>
                         </div>
                         <div>
                             <div className="text-[9px] text-text-extra-low">24h Vol</div>
-                            <div className="mt-0.5 text-[12px] text-text-extra-high tabular-nums">
+                            <div className={metricClassName} title={marketVerdict?.detail}>
                                 {variant.market ? formatLargeNumber(variant.market.volume24hUSD) : '—'}
                             </div>
                         </div>
@@ -401,7 +413,7 @@ function AssetVariantCard({
                             <div className="text-[9px] text-text-extra-low">
                                 {hasExecutionQuality ? 'Exec Q' : showTradeCount ? 'Trades' : '1h Vol'}
                             </div>
-                            <div className="mt-0.5 text-[12px] text-text-extra-high tabular-nums">
+                            <div className={metricClassName} title={marketVerdict?.detail}>
                                 {hasExecutionQuality
                                     ? formatExecutionScore(executionQuality.executionScore)
                                     : showTradeCount

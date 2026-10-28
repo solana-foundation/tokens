@@ -2482,7 +2482,7 @@ export function makePostgresClickhouseRepo(sql: Sql): ClickhouseRepo {
             >`
                 SELECT asset_id, category, name, symbol, aliases
                 FROM assets
-                WHERE category IN ('equity', 'commodity')
+                WHERE category IN ('equity', 'etf', 'commodity')
                   AND is_active = true
                 ORDER BY asset_id ASC
                 LIMIT 5000

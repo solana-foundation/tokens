@@ -96,7 +96,7 @@ describe('selectV2HeadlineStats', () => {
         issuedVariantCount: 0,
         excludedByIssuance: { bridged: 0, wrapped: 6, derivative: 0 },
         excludedCount: 0,
-        excludedByQuality: { stale: 0, dust: 0, priceOutlier: 0 },
+        excludedByQuality: { stale: 0, inactive: 0, dust: 0, priceOutlier: 0 },
         chainCount: 6,
         excludedFromSupplyCount: 6,
         ...overrides,
@@ -260,8 +260,8 @@ describe('buildV2Asset headline', () => {
     const build = (params: {
         asset?: ReturnType<typeof asset>;
         variants: V2VariantResult[];
-        markets: Array<[string, ReturnType<typeof row>]>;
-        coingeckoPrice?: typeof coingecko | null;
+        markets: Array<[string, ReturnType<typeof row> & { lastTradeAt?: number }]>;
+        coingeckoPrice?: Parameters<typeof buildV2Asset>[0]['coingeckoPrice'];
         stockPrice?: Parameters<typeof buildV2Asset>[0]['stockPrice'];
         stockInstrument?: Parameters<typeof buildV2Asset>[0]['stockInstrument'];
         hideBlocked?: boolean;
@@ -348,12 +348,137 @@ describe('buildV2Asset headline', () => {
         expect(out.stats?.price).toBe(378);
         expect(out.stats?.source.price).toBe('stock');
         expect(out.stats?.fdv).toBeNull();
-        expect(out.stats?.circulatingSupply).toBe(237_000);
+        // The dust Arbitrum row is out of the market sums but its 48,000 tokens
+        // exist: supply counts, valued at the stock price, not at its $15,192.
+        expect(out.stats?.circulatingSupply).toBe(285_000);
         expect(out.stats?.source.circulatingSupply).toBe('onchain');
-        expect(out.aggregate.marketCap).toBe(90_000_000);
+        expect(out.aggregate.marketCap).toBe(90_000_000 + 48_000 * 378);
+        expect(out.aggregate.liquidity).toBe(4_200_000);
         expect(out.aggregate.excludedCount).toBe(1);
         expect(out.variants?.find(v => v.chain === 'arbitrum')?.market?.quality.included).toBe(false);
         expect(out.referenceMarket?.source).toBe('stock');
+    });
+
+    const QQQX_SOL = 'Xs8S1uUs1zvS2p7iwtsG3b6fkhpvmwz4GYU3gWAmWHZ';
+    const QQQX_EVM = '0xa753a7395cae905cd615da0b82a53e0560f250af';
+    const nasdaq = () =>
+        asset({ assetId: 'nasdaq', category: 'etf', name: 'Nasdaq', symbol: 'QQQ', coingeckoId: 'nasdaq-xstock' });
+    const nasdaqVariants = () => [
+        { ...variant('solana', QQQX_SOL, 'etf', ['curated:etfs']), assetId: 'nasdaq' },
+        { ...variant('ethereum', QQQX_EVM, 'etf', ['coingecko-derived']), assetId: 'nasdaq' },
+        { ...variant('arbitrum', QQQX_EVM, 'etf', ['coingecko-derived']), assetId: 'nasdaq' },
+    ];
+    const nasdaqMarkets = (): Array<[string, ReturnType<typeof row> & { lastTradeAt?: number }]> => [
+        [`solana:${QQQX_SOL}`, row(722, 3_048_000, 27_363_000, 37_907, 84_651)],
+        // Real issued supply, dust pools: Ethereum traded $358 today, Arbitrum last traded in July.
+        [`ethereum:${QQQX_EVM}`, { ...row(722, 512, 24_624_000, 34_091), volume24hUSD: 358 }],
+        [
+            `arbitrum:${QQQX_EVM}`,
+            { ...row(720, 0, 23_675_000, 32_883), volume24hUSD: 0, lastTradeAt: NOW - 106 * 24 * 3_600_000 },
+        ],
+    ];
+    const nasdaqCoingecko = {
+        ...coingecko,
+        coinId: 'nasdaq-xstock',
+        priceUsd: 725,
+        marketCapUsd: 49_350_000,
+        fdvUsd: 208_873_000,
+        circulatingSupply: 68_052,
+        totalSupply: 287_897,
+        maxSupply: null,
+    };
+    const qqqStock = {
+        assetId: 'nasdaq',
+        symbol: 'QQQ',
+        normalizedSymbol: 'QQQ',
+        priceUsd: 723,
+        volume24hUsd: 40_000_000_000,
+        priceChange24hPercent: 0.3,
+        sharesOutstanding: null,
+        sharesAsOf: null,
+        sharesLastFetchedAt: null,
+        asOf: NOW,
+        lastFetchedAt: NOW,
+        source: 'clickhouse_stock' as const,
+    };
+
+    test('nasdaq (ETF): the stock feed prices it; market cap is the tokenized float at that price across every deployment', () => {
+        const out = build({
+            asset: nasdaq(),
+            variants: nasdaqVariants(),
+            markets: nasdaqMarkets(),
+            coingeckoPrice: nasdaqCoingecko,
+            stockInstrument: {
+                assetId: 'nasdaq',
+                symbol: 'QQQ',
+                normalizedSymbol: 'QQQ',
+                exchange: null,
+                name: 'Nasdaq',
+            } as never,
+            stockPrice: qqqStock,
+        });
+        expect(out.stats?.price).toBe(723);
+        expect(out.stats?.source.price).toBe('stock');
+        expect(out.stats?.fdv).toBeNull();
+        expect(out.referenceMarket?.source).toBe('stock');
+        // Every deployment is the fund: all native, all counted toward supply.
+        expect(out.variants?.map(v => v.issuance)).toEqual(['native', 'native', 'native']);
+        expect(out.aggregate.issuedVariantCount).toBe(3);
+        expect(out.aggregate.excludedFromSupplyCount).toBe(0);
+        expect(out.stats?.totalSupply).toBe(84_651 + 34_091 + 32_883);
+        expect(out.stats?.source.totalSupply).toBe('onchain');
+        // The Solana pool is the market; the dust and inactive EVM rows add supply at the stock price only.
+        expect(out.aggregate.liquidity).toBe(3_048_000);
+        expect(out.stats?.marketCap).toBe(27_363_000 + (34_091 + 32_883) * 723);
+        expect(out.stats?.source.marketCap).toBe('onchain');
+        expect(out.chainStats.arbitrum?.excludedByQuality).toEqual({ stale: 0, inactive: 1, dust: 1, priceOutlier: 0 });
+        expect(out.chainStats.arbitrum?.totalSupply).toBe(32_883);
+        expect(out.chainStats.arbitrum?.liquidity).toBeNull();
+        expect(out.chainStats.ethereum?.excludedByQuality).toEqual({ stale: 0, inactive: 0, dust: 1, priceOutlier: 0 });
+        expect(out.variants?.find(v => v.chain === 'arbitrum')?.market?.quality.reasons).toEqual(['inactive', 'dust']);
+    });
+
+    test('nasdaq without a stock instrument: CoinGecko is the headline instead of nothing', () => {
+        const out = build({
+            asset: nasdaq(),
+            variants: nasdaqVariants(),
+            markets: nasdaqMarkets(),
+            coingeckoPrice: nasdaqCoingecko,
+        });
+        expect(out.stats?.price).toBe(725);
+        expect(out.stats?.source.price).toBe('coingecko');
+        expect(out.stats?.marketCap).toBe(49_350_000);
+        expect(out.stats?.source.marketCap).toBe('coingecko');
+        expect(out.stats?.fdv).toBe(208_873_000);
+        expect(out.referenceMarket?.source).toBe('coingecko');
+        // The supply the guard-excluded rows carry is still the chain's, valued at the CoinGecko price.
+        expect(out.chainStats.arbitrum?.marketCap).toBe(32_883 * 725);
+    });
+
+    test('an equity the stock feed does not carry (target) falls back to its CoinGecko reference', () => {
+        const TGT = 'XsjXR5jf4d4GNpJXwLvEBTMwK3ZYro2qZGgvUCzyJ11';
+        const out = build({
+            asset: asset({
+                assetId: 'target',
+                category: 'equity',
+                name: 'Target',
+                symbol: 'TGT',
+                coingeckoId: 'target-xstock',
+            }),
+            variants: [{ ...variant('solana', TGT, 'tokenized_equity'), assetId: 'target' }],
+            markets: [[`solana:${TGT}`, row(96, 40_000, 4_800_000, 50_000)]],
+            coingeckoPrice: {
+                ...coingecko,
+                coinId: 'target-xstock',
+                priceUsd: 95.5,
+                marketCapUsd: 4_775_000,
+                fdvUsd: 4_775_000,
+            },
+        });
+        expect(out.stats?.price).toBe(95.5);
+        expect(out.stats?.source.price).toBe('coingecko');
+        expect(out.stats?.marketCap).toBe(4_775_000);
+        expect(out.referenceMarket?.source).toBe('coingecko');
     });
 
     test("ethereum: the native coin's home-chain row carries the reference supply; Base ETH is bridged", () => {
@@ -554,7 +679,7 @@ describe('chain stats', () => {
             issuedVariantCount: 1,
             excludedByIssuance: { bridged: 1, wrapped: 0, derivative: 0 },
             excludedCount: 0,
-            excludedByQuality: { stale: 0, dust: 0, priceOutlier: 0 },
+            excludedByQuality: { stale: 0, inactive: 0, dust: 0, priceOutlier: 0 },
         });
         expect(stats.ethereum?.marketCap).toBeNull();
         expect(stats.ethereum?.excludedByIssuance).toEqual({ bridged: 0, wrapped: 1, derivative: 0 });
@@ -582,7 +707,7 @@ describe('chain stats', () => {
         expect(aggregateChainStats(stats).trade24h).toBe(77);
     });
 
-    test('a row the quality guard excludes leaves every sum but still counts as a variant', () => {
+    test('a row the quality guard excludes leaves the market sums but keeps its issued supply at the reference price', () => {
         const NOW = 1_800_000_000_000;
         const byKey = new Map([
             [`solana:${USDC_SOLANA}`, { ...market(100_000, 1000), price: 1, volume24hUSD: 50_000, lastFetchedAt: NOW - 60_000 }],
@@ -591,21 +716,65 @@ describe('chain stats', () => {
         ]);
         const quality = assessVariantMarkets([variants[0]!, variants[1]!], byKey, { priceUsd: 1 }, NOW);
         expect(quality.get(`base:${USDC_BASE}`)?.included).toBe(false);
-        const stats = computeChainStats([variants[0]!, variants[1]!], byKey, null, quality);
+        const stats = computeChainStats([variants[0]!, variants[1]!], byKey, null, quality, null, undefined, 1);
         expect(stats.base?.liquidity).toBeNull();
-        expect(stats.base?.marketCap).toBeNull();
+        expect(stats.base?.volume24hUSD).toBeNull();
+        expect(stats.base?.price).toBeNull();
         expect(stats.base?.variantCount).toBe(1);
-        expect(stats.base?.issuedVariantCount).toBe(0);
         expect(stats.base?.excludedCount).toBe(1);
         // Dust rows never reach the price pass: one reason, not two.
-        expect(stats.base?.excludedByQuality).toEqual({ stale: 0, dust: 1, priceOutlier: 0 });
+        expect(stats.base?.excludedByQuality).toEqual({ stale: 0, inactive: 0, dust: 1, priceOutlier: 0 });
+        // The 5 tokens on Base exist: counted, and valued at the reference, not at the row's $739M.
+        expect(stats.base?.issuedVariantCount).toBe(1);
+        expect(stats.base?.circulatingSupply).toBe(5);
+        expect(stats.base?.marketCap).toBe(5);
         expect(stats.solana?.marketCap).toBe(1000);
         expect(stats.solana?.liquidity).toBe(100_000);
         const aggregate = aggregateChainStats(stats);
-        expect(aggregate.marketCap).toBe(1000);
+        expect(aggregate.marketCap).toBe(1005);
+        expect(aggregate.circulatingSupply).toBe(10);
         expect(aggregate.excludedCount).toBe(1);
         expect(aggregate.excludedByQuality.dust).toBe(1);
         expect(aggregate.excludedFromSupplyCount).toBe(0);
+    });
+
+    test('without a reference price an excluded row is counted in supply but left unpriced', () => {
+        const NOW = 1_800_000_000_000;
+        const byKey = new Map([
+            [
+                `solana:${USDC_SOLANA}`,
+                { ...market(100_000, 1000), price: 1, volume24hUSD: 50_000, lastFetchedAt: NOW - 60_000 },
+            ],
+            [
+                `base:${USDC_BASE}`,
+                { ...market(11, 739_000_000), price: 40, volume24hUSD: 40, lastFetchedAt: NOW - 60_000 },
+            ],
+        ]);
+        const quality = assessVariantMarkets([variants[0]!, variants[1]!], byKey, null, NOW);
+        const stats = computeChainStats([variants[0]!, variants[1]!], byKey, null, quality);
+        expect(stats.base?.issuedVariantCount).toBe(1);
+        expect(stats.base?.circulatingSupply).toBe(5);
+        expect(stats.base?.marketCap).toBeNull();
+        expect(aggregateChainStats(stats).marketCap).toBe(1000);
+    });
+
+    test('an excluded bridged row is still a bridged claim, not issued supply', () => {
+        const NOW = 1_800_000_000_000;
+        const bridged = variants[2]!;
+        const byKey = new Map([
+            [
+                `solana:${USDC_SOLANA}`,
+                { ...market(100_000, 1000), price: 1, volume24hUSD: 50_000, lastFetchedAt: NOW - 60_000 },
+            ],
+            [bridged.key, { ...market(5, 50), price: 1, volume24hUSD: 0, lastFetchedAt: NOW - 60_000 }],
+        ]);
+        const quality = assessVariantMarkets([variants[0]!, bridged], byKey, { priceUsd: 1 }, NOW);
+        expect(quality.get(bridged.key)?.included).toBe(false);
+        const stats = computeChainStats([variants[0]!, bridged], byKey, null, quality, null, undefined, 1);
+        expect(stats.base?.issuedVariantCount).toBe(0);
+        expect(stats.base?.circulatingSupply).toBeNull();
+        expect(stats.base?.excludedByIssuance.bridged).toBe(1);
+        expect(stats.base?.excludedCount).toBe(1);
     });
 
     test('an LST priced at 1.3 SOL is a derivative and exempt from the outlier check; a spot row at 2× is not', () => {
@@ -1121,7 +1290,7 @@ describe('selectVolume30d', () => {
                 issuedVariantCount: 1,
                 excludedByIssuance: { bridged: 0, wrapped: 0, derivative: 0 },
                 excludedCount: 0,
-                excludedByQuality: { stale: 0, dust: 0, priceOutlier: 0 },
+                excludedByQuality: { stale: 0, inactive: 0, dust: 0, priceOutlier: 0 },
             };
         }
         return out;

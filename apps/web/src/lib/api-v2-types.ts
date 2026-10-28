@@ -48,9 +48,11 @@ export interface V2Market {
     lastTradeAt: number | null;
     asOf: number | null;
     lastFetchedAt: number | null;
-    /** Whether this row entered the asset's sums / averages, and why not. */
-    quality: { included: boolean; reasons: Array<'stale' | 'dust' | 'price_outlier'> };
+    /** Whether this row entered the asset's market sums / averages, and why not (issued supply still counts). */
+    quality: { included: boolean; reasons: V2MarketQualityReason[] };
 }
+
+export type V2MarketQualityReason = 'stale' | 'inactive' | 'dust' | 'price_outlier';
 
 export interface V2Advisory {
     status: AdvisoryStatus;
@@ -167,7 +169,7 @@ export interface V2ChainStats {
     issuedVariantCount: number;
     excludedByIssuance: { bridged: number; wrapped: number; derivative: number };
     excludedCount: number;
-    excludedByQuality: { stale: number; dust: number; priceOutlier: number };
+    excludedByQuality: { stale: number; inactive: number; dust: number; priceOutlier: number };
 }
 
 /** `executable` (default): chains we can swap on rank first; `global`: every chain. */

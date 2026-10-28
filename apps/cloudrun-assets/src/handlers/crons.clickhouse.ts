@@ -263,7 +263,12 @@ export async function syncClickhouseStockMappings(
     }
 
     const mappableAssets = await deps.clickhouseRepo.listStockMappableAssets();
-    const equityAssets = mappableAssets.filter(asset => asset.category !== 'commodity');
+    const equityAssets = mappableAssets.filter(asset => asset.category !== 'commodity' && asset.category !== 'etf');
+    // An exchange-traded fund is one share per token like an equity, and its
+    // ticker (QQQ, SPY, VTI) trades in the same feed. The ETF-name blocklist in
+    // `isPublicEquityAsset` exists to keep an *equity* off a fund's ticker, so
+    // ETF assets only take the non-public (pre-IPO / private) check.
+    const etfAssets = mappableAssets.filter(asset => asset.category === 'etf' && !hasNonPublicEquitySignal(asset));
     const commodityAssets = mappableAssets.filter(asset => asset.category === 'commodity');
 
     // Commodities match ONLY via the explicit benchmark ticker map (never symbol/alias/name).
@@ -273,7 +278,7 @@ export async function syncClickhouseStockMappings(
         if (ticker) commodityAssetByTicker.set(normalizeSymbol(ticker), asset);
     }
 
-    const publicAssets = equityAssets.filter(isPublicEquityAsset);
+    const publicAssets = [...equityAssets.filter(isPublicEquityAsset), ...etfAssets];
     const assetById = new Map<string, EquityCandidate>();
     const assetBySymbol = new Map<string, EquityCandidate>();
     const assetByAlias = new Map<string, EquityCandidate>();
