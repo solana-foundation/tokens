@@ -20,6 +20,13 @@ export interface GcpLogsHookDeps {
     fetchImpl?: typeof fetch;
     /** Minimum spacing between pipeline heartbeats per instance (default 10 s). */
     heartbeatIntervalMs?: number;
+    /**
+     * Upper bound on one Loki push (default 20 s). Pub/Sub's ack deadline on
+     * the subscription is 60 s: a push that hangs longer than that expires
+     * the deadline and the entries are redelivered on top of the hung push,
+     * so a hung push must fail fast and turn into a 502 (retry) instead.
+     */
+    lokiPushTimeoutMs?: number;
     now?: () => number;
 }
 
@@ -29,13 +36,28 @@ export interface GcpLogsHookDeps {
  * its timestamp is "now" even when everything else is queued: `lag_s` is how
  * far behind the pipeline is, and the Grafana rule `tokens-logs-pipeline-lagging`
  * (plus the lag guard on every Loki "silent/stale" rule) reads it.
+ *
+ * `publish_lag_s` is the same measurement from the Pub/Sub publish time
+ * instead of the Cloud Logging entry timestamp. `lag_s − publish_lag_s` is
+ * therefore Cloud Logging receipt → Logs Router → sink publish (Google's
+ * side, no metric of its own) and `publish_lag_s` alone is Pub/Sub delivery
+ * plus any redelivery after this hook answered 502. On 2026-10-28 a 4–6 min
+ * tail on 1–3 % of entries could only be attributed by elimination because
+ * the split was not recorded.
  */
 export const PIPELINE_HEARTBEAT_SERVICE = 'tokens-logs-pipeline';
 const DEFAULT_HEARTBEAT_INTERVAL_MS = 10_000;
+const DEFAULT_LOKI_PUSH_TIMEOUT_MS = 20_000;
 
 type LokiStream = {
     stream: Record<string, string>;
     values: Array<[string, string]>;
+};
+
+/** One Cloud Logging entry on its way to Loki, with when Pub/Sub published it. */
+type PendingEntry = {
+    stream: LokiStream;
+    publishedMs?: number;
 };
 
 function tsNs(ms: number): string {
@@ -54,12 +76,19 @@ function mirrorTargets(url: string, auth: string): { primary: [string, string]; 
     return { primary: [urls[0] ?? '', auths[0] ?? ''], mirrors };
 }
 
-async function pushMirror(fetchImpl: typeof fetch, url: string, auth: string, body: string): Promise<void> {
+async function pushMirror(
+    fetchImpl: typeof fetch,
+    url: string,
+    auth: string,
+    body: string,
+    timeoutMs: number,
+): Promise<void> {
     try {
         const res = await fetchImpl(url, {
             method: 'POST',
             headers: { Authorization: auth, 'Content-Type': 'application/json' },
             body,
+            signal: AbortSignal.timeout(timeoutMs),
         });
         if (!res.ok) console.error(`loki: mirror push failed status=${res.status} url=${url}`);
     } catch (err) {
@@ -82,15 +111,17 @@ export async function pushToLoki(deps: GcpLogsHookDeps, streams: LokiStream[]): 
     }
     if (streams.length === 0 || streams.every(s => s.values.length === 0)) return 'pushed';
     const fetchImpl = deps.fetchImpl ?? fetch;
+    const timeoutMs = deps.lokiPushTimeoutMs ?? DEFAULT_LOKI_PUSH_TIMEOUT_MS;
     const { primary, mirrors } = mirrorTargets(lokiUrl, lokiAuth);
     const body = JSON.stringify({ streams });
-    const mirrored = Promise.all(mirrors.map(([url, auth]) => pushMirror(fetchImpl, url, auth, body)));
+    const mirrored = Promise.all(mirrors.map(([url, auth]) => pushMirror(fetchImpl, url, auth, body, timeoutMs)));
     let res: Response;
     try {
         res = await fetchImpl(primary[0], {
             method: 'POST',
             headers: { Authorization: primary[1], 'Content-Type': 'application/json' },
             body,
+            signal: AbortSignal.timeout(timeoutMs),
         });
     } catch (err) {
         await mirrored;
@@ -107,25 +138,37 @@ export async function pushToLoki(deps: GcpLogsHookDeps, streams: LokiStream[]): 
 const BATCH_WINDOW_MS = 250;
 const BATCH_MAX_ENTRIES = 500;
 
-function heartbeatStream(envLabel: string, nowMs: number, streams: LokiStream[]): LokiStream {
+function heartbeatStream(envLabel: string, nowMs: number, batch: PendingEntry[]): LokiStream {
+    // Both lag fields describe the same message — the oldest entry in the
+    // push — so that lag_s − publish_lag_s is that one entry's time before
+    // Pub/Sub rather than a difference between two unrelated messages.
     let oldestMs = nowMs;
+    let oldestPublishedMs: number | undefined;
     let entries = 0;
-    for (const s of streams) {
-        for (const [ts] of s.values) {
+    for (const { stream, publishedMs } of batch) {
+        for (const [ts] of stream.values) {
             entries += 1;
             const ms = Number(BigInt(ts) / 1_000_000n);
-            if (ms < oldestMs) oldestMs = ms;
+            if (ms < oldestMs) {
+                oldestMs = ms;
+                oldestPublishedMs = publishedMs;
+            }
         }
     }
     const lagS = Math.max(0, Math.round((nowMs - oldestMs) / 1000));
+    const line: Record<string, unknown> = { event: 'gcp_logs_push', lag_s: lagS };
+    if (oldestPublishedMs !== undefined) {
+        line.publish_lag_s = Math.max(0, Math.round((nowMs - oldestPublishedMs) / 1000));
+    }
+    line.entries = entries;
     return {
         stream: { service: PIPELINE_HEARTBEAT_SERVICE, env: envLabel, source: 'direct' },
-        values: [[tsNs(nowMs), JSON.stringify({ event: 'gcp_logs_push', lag_s: lagS, entries })]],
+        values: [[tsNs(nowMs), JSON.stringify(line)]],
     };
 }
 
-function createLokiBatcher(deps: GcpLogsHookDeps): (stream: LokiStream) => Promise<LokiPushResult> {
-    let pending: Array<{ stream: LokiStream; resolve: (result: LokiPushResult) => void }> = [];
+function createLokiBatcher(deps: GcpLogsHookDeps): (entry: PendingEntry) => Promise<LokiPushResult> {
+    let pending: Array<PendingEntry & { resolve: (result: LokiPushResult) => void }> = [];
     let timer: ReturnType<typeof setTimeout> | undefined;
     const envLabel = deps.envLabel ?? 'prd';
     const heartbeatIntervalMs = deps.heartbeatIntervalMs ?? DEFAULT_HEARTBEAT_INTERVAL_MS;
@@ -144,7 +187,7 @@ function createLokiBatcher(deps: GcpLogsHookDeps): (stream: LokiStream) => Promi
             const withHeartbeat = nowMs - lastHeartbeatAt >= heartbeatIntervalMs;
             const result = await pushToLoki(
                 deps,
-                withHeartbeat ? [...streams, heartbeatStream(envLabel, nowMs, streams)] : streams,
+                withHeartbeat ? [...streams, heartbeatStream(envLabel, nowMs, batch)] : streams,
             );
             if (withHeartbeat && result === 'pushed') lastHeartbeatAt = nowMs;
             if (result !== 'rejected' || batch.length === 1) {
@@ -160,9 +203,9 @@ function createLokiBatcher(deps: GcpLogsHookDeps): (stream: LokiStream) => Promi
         }
     };
 
-    return stream =>
+    return entry =>
         new Promise(resolve => {
-            pending.push({ stream, resolve });
+            pending.push({ ...entry, resolve });
             if (pending.length >= BATCH_MAX_ENTRIES) void flush();
             else timer ??= setTimeout(() => void flush(), BATCH_WINDOW_MS);
         });
@@ -186,15 +229,16 @@ export function registerGcpLogsRoute(app: Hono, deps: GcpLogsHookDeps): void {
             return c.text('unauthorized', 401);
         }
 
-        // Pub/Sub push envelope: { message: { data: base64(LogEntry JSON) } }.
-        let envelope: { message?: { data?: string } };
+        // Pub/Sub push envelope: { message: { data: base64(LogEntry JSON), publishTime } }.
+        let envelope: { message?: { data?: string; publishTime?: string } };
         try {
-            envelope = (await c.req.json()) as { message?: { data?: string } };
+            envelope = (await c.req.json()) as { message?: { data?: string; publishTime?: string } };
         } catch {
             return c.text('bad json', 400);
         }
         const data = envelope.message?.data;
         if (!data) return c.body(null, 204);
+        const publishedMs = Date.parse(envelope.message?.publishTime ?? '');
 
         let entry: Record<string, unknown>;
         try {
@@ -214,8 +258,11 @@ export function registerGcpLogsRoute(app: Hono, deps: GcpLogsHookDeps): void {
                 : JSON.stringify(entry.jsonPayload ?? entry.protoPayload ?? entry.httpRequest ?? entry);
 
         const result = await pushBatched({
-            stream: { service, env: envLabel, source: 'gcp', severity },
-            values: [[tsNs(tsMs), line]],
+            stream: {
+                stream: { service, env: envLabel, source: 'gcp', severity },
+                values: [[tsNs(tsMs), line]],
+            },
+            publishedMs: Number.isFinite(publishedMs) ? publishedMs : undefined,
         });
         // 'rejected' entries are ACKed (204): Loki will never accept them.
         return c.body(null, result === 'retryable' ? 502 : 204);

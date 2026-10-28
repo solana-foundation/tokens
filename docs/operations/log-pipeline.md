@@ -36,13 +36,30 @@ instance`, Pub/Sub backs off per message (10 s → 60 s, was 600 s before
 Every Loki push the hook makes also carries one entry in the stream
 `{service="tokens-logs-pipeline", env, source="direct"}` (at most one per
 10 s per instance), timestamped **now**, with
-`{"event":"gcp_logs_push","lag_s":<now − oldest entry in the push>,"entries":<n>}`.
+`{"event":"gcp_logs_push","lag_s":<now − oldest entry in the push>,"publish_lag_s":<now − that same entry's Pub/Sub publishTime>,"entries":<n>}`.
 It never travels through Cloud Logging or Pub/Sub, so it is current even
 when everything else is queued.
 
+The two lag fields describe the same entry (the oldest in the push) and
+split its path at Pub/Sub. `lag_s − publish_lag_s` is
+Cloud Logging receipt → Logs Router → sink publish: Google's side, with no
+metric of its own. `publish_lag_s` is Pub/Sub delivery, including any
+redelivery after the hook answered 502 (Loki 5xx, network error, or the
+20 s push timeout) — it should track `oldest_unacked_message_age`.
+
 - `tokens-logs-pipeline-lagging` (alert-rules/logs-pipeline-lagging.json)
-  fires when `lag_s` stays above 300 for 5 minutes, or when no heartbeat has
-  been seen for 5 minutes (no pushes at all).
+  fires when the **median** `lag_s` over 10 minutes stays above 300 s for
+  10 minutes (more than half of all pushes are behind), or when no heartbeat
+  has been seen for 10 minutes (no pushes at all). It is a median on
+  purpose: `lag_s` is the age of the _oldest_ entry in a push, so a max
+  would page on a single late entry every few minutes while 95 % of entries
+  land within seconds (see the 2026-10-28 tail below). The per-rule lag
+  guards below still use the max, which is the safe direction for a guard.
+  Gotcha: `| json` promotes `entries` (and `event`) to labels, so a range
+  aggregation over the heartbeat yields one series per distinct entry
+  count; the median must be collapsed with `by ()` (a `max(...)` wrapper
+  would instead return the median of whichever group happened to be
+  slowest, 295 s on 2026-10-28 when the true median was 2 s).
 - Every GCP-sourced silence/stale rule (`assets-v2-evm-markets-refresh-silent`,
   `stablecoin-peg-guard-stale`, `assets-v2-solana-sync-stale`,
   `assets-v2-evm-variants-sync-stale`, `assets-solana-data-sync-stale`,
@@ -59,6 +76,22 @@ when everything else is queued.
 
 A real outage that starts during a lag episode is therefore reported once
 the backlog drains, not before. The lag alert is the signal to go and look.
+
+## Episode: the Logs Router tail (2026-10-28)
+
+From ~13:30Z, in prd and stg at the same minutes, 1–3 % of pushes carried
+an entry 4–6 minutes old while 90 %+ of pushes stayed under 10 s, push
+rate never dipped, and log volume was flat. The max-based first version of
+`tokens-logs-pipeline-lagging` flapped on that for hours. Every segment we
+own was measured clean: `receiveTimestamp − timestamp` on ~7,000 entries
+around the late pushes was < 20 s (95 % < 1 s); Pub/Sub
+`oldest_unacked_message_age` ≤ 13 s in both projects with sent = published
+per hour and no expired ack deadlines; the hook answered 204 to every
+sampled push with no `loki:` errors; the sink reported no export errors;
+Personalized Service Health was empty. What remains is Cloud Logging
+receipt → Logs Router → sink publish, which has no metric — hence
+`publish_lag_s` in the heartbeat, so the next tail is attributable from
+Loki alone (and is the evidence a Google support case needs).
 
 ## Incident: the daily NOTICE burst (2026-10-21 → 2026-10-27)
 
