@@ -1,5 +1,7 @@
 import type { NextConfig } from 'next';
 
+import { IMAGE_CONTENT_DISPOSITION_TYPE, IMAGE_CONTENT_SECURITY_POLICY } from './src/lib/image-response-headers';
+
 const nextConfig: NextConfig = {
     // Instant Navigations (Next 16.3): explicit caching via 'use cache' and
     // per-route static shells that prefetch/render instantly on client navs.
@@ -9,10 +11,11 @@ const nextConfig: NextConfig = {
     images: {
         // Many token logos (arweave, IPFS gateways) serve SVG content from
         // extension-less URLs; the optimizer rejects them unless SVG is allowed.
-        // The CSP sandbox + attachment disposition keep served SVGs inert.
+        // The CSP sandbox + attachment disposition keep served SVGs inert; the
+        // /api/image-proxy route applies the same policy from the shared module.
         dangerouslyAllowSVG: true,
-        contentDispositionType: 'attachment',
-        contentSecurityPolicy: "default-src 'self'; script-src 'none'; object-src 'none'; sandbox;",
+        contentDispositionType: IMAGE_CONTENT_DISPOSITION_TYPE,
+        contentSecurityPolicy: IMAGE_CONTENT_SECURITY_POLICY,
         remotePatterns: [
             {
                 protocol: 'https',
