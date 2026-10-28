@@ -141,11 +141,21 @@ export function AssetStatsSection({
     const statsSource: V2AssetStats['source'] = market?.statsSource ?? {};
     const onChain = (what: string) =>
         `${what} aggregated across ${chainList} on-chain markets, leaving out stale, inactive, dust and outlier rows.`;
-    const fromSource = (what: string, key: keyof V2AssetStats['source'], fallbackCopy: string) => {
+    // Supply and value are summed over issued variants; a pool the quality
+    // guard excludes still counts the tokens issued on its chain (valued at
+    // the reference price), so these say so rather than claiming exclusion.
+    const onChainIssued = (what: string) =>
+        `${what} summed over issued variants across ${chainList}. Tokens on chains whose pools failed the quality guard still count, valued at the reference price.`;
+    const fromSource = (
+        what: string,
+        key: keyof V2AssetStats['source'],
+        fallbackCopy: string,
+        onChainCopy: (what: string) => string = onChain,
+    ) => {
         const kind = statsSource[key];
         if (kind === 'coingecko') return `${what} from CoinGecko (global, all venues).`;
         if (kind === 'stock') return `${what} from the stock market reference.`;
-        if (kind === 'onchain') return onChain(what);
+        if (kind === 'onchain') return onChainCopy(what);
         return fallbackCopy;
     };
     const variantCopy = (what: string) =>
@@ -158,14 +168,14 @@ export function AssetStatsSection({
                   marketCap:
                       market?.marketCapSource === 'company'
                           ? 'Company market cap (stock price × shares outstanding).'
-                          : fromSource('Market cap', 'marketCap', onChain('Market cap')),
+                          : fromSource('Market cap', 'marketCap', onChainIssued('Market cap'), onChainIssued),
                   liquidity: onChain('Liquidity'),
                   volume24h: `${onChain('24h DEX volume')} For crypto and stock assets, the provider's all-venue volume appears as a secondary pill.`,
                   price: fromSource('Price', 'price', onChain('Price')),
                   priceChange24h: fromSource('24h price change', 'priceChange24hPercent', onChain('24h price change')),
-                  fdv: fromSource('FDV', 'fdv', onChain('FDV')),
-                  totalSupply: fromSource('Total supply', 'totalSupply', onChain('Total supply (issued variants only)')),
-                  supply: fromSource('Circulating supply', 'circulatingSupply', onChain('Circulating supply (issued variants only)')),
+                  fdv: fromSource('FDV', 'fdv', onChainIssued('FDV'), onChainIssued),
+                  totalSupply: fromSource('Total supply', 'totalSupply', onChainIssued('Total supply'), onChainIssued),
+                  supply: fromSource('Circulating supply', 'circulatingSupply', onChainIssued('Circulating supply'), onChainIssued),
               }
             : {
                   marketCap: variantCopy('Market cap'),
