@@ -16,7 +16,7 @@
                 "to": 0
             },
             "model": {
-                "expr": "sum(count_over_time({service=~\"tokens-assets(-jobs)?-prd-us\"} | json | job=\"sync-v2-solana-variants\" | event=\"v2_solana_sync\" | ok=\"true\" [30m]))",
+                "expr": "sum(count_over_time({service=~\"tokens-assets(-jobs)?-prd-us\"} | json | job=\"sync-v2-solana-variants\" | event=\"v2_solana_sync\" | ok=\"true\" [30m])) or vector(0)",
                 "queryType": "range",
                 "refId": "A"
             }
@@ -41,6 +41,41 @@
             }
         },
         {
+            "refId": "D",
+            "datasourceUid": "grafanacloud-logs",
+            "queryType": "instant",
+            "relativeTimeRange": {
+                "from": 600,
+                "to": 0
+            },
+            "model": {
+                "expr": "max(max_over_time({service=\"tokens-logs-pipeline\", env=\"prd\"} | json | event=\"gcp_logs_push\" | unwrap lag_s [10m])) or vector(0)",
+                "queryType": "instant",
+                "instant": true,
+                "range": false,
+                "refId": "D"
+            }
+        },
+        {
+            "refId": "E",
+            "datasourceUid": "__expr__",
+            "queryType": "",
+            "relativeTimeRange": {
+                "from": 0,
+                "to": 0
+            },
+            "model": {
+                "type": "reduce",
+                "refId": "E",
+                "expression": "D",
+                "reducer": "last",
+                "settings": {
+                    "mode": "replaceNN",
+                    "replaceWithValue": 0
+                }
+            }
+        },
+        {
             "refId": "C",
             "datasourceUid": "__expr__",
             "queryType": "",
@@ -49,28 +84,9 @@
                 "to": 0
             },
             "model": {
-                "type": "threshold",
+                "type": "math",
                 "refId": "C",
-                "expression": "B",
-                "conditions": [
-                    {
-                        "evaluator": {
-                            "type": "lt",
-                            "params": [1]
-                        },
-                        "operator": {
-                            "type": "and"
-                        },
-                        "query": {
-                            "params": ["B"]
-                        },
-                        "reducer": {
-                            "type": "last",
-                            "params": []
-                        },
-                        "type": "query"
-                    }
-                ]
+                "expression": "$B < 1 && $E < 600"
             }
         }
     ],
@@ -89,7 +105,7 @@
     },
     "annotations": {
         "summary": "The v2 Solana mirror (sync-v2-solana-variants) has not completed successfully in 30 minutes",
-        "description": "No v2_solana_sync log line with ok=true from sync-v2-solana-variants in 30 minutes, i.e. six missed 5-minute ticks. The job copies v1's asset_variants / variant_markets_latest / asset_markets_latest Solana rows into the v2 tables; a run whose variants mirror fails logs ok=false (reason mirror_failed) and does not count. Either the Cloud Scheduler job is failing (check the scheduler run history and the job HTTP status: 404 v2_assets_jobs_disabled means BIRDEYE_API_KEY is missing on the worker; 500 means the mirror statements failed, usually a DB timeout or a v1 column rename), or the worker is down. GET /api/v2/assets and /api/v2/variants/solana/{mint} keep serving the last mirrored rows, so this is v2 lagging v1, not an outage; v1 is unaffected.",
+        "description": "No v2_solana_sync log line with ok=true from sync-v2-solana-variants in 30 minutes, i.e. six missed 5-minute ticks. The job copies v1's asset_variants / variant_markets_latest / asset_markets_latest Solana rows into the v2 tables; a run whose variants mirror fails logs ok=false (reason mirror_failed) and does not count. Either the Cloud Scheduler job is failing (check the scheduler run history and the job HTTP status: 404 v2_assets_jobs_disabled means BIRDEYE_API_KEY is missing on the worker; 500 means the mirror statements failed, usually a DB timeout or a v1 column rename), or the worker is down. GET /api/v2/assets and /api/v2/variants/solana/{mint} keep serving the last mirrored rows, so this is v2 lagging v1, not an outage; v1 is unaffected. Suppressed while tokens-logs-pipeline-lagging fires (Cloud Logging → Loki ingestion more than 10 minutes behind): the lines may simply not have reached Loki yet; confirm the run in Cloud Logging before treating this as a job outage.",
         "runbook_url": "https://github.com/solana-foundation/tokens/blob/main/docs/operations/v2-multichain-assets.md"
     }
 }

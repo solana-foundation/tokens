@@ -1,4 +1,5 @@
 import postgres, { type Sql } from 'postgres';
+import { onPostgresNotice } from '@tokens/cloudrun-shutdown/postgres-notice';
 
 import type { PlatformAuthRepo } from './handlers/platformAuth';
 import type { UsageIngestRepo } from './handlers/usageIngest';
@@ -14,6 +15,7 @@ export function getSql(): Sql {
         idle_timeout: Number(process.env.PG_IDLE_TIMEOUT) || 240,
         connect_timeout: Number(process.env.PG_CONNECT_TIMEOUT) || 30,
         connection: { application_name: 'cloudrun-usage' },
+        onnotice: onPostgresNotice,
     });
     return cached;
 }

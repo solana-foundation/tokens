@@ -54,9 +54,15 @@ resource "google_pubsub_subscription" "logs_to_grafana" {
     }
   }
 
+  # One Cloud Logging entry is one push. When a burst saturates the admin
+  # service (429 "no available instance"), Pub/Sub backs off per message; a
+  # 600s ceiling parked rejected entries for ten minutes and stretched a
+  # 500k-entry backlog into a 40+ minute Loki lag (2026-10-27, see
+  # docs/operations/log-pipeline.md). Keep retries short so the backlog
+  # drains as fast as the endpoint allows.
   retry_policy {
     minimum_backoff = "10s"
-    maximum_backoff = "600s"
+    maximum_backoff = "60s"
   }
 }
 

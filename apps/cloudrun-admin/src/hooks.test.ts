@@ -1,13 +1,15 @@
 import { describe, expect, it } from 'bun:test';
 import { Hono } from 'hono';
 
-import { registerGcpLogsRoute, type GcpLogsHookDeps } from './hooks';
+import { PIPELINE_HEARTBEAT_SERVICE, registerGcpLogsRoute, type GcpLogsHookDeps } from './hooks';
 import { OidcAuthError } from './oidc';
 
+type PushBody = { streams: Array<{ stream: Record<string, string>; values: Array<[string, string]> }> };
+
 function makeApp(deps: Partial<GcpLogsHookDeps> = {}, lokiStatus = 204) {
-    const pushed: unknown[] = [];
+    const pushed: PushBody[] = [];
     const fetchImpl = (async (_url: string | URL | Request, init?: RequestInit) => {
-        pushed.push(JSON.parse(String(init?.body ?? '{}')));
+        pushed.push(JSON.parse(String(init?.body ?? '{}')) as PushBody);
         return new Response(lokiStatus >= 400 ? 'nope' : null, { status: lokiStatus });
     }) as unknown as typeof fetch;
 
@@ -21,6 +23,16 @@ function makeApp(deps: Partial<GcpLogsHookDeps> = {}, lokiStatus = 204) {
         ...deps,
     });
     return { app, pushed };
+}
+
+function heartbeats(body: PushBody) {
+    return body.streams
+        .filter(s => s.stream.service === PIPELINE_HEARTBEAT_SERVICE)
+        .map(s => ({ stream: s.stream, ts: s.values[0]?.[0], line: JSON.parse(s.values[0]?.[1] ?? '{}') as Record<string, unknown> }));
+}
+
+function entryStreams(body: PushBody) {
+    return body.streams.filter(s => s.stream.service !== PIPELINE_HEARTBEAT_SERVICE);
 }
 
 const entry = {
@@ -61,7 +73,7 @@ describe('/hooks/gcp-logs', () => {
     it('pushes a LogEntry to Loki with service/severity labels', async () => {
         const { app, pushed } = makeApp();
         expect((await call(app, envelope(entry))).status).toBe(204);
-        const body = pushed[0] as { streams: Array<{ stream: Record<string, string>; values: [string, string][] }> };
+        const body = pushed[0]!;
         expect(body.streams[0]!.stream).toEqual({
             service: 'tokens-assets-prd-us',
             env: 'stg',
@@ -108,14 +120,13 @@ describe('/hooks/gcp-logs', () => {
         );
         expect(statuses).toEqual([204, 204, 204]);
         expect(pushed).toHaveLength(1);
-        const body = pushed[0] as { streams: Array<{ values: [string, string][] }> };
-        expect(body.streams.map(s => s.values[0]![1]).sort()).toEqual(['a', 'b', 'c']);
+        expect(entryStreams(pushed[0]!).map(s => s.values[0]![1]).sort()).toEqual(['a', 'b', 'c']);
     });
 
     it('falls back to per-entry pushes when Loki rejects a batch', async () => {
         const fetchImpl = (async (_url: string | URL | Request, init?: RequestInit) => {
-            const body = JSON.parse(String(init?.body)) as { streams: Array<{ values: [string, string][] }> };
-            if (body.streams.length > 1 || body.streams[0]!.values[0]![1] === 'bad') {
+            const entries = entryStreams(JSON.parse(String(init?.body)) as PushBody);
+            if (entries.length > 1 || entries[0]!.values[0]![1] === 'bad') {
                 return new Response('nope', { status: 400 });
             }
             return new Response('down', { status: 503 });
@@ -127,6 +138,63 @@ describe('/hooks/gcp-logs', () => {
         ]);
         expect(bad.status).toBe(204);
         expect(good.status).toBe(502);
+    });
+
+    it('rides a pipeline heartbeat on the push, with lag_s measured from the oldest entry', async () => {
+        const nowMs = Date.parse('2026-07-16T12:05:00Z');
+        const { app, pushed } = makeApp({ now: () => nowMs });
+        expect((await call(app, envelope(entry))).status).toBe(204);
+        expect(pushed).toHaveLength(1);
+        expect(entryStreams(pushed[0]!)).toHaveLength(1);
+        const [hb] = heartbeats(pushed[0]!);
+        expect(hb!.stream).toEqual({ service: 'tokens-logs-pipeline', env: 'stg', source: 'direct' });
+        expect(hb!.ts).toBe(`${BigInt(nowMs) * 1_000_000n}`);
+        expect(hb!.line).toEqual({ event: 'gcp_logs_push', lag_s: 300, entries: 1 });
+    });
+
+    it('sends at most one heartbeat per interval per instance', async () => {
+        let nowMs = 1_000_000;
+        const { app, pushed } = makeApp({ now: () => nowMs, heartbeatIntervalMs: 10_000 });
+        await call(app, envelope(entry));
+        nowMs += 5_000;
+        await call(app, envelope(entry));
+        nowMs += 5_000;
+        await call(app, envelope(entry));
+        expect(pushed.map(b => heartbeats(b).length)).toEqual([1, 0, 1]);
+    });
+
+    it('re-sends the heartbeat on the next push when Loki was down', async () => {
+        let status = 503;
+        const pushed: PushBody[] = [];
+        const fetchImpl = (async (_url: string | URL | Request, init?: RequestInit) => {
+            pushed.push(JSON.parse(String(init?.body)) as PushBody);
+            return new Response(status >= 400 ? 'x' : null, { status });
+        }) as unknown as typeof fetch;
+        const { app } = makeApp({ fetchImpl, now: () => 5_000_000 });
+        expect((await call(app, envelope(entry))).status).toBe(502);
+        status = 204;
+        expect((await call(app, envelope(entry))).status).toBe(204);
+        expect(pushed.map(b => heartbeats(b).length)).toEqual([1, 1]);
+    });
+
+    it('keeps the heartbeat out of per-entry retries after a rejected batch', async () => {
+        const pushed: PushBody[] = [];
+        const fetchImpl = (async (_url: string | URL | Request, init?: RequestInit) => {
+            const body = JSON.parse(String(init?.body)) as PushBody;
+            pushed.push(body);
+            return new Response(entryStreams(body).length > 1 ? 'nope' : null, {
+                status: entryStreams(body).length > 1 ? 400 : 204,
+            });
+        }) as unknown as typeof fetch;
+        const { app } = makeApp({ fetchImpl });
+        const statuses = await Promise.all(
+            ['a', 'b'].map(async t => (await call(app, envelope({ ...entry, textPayload: t }))).status),
+        );
+        expect(statuses).toEqual([204, 204]);
+        expect(pushed).toHaveLength(3);
+        expect(heartbeats(pushed[0]!)).toHaveLength(1);
+        expect(heartbeats(pushed[1]!)).toHaveLength(0);
+        expect(heartbeats(pushed[2]!)).toHaveLength(0);
     });
 
     it('acks unparseable payloads without redelivery', async () => {

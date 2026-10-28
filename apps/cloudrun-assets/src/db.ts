@@ -1,4 +1,5 @@
 import postgres, { type Sql } from 'postgres';
+import { onPostgresNotice } from '@tokens/cloudrun-shutdown/postgres-notice';
 
 import { CURATED_LIST_SLUGS, type CuratedListSlug } from '@tokens/asset-registry/curated-lists';
 import type {
@@ -177,6 +178,7 @@ export function getSql(): Sql {
         max: options.max,
         idle_timeout: options.idle_timeout,
         connect_timeout: options.connect_timeout,
+        onnotice: onPostgresNotice,
         // postgres.js types `connection` as its known parameters only; arbitrary
         // GUCs (lock_timeout, statement_timeout) are accepted at runtime.
         connection: options.connection as unknown as NonNullable<Parameters<typeof postgres>[1]>['connection'],
@@ -192,6 +194,13 @@ export function getSql(): Sql {
     return cached;
 }
 
+/**
+ * Prefix tsquery for the full-text branches of the search queries. Every
+ * consumer evaluates it once through a `WITH tq AS MATERIALIZED (...)` CTE:
+ * inlined into the WHERE/ORDER BY, Postgres re-ran `to_tsquery` per scanned
+ * row and a stop-word-only query ("a", "the") raised one NOTICE per row per
+ * call site (see @tokens/cloudrun-shutdown/postgres-notice).
+ */
 export function buildPrefixTsQuery(query: string): string | null {
     const tokens = query
         .trim()
@@ -246,15 +255,17 @@ export function makePostgresAssetsRepo(sql: Sql): AssetsRepo {
             // for aliases whose asset row is gone).
             const hasFilter = Boolean(filter?.category || filter?.region || filter?.industry);
             const rows = await sql<AssetAliasRow[]>`
+                WITH tq AS MATERIALIZED (SELECT to_tsquery('english', ${tsq}) AS q)
                 SELECT al.alias, al.normalized, al.asset_id, al.priority
                 FROM asset_aliases al
+                CROSS JOIN tq
                 ${hasFilter ? sql`JOIN assets a ON a.asset_id = al.asset_id` : sql``}
-                WHERE (to_tsvector('english', al.alias) @@ to_tsquery('english', ${tsq})
+                WHERE (to_tsvector('english', al.alias) @@ tq.q
                    OR al.alias ILIKE ${pattern})
                   ${filter?.category ? sql`AND a.category = ${filter.category}` : sql``}
                   ${filter?.region ? sql`AND a.region = ${filter.region}` : sql``}
                   ${filter?.industry ? sql`AND a.industry = ${filter.industry}` : sql``}
-                ORDER BY ts_rank_cd(to_tsvector('english', al.alias), to_tsquery('english', ${tsq})) DESC,
+                ORDER BY ts_rank_cd(to_tsvector('english', al.alias), tq.q) DESC,
                          al.priority DESC,
                          length(al.alias) ASC,
                          al.alias ASC
@@ -267,16 +278,18 @@ export function makePostgresAssetsRepo(sql: Sql): AssetsRepo {
             const tsq = buildPrefixTsQuery(query) ?? 'noresultsentinel:*';
             const pattern = `%${query}%`;
             const rows = await sql<AssetRow[]>`
+                WITH tq AS MATERIALIZED (SELECT to_tsquery('english', ${tsq}) AS q)
                 SELECT id, asset_id, category, name, symbol, aliases,
                        coingecko_id, description, image_url, is_active,
                        created_at, updated_at, region, industry
                 FROM assets
-                WHERE (to_tsvector('english', coalesce(name, '')) @@ to_tsquery('english', ${tsq})
+                CROSS JOIN tq
+                WHERE (to_tsvector('english', coalesce(name, '')) @@ tq.q
                    OR coalesce(name, '') ILIKE ${pattern})
                   ${filter?.category ? sql`AND category = ${filter.category}` : sql``}
                   ${filter?.region ? sql`AND region = ${filter.region}` : sql``}
                   ${filter?.industry ? sql`AND industry = ${filter.industry}` : sql``}
-                ORDER BY ts_rank_cd(to_tsvector('english', coalesce(name, '')), to_tsquery('english', ${tsq})) DESC,
+                ORDER BY ts_rank_cd(to_tsvector('english', coalesce(name, '')), tq.q) DESC,
                          length(coalesce(name, '')) ASC,
                          asset_id ASC
                 LIMIT ${limit}
@@ -288,16 +301,18 @@ export function makePostgresAssetsRepo(sql: Sql): AssetsRepo {
             const tsq = buildPrefixTsQuery(query) ?? 'noresultsentinel:*';
             const pattern = `%${query}%`;
             const rows = await sql<AssetRow[]>`
+                WITH tq AS MATERIALIZED (SELECT to_tsquery('english', ${tsq}) AS q)
                 SELECT id, asset_id, category, name, symbol, aliases,
                        coingecko_id, description, image_url, is_active,
                        created_at, updated_at, region, industry
                 FROM assets
-                WHERE (to_tsvector('english', coalesce(symbol, '')) @@ to_tsquery('english', ${tsq})
+                CROSS JOIN tq
+                WHERE (to_tsvector('english', coalesce(symbol, '')) @@ tq.q
                    OR coalesce(symbol, '') ILIKE ${pattern})
                   ${filter?.category ? sql`AND category = ${filter.category}` : sql``}
                   ${filter?.region ? sql`AND region = ${filter.region}` : sql``}
                   ${filter?.industry ? sql`AND industry = ${filter.industry}` : sql``}
-                ORDER BY ts_rank_cd(to_tsvector('english', coalesce(symbol, '')), to_tsquery('english', ${tsq})) DESC,
+                ORDER BY ts_rank_cd(to_tsvector('english', coalesce(symbol, '')), tq.q) DESC,
                          length(coalesce(symbol, '')) ASC,
                          asset_id ASC
                 LIMIT ${limit}
@@ -3277,9 +3292,11 @@ export function makePostgresCoingeckoReadsRepo(sql: Sql): CoingeckoReadsRepo {
             const pattern = `%${query}%`;
             const prefix = `${query}%`;
             const rows = await sql<CoingeckoCoinSearchRow[]>`
+                WITH tq AS MATERIALIZED (SELECT to_tsquery('english', ${tsq}) AS q)
                 SELECT coin_id, symbol, name, platforms, coin
                 FROM coingecko_coins
-                WHERE to_tsvector('english', coin_id) @@ to_tsquery('english', ${tsq})
+                CROSS JOIN tq
+                WHERE to_tsvector('english', coin_id) @@ tq.q
                    OR coin_id ILIKE ${pattern}
                 ORDER BY
                     CASE
@@ -3287,7 +3304,7 @@ export function makePostgresCoingeckoReadsRepo(sql: Sql): CoingeckoReadsRepo {
                         WHEN lower(coin_id) LIKE lower(${prefix}) THEN 1
                         ELSE 2
                     END,
-                    ts_rank_cd(to_tsvector('english', coin_id), to_tsquery('english', ${tsq})) DESC,
+                    ts_rank_cd(to_tsvector('english', coin_id), tq.q) DESC,
                     length(coin_id) ASC,
                     coin_id ASC
                 LIMIT ${limit}
@@ -3299,9 +3316,11 @@ export function makePostgresCoingeckoReadsRepo(sql: Sql): CoingeckoReadsRepo {
             const pattern = `%${query}%`;
             const prefix = `${query}%`;
             const rows = await sql<CoingeckoCoinSearchRow[]>`
+                WITH tq AS MATERIALIZED (SELECT to_tsquery('english', ${tsq}) AS q)
                 SELECT coin_id, symbol, name, platforms, coin
                 FROM coingecko_coins
-                WHERE to_tsvector('english', symbol) @@ to_tsquery('english', ${tsq})
+                CROSS JOIN tq
+                WHERE to_tsvector('english', symbol) @@ tq.q
                    OR symbol ILIKE ${pattern}
                 ORDER BY
                     CASE
@@ -3309,7 +3328,7 @@ export function makePostgresCoingeckoReadsRepo(sql: Sql): CoingeckoReadsRepo {
                         WHEN lower(symbol) LIKE lower(${prefix}) THEN 1
                         ELSE 2
                     END,
-                    ts_rank_cd(to_tsvector('english', symbol), to_tsquery('english', ${tsq})) DESC,
+                    ts_rank_cd(to_tsvector('english', symbol), tq.q) DESC,
                     length(symbol) ASC,
                     symbol ASC
                 LIMIT ${limit}
@@ -3321,9 +3340,11 @@ export function makePostgresCoingeckoReadsRepo(sql: Sql): CoingeckoReadsRepo {
             const pattern = `%${query}%`;
             const prefix = `${query}%`;
             const rows = await sql<CoingeckoCoinSearchRow[]>`
+                WITH tq AS MATERIALIZED (SELECT to_tsquery('english', ${tsq}) AS q)
                 SELECT coin_id, symbol, name, platforms, coin
                 FROM coingecko_coins
-                WHERE to_tsvector('english', name) @@ to_tsquery('english', ${tsq})
+                CROSS JOIN tq
+                WHERE to_tsvector('english', name) @@ tq.q
                    OR name ILIKE ${pattern}
                 ORDER BY
                     CASE
@@ -3331,7 +3352,7 @@ export function makePostgresCoingeckoReadsRepo(sql: Sql): CoingeckoReadsRepo {
                         WHEN lower(name) LIKE lower(${prefix}) THEN 1
                         ELSE 2
                     END,
-                    ts_rank_cd(to_tsvector('english', name), to_tsquery('english', ${tsq})) DESC,
+                    ts_rank_cd(to_tsvector('english', name), tq.q) DESC,
                     length(name) ASC,
                     name ASC
                 LIMIT ${limit}
@@ -3725,9 +3746,11 @@ export function makePostgresTokensReadsRepo(sql: Sql): TokensReadsRepo {
             const pattern = `%${query}%`;
             const prefix = `${query}%`;
             const rows = await sql<TokenRow[]>`
+                WITH tq AS MATERIALIZED (SELECT to_tsquery('english', ${tsq}) AS q)
                 SELECT ${sql.unsafe(TOKEN_COLUMNS)}
                 FROM tokens
-                WHERE to_tsvector('english', coalesce(symbol, '')) @@ to_tsquery('english', ${tsq})
+                CROSS JOIN tq
+                WHERE to_tsvector('english', coalesce(symbol, '')) @@ tq.q
                    OR coalesce(symbol, '') ILIKE ${pattern}
                 ORDER BY
                     CASE
@@ -3735,7 +3758,7 @@ export function makePostgresTokensReadsRepo(sql: Sql): TokensReadsRepo {
                         WHEN lower(coalesce(symbol, '')) LIKE lower(${prefix}) THEN 1
                         ELSE 2
                     END,
-                    ts_rank_cd(to_tsvector('english', coalesce(symbol, '')), to_tsquery('english', ${tsq})) DESC,
+                    ts_rank_cd(to_tsvector('english', coalesce(symbol, '')), tq.q) DESC,
                     length(coalesce(symbol, '')) ASC,
                     symbol ASC
                 LIMIT ${limit}
@@ -3747,9 +3770,11 @@ export function makePostgresTokensReadsRepo(sql: Sql): TokensReadsRepo {
             const pattern = `%${query}%`;
             const prefix = `${query}%`;
             const rows = await sql<TokenRow[]>`
+                WITH tq AS MATERIALIZED (SELECT to_tsquery('english', ${tsq}) AS q)
                 SELECT ${sql.unsafe(TOKEN_COLUMNS)}
                 FROM tokens
-                WHERE to_tsvector('english', coalesce(name, '')) @@ to_tsquery('english', ${tsq})
+                CROSS JOIN tq
+                WHERE to_tsvector('english', coalesce(name, '')) @@ tq.q
                    OR coalesce(name, '') ILIKE ${pattern}
                 ORDER BY
                     CASE
@@ -3757,7 +3782,7 @@ export function makePostgresTokensReadsRepo(sql: Sql): TokensReadsRepo {
                         WHEN lower(coalesce(name, '')) LIKE lower(${prefix}) THEN 1
                         ELSE 2
                     END,
-                    ts_rank_cd(to_tsvector('english', coalesce(name, '')), to_tsquery('english', ${tsq})) DESC,
+                    ts_rank_cd(to_tsvector('english', coalesce(name, '')), tq.q) DESC,
                     length(coalesce(name, '')) ASC,
                     name ASC
                 LIMIT ${limit}
