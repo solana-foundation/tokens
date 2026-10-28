@@ -99,7 +99,12 @@ function buildColumns(onOpenResponse: (row: RegistryRow) => void) {
         }),
         columnHelper.accessor(row => row.marketCapUsd ?? undefined, {
             id: 'marketCapUsd',
-            header: 'Market Cap',
+            header: () => (
+                <span className="flex flex-col items-end leading-tight">
+                    Market Cap
+                    <span className="text-[11px] font-medium text-text-extra-low">CoinGecko</span>
+                </span>
+            ),
             sortUndefined: 'last',
             cell: info => <UsdCell value={info.row.original.marketCapUsd} />,
         }),

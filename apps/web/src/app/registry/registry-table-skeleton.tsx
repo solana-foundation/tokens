@@ -62,6 +62,13 @@ export function RegistryTableSkeleton() {
                                                         Allium · RWA.xyz
                                                     </span>
                                                 </span>
+                                            ) : label === 'Market Cap' ? (
+                                                <span className="inline-flex flex-col items-end leading-tight">
+                                                    {label}
+                                                    <span className="text-[11px] font-medium text-text-extra-low">
+                                                        CoinGecko
+                                                    </span>
+                                                </span>
                                             ) : (
                                                 <span className="inline-flex text-nowrap items-center gap-1">
                                                     {label}
