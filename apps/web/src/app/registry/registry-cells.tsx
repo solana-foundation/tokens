@@ -46,8 +46,8 @@ export function AddressLink({ address, className }: { address: string; className
     );
 }
 
-export function EmptyValue({ align = 'left' }: { align?: 'left' | 'right' }) {
-    return <span className={cn('block text-[14px] text-text-extra-low', align === 'right' && 'text-right')}>—</span>;
+export function EmptyValue() {
+    return <span className="block text-[14px] text-text-extra-low">—</span>;
 }
 
 export function TextCell({ value }: { value: string | null }) {
@@ -56,11 +56,9 @@ export function TextCell({ value }: { value: string | null }) {
 
 export function UsdCell({ value }: { value: number | null }) {
     return value == null ? (
-        <EmptyValue align="right" />
+        <EmptyValue />
     ) : (
-        <span className="block text-right text-[14px] text-[#2D2D2D] font-medium tabular-nums">
-            {formatLargeNumber(value)}
-        </span>
+        <span className="block text-[14px] text-[#2D2D2D] font-medium tabular-nums">{formatLargeNumber(value)}</span>
     );
 }
 

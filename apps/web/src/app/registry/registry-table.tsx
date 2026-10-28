@@ -37,8 +37,6 @@ import { useRegistryUrlState } from './use-registry-url-state';
 
 const columnHelper = createColumnHelper<RegistryRow>();
 
-const RIGHT_ALIGNED_COLUMNS = new Set(['marketCapUsd']);
-
 // The table only renders at md and up (phones get RegistryMobileList), so the
 // cells carry no phone variants and the Token column needs no sticky pin.
 function TokenCell({ row }: { row: RegistryRow }) {
@@ -100,7 +98,7 @@ function buildColumns(onOpenResponse: (row: RegistryRow) => void) {
         columnHelper.accessor(row => row.marketCapUsd ?? undefined, {
             id: 'marketCapUsd',
             header: () => (
-                <span className="flex flex-col items-end leading-tight">
+                <span className="flex flex-col items-start leading-tight">
                     Market Cap
                     <span className="text-[11px] font-medium text-text-extra-low">CoinGecko</span>
                 </span>
@@ -235,7 +233,6 @@ function RegistryTableInner({ data }: { data: RegistryData }) {
                                             const canSort = header.column.getCanSort();
                                             const sortDirection = header.column.getIsSorted();
                                             const isLast = index === headerGroup.headers.length - 1;
-                                            const alignRight = RIGHT_ALIGNED_COLUMNS.has(header.column.id);
 
                                             return (
                                                 <th
@@ -245,7 +242,6 @@ function RegistryTableInner({ data }: { data: RegistryData }) {
                                                         index === 0 && 'pl-6 pr-4',
                                                         index !== 0 && !isLast && 'px-5',
                                                         isLast && 'pl-5 pr-8',
-                                                        alignRight && 'text-right',
                                                     )}
                                                 >
                                                     <button
@@ -254,7 +250,6 @@ function RegistryTableInner({ data }: { data: RegistryData }) {
                                                             'inline-flex text-nowrap items-center gap-1',
                                                             canSort &&
                                                                 'cursor-pointer hover:text-text-extra-high select-none',
-                                                            alignRight && 'justify-end w-full',
                                                         )}
                                                         onClick={header.column.getToggleSortingHandler()}
                                                         disabled={!canSort}
