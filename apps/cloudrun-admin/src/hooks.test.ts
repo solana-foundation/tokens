@@ -42,11 +42,13 @@ const entry = {
     resource: { type: 'cloud_run_revision', labels: { service_name: 'tokens-assets-prd-us' } },
 };
 
-function envelope(e: unknown): RequestInit {
+function envelope(e: unknown, publishTime?: string): RequestInit {
     return {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: 'Bearer good' },
-        body: JSON.stringify({ message: { data: Buffer.from(JSON.stringify(e)).toString('base64') } }),
+        body: JSON.stringify({
+            message: { data: Buffer.from(JSON.stringify(e)).toString('base64'), publishTime },
+        }),
     };
 }
 
@@ -150,6 +152,45 @@ describe('/hooks/gcp-logs', () => {
         expect(hb!.stream).toEqual({ service: 'tokens-logs-pipeline', env: 'stg', source: 'direct' });
         expect(hb!.ts).toBe(`${BigInt(nowMs) * 1_000_000n}`);
         expect(hb!.line).toEqual({ event: 'gcp_logs_push', lag_s: 300, entries: 1 });
+    });
+
+    it('splits the lag at the Pub/Sub publish time when the envelope carries one', async () => {
+        const nowMs = Date.parse('2026-07-16T12:05:00Z');
+        const { app, pushed } = makeApp({ now: () => nowMs });
+        // Entry written 12:00:00, published to Pub/Sub 12:04:15, pushed 12:05:00:
+        // 255 s of the 300 s were spent before Pub/Sub, 45 s after.
+        expect((await call(app, envelope(entry, '2026-07-16T12:04:15.123Z'))).status).toBe(204);
+        const [hb] = heartbeats(pushed[0]!);
+        expect(hb!.line).toEqual({ event: 'gcp_logs_push', lag_s: 300, publish_lag_s: 45, entries: 1 });
+    });
+
+    it('reports the oldest publish time across a batch and never goes negative', async () => {
+        const nowMs = Date.parse('2026-07-16T12:05:00Z');
+        const { app, pushed } = makeApp({ now: () => nowMs });
+        await Promise.all([
+            call(app, envelope({ ...entry, textPayload: 'a' }, '2026-07-16T12:04:50Z')),
+            call(app, envelope({ ...entry, textPayload: 'b' }, '2026-07-16T12:03:00Z')),
+            call(app, envelope({ ...entry, textPayload: 'c' }, '2026-07-16T12:05:01Z')),
+        ]);
+        expect(pushed).toHaveLength(1);
+        const [hb] = heartbeats(pushed[0]!);
+        expect(hb!.line).toEqual({ event: 'gcp_logs_push', lag_s: 300, publish_lag_s: 120, entries: 3 });
+    });
+
+    it('fails a hung Loki push fast and asks Pub/Sub to retry', async () => {
+        let signal: AbortSignal | null | undefined;
+        const fetchImpl = ((_url: string | URL | Request, init?: RequestInit) => {
+            signal = init?.signal;
+            return new Promise<Response>((_resolve, reject) => {
+                init?.signal?.addEventListener('abort', () => reject(init.signal!.reason as Error));
+            });
+        }) as unknown as typeof fetch;
+        const { app } = makeApp({ fetchImpl, lokiPushTimeoutMs: 20 });
+        const started = Date.now();
+        expect((await call(app, envelope(entry))).status).toBe(502);
+        expect(Date.now() - started).toBeLessThan(5_000);
+        expect(signal).toBeInstanceOf(AbortSignal);
+        expect(signal!.aborted).toBe(true);
     });
 
     it('sends at most one heartbeat per interval per instance', async () => {
