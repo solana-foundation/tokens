@@ -36,11 +36,12 @@ instance`, Pub/Sub backs off per message (10 s → 60 s, was 600 s before
 Every Loki push the hook makes also carries one entry in the stream
 `{service="tokens-logs-pipeline", env, source="direct"}` (at most one per
 10 s per instance), timestamped **now**, with
-`{"event":"gcp_logs_push","lag_s":<now − oldest entry in the push>,"publish_lag_s":<now − oldest Pub/Sub publishTime in the push>,"entries":<n>}`.
+`{"event":"gcp_logs_push","lag_s":<now − oldest entry in the push>,"publish_lag_s":<now − that same entry's Pub/Sub publishTime>,"entries":<n>}`.
 It never travels through Cloud Logging or Pub/Sub, so it is current even
 when everything else is queued.
 
-The two lag fields split the path at Pub/Sub. `lag_s − publish_lag_s` is
+The two lag fields describe the same entry (the oldest in the push) and
+split its path at Pub/Sub. `lag_s − publish_lag_s` is
 Cloud Logging receipt → Logs Router → sink publish: Google's side, with no
 metric of its own. `publish_lag_s` is Pub/Sub delivery, including any
 redelivery after the hook answered 502 (Loki 5xx, network error, or the

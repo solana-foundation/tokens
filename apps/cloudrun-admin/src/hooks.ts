@@ -139,20 +139,25 @@ const BATCH_WINDOW_MS = 250;
 const BATCH_MAX_ENTRIES = 500;
 
 function heartbeatStream(envLabel: string, nowMs: number, batch: PendingEntry[]): LokiStream {
+    // Both lag fields describe the same message — the oldest entry in the
+    // push — so that lag_s − publish_lag_s is that one entry's time before
+    // Pub/Sub rather than a difference between two unrelated messages.
     let oldestMs = nowMs;
-    let oldestPublishedMs = Infinity;
+    let oldestPublishedMs: number | undefined;
     let entries = 0;
     for (const { stream, publishedMs } of batch) {
         for (const [ts] of stream.values) {
             entries += 1;
             const ms = Number(BigInt(ts) / 1_000_000n);
-            if (ms < oldestMs) oldestMs = ms;
+            if (ms < oldestMs) {
+                oldestMs = ms;
+                oldestPublishedMs = publishedMs;
+            }
         }
-        if (publishedMs !== undefined && publishedMs < oldestPublishedMs) oldestPublishedMs = publishedMs;
     }
     const lagS = Math.max(0, Math.round((nowMs - oldestMs) / 1000));
     const line: Record<string, unknown> = { event: 'gcp_logs_push', lag_s: lagS };
-    if (Number.isFinite(oldestPublishedMs)) {
+    if (oldestPublishedMs !== undefined) {
         line.publish_lag_s = Math.max(0, Math.round((nowMs - oldestPublishedMs) / 1000));
     }
     line.entries = entries;
