@@ -52,7 +52,6 @@ export function RegistryTableSkeleton() {
                                             className={cn(
                                                 'py-3 text-[14px] font-medium text-text-high bg-gray-50/80 border-b border-border-light align-bottom',
                                                 index === 0 ? 'pl-6 pr-4' : 'px-5',
-                                                label === 'Market Cap' && 'text-right',
                                             )}
                                         >
                                             {label === 'Value' ? (
@@ -60,6 +59,13 @@ export function RegistryTableSkeleton() {
                                                     {label}
                                                     <span className="text-[11px] font-medium text-text-extra-low">
                                                         Allium · RWA.xyz
+                                                    </span>
+                                                </span>
+                                            ) : label === 'Market Cap' ? (
+                                                <span className="inline-flex flex-col items-start leading-tight">
+                                                    {label}
+                                                    <span className="text-[11px] font-medium text-text-extra-low">
+                                                        CoinGecko
                                                     </span>
                                                 </span>
                                             ) : (
@@ -99,7 +105,7 @@ export function RegistryTableSkeleton() {
                                             <ValueBars />
                                         </td>
                                         <td className="py-3.5 px-5">
-                                            <Skeleton className={cn('ml-auto h-3.5 w-16', BAR)} />
+                                            <Skeleton className={cn('h-3.5 w-16', BAR)} />
                                         </td>
                                         <td className="py-3.5 pl-5 pr-8">
                                             <Skeleton className="ml-auto size-8 rounded-full bg-gray-100" />
