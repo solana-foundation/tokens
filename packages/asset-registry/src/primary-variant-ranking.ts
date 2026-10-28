@@ -254,7 +254,9 @@ function comparePrimaryVariantCandidates(params: {
     const volumeDelta = getVolume(params.marketByMint, params.next.mint) - getVolume(params.marketByMint, params.best.mint);
     if (volumeDelta !== 0) return { isBetter: volumeDelta > 0, reason: 'volume24h' };
 
-    const rankDelta = getMintRank(params.mintRank, params.next.mint) - getMintRank(params.mintRank, params.best.mint);
+    const nextRank = getMintRank(params.mintRank, params.next.mint);
+    const bestRank = getMintRank(params.mintRank, params.best.mint);
+    const rankDelta = nextRank === bestRank ? 0 : nextRank - bestRank;
     if (rankDelta !== 0) return { isBetter: rankDelta < 0, reason: 'curated_rank' };
 
     if (params.lexicalTieBreak) {
