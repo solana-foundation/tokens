@@ -86,8 +86,8 @@
     "slack": "true"
   },
   "annotations": {
-    "summary": "tokens.xyz API smoke canary failed 2+ times in 3 minutes",
-    "description": "The minute-cadence smoke canary on tokens-ci-runner has reported 2 or more failed runs in the last 3 minutes. Tokens API is likely down or degraded \u2014 check the API overview dashboard and the most recent Slack alert for which probes failed.",
+    "summary": "tokens.xyz smoke canary (API + public web pages) failed 2+ times in 3 minutes",
+    "description": "The minute-cadence smoke canary on tokens-ci-runner has reported 2 or more failed runs in the last 3 minutes. It probes the Tokens API and, for prod, the public site's data pages (/, /registry, /heatmap), which fail when they render their \"temporarily unavailable\" panel even though the HTTP status is 200. Check the most recent Slack alert or the smoke_canary_summary line in Loki ({service=\"tokens-smoke\"}) for which probes failed: [api] probes mean the API is down or degraded, [web] probes mean tokens.xyz is serving a broken page (check the Vercel logs for the web project).",
     "runbook_url": "https://example.com/runbooks/api-smoke-canary-failing"
   },
   "notification_settings": {

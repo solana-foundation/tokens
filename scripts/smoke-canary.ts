@@ -423,7 +423,32 @@ const webProbes: Probe[] = [
             }
         },
     },
+    // Data pages render an "unavailable" panel with a 200 when their API read
+    // fails, so a status check alone passes on a broken page. On 2026-10-28 a
+    // failed read was baked into the CDN copy of /registry and served for 15h
+    // while every API probe here passed.
+    webDataPageProbe('web-registry', '/registry', 'Registry data is temporarily unavailable'),
+    webDataPageProbe('web-heatmap', '/heatmap', 'The heat map is temporarily unavailable'),
 ];
+
+function webDataPageProbe(name: string, path: string, unavailableMarker: string): Probe {
+    return {
+        name,
+        target: 'web',
+        method: 'GET',
+        path,
+        auth: false,
+        expectJson: false,
+        budgetMs: 8000,
+        assert: ({ body, status }) => {
+            assert(status === 200, `expected 200, got ${status}`);
+            assert(!body.includes(unavailableMarker), `page shows its "unavailable" panel ("${unavailableMarker}")`);
+            // USDC is in every registry snapshot and every heat map, so a page
+            // that rendered its data has the mint somewhere in the HTML.
+            assert(body.includes(USDC_MINT), `page HTML has no USDC row (${USDC_MINT}) — its data did not render`);
+        },
+    };
+}
 
 const probes: Probe[] = [...apiProbes, ...(appBaseUrl ? appProbes : []), ...(webBaseUrl ? webProbes : [])];
 

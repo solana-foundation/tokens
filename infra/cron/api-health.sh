@@ -49,10 +49,12 @@ ${SF_LOKI_URL:-}|${SF_LOKI_USER:-}|${SF_LOKI_WRITE_TOKEN:-}
 EOF
 }
 
+# Web probes (public site + its data pages) run against prod only: staging
+# previews have no stable public URL.
 if [ "$TARGET" = "staging" ]; then
-  api_url="$TOKENS_API_STAGE_URL"; app_url="$TOKENS_APP_STAGE_URL"; api_key="$TOKENS_API_KEY_STAGING"
+  api_url="$TOKENS_API_STAGE_URL"; app_url="$TOKENS_APP_STAGE_URL"; api_key="$TOKENS_API_KEY_STAGING"; web_url=""
 else
-  api_url="$TOKENS_API_PROD_URL"; app_url="$TOKENS_APP_PROD_URL"; api_key="$TOKENS_API_KEY"
+  api_url="$TOKENS_API_PROD_URL"; app_url="$TOKENS_APP_PROD_URL"; api_key="$TOKENS_API_KEY"; web_url="https://tokens.xyz"
 fi
 
 SMOKE_LOG="$(mktemp -t tokens-smoke.XXXXXX)"
@@ -61,6 +63,7 @@ trap 'rm -f "$SMOKE_LOG"' EXIT
 probe_status=0
 TOKENS_API_BASE_URL="$api_url" \
 TOKENS_APP_BASE_URL="$app_url" \
+TOKENS_WEB_BASE_URL="$web_url" \
 TOKENS_API_KEY="$api_key" \
   "$HOME/.bun/bin/bun" scripts/smoke-canary.ts > "$SMOKE_LOG" 2>&1 \
   || probe_status=$?
