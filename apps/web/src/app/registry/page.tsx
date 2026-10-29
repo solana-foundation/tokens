@@ -1,8 +1,10 @@
 import type { Metadata } from 'next';
 import { Suspense } from 'react';
+import { connection } from 'next/server';
 
 import { SiteFooter } from '@/components/site-footer';
 import { fetchRegistry } from './lib/fetch-registry';
+import type { RegistryData } from './lib/types';
 import { RegistryTable } from './registry-table';
 import { RegistryTableSkeleton } from './registry-table-skeleton';
 
@@ -41,16 +43,30 @@ export default function RegistryPage() {
 }
 
 /**
- * The table is part of the prerendered shell: fetchRegistry is `use cache`
- * (one GET /api/v2/registry read, revalidated in the background), so a reload
- * or a prefetched navigation gets the rows from the CDN with no loading state.
- * When the API is unreachable while prerendering (a preview whose API deploy
- * is still building, a prod blip) the panel below is what gets prerendered,
- * and fetchRegistry's one-second cache life makes the next request retry.
+ * `connection()` keeps the fetch out of the build-time prerender, so the
+ * static shell (heading, skeleton) never depends on the API being reachable.
+ * A failed prerender used to bake the "unavailable" panel into the CDN copy
+ * of the page, and tokens.xyz served it for hours (2026-10-29). fetchRegistry's
+ * `use cache` still serves the rows across requests, and it throws on failure
+ * so a failure is never cached: this request shows the panel and the next one
+ * retries.
  */
 async function RegistryLoader() {
-    const data = await fetchRegistry();
-    if (!data) return <RegistryUnavailable />;
+    await connection();
+    let data: RegistryData;
+    try {
+        data = await fetchRegistry();
+    } catch (error) {
+        // fetchRegistry logs the reason (asset_registry_fetch_failed); in
+        // production the message here is Next's generic one, the digest links the two.
+        console.error(
+            JSON.stringify({
+                event: 'asset_registry_unavailable',
+                digest: (error as { digest?: unknown } | null)?.digest ?? null,
+            }),
+        );
+        return <RegistryUnavailable />;
+    }
     return (
         <section className="relative mx-auto max-w-7xl px-4 md:px-6 pb-12 md:pb-24">
             <RegistryTable data={data} />
