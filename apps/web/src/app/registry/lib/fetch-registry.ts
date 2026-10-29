@@ -20,7 +20,7 @@ const REGISTRY_PATH = '/api/v2/registry?limit=5000';
  * at request time (see RegistryLoader), falls back to an "unavailable" panel,
  * and the next request retries the API. Returning a value on failure would be
  * cached like a success, and a failure baked into a prerendered page is served
- * from the CDN until a background regeneration happens to succeed.
+ * from the CDN until the next deploy (15h on 2026-10-28).
  */
 export async function fetchRegistry(): Promise<RegistryData> {
     'use cache';
