@@ -209,8 +209,8 @@ type UsageCall = { name: string; body: Record<string, unknown> };
 /** Fakes the usage service: legacy query/mutation + the merged mutation. */
 function fakeUsageFetch(options: {
     merged?: unknown | ((body: Record<string, unknown>) => Response);
-    auth?: unknown;
-    limits?: unknown;
+    auth?: unknown | (() => Response);
+    limits?: unknown | (() => Response);
 }): UsageCall[] {
     // The Cloud Run caller captures `fetch` when it is built; rebuild it so a
     // swapped stub is actually used.
@@ -228,11 +228,29 @@ function fakeUsageFetch(options: {
                 return (options.merged as (b: Record<string, unknown>) => Response)(body);
             return json(options.merged ?? { auth: AUTH_RESULT, limits: OK_LIMITS });
         }
-        if (name === 'apiKeysAuthenticate') return json('auth' in options ? options.auth : AUTH_RESULT);
-        if (name === 'limitsEnforce') return json('limits' in options ? options.limits : OK_LIMITS);
+        if (name === 'apiKeysAuthenticate') {
+            if (typeof options.auth === 'function') return (options.auth as () => Response)();
+            return json('auth' in options ? options.auth : AUTH_RESULT);
+        }
+        if (name === 'limitsEnforce') {
+            if (typeof options.limits === 'function') return (options.limits as () => Response)();
+            return json('limits' in options ? options.limits : OK_LIMITS);
+        }
         return json(null);
     }) as typeof fetch;
     return calls;
+}
+
+/** Google's own 404 page: the request never reached the usage container. */
+function frontend404(): Response {
+    const html = '<html><head><title>404 Page not found</title></head><body>Error: Page not found</body></html>';
+    return new Response(html, { status: 404, headers: { 'content-type': 'text/html' } });
+}
+
+/** Returns `failures` frontend 404s, then delegates to `then`. */
+function dropFirst(failures: number, then: () => Response): () => Response {
+    let seen = 0;
+    return () => (seen++ < failures ? frontend404() : then());
 }
 
 function httpRequestLog(): Record<string, unknown> | undefined {
@@ -321,6 +339,68 @@ describe('route() merged auth + limits', () => {
         const second = await okHandler(request({ 'x-api-key': 'tk_live' }), {} as never);
         expect(second.status).toBe(200);
         expect(calls.map(c => c.name)).toEqual(['apiKeysAuthenticate', 'limitsEnforce']);
+    });
+
+    it('a Cloud Run frontend 404 on the merged call is replayed once, with no fallback and no backoff', async () => {
+        const ok = () =>
+            new Response(JSON.stringify({ auth: AUTH_RESULT, limits: OK_LIMITS }), {
+                status: 200,
+                headers: { 'content-type': 'application/json' },
+            });
+        const calls = fakeUsageFetch({ merged: dropFirst(1, ok) });
+        const first = await okHandler(request({ 'x-api-key': 'tk_live' }), {} as never);
+        expect(first.status).toBe(200);
+        expect(calls.map(c => c.name)).toEqual(['apiKeysAuthenticateAndEnforce', 'apiKeysAuthenticateAndEnforce']);
+        expect(httpRequestLog()?.rate_limit).toEqual(OK_LIMITS.rateLimit);
+
+        calls.length = 0;
+        const second = await okHandler(request({ 'x-api-key': 'tk_live' }), {} as never);
+        expect(second.status).toBe(200);
+        expect(calls.map(c => c.name)).toEqual(['apiKeysAuthenticateAndEnforce']);
+    });
+
+    it('two frontend 404s in a row fall back to the legacy calls for this request only', async () => {
+        const calls = fakeUsageFetch({ merged: () => frontend404() });
+        const first = await okHandler(request({ 'x-api-key': 'tk_live' }), {} as never);
+        expect(first.status).toBe(200);
+        expect(calls.map(c => c.name)).toEqual([
+            'apiKeysAuthenticateAndEnforce',
+            'apiKeysAuthenticateAndEnforce',
+            'apiKeysAuthenticate',
+            'limitsEnforce',
+        ]);
+
+        // No 5-minute backoff: the service is fine, only the frontend dropped us.
+        calls.length = 0;
+        fakeUsageFetch({});
+        const second = await okHandler(request({ 'x-api-key': 'tk_live' }), {} as never);
+        expect(second.status).toBe(200);
+    });
+
+    it('legacy path: a frontend 404 on apiKeysAuthenticate is replayed instead of becoming a 500', async () => {
+        process.env.TOKENS_MERGED_AUTH_LIMITS = 'off';
+        const calls = fakeUsageFetch({
+            auth: dropFirst(1, () => new Response(JSON.stringify(AUTH_RESULT), { status: 200 })),
+            limits: dropFirst(1, () => new Response(JSON.stringify(OK_LIMITS), { status: 200 })),
+        });
+        const res = await okHandler(request({ 'x-api-key': 'tk_live' }), {} as never);
+        expect(res.status).toBe(200);
+        expect(calls.map(c => c.name)).toEqual([
+            'apiKeysAuthenticate',
+            'apiKeysAuthenticate',
+            'limitsEnforce',
+            'limitsEnforce',
+        ]);
+        expect(logs.some(line => line.includes('rate_limit_degraded'))).toBe(false);
+        expect(httpRequestLog()?.rate_limit).toEqual(OK_LIMITS.rateLimit);
+    });
+
+    it('legacy path: two frontend 404s on apiKeysAuthenticate still fail closed', async () => {
+        process.env.TOKENS_MERGED_AUTH_LIMITS = 'off';
+        const calls = fakeUsageFetch({ auth: () => frontend404() });
+        const res = await okHandler(request({ 'x-api-key': 'tk_live' }), {} as never);
+        expect(res.status).toBeGreaterThanOrEqual(500);
+        expect(calls.map(c => c.name)).toEqual(['apiKeysAuthenticate', 'apiKeysAuthenticate']);
     });
 
     it("any other transport failure is auth's and fails closed, with no legacy calls", async () => {

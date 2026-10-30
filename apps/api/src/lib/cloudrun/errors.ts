@@ -37,6 +37,36 @@ export type CloudRunError =
     | MissingEnvError
     | UpstreamDataError;
 
+/**
+ * Our services answer a call name they do not know with JSON
+ * `{ error: "unknown query: <name>" }` (404). That is the only 404 our own
+ * code produces on the `/query|/mutation/<name>` paths.
+ */
+export function isUnknownCloudRunCall(error: unknown): boolean {
+    const tagged = error as { _tag?: unknown; status?: unknown; body?: unknown };
+    if (tagged?._tag !== 'CloudRunHttpError' || tagged.status !== 404) return false;
+    if (typeof tagged.body !== 'string') return false;
+    try {
+        const parsed = JSON.parse(tagged.body) as { error?: unknown };
+        return typeof parsed?.error === 'string' && parsed.error.startsWith('unknown ');
+    } catch {
+        return false;
+    }
+}
+
+/**
+ * Cloud Run's Google frontend occasionally answers a freshly deployed
+ * revision with its own HTML "404 Page not found" page before the request
+ * reaches the container (2026-10-30: ~5% of calls to a new usage revision for
+ * 22 minutes, zero 404s in the service's own request logs). Such a request
+ * never ran, so replaying it is safe — even for a mutation. Any 404 whose
+ * body is not our JSON shape is treated as this.
+ */
+export function isCloudRunFrontendNotFound(error: unknown): boolean {
+    const tagged = error as { _tag?: unknown; status?: unknown };
+    return tagged?._tag === 'CloudRunHttpError' && tagged.status === 404 && !isUnknownCloudRunCall(error);
+}
+
 /** Timeouts and network failures are transient; upstream 5xx is transient-shaped. 4xx is caller/data-dependent. */
 export function isRetryableCloudRunError(error: CloudRunError): boolean {
     switch (error._tag) {
