@@ -102,7 +102,9 @@ async function pushToLoki(deps: HookDeps, streams: LokiStream[]): Promise<boolea
     }
     const res = outcome.res;
     if (!res.ok) {
-        const text = await res.text();
+        // The decision is status-based; a stalled or aborted error body must not
+        // turn a permanent 4xx rejection into a retry (or a throw).
+        const text = await res.text().catch(() => '');
         console.error(`loki: push failed status=${res.status} body=${text.slice(0, 300)}`);
         // Loki 4xx = permanently unshippable (too-old timestamp, bad labels):
         // retrying can never succeed, so report success to stop redelivery.

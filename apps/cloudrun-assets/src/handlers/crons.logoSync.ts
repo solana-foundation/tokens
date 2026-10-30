@@ -343,6 +343,11 @@ export async function syncLogos(deps: LogoSyncCronDeps, rawArgs: unknown): Promi
     let failed = 0;
     let skippedUnchanged = 0;
     let skippedFirstParty = 0;
+    // The terminal repo write (success or failure) per mint, with its count
+    // attached. When the per-item timeout fires while that write is in flight,
+    // `onItemError` waits for it instead of writing a second failure row, so
+    // every attempt is written and counted exactly once.
+    const terminalWrites = new Map<string, Promise<void>>();
 
     const summary = await Effect.runPromise(
         runJobPool({
@@ -354,10 +359,10 @@ export async function syncLogos(deps: LogoSyncCronDeps, rawArgs: unknown): Promi
             itemTimeoutMs: args.itemTimeoutMs,
             shouldStop: isShuttingDown,
             // The thunk takes Effect's interruption signal: when the per-item
-            // timeout fires, the in-flight hop is aborted and every step after an
-            // await re-checks `signal.aborted` before touching counters or the
-            // store/DB. Otherwise the orphaned body would keep running after
-            // `onItemError` already counted and recorded the failure.
+            // timeout fires, the in-flight hop is aborted and every step before a
+            // write re-checks `signal.aborted`. Otherwise the orphaned body would
+            // keep running after `onItemError` already counted and recorded the
+            // failure.
             process: candidate =>
                 Effect.tryPromise(async (signal: AbortSignal) => {
                     const nowMs = deps.base.now();
@@ -402,18 +407,23 @@ export async function syncLogos(deps: LogoSyncCronDeps, rawArgs: unknown): Promi
                         const error = errors.join('; ').slice(0, 1000);
                         console.warn(`[logo-sync] mint=${candidate.mint} all sources failed: ${error}`);
                         if (signal.aborted) return;
-                        await deps.repo.recordFailure({
-                            mint: candidate.mint,
-                            sourceUrl: candidate.source_url,
-                            sourceTable: candidate.source_table,
-                            error,
-                            nowMs,
-                        });
-                        if (signal.aborted) return;
-                        failed += 1;
+                        const write = deps.repo
+                            .recordFailure({
+                                mint: candidate.mint,
+                                sourceUrl: candidate.source_url,
+                                sourceTable: candidate.source_table,
+                                error,
+                                nowMs,
+                            })
+                            .then(() => {
+                                failed += 1;
+                            });
+                        terminalWrites.set(candidate.mint, write);
+                        await write;
                         return;
                     }
 
+                    if (signal.aborted) return;
                     const key = logoObjectKey(candidate.mint);
                     await deps.store.put(key, success.webp, {
                         contentType: LOGO_OUTPUT_CONTENT_TYPE,
@@ -425,21 +435,37 @@ export async function syncLogos(deps: LogoSyncCronDeps, rawArgs: unknown): Promi
                         },
                     });
                     if (signal.aborted) return;
-                    await deps.repo.recordSuccess({
-                        mint: candidate.mint,
-                        sourceUrl: candidate.source_url,
-                        sourceTable: candidate.source_table,
-                        sourceKind: success.kind,
-                        sourceHash,
-                        cdnUrl: deps.store.publicUrl(key),
-                        contentType: success.contentType,
-                        nowMs,
-                    });
-                    if (signal.aborted) return;
-                    synced += 1;
+                    const write = deps.repo
+                        .recordSuccess({
+                            mint: candidate.mint,
+                            sourceUrl: candidate.source_url,
+                            sourceTable: candidate.source_table,
+                            sourceKind: success.kind,
+                            sourceHash,
+                            cdnUrl: deps.store.publicUrl(key),
+                            contentType: success.contentType,
+                            nowMs,
+                        })
+                        .then(() => {
+                            synced += 1;
+                        });
+                    terminalWrites.set(candidate.mint, write);
+                    await write;
                 }),
             onItemError: (candidate, error) =>
                 Effect.tryPromise(async () => {
+                    // A timed-out item whose terminal write is in flight: let that
+                    // write (and its count) settle rather than adding a second
+                    // failure row that would bump `attempts` twice. Only when the
+                    // write itself failed does the compensation below run.
+                    const pending = terminalWrites.get(candidate.mint);
+                    if (pending) {
+                        const written = await pending.then(
+                            () => true,
+                            () => false,
+                        );
+                        if (written) return;
+                    }
                     // Store/DB failure after the fetch plan: keep any previous copy, count the failure.
                     failed += 1;
                     const message = describeError(error);

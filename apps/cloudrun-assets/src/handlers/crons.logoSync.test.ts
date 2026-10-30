@@ -396,6 +396,22 @@ describe('syncLogos', () => {
         expect(h.successes).toEqual([]);
     });
 
+    test('a failure write that outlives the timeout is recorded once, not again by the timeout handler', async () => {
+        // Every source 599s, so the body reaches recordFailure; that write resolves
+        // only after the per-item timeout fires.
+        const h = makeHarness([candidate({ source_url: 'https://slow.example/a.png' })], {}, { pinata: false });
+        const originalRecordFailure = h.deps.repo.recordFailure.bind(h.deps.repo);
+        h.deps.repo.recordFailure = row =>
+            new Promise(resolve => setTimeout(() => resolve(originalRecordFailure(row)), 600));
+        const out = await syncLogos(h.deps, { ...fastArgs, itemTimeoutMs: 200 });
+        await new Promise(resolve => setTimeout(resolve, 700));
+        expect(out.failed).toBe(1);
+        expect(out.synced).toBe(0);
+        expect(h.failures).toHaveLength(1);
+        expect(h.failures[0]!.error).not.toStartWith('job:');
+        expect(h.successes).toEqual([]);
+    });
+
     test('first-party source URLs are never re-hosted', async () => {
         const h = makeHarness([candidate({ source_url: '/logos/xstocks/TSLAx.png' })], {});
         const out = await syncLogos(h.deps, fastArgs);
