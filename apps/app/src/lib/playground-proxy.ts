@@ -262,9 +262,13 @@ async function proxy(
         ...(hasBody && request.body ? { duplex: 'half' as const } : {}),
     };
 
+    // The deadline covers headers and body alike: an upstream that sends headers
+    // and then stalls aborts the body read, which must map to the same 504.
     let upstream: Response;
+    let bodyBytes: ArrayBuffer;
     try {
         upstream = await fetch(targetUrl, upstreamInit);
+        bodyBytes = await upstream.arrayBuffer();
     } catch (error) {
         if (error instanceof Error && (error.name === 'AbortError' || error.name === 'TimeoutError')) {
             logProxyError('Dashboard API proxy upstream timed out', error);
@@ -285,8 +289,6 @@ async function proxy(
     stripUnsupportedUpstreamHeaders(responseHeaders);
     stripProxyUnsafeResponseHeaders(responseHeaders);
     responseHeaders.set('cache-control', 'no-store');
-
-    const bodyBytes = await upstream.arrayBuffer();
 
     return new Response(bodyBytes, {
         status: upstream.status,
