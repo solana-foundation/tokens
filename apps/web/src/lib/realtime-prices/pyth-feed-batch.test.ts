@@ -49,3 +49,10 @@ describe('keys', () => {
         expect(buildLiveQuoteKey({})).toBe('');
     });
 });
+
+describe('resolveRetryDelayMs', () => {
+    test('doubles from five seconds and caps at a minute', async () => {
+        const { resolveRetryDelayMs } = await import('./pyth-feed-resolver');
+        expect([0, 1, 2, 3, 4, 9].map(resolveRetryDelayMs)).toEqual([5_000, 10_000, 20_000, 40_000, 60_000, 60_000]);
+    });
+});

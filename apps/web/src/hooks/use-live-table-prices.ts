@@ -8,7 +8,7 @@ import {
     buildLiveQuoteKey,
     pythFeedResolutionKey,
 } from '@/lib/realtime-prices/pyth-feed-batch';
-import { resolvePythFeedsBatch } from '@/lib/realtime-prices/pyth-feed-resolver';
+import { resolvePythFeedsBatch, resolveRetryDelayMs } from '@/lib/realtime-prices/pyth-feed-resolver';
 import { subscribePythFeed } from '@/lib/realtime-prices/pyth-pro-client';
 import type { Token } from '@/lib/types';
 
@@ -48,23 +48,35 @@ export function useLiveTablePrices(tokens: readonly Token[], enabled = true): vo
     useEffect(() => {
         if (rows.length === 0) return;
         let cancelled = false;
+        let retryTimer: number | null = null;
+        let attempt = 0;
         const unsubscribes: Array<() => void> = [];
+        const subscribedFeeds = new Set<number>();
 
-        void (async () => {
-            const resolved = await resolvePythFeedsBatch(rows.map(r => r.item));
+        // Resolve `pending`, subscribe what resolved, and retry only the rows whose lookup
+        // failed transiently (network error, directory load failure) with backoff.
+        const run = async (pending: LiveRow[]) => {
+            const resolved = await resolvePythFeedsBatch(pending.map(r => r.item));
             if (cancelled) return;
 
             // Several rows can share one feed (e.g. two listings of the same asset).
             const quoteKeysByFeed = new Map<number, string[]>();
-            for (const row of rows) {
+            const errored: LiveRow[] = [];
+            for (const row of pending) {
                 const result = resolved.get(pythFeedResolutionKey(row.item));
-                if (!result || result.status !== 'ok' || !result.feed) continue;
+                if (!result || result.status === 'error') {
+                    errored.push(row);
+                    continue;
+                }
+                if (result.status !== 'ok' || !result.feed) continue;
+                if (subscribedFeeds.has(result.feed.feedId)) continue;
                 const list = quoteKeysByFeed.get(result.feed.feedId) ?? [];
                 list.push(row.quoteKey);
                 quoteKeysByFeed.set(result.feed.feedId, list);
             }
 
             for (const [feedId, quoteKeys] of quoteKeysByFeed) {
+                subscribedFeeds.add(feedId);
                 unsubscribes.push(
                     subscribePythFeed(feedId, {
                         onTick: tick => {
@@ -77,10 +89,16 @@ export function useLiveTablePrices(tokens: readonly Token[], enabled = true): vo
                     }),
                 );
             }
-        })();
+
+            if (errored.length > 0) {
+                retryTimer = window.setTimeout(() => void run(errored), resolveRetryDelayMs(attempt++));
+            }
+        };
+        void run(rows);
 
         return () => {
             cancelled = true;
+            if (retryTimer != null) window.clearTimeout(retryTimer);
             for (const unsubscribe of unsubscribes) unsubscribe();
         };
         // `signature` captures everything in `rows` that matters.

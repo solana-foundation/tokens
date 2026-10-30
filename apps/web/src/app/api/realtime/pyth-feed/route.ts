@@ -26,6 +26,9 @@ export async function GET(request: Request): Promise<Response> {
     switch (resolution.status) {
         case 'unconfigured':
             return NextResponse.json({ status: 'unconfigured' }, { status: 503, headers: NO_STORE });
+        case 'error':
+            // Upstream hiccup: never let the CDN or the browser cache this as "no feed".
+            return NextResponse.json({ status: 'error' }, { status: 502, headers: NO_STORE });
         case 'not_found':
             return NextResponse.json(
                 { status: 'not_found', candidates: resolution.candidates },

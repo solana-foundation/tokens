@@ -60,6 +60,14 @@ function writeCache(key: string, result: ResolvedPythFeedResult): void {
     }
 }
 
+const RESOLVE_RETRY_BASE_MS = 5_000;
+const RESOLVE_RETRY_MAX_MS = 60_000;
+
+/** Backoff for retrying a transient (`error`) resolution: 5 s, 10 s, 20 s … capped at 60 s. */
+export function resolveRetryDelayMs(attempt: number): number {
+    return Math.min(RESOLVE_RETRY_MAX_MS, RESOLVE_RETRY_BASE_MS * 2 ** Math.max(0, Math.min(attempt, 6)));
+}
+
 const inFlight = new Map<string, Promise<ResolvedPythFeedResult>>();
 
 export async function resolvePythFeed(args: ResolvePythFeedArgs): Promise<ResolvedPythFeedResult> {

@@ -24,7 +24,13 @@ import { getVariantByMint } from '@tokens/asset-registry';
 import { cn } from '@tokens/ui/cn';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@tokens/ui/tooltip';
 import { AssetAdvisoryBadge } from '@/components/asset-advisory-badge';
-import { LivePercentChangeCell, TokenLogo, TokenTablePriceCell } from './token-table-cells';
+import {
+    LivePercentChangeCell,
+    TokenLogo,
+    TokenTablePriceCell,
+    rowChangeForSort,
+    rowPriceForSort,
+} from './token-table-cells';
 import {
     INLINE_CHART_FALLBACK_DAYS,
     TRENDING_WINDOW_LABELS,
@@ -345,6 +351,14 @@ function resolveCoinGeckoIdForToken(token: Token): string | null {
     return null;
 }
 
+/** Ascending compare with nulls last; TanStack flips the sign for descending sorts. */
+function compareNullable(a: number | null, b: number | null): number {
+    if (a == null && b == null) return 0;
+    if (a == null) return 1;
+    if (b == null) return -1;
+    return a - b;
+}
+
 function createColumns(variant: TokenTableVariantConfig, trendingWindow: TrendingWindow) {
     const isTrending = isTrendingVariant(variant);
     const windowLabel = TRENDING_WINDOW_LABELS[trendingWindow];
@@ -393,18 +407,31 @@ function createColumns(variant: TokenTableVariantConfig, trendingWindow: Trendin
             ? columnHelper.accessor('price', {
                   header: 'Price',
                   cell: info => <TokenTablePriceCell token={info.row.original} />,
+                  // Sort on what the cell shows at the moment the header is clicked (live when
+                  // streaming, else the snapshot). Ticks do not re-sort, so rows stay put.
+                  sortingFn: (a, b) => compareNullable(rowPriceForSort(a.original), rowPriceForSort(b.original)),
               })
             : null,
         variant.columns.showPriceChange1h
             ? columnHelper.accessor('priceChange1hPercent', {
                   header: '1H',
                   cell: info => <LivePercentChangeCell token={info.row.original} field="priceChange1hPercent" />,
+                  sortingFn: (a, b) =>
+                      compareNullable(
+                          rowChangeForSort(a.original, 'priceChange1hPercent'),
+                          rowChangeForSort(b.original, 'priceChange1hPercent'),
+                      ),
               })
             : null,
         variant.columns.showPriceChange24h
             ? columnHelper.accessor('priceChange24hPercent', {
                   header: '1D',
                   cell: info => <LivePercentChangeCell token={info.row.original} field="priceChange24hPercent" />,
+                  sortingFn: (a, b) =>
+                      compareNullable(
+                          rowChangeForSort(a.original, 'priceChange24hPercent'),
+                          rowChangeForSort(b.original, 'priceChange24hPercent'),
+                      ),
               })
             : null,
         variant.columns.showChart24h

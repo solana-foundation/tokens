@@ -3,7 +3,11 @@
 import { useEffect, useRef, useState } from 'react';
 
 import { setLiveSpotPrice } from '@/lib/realtime-prices/live-spot-store';
-import { resolvePythFeed, type ResolvedPythFeedStatus } from '@/lib/realtime-prices/pyth-feed-resolver';
+import {
+    resolvePythFeed,
+    resolveRetryDelayMs,
+    type ResolvedPythFeedStatus,
+} from '@/lib/realtime-prices/pyth-feed-resolver';
 import type { PythFeedMode } from '@/lib/realtime-prices/pyth-feed-selection';
 import { subscribePythFeed } from '@/lib/realtime-prices/pyth-pro-client';
 import type { PythUnavailableReason } from '@/lib/realtime-prices/pyth-pro-protocol';
@@ -94,7 +98,10 @@ export function useRealtimeQuote(args: UseRealtimeQuoteArgs): RealtimeQuoteStatu
         }
 
         let cancelled = false;
-        void (async () => {
+        let retryTimer: number | null = null;
+        let attempt = 0;
+
+        const run = async () => {
             const result = await resolvePythFeed({ symbol: symbolUpper, category: category || null, mode });
             if (cancelled) return;
             const ok = result.status === 'ok' && result.feed;
@@ -103,10 +110,18 @@ export function useRealtimeQuote(args: UseRealtimeQuoteArgs): RealtimeQuoteStatu
                 feedId: ok ? result.feed!.feedId : null,
                 reason: result.status === 'ok' ? null : result.status,
             });
-        })();
+            // A transient failure (network, Pyth search timeout) is retried with backoff while
+            // the page stays open; definitive answers (not found, not entitled) are not.
+            if (result.status === 'error') {
+                const delay = resolveRetryDelayMs(attempt++);
+                retryTimer = window.setTimeout(() => void run(), delay);
+            }
+        };
+        void run();
 
         return () => {
             cancelled = true;
+            if (retryTimer != null) window.clearTimeout(retryTimer);
         };
     }, [enabled, symbolUpper, category, mode, resolveKey]);
 

@@ -82,7 +82,9 @@ export type PythFeedResolution =
     | { status: 'ok'; feed: ResolvedPythFeed }
     | { status: 'not_entitled'; feed: ResolvedPythFeed }
     | { status: 'not_found'; candidates: string[] }
-    | { status: 'unconfigured' };
+    | { status: 'unconfigured' }
+    /** A required upstream search failed or timed out; callers must not cache this and should retry. */
+    | { status: 'error' };
 
 interface FeedCacheEntry {
     value: PythFeedResolution;
@@ -140,7 +142,10 @@ export async function resolvePythFeed(args: {
                 searchPythSymbols(tickerUpper, false),
                 searchPythSymbols(tickerUpper, true),
             ]);
-            const selection = all ? selectPythFeed({ ticker: tickerUpper, category, mode: args.mode }, all) : null;
+            // Both searches are required to answer: without the directory we cannot say "no feed",
+            // and without the entitled view we cannot say "not covered". Report a retryable error.
+            if (!all || !entitled) return { status: 'error' };
+            const selection = selectPythFeed({ ticker: tickerUpper, category, mode: args.mode }, all);
             let value: PythFeedResolution;
             if (!selection) {
                 value = {
@@ -148,17 +153,14 @@ export async function resolvePythFeed(args: {
                     candidates: buildPythSymbolCandidates(tickerUpper, category, args.mode),
                 };
             } else {
-                const isEntitled = (entitled ?? []).some(entry => entry?.pyth_lazer_id === selection.feedId);
+                const isEntitled = entitled.some(entry => entry?.pyth_lazer_id === selection.feedId);
                 const feed: ResolvedPythFeed = { ...selection, entitled: isEntitled };
                 value = isEntitled ? { status: 'ok', feed } : { status: 'not_entitled', feed };
             }
-            // Only cache answers we actually got from upstream; a failed search should retry soon.
-            if (all) {
-                feedCache.set(cacheKey, {
-                    value,
-                    expiresAtMs: Date.now() + (value.status === 'ok' ? FEED_HIT_TTL_MS : FEED_MISS_TTL_MS),
-                });
-            }
+            feedCache.set(cacheKey, {
+                value,
+                expiresAtMs: Date.now() + (value.status === 'ok' ? FEED_HIT_TTL_MS : FEED_MISS_TTL_MS),
+            });
             return value;
         } finally {
             inFlight.delete(cacheKey);
