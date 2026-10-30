@@ -68,7 +68,7 @@ export const GET = route(
                 variants: canonicalVariants,
             };
 
-            const tokenByMint = yield* Effect.tryPromise(() => loadTokensByMints(canonical.variants.map(v => v.mint)));
+            const tokenByMint = yield* loadTokensByMints(canonical.variants.map(v => v.mint));
             const primary = pickPrimaryVariant(canonical, mintRank, tokenByMint);
             const requestedMintRaw = (url.searchParams.get('mint') ?? '').trim();
             const mint =

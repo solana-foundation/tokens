@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'bun:test';
+import { Effect } from 'effect';
 
 import {
     collectPaginatedFeedPages,
@@ -55,16 +56,16 @@ describe('CoinGecko news pagination', () => {
 
     it('keeps earlier pages when a later page fails', async () => {
         const errors: Array<{ page: number; collectedCount: number }> = [];
-        const collected = await collectPaginatedFeedPages({
-            pageCount: 3,
-            requestedCount: 50,
-            fetchPage: async page => {
-                if (page === 2) throw new Error('rate limited');
-                return [`page-${page}-item`];
-            },
-            mapPageItems: items => items,
-            onPageError: (_error, context) => errors.push(context),
-        });
+        const collected = await Effect.runPromise(
+            collectPaginatedFeedPages({
+                pageCount: 3,
+                requestedCount: 50,
+                fetchPage: page =>
+                    page === 2 ? Effect.fail(new Error('rate limited')) : Effect.succeed([`page-${page}-item`]),
+                mapPageItems: items => items,
+                onPageError: (_error, context) => errors.push(context),
+            }),
+        );
 
         expect(collected.length).toBe(1);
         expect(collected[0]).toBe('page-1-item');

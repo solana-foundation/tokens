@@ -130,41 +130,41 @@ function mapCoinGeckoNewsArticle(article: CoinGeckoNewsArticle): FeedArticle {
     };
 }
 
-async function fetchCoinGeckoNews(
+function fetchCoinGeckoNews(
     coinId: string,
     requestedCount: number,
     options: { validation?: CoinGeckoNewsValidation } = {},
-): Promise<FeedArticle[]> {
-    if (requestedCount <= 0) return [];
+): Effect.Effect<FeedArticle[], never> {
+    return Effect.gen(function* () {
+        if (requestedCount <= 0) return [];
 
-    // A coin resolved from `mint` was already classified against the catalog
-    // row we read; re-validating would only repeat the same RPC by coin id.
-    const validation = options.validation ?? (await Effect.runPromise(validateCoinGeckoNewsCoinId(coinId)));
-    if (!validation.shouldFetch) return [];
+        // A coin resolved from `mint` was already classified against the catalog
+        // row we read; re-validating would only repeat the same RPC by coin id.
+        const validation = options.validation ?? (yield* validateCoinGeckoNewsCoinId(coinId));
+        if (!validation.shouldFetch) return [];
 
-    const apiKey = process.env.COINGECKO_API_KEY?.trim();
-    if (!apiKey) return [];
+        const apiKey = process.env.COINGECKO_API_KEY?.trim();
+        if (!apiKey) return [];
 
-    const recoverCoinNotFound = createCoinGeckoNewsNotFoundRecovery<CoinGeckoNewsResponse>([]);
+        const recoverCoinNotFound = createCoinGeckoNewsNotFoundRecovery<CoinGeckoNewsResponse>([]);
 
-    const pageCount = getCoinGeckoNewsPageCount({
-        requestedCount,
-        perPage: MAX_COINGECKO_NEWS_PER_PAGE,
-        maxPages: MAX_COINGECKO_NEWS_PAGES,
-    });
-    const allArticles = await collectPaginatedFeedPages<CoinGeckoNewsArticle, FeedArticle>({
-        pageCount,
-        requestedCount,
-        fetchPage: async page => {
-            const upstreamUrl = new URL('https://pro-api.coingecko.com/api/v3/news');
-            upstreamUrl.searchParams.set('page', String(page));
-            upstreamUrl.searchParams.set('per_page', String(MAX_COINGECKO_NEWS_PER_PAGE));
-            upstreamUrl.searchParams.set('language', 'en');
-            upstreamUrl.searchParams.set('type', 'news');
-            if (coinId) upstreamUrl.searchParams.set('coin_id', coinId);
+        const pageCount = getCoinGeckoNewsPageCount({
+            requestedCount,
+            perPage: MAX_COINGECKO_NEWS_PER_PAGE,
+            maxPages: MAX_COINGECKO_NEWS_PAGES,
+        });
+        const allArticles = yield* collectPaginatedFeedPages<CoinGeckoNewsArticle, FeedArticle>({
+            pageCount,
+            requestedCount,
+            fetchPage: page => {
+                const upstreamUrl = new URL('https://pro-api.coingecko.com/api/v3/news');
+                upstreamUrl.searchParams.set('page', String(page));
+                upstreamUrl.searchParams.set('per_page', String(MAX_COINGECKO_NEWS_PER_PAGE));
+                upstreamUrl.searchParams.set('language', 'en');
+                upstreamUrl.searchParams.set('type', 'news');
+                if (coinId) upstreamUrl.searchParams.set('coin_id', coinId);
 
-            return Effect.runPromise(
-                fetchJsonWithRetry<CoinGeckoNewsResponse>({
+                return fetchJsonWithRetry<CoinGeckoNewsResponse>({
                     url: upstreamUrl.toString(),
                     service: 'coingecko',
                     init: {
@@ -176,24 +176,25 @@ async function fetchCoinGeckoNews(
                     },
                     maxRetries: 2,
                     recoverHttpError: recoverCoinNotFound,
-                }),
-            );
-        },
-        mapPageItems: articles => articles.filter(item => item && item.type === 'news').map(mapCoinGeckoNewsArticle),
-        onPageError: (error, context) => {
-            console.warn('CoinGecko news page failed; returning partial news feed', {
-                coinId: coinId || undefined,
-                page: context.page,
-                collected: context.collectedCount,
-                requestedCount,
-                error,
-            });
-        },
-    });
+                });
+            },
+            mapPageItems: articles =>
+                articles.filter(item => item && item.type === 'news').map(mapCoinGeckoNewsArticle),
+            onPageError: (error, context) => {
+                console.warn('CoinGecko news page failed; returning partial news feed', {
+                    coinId: coinId || undefined,
+                    page: context.page,
+                    collected: context.collectedCount,
+                    requestedCount,
+                    error,
+                });
+            },
+        });
 
-    return allArticles
-        .sort((a, b) => parsePostedAtMs(b.posted_at) - parsePostedAtMs(a.posted_at))
-        .slice(0, requestedCount);
+        return allArticles
+            .sort((a, b) => parsePostedAtMs(b.posted_at) - parsePostedAtMs(a.posted_at))
+            .slice(0, requestedCount);
+    });
 }
 
 function emptyFeedArticlesEffect() {
@@ -209,7 +210,7 @@ function fetchCoinGeckoNewsEffect(
     requestedCount: number,
     options: { validation?: CoinGeckoNewsValidation } = {},
 ) {
-    return Effect.tryPromise(() => fetchCoinGeckoNews(coinId, requestedCount, options)).pipe(
+    return fetchCoinGeckoNews(coinId, requestedCount, options).pipe(
         tapErrorAndDefault('v1.newsFeed.coingecko', [] as FeedArticle[], { coinId }),
     );
 }
@@ -228,9 +229,7 @@ function parseMint(url: URL): Effect.Effect<string, BadRequestError> {
 }
 
 function fetchTokensFeedEffect(limit: number) {
-    return Effect.tryPromise(() => fetchTokensFeed(limit)).pipe(
-        tapErrorAndDefault('v1.newsFeed.x', [] as XFeedCandidate[]),
-    );
+    return fetchTokensFeed(limit).pipe(tapErrorAndDefault('v1.newsFeed.x', [] as XFeedCandidate[]));
 }
 
 function getCandidateFetchCounts(params: { limit: number; tweetReserve: number; source: 'all' | 'news' | 'tweets' }) {
@@ -246,79 +245,85 @@ interface XFeedCandidate {
     matchText: string;
 }
 
-async function fetchTokensFeed(limit: number): Promise<XFeedCandidate[]> {
-    const bearerToken = await Effect.runPromise(resolveXBearerToken());
-    if (!bearerToken) return [];
+function fetchTokensFeed(limit: number): Effect.Effect<XFeedCandidate[], unknown> {
+    return Effect.gen(function* () {
+        const bearerToken = yield* resolveXBearerToken();
+        if (!bearerToken) return [];
 
-    const authHeaders = {
-        Accept: 'application/json',
-        Authorization: `Bearer ${bearerToken}`,
-    };
+        const authHeaders = {
+            Accept: 'application/json',
+            Authorization: `Bearer ${bearerToken}`,
+        };
 
-    const userUrl = new URL(`https://api.x.com/2/users/by/username/${X_USERNAME}`);
-    userUrl.searchParams.set('user.fields', 'id,name,username,profile_image_url');
+        const userUrl = new URL(`https://api.x.com/2/users/by/username/${X_USERNAME}`);
+        userUrl.searchParams.set('user.fields', 'id,name,username,profile_image_url');
 
-    const userResponse = await Effect.runPromise(runXRequest(fetchJsonWithRetry<XUserLookupResponse>({
-        url: userUrl.toString(),
-        service: 'x',
-        init: {
-            headers: authHeaders,
-            next: { revalidate: 60 },
-        },
-        maxRetries: 2,
-    })));
+        const userResponse = yield* runXRequest(
+            fetchJsonWithRetry<XUserLookupResponse>({
+                url: userUrl.toString(),
+                service: 'x',
+                init: {
+                    headers: authHeaders,
+                    next: { revalidate: 60 },
+                },
+                maxRetries: 2,
+            }),
+        );
 
-    const user = userResponse.data;
-    if (!user?.id) return [];
+        const user = userResponse.data;
+        if (!user?.id) return [];
 
-    const postsUrl = new URL(`https://api.x.com/2/users/${user.id}/tweets`);
-    postsUrl.searchParams.set('max_results', String(Math.min(Math.max(limit, 5), MAX_X_RESULTS)));
-    postsUrl.searchParams.set('exclude', 'retweets,replies');
-    postsUrl.searchParams.set('tweet.fields', 'attachments,created_at,text,in_reply_to_user_id,referenced_tweets');
-    postsUrl.searchParams.set('expansions', 'attachments.media_keys');
-    postsUrl.searchParams.set('media.fields', 'media_key,preview_image_url,type,url');
+        const postsUrl = new URL(`https://api.x.com/2/users/${user.id}/tweets`);
+        postsUrl.searchParams.set('max_results', String(Math.min(Math.max(limit, 5), MAX_X_RESULTS)));
+        postsUrl.searchParams.set('exclude', 'retweets,replies');
+        postsUrl.searchParams.set('tweet.fields', 'attachments,created_at,text,in_reply_to_user_id,referenced_tweets');
+        postsUrl.searchParams.set('expansions', 'attachments.media_keys');
+        postsUrl.searchParams.set('media.fields', 'media_key,preview_image_url,type,url');
 
-    const postsResponse = await Effect.runPromise(runXRequest(fetchJsonWithRetry<XUserPostsResponse>({
-        url: postsUrl.toString(),
-        service: 'x',
-        init: {
-            headers: authHeaders,
-            next: { revalidate: 60 },
-        },
-        maxRetries: 2,
-    })));
-    const mediaByKey = buildMediaByKey(postsResponse.includes?.media);
+        const postsResponse = yield* runXRequest(
+            fetchJsonWithRetry<XUserPostsResponse>({
+                url: postsUrl.toString(),
+                service: 'x',
+                init: {
+                    headers: authHeaders,
+                    next: { revalidate: 60 },
+                },
+                maxRetries: 2,
+            }),
+        );
+        const mediaByKey = buildMediaByKey(postsResponse.includes?.media);
 
-    const posts = (postsResponse.data ?? []).filter(
-        post => post.id && post.text && post.created_at && !isReplyPost(post),
-    );
-    // X's token tags arrive as `solana:<mint>` in the API text; restore them to `$SYMBOL` so
-    // posts read like they do on x.com (and so `$SYMBOL` term matching sees them).
-    // Tagged addresses are kept for matching: a mint term must still find a
-    // `solana:<mint>` tag after the title shows `$SYMBOL` (or a shortened
-    // address when no symbol could be resolved). Only the addresses, not the
-    // raw text: the `solana:` chain prefix would otherwise match `coin_id=solana`.
-    const rawTexts = posts.map(post => cleanPostText(post.text));
-    const titles = await Effect.runPromise(restoreXCashtagsInTexts(rawTexts));
+        const posts = (postsResponse.data ?? []).filter(
+            post => post.id && post.text && post.created_at && !isReplyPost(post),
+        );
+        // X's token tags arrive as `solana:<mint>` in the API text; restore them to `$SYMBOL` so
+        // posts read like they do on x.com (and so `$SYMBOL` term matching sees them).
+        // Tagged addresses are kept for matching: a mint term must still find a
+        // `solana:<mint>` tag after the title shows `$SYMBOL` (or a shortened
+        // address when no symbol could be resolved). Only the addresses, not the
+        // raw text: the `solana:` chain prefix would otherwise match `coin_id=solana`.
+        const rawTexts = posts.map(post => cleanPostText(post.text));
+        const titles = yield* restoreXCashtagsInTexts(rawTexts);
 
-    return posts
-        .map((post, index) => ({
-            article: {
-                title: titles[index] ?? rawTexts[index] ?? '',
-                url: buildXPostUrl(user.username, post.id),
-                image: getPostImage(post, mediaByKey, user.profile_image_url),
-                author: user.username,
-                posted_at: post.created_at ?? '',
-                type: 'news' as const,
-                source_name: `@${user.username}`,
-                related_coin_ids: [],
-                feed_source: 'x' as const,
-            },
-            matchText: findXTokenTags(rawTexts[index] ?? '')
-                .map(tag => tag.address)
-                .join(' '),
-        }))
-        .sort((a, b) => parsePostedAtMs(b.article.posted_at) - parsePostedAtMs(a.article.posted_at));
+        return posts
+            .map((post, index) => ({
+                article: {
+                    title: titles[index] ?? rawTexts[index] ?? '',
+                    url: buildXPostUrl(user.username, post.id),
+                    image: getPostImage(post, mediaByKey, user.profile_image_url),
+                    author: user.username,
+                    posted_at: post.created_at ?? '',
+                    type: 'news' as const,
+                    source_name: `@${user.username}`,
+                    related_coin_ids: [],
+                    feed_source: 'x' as const,
+                },
+                matchText: findXTokenTags(rawTexts[index] ?? '')
+                    .map(tag => tag.address)
+                    .join(' '),
+            }))
+            .sort((a, b) => parsePostedAtMs(b.article.posted_at) - parsePostedAtMs(a.article.posted_at));
+    });
 }
 
 export const GET = route(
