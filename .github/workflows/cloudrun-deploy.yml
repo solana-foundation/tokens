@@ -58,9 +58,41 @@ jobs:
           echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
         id: build
 
+      # The pre-traffic probe below must reach the candidate as an authorised
+      # caller: on an IAM-gated service (admin) an unauthenticated request is
+      # answered 403 by Cloud Run before it reaches any revision, which proves
+      # nothing. The deployer SA may invoke every service (roles/run.admin
+      # carries run.routes.invoke), but WIF credentials cannot run
+      # `gcloud auth print-identity-token --audiences`, and the SA cannot mint
+      # an ID token for itself (serviceAccountUser lacks getOpenIdToken). The
+      # federated principal can (roles/iam.workloadIdentityUser), which is what
+      # the auth action's id_token format does. Cloud Run requires the
+      # service's own URL as the audience even for requests to a tag URL.
+      - name: Resolve service URL for the probe token
+        id: svc
+        if: ${{ !(inputs.env == 'prd' && inputs.service == 'assets') }}
+        run: |
+          set -euo pipefail
+          url=$(gcloud run services describe "tokens-${{ inputs.service }}-${{ inputs.env }}-us" \
+            --region=${{ env.GCP_REGION }} --project=${{ env.GCP_PROJECT }} --format='value(status.url)')
+          [ -n "$url" ] || { echo "::error::could not resolve the service URL for the probe token"; exit 1; }
+          echo "url=$url" >> "$GITHUB_OUTPUT"
+
+      - name: Mint the probe identity token
+        id: probe_token
+        if: ${{ !(inputs.env == 'prd' && inputs.service == 'assets') }}
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v2
+        with:
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_CLOUDRUN_DEPLOYER_SA }}
+          token_format: id_token
+          id_token_audience: ${{ steps.svc.outputs.url }}
+          id_token_include_email: true
+
       - name: Deploy to Cloud Run
         env:
           IMAGE: ${{ steps.build.outputs.image }}
+          PROBE_ID_TOKEN: ${{ steps.probe_token.outputs.id_token }}
         run: |
           set -euo pipefail
           extra=()
@@ -108,19 +140,18 @@ jobs:
               --quiet
             desc=$(gc describe "$svc" --format=json)
             rev=$(jq -r '.status.latestCreatedRevisionName' <<<"$desc")
-            svc_url=$(jq -r '.status.url' <<<"$desc")
             tag_url=$(jq -r --arg t "$tag" '[.status.traffic[] | select(.tag == $t) | .url][0] // empty' <<<"$desc")
             if [ -z "$tag_url" ]; then
               echo "::error::$svc: revision $rev has no URL for tag $tag; traffic left on the previous revision."
               exit 1
             fi
-            # Probe as the deployer SA (roles/run.admin includes run.routes.invoke)
-            # so an IAM-gated service (admin) cannot pass on Cloud Run's own 403;
-            # the probe requires 200 from /health. The token audience must be the
-            # service URL even for a tag URL (Cloud Run service-to-service docs).
-            id_token=$(gcloud auth print-identity-token --audiences="$svc_url")
-            echo "::add-mask::$id_token"
-            if ! PROBE_ID_TOKEN="$id_token" scripts/probe-cloudrun-revision.sh "$tag_url" 100; then
+            if [ -z "${PROBE_ID_TOKEN:-}" ]; then
+              echo "::error::$svc: no identity token for the probe (see the 'Mint the probe identity token' step); traffic left on the previous revision."
+              exit 1
+            fi
+            # PROBE_ID_TOKEN (step env, minted above) authenticates the probe as
+            # the deployer SA; the probe requires 200 from /health.
+            if ! scripts/probe-cloudrun-revision.sh "$tag_url" 100; then
               echo "::error::$svc: revision $rev failed the pre-traffic probe (see above); traffic left on the previous revision. Investigate, then re-run this deploy."
               exit 1
             fi
