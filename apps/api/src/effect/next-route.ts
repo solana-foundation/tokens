@@ -15,6 +15,7 @@ import {
 import type { AuthenticateApiKeyResult } from '@/lib/cloudrun/platformAuth';
 import { loadEnv } from '@/lib/env';
 import { CloudRunMemoStore, CloudRunQueryMemo } from '@/lib/cloudrun/client';
+import { isCloudRunFrontendNotFound, isUnknownCloudRunCall } from '@/lib/cloudrun/errors';
 import { getRedisClient, type RedisClient } from '@/lib/redis';
 import { slidingWindowLimit } from './sliding-window-rate-limit';
 import {
@@ -174,16 +175,14 @@ function mergedAuthLimitsEnabled(): boolean {
     return Date.now() >= mergedUnavailableUntilMs;
 }
 
-function isUnknownMutation(error: unknown): boolean {
-    const tagged = error as { _tag?: unknown; status?: unknown };
-    return tagged?._tag === 'CloudRunHttpError' && tagged.status === 404;
-}
-
 /**
  * Auth and limits in one usage-service round-trip when the backend supports
- * it. Falls back to today's two calls for this request on a 404 (and
- * remembers that per process); every other transport failure is auth's and
- * fails closed exactly as `authenticateApiKey` does.
+ * it. Falls back to today's two calls for this request when the service
+ * answers "unknown mutation" (and remembers that per process), or when Cloud
+ * Run's frontend dropped the call with its own 404 twice in a row (no
+ * memory: the service is fine, the legacy calls are simply one more chance).
+ * Every other transport failure is auth's and fails closed exactly as
+ * `authenticateApiKey` does.
  */
 function requirePlatformAuthAndLimits(
     request: Request,
@@ -209,9 +208,12 @@ function requirePlatformAuthAndLimits(
         }).pipe(
             Effect.map(result => ({ ok: true as const, result })),
             Effect.catch(error => {
-                if (!isUnknownMutation(error)) return Effect.fail(error);
-                mergedUnavailableUntilMs = Date.now() + MERGED_UNAVAILABLE_BACKOFF_MS;
-                return Effect.succeed({ ok: false as const });
+                if (isUnknownCloudRunCall(error)) {
+                    mergedUnavailableUntilMs = Date.now() + MERGED_UNAVAILABLE_BACKOFF_MS;
+                    return Effect.succeed({ ok: false as const });
+                }
+                if (isCloudRunFrontendNotFound(error)) return Effect.succeed({ ok: false as const });
+                return Effect.fail(error);
             }),
         );
         if (!outcome.ok) {

@@ -1,7 +1,7 @@
 import { Effect } from 'effect';
 
 import { cloudRunMutation, cloudRunQuery } from './client';
-import type { CloudRunError } from './errors';
+import { isCloudRunFrontendNotFound, type CloudRunError } from './errors';
 
 /**
  * Platform API-key auth + usage logging on the authenticated `/v1` hot path
@@ -23,12 +23,25 @@ export interface AuthenticateApiKeyResult {
     };
 }
 
+/**
+ * One immediate replay when Cloud Run's frontend dropped the request with its
+ * own 404 (see `isCloudRunFrontendNotFound`). Applied to the per-request usage
+ * hops only: each is on the critical path of every keyed request, so one
+ * dropped call must not become a 500 (or silently disable rate limiting).
+ * Nothing else is retried here — timeouts and 5xx keep today's semantics.
+ */
+function retryFrontendNotFoundOnce<A>(effect: Effect.Effect<A, CloudRunError>): Effect.Effect<A, CloudRunError> {
+    return Effect.retry(effect, { while: isCloudRunFrontendNotFound, times: 1 });
+}
+
 export function authenticateApiKey(
     keyHash: string,
 ): Effect.Effect<AuthenticateApiKeyResult | null, CloudRunError> {
-    return cloudRunQuery<AuthenticateApiKeyResult | null>('usage', 'apiKeysAuthenticate', {
-        keyHash,
-    });
+    return retryFrontendNotFoundOnce(
+        cloudRunQuery<AuthenticateApiKeyResult | null>('usage', 'apiKeysAuthenticate', {
+            keyHash,
+        }),
+    );
 }
 
 export interface LogApiRequestArgs {
@@ -68,7 +81,9 @@ export type LimitsEnforceResult =
       };
 
 export function limitsEnforce(args: LimitsEnforceArgs): Effect.Effect<LimitsEnforceResult, CloudRunError> {
-    return cloudRunMutation<LimitsEnforceResult>('usage', 'limitsEnforce', { ...args }, { timeoutMs: 1500 });
+    return retryFrontendNotFoundOnce(
+        cloudRunMutation<LimitsEnforceResult>('usage', 'limitsEnforce', { ...args }, { timeoutMs: 1500 }),
+    );
 }
 
 export interface AuthenticateAndEnforceArgs {
@@ -83,14 +98,17 @@ export type AuthenticateAndEnforceResult =
 
 /**
  * `apiKeysAuthenticate` + `limitsEnforce` in one round-trip. Deliberately a
- * mutation (it increments counters; never retried) with the client's default
- * auth timeout: the 1.5 s bound lives server-side on the limits half, so a
- * slow Redis cannot turn auth fail-closed.
+ * mutation (it increments counters; the client never retries it — the only
+ * replay is the frontend-404 one, which the service never saw) with the
+ * client's default auth timeout: the 1.5 s bound lives server-side on the
+ * limits half, so a slow Redis cannot turn auth fail-closed.
  */
 export function authenticateAndEnforce(
     args: AuthenticateAndEnforceArgs,
 ): Effect.Effect<AuthenticateAndEnforceResult, CloudRunError> {
-    return cloudRunMutation<AuthenticateAndEnforceResult>('usage', 'apiKeysAuthenticateAndEnforce', { ...args });
+    return retryFrontendNotFoundOnce(
+        cloudRunMutation<AuthenticateAndEnforceResult>('usage', 'apiKeysAuthenticateAndEnforce', { ...args }),
+    );
 }
 
 /**

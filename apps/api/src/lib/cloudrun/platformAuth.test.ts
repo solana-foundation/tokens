@@ -3,7 +3,7 @@ import { describe, expect, it } from 'bun:test';
 import { Effect } from 'effect';
 
 import { __resetCloudRunClientForTesting } from './client';
-import { authenticateApiKey, logApiRequest } from './platformAuth';
+import { authenticateAndEnforce, authenticateApiKey, limitsEnforce, logApiRequest } from './platformAuth';
 
 const ENV_KEYS = [
     'TOKENS_CLOUDRUN_AUTH_TOKEN',
@@ -112,5 +112,114 @@ describe('cloudrun/platformAuth.logApiRequest', () => {
 
         expect(capturedUrl).toBe(`${USAGE_URL}/mutation/logApiRequest`);
         expect(JSON.parse(capturedBody)).toEqual(args);
+    });
+});
+
+// -----------------------------------------------------------------------------
+// Cloud Run frontend 404s (the request never reached the service)
+// -----------------------------------------------------------------------------
+
+const FRONTEND_404_HTML =
+    '<html><head><title>404 Page not found</title></head><body><h1>Error: Page not found</h1></body></html>';
+
+const AUTH_PAYLOAD = {
+    apiKeyId: 'key_1',
+    keyPrefix: 'tk_live_abc',
+    projectId: 'proj_1',
+    ownerClerkUserId: 'user_1',
+    scopes: ['assets:read'],
+};
+
+/** Answers from `responses` in order; the last one repeats. */
+function scriptedFetch(responses: Array<() => Response>): { fetchImpl: typeof fetch; calls: string[] } {
+    const calls: string[] = [];
+    const fetchImpl = (async (input: string | URL | Request) => {
+        calls.push(String(input).split('/').pop() ?? '');
+        const next = responses[Math.min(calls.length - 1, responses.length - 1)]!;
+        return next();
+    }) as unknown as typeof fetch;
+    return { fetchImpl, calls };
+}
+
+const frontend404 = () => new Response(FRONTEND_404_HTML, { status: 404, headers: { 'content-type': 'text/html' } });
+const json = (payload: unknown, status = 200) =>
+    new Response(JSON.stringify(payload), { status, headers: { 'content-type': 'application/json' } });
+
+describe('cloudrun/platformAuth frontend-404 replay', () => {
+    it('authenticateApiKey replays once when the Google frontend answered HTML 404', async () => {
+        const { fetchImpl, calls } = scriptedFetch([frontend404, () => json(AUTH_PAYLOAD)]);
+        const result = await withEnvAndFetch(CLOUDRUN_ENV, fetchImpl, () => authenticateApiKey('a'.repeat(64)));
+        expect(result).toEqual(AUTH_PAYLOAD);
+        expect(calls).toEqual(['apiKeysAuthenticate', 'apiKeysAuthenticate']);
+    });
+
+    it('gives up after one replay and surfaces the 404 as CloudRunHttpError', async () => {
+        const { fetchImpl, calls } = scriptedFetch([frontend404]);
+        const error = await withEnvAndFetch(CLOUDRUN_ENV, fetchImpl, () =>
+            Effect.flip(authenticateApiKey('a'.repeat(64))),
+        );
+        expect(error._tag).toBe('CloudRunHttpError');
+        expect((error as { status?: number }).status).toBe(404);
+        expect(calls.length).toBe(2);
+    });
+
+    it("does NOT replay the service's own JSON 404 (unknown query)", async () => {
+        const { fetchImpl, calls } = scriptedFetch([
+            () => json({ error: 'unknown query: apiKeysAuthenticate' }, 404),
+            () => json(AUTH_PAYLOAD),
+        ]);
+        const exit = await withEnvAndFetch(CLOUDRUN_ENV, fetchImpl, () =>
+            Effect.exit(authenticateApiKey('a'.repeat(64))),
+        );
+        expect(exit._tag).toBe('Failure');
+        expect(calls).toEqual(['apiKeysAuthenticate']);
+    });
+
+    it('replays the merged mutation and limitsEnforce too: the service never saw the dropped call', async () => {
+        const merged = scriptedFetch([
+            frontend404,
+            () => json({ auth: AUTH_PAYLOAD, limits: { allowed: true, rateLimit: {}, quota: {} } }),
+        ]);
+        const mergedResult = await withEnvAndFetch(CLOUDRUN_ENV, merged.fetchImpl, () =>
+            authenticateAndEnforce({
+                keyHash: 'a'.repeat(64),
+                defaults: {
+                    rateLimit: { requests: 1, windowSeconds: 1 },
+                    sustainedRateLimit: { requests: 1, windowSeconds: 1 },
+                    quota: { requestsPerMonth: 1 },
+                },
+            }),
+        );
+        expect(mergedResult.auth).toEqual(AUTH_PAYLOAD);
+        expect(merged.calls).toEqual(['apiKeysAuthenticateAndEnforce', 'apiKeysAuthenticateAndEnforce']);
+
+        const limits = scriptedFetch([
+            frontend404,
+            () =>
+                json({
+                    allowed: true,
+                    rateLimit: { limit: 1, remaining: 0, resetMs: 0 },
+                    quota: { limit: 1, used: 1, remaining: 0, resetMs: 0 },
+                }),
+        ]);
+        const limitsResult = await withEnvAndFetch(CLOUDRUN_ENV, limits.fetchImpl, () =>
+            limitsEnforce({
+                apiKeyId: 'key_1',
+                rateLimit: { requests: 1, windowSeconds: 1 },
+                sustainedRateLimit: { requests: 1, windowSeconds: 1 },
+                quota: { requestsPerMonth: 1 },
+            }),
+        );
+        expect(limitsResult.allowed).toBe(true);
+        expect(limits.calls).toEqual(['limitsEnforce', 'limitsEnforce']);
+    });
+
+    it('a 5xx is still not replayed by these wrappers', async () => {
+        const { fetchImpl, calls } = scriptedFetch([() => new Response('boom', { status: 503 })]);
+        const exit = await withEnvAndFetch(CLOUDRUN_ENV, fetchImpl, () =>
+            Effect.exit(authenticateApiKey('a'.repeat(64))),
+        );
+        expect(exit._tag).toBe('Failure');
+        expect(calls).toEqual(['apiKeysAuthenticate']);
     });
 });
