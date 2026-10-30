@@ -84,12 +84,42 @@ jobs:
               echo "Promote it manually through 10% → 50% → 100% using the assets DB resilience runbook."
             } >> "$GITHUB_STEP_SUMMARY"
           else
-            gcloud run deploy tokens-${{ inputs.service }}-${{ inputs.env }}-us \
+            # prices / usage / admin (and every stg service): land at 0% behind
+            # a tag, probe the new revision through Cloud Run's frontend, and
+            # only then route traffic to it. 2026-10-30: the frontend answered
+            # ~5% of requests to a fresh usage revision with its own 404 for
+            # 22 minutes, and a straight-to-100% deploy turned that into an
+            # API-wide 5xx page (scripts/probe-cloudrun-revision.sh). Traffic
+            # is pinned to the revision by name, as the assets promotion does.
+            svc="tokens-${{ inputs.service }}-${{ inputs.env }}-us"
+            tag="cand-${GITHUB_SHA:0:12}"
+            gc() { gcloud run services "$@" --region=${{ env.GCP_REGION }} --project=${{ env.GCP_PROJECT }}; }
+            gcloud run deploy "$svc" \
               --image="$IMAGE" \
               --region=${{ env.GCP_REGION }} \
               --project=${{ env.GCP_PROJECT }} \
+              --no-traffic \
+              --tag="$tag" \
               "${extra[@]}" \
               --quiet
+            rev=$(gc describe "$svc" --format='value(status.latestCreatedRevisionName)')
+            tag_url=$(gc describe "$svc" --format=json \
+              | jq -r --arg t "$tag" '[.status.traffic[] | select(.tag == $t) | .url][0] // empty')
+            if [ -z "$tag_url" ]; then
+              echo "::error::$svc: revision $rev has no URL for tag $tag; traffic left on the previous revision."
+              exit 1
+            fi
+            if ! scripts/probe-cloudrun-revision.sh "$tag_url" 100; then
+              gc update-traffic "$svc" --remove-tags="$tag" --quiet || true
+              echo "::error::$svc: revision $rev failed the pre-traffic probe (see above); traffic left on the previous revision. Investigate, then re-run this deploy."
+              exit 1
+            fi
+            gc update-traffic "$svc" --to-revisions="$rev=100" --quiet
+            gc update-traffic "$svc" --remove-tags="$tag" --quiet || true
+            {
+              echo "### $svc"
+              echo "Revision \`$rev\` passed 100/100 frontend probes and now serves 100% of traffic."
+            } >> "$GITHUB_STEP_SUMMARY"
           fi
           jobs_service=tokens-assets-jobs-${{ inputs.env }}-us
           if [ "${{ inputs.service }}" = "assets" ] && gcloud run services describe "$jobs_service" --region=${{ env.GCP_REGION }} --project=${{ env.GCP_PROJECT }} >/dev/null 2>&1; then

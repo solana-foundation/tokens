@@ -709,8 +709,10 @@ jobs:
             while :; do
               sleep 30
               now=$(date +%s)
-              code=$(curl -s -o /dev/null -m 10 --retry 2 -w '%{http_code}' "$tag_url/health" || echo 000)
-              [ "$code" = "200" ] || fail_and_rollback "$stage" "candidate /health returned $code"
+              # A burst, not one request: Cloud Run's frontend has dropped ~5%
+              # of calls to a fresh revision with its own 404 (2026-10-30).
+              scripts/probe-cloudrun-revision.sh "$tag_url" 40 \
+                || fail_and_rollback "$stage" "candidate /health probe failed (see the run log for the codes)"
               window=$(( now - start + 90 ))
               fails=$(loki_count "sum(count_over_time({service=\"tokens-smoke\"} | json | event=\`smoke_canary_summary\` | failed_any = \`true\` [${window}s]))")
               [ -n "$fails" ] || fail_and_rollback "$stage" "smoke-canary query failed (Loki unreachable after 3 attempts)"
