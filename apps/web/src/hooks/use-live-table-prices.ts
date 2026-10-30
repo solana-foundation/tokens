@@ -42,8 +42,16 @@ export function useLiveTablePrices(tokens: readonly Token[], enabled = true): vo
         return out;
     }, [tokens, enabled]);
 
-    // Stable identity for the effect: only re-resolve when the set of rows actually changes.
-    const signature = useMemo(() => rows.map(r => `${r.quoteKey}|${pythFeedResolutionKey(r.item)}`).join(','), [rows]);
+    // Stable identity for the effect: only re-resolve when the *set* of rows changes.
+    // Sorted so a re-sort of the same rows does not tear down and rebuild subscriptions.
+    const signature = useMemo(
+        () =>
+            rows
+                .map(r => `${r.quoteKey}|${pythFeedResolutionKey(r.item)}`)
+                .sort()
+                .join(','),
+        [rows],
+    );
 
     useEffect(() => {
         if (rows.length === 0) return;

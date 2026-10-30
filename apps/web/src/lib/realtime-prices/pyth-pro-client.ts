@@ -25,6 +25,11 @@ const TOKEN_MIN_LIFETIME_MS = 15_000;
 const RECONNECT_BASE_MS = 1_000;
 const RECONNECT_MAX_MS = 30_000;
 const UNCONFIGURED_RETRY_MS = 5 * 60_000;
+/** Keep the socket open this long after the last subscriber leaves, so a re-sort or page change does not reconnect. */
+const IDLE_LINGER_MS = 20_000;
+/** A cached JWT is reused until this close to its expiry. */
+const TOKEN_REUSE_MARGIN_MS = 90_000;
+const TOKEN_STORAGE_KEY = 'TOKENS_PYTH_PRO_JWT_V1';
 
 export type PythSubscriptionStatus =
     { kind: 'subscribed' } | { kind: 'unavailable'; reason: PythUnavailableReason } | { kind: 'disconnected' };
@@ -66,6 +71,56 @@ function notifyStatus(sub: FeedSubscription, status: PythSubscriptionStatus): vo
 
 type TokenFetchResult =
     { accessToken: string; expiresAtMs: number } | { rateLimitedForMs: number } | 'unconfigured' | null;
+
+interface CachedToken {
+    accessToken: string;
+    expiresAtMs: number;
+}
+
+let cachedToken: CachedToken | null = null;
+
+function readStoredToken(): CachedToken | null {
+    try {
+        const raw = window.sessionStorage.getItem(TOKEN_STORAGE_KEY);
+        if (!raw) return null;
+        const parsed = JSON.parse(raw) as Partial<CachedToken>;
+        if (typeof parsed.accessToken !== 'string' || typeof parsed.expiresAtMs !== 'number') return null;
+        return { accessToken: parsed.accessToken, expiresAtMs: parsed.expiresAtMs };
+    } catch {
+        return null;
+    }
+}
+
+function storeToken(token: CachedToken | null): void {
+    cachedToken = token;
+    try {
+        if (token) window.sessionStorage.setItem(TOKEN_STORAGE_KEY, JSON.stringify(token));
+        else window.sessionStorage.removeItem(TOKEN_STORAGE_KEY);
+    } catch {
+        // Storage may be unavailable (private mode, quota); the in-memory copy still works.
+    }
+}
+
+function isReusable(token: CachedToken | null): token is CachedToken {
+    return !!token && token.expiresAtMs - Date.now() > TOKEN_REUSE_MARGIN_MS;
+}
+
+/**
+ * A JWT that is still good for a while, minting only when none is. Reconnects
+ * (sort changes, page navigation, host failover) therefore do not spend the
+ * server's mint budget; a tab mints roughly once per token lifetime.
+ */
+async function getAccessToken(): Promise<TokenFetchResult> {
+    if (isReusable(cachedToken)) return cachedToken;
+    const stored = readStoredToken();
+    if (isReusable(stored)) {
+        cachedToken = stored;
+        return stored;
+    }
+    const minted = await fetchAccessToken();
+    if (minted && typeof minted === 'object' && 'accessToken' in minted) storeToken(minted);
+    return minted;
+}
 
 async function fetchAccessToken(): Promise<TokenFetchResult> {
     try {
@@ -167,7 +222,7 @@ async function connect(): Promise<void> {
     connectionState = 'connecting';
     const generation = ++connectGeneration;
 
-    const token = await fetchAccessToken();
+    const token = await getAccessToken();
     if (generation !== connectGeneration) return;
     if (token === 'unconfigured') {
         connectionState = 'closed';
@@ -211,6 +266,7 @@ async function connect(): Promise<void> {
         tokenRefreshTimer = window.setTimeout(() => {
             tokenRefreshTimer = null;
             if (socket !== ws) return;
+            storeToken(null);
             teardownSocket();
             void connect();
         }, refreshIn);
@@ -225,21 +281,35 @@ async function connect(): Promise<void> {
         // onclose follows; nothing to do here.
     };
 
-    ws.onclose = () => {
+    ws.onclose = event => {
         if (socket !== ws) return;
+        // A close before the handshake completed usually means the token was refused; mint anew next time.
+        if (connectionState === 'connecting' || event.code === 1002 || event.code === 1008) storeToken(null);
         teardownSocket();
         hostIndex += 1;
         if (subscriptionsByFeed.size > 0) scheduleReconnect(backoffDelay());
     };
 }
 
+let idleTimer: number | null = null;
+
+/**
+ * When the last subscriber leaves, keep the socket for a short linger before
+ * closing it: a table re-sort or a client-side page change unsubscribes
+ * everything and resubscribes moments later, and must not cost a reconnect.
+ */
 function disconnectIfIdle(): void {
     if (subscriptionsByFeed.size > 0) return;
-    clearTimer(reconnectTimer);
-    reconnectTimer = null;
-    connectGeneration += 1;
-    teardownSocket();
-    connectionState = 'idle';
+    clearTimer(idleTimer);
+    idleTimer = window.setTimeout(() => {
+        idleTimer = null;
+        if (subscriptionsByFeed.size > 0) return;
+        clearTimer(reconnectTimer);
+        reconnectTimer = null;
+        connectGeneration += 1;
+        teardownSocket();
+        connectionState = 'idle';
+    }, IDLE_LINGER_MS);
 }
 
 /**
@@ -249,6 +319,9 @@ function disconnectIfIdle(): void {
  */
 export function subscribePythFeed(feedId: number, listener: PythFeedListener): () => void {
     if (typeof window === 'undefined' || !Number.isInteger(feedId)) return () => {};
+
+    clearTimer(idleTimer);
+    idleTimer = null;
 
     let sub = subscriptionsByFeed.get(feedId);
     if (!sub) {
