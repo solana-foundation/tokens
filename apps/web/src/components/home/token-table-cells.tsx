@@ -8,10 +8,14 @@ import { cn } from '@tokens/ui/cn';
 import { useInlineLatestClose } from '@/hooks/queries/use-inline-latest-close';
 import { getTokenLogoURLWithSecondarySymbol } from '@/lib/logo-overrides';
 import { normalizeLogoSrc } from '@/lib/normalize-logo-src';
+import { useLiveSpotPrice } from '@/lib/realtime-prices/live-spot-store';
+import { buildLiveQuoteKey } from '@/lib/realtime-prices/pyth-feed-batch';
 import type { Token } from '@/lib/types';
 import { INLINE_CHART_FALLBACK_DAYS, formatPrice } from './token-table-format';
 
 /** Cell renderers shared by the home table and its phone list; formatters live in token-table-format.ts. */
+
+const LIVE_PRICE_STALE_MS = 10_000;
 
 export function TokenTablePriceCell({ token, className }: { token: Token; className?: string }) {
     const shouldUseCanonicalAssetChart = token.canonicalMarketSource === 'clickhouse_stock';
@@ -21,10 +25,22 @@ export function TokenTablePriceCell({ token, className }: { token: Token; classN
         useCanonicalAssetChart: shouldUseCanonicalAssetChart,
         fallbackDays: INLINE_CHART_FALLBACK_DAYS,
     });
-    const displayPrice = token.coingeckoId || shouldUseCanonicalAssetChart ? token.price : (latestClose ?? token.price);
+    const snapshotPrice =
+        token.coingeckoId || shouldUseCanonicalAssetChart ? token.price : (latestClose ?? token.price);
+    // Live Pyth price when the table hook is streaming this row (see useLiveTablePrices);
+    // a tick older than the stale window falls back to the snapshot.
+    const liveSpot = useLiveSpotPrice(buildLiveQuoteKey(token));
+    const livePrice =
+        liveSpot && liveSpot.source === 'pyth' && Date.now() - liveSpot.updatedAtMs <= LIVE_PRICE_STALE_MS
+            ? liveSpot.priceUsd
+            : null;
+    const displayPrice = livePrice ?? snapshotPrice;
 
     return (
-        <span className={cn('block w-full text-right text-[14px] text-[#2D2D2D] font-medium tabular-nums', className)}>
+        <span
+            className={cn('block w-full text-right text-[14px] text-[#2D2D2D] font-medium tabular-nums', className)}
+            data-live={livePrice !== null ? 'true' : undefined}
+        >
             {formatPrice(displayPrice)}
         </span>
     );

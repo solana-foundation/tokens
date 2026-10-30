@@ -169,6 +169,71 @@ export async function resolvePythFeed(args: {
     return promise;
 }
 
+// ---------------------------------------------------------------------------
+// Batch resolution against the entitled directory (home tables).
+// ---------------------------------------------------------------------------
+
+const ENTITLED_DIRECTORY_TTL_MS = 60 * 60 * 1000;
+const ENTITLED_DIRECTORY_MISS_TTL_MS = 60 * 1000;
+let entitledDirectory: { entries: PythSymbolEntry[]; expiresAtMs: number } | null = null;
+let entitledDirectoryInFlight: Promise<PythSymbolEntry[] | null> | null = null;
+
+/**
+ * The feeds our key may subscribe to (~500 entries, ~430 KB) — enough to resolve a
+ * whole table in one pass without a per-symbol search. Cached per instance for an hour.
+ */
+export async function loadEntitledPythDirectory(): Promise<PythSymbolEntry[] | null> {
+    const key = readPythApiKey();
+    if (!key) return null;
+    const now = Date.now();
+    if (entitledDirectory && entitledDirectory.expiresAtMs > now) return entitledDirectory.entries;
+    if (entitledDirectoryInFlight) return entitledDirectoryInFlight;
+
+    entitledDirectoryInFlight = (async () => {
+        try {
+            const res = await fetch(`${PYTH_AUTH_ORIGIN}/v1/symbols?entitled_only=true`, {
+                method: 'GET',
+                headers: { Authorization: `Bearer ${key}` },
+                cache: 'no-store',
+                signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS * 2),
+            });
+            if (!res.ok) throw new Error(`symbols ${res.status}`);
+            const json = (await res.json()) as unknown;
+            if (!Array.isArray(json)) throw new Error('symbols: not an array');
+            entitledDirectory = {
+                entries: json as PythSymbolEntry[],
+                expiresAtMs: Date.now() + ENTITLED_DIRECTORY_TTL_MS,
+            };
+            return entitledDirectory.entries;
+        } catch (error) {
+            console.error('[pyth] entitled directory load failed', error);
+            // Keep serving a stale copy if we have one; otherwise back off briefly.
+            if (entitledDirectory) {
+                entitledDirectory.expiresAtMs = Date.now() + ENTITLED_DIRECTORY_MISS_TTL_MS;
+                return entitledDirectory.entries;
+            }
+            return null;
+        } finally {
+            entitledDirectoryInFlight = null;
+        }
+    })();
+    return entitledDirectoryInFlight;
+}
+
+/** Resolve many tickers at once against the entitled directory. `null` = no feed this plan can stream. */
+export async function resolveEntitledPythFeeds(
+    items: readonly { ticker: string; category: string | null; mode: PythFeedMode }[],
+): Promise<Map<string, PythFeedSelection | null> | null> {
+    const entries = await loadEntitledPythDirectory();
+    if (!entries) return null;
+    const out = new Map<string, PythFeedSelection | null>();
+    for (const item of items) {
+        const key = `${item.mode}:${(item.category ?? '').trim().toLowerCase()}:${normalizePythTicker(item.ticker)}`;
+        out.set(key, selectPythFeed({ ticker: item.ticker, category: item.category, mode: item.mode }, entries));
+    }
+    return out;
+}
+
 export interface PythLatestPrice {
     feedId: number;
     symbol: string;

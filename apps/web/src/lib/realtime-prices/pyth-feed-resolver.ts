@@ -1,5 +1,10 @@
 'use client';
 
+import {
+    PYTH_FEED_BATCH_MAX_ITEMS,
+    type PythFeedRequestItem,
+    pythFeedResolutionKey,
+} from '@/lib/realtime-prices/pyth-feed-batch';
 import type { PythFeedMode, PythFeedSelection } from '@/lib/realtime-prices/pyth-feed-selection';
 import { isSupportedPythTicker, normalizePythTicker } from '@/lib/realtime-prices/pyth-feed-selection';
 
@@ -10,7 +15,8 @@ const LOCAL_CACHE_PREFIX = 'TOKENS_PYTH_FEED_V3:';
 const HIT_TTL_MS = 6 * 60 * 60 * 1000;
 const MISS_TTL_MS = 10 * 60 * 1000;
 
-export type ResolvedPythFeedStatus = 'ok' | 'not_entitled' | 'not_found' | 'unconfigured' | 'error';
+/** `unavailable` = batch lookup found no entitled feed (cannot tell not_found from not_entitled). */
+export type ResolvedPythFeedStatus = 'ok' | 'not_entitled' | 'not_found' | 'unavailable' | 'unconfigured' | 'error';
 
 export interface ResolvedPythFeedResult {
     status: ResolvedPythFeedStatus;
@@ -29,8 +35,7 @@ export interface ResolvePythFeedArgs {
 }
 
 function cacheKey(args: ResolvePythFeedArgs, tickerUpper: string): string {
-    const category = (args.category ?? '').trim().toLowerCase();
-    return `${LOCAL_CACHE_PREFIX}${args.mode}:${category}:${tickerUpper}`;
+    return `${LOCAL_CACHE_PREFIX}${pythFeedResolutionKey({ ticker: tickerUpper, category: args.category ?? null, mode: args.mode })}`;
 }
 
 function readCache(key: string): ResolvedPythFeedResult | null {
@@ -100,4 +105,63 @@ export async function resolvePythFeed(args: ResolvePythFeedArgs): Promise<Resolv
 
     inFlight.set(key, promise);
     return promise;
+}
+
+/**
+ * Resolve many tickers in one round trip (home tables). Cached entries are served
+ * from localStorage; only misses go to /api/realtime/pyth-feeds, in chunks.
+ * Returns a map keyed by `pythFeedResolutionKey`.
+ */
+export async function resolvePythFeedsBatch(
+    items: readonly PythFeedRequestItem[],
+): Promise<Map<string, ResolvedPythFeedResult>> {
+    const out = new Map<string, ResolvedPythFeedResult>();
+    if (typeof window === 'undefined') return out;
+
+    const misses: PythFeedRequestItem[] = [];
+    const seen = new Set<string>();
+    for (const item of items) {
+        const key = pythFeedResolutionKey(item);
+        if (seen.has(key)) continue;
+        seen.add(key);
+        const cached = readCache(`${LOCAL_CACHE_PREFIX}${key}`);
+        if (cached) out.set(key, cached);
+        else misses.push(item);
+    }
+
+    for (let i = 0; i < misses.length; i += PYTH_FEED_BATCH_MAX_ITEMS) {
+        const chunk = misses.slice(i, i + PYTH_FEED_BATCH_MAX_ITEMS);
+        try {
+            const res = await fetch('/api/realtime/pyth-feeds', {
+                method: 'POST',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({
+                    items: chunk.map(item => ({ symbol: item.ticker, category: item.category, mode: item.mode })),
+                }),
+            });
+            if (res.status === 503) {
+                for (const item of chunk) out.set(pythFeedResolutionKey(item), { status: 'unconfigured', feed: null });
+                continue;
+            }
+            if (!res.ok) {
+                for (const item of chunk) out.set(pythFeedResolutionKey(item), { status: 'error', feed: null });
+                continue;
+            }
+            const json = (await res.json()) as { feeds?: Record<string, unknown> };
+            const feeds = json.feeds ?? {};
+            for (const item of chunk) {
+                const key = pythFeedResolutionKey(item);
+                const feed = (feeds[key] ?? null) as ResolvedPythFeedResult['feed'];
+                const result: ResolvedPythFeedResult =
+                    feed && typeof feed.feedId === 'number'
+                        ? { status: 'ok', feed: { ...feed, entitled: true } }
+                        : { status: 'unavailable', feed: null };
+                writeCache(`${LOCAL_CACHE_PREFIX}${key}`, result);
+                out.set(key, result);
+            }
+        } catch {
+            for (const item of chunk) out.set(pythFeedResolutionKey(item), { status: 'error', feed: null });
+        }
+    }
+    return out;
 }

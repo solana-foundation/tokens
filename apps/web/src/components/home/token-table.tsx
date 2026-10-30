@@ -5,6 +5,7 @@ import dynamic from 'next/dynamic';
 import { useRouter } from 'next/navigation';
 import { trackEvent } from '@/lib/posthog-client';
 import { buildCoinHref } from '@/lib/coin-href';
+import { useLiveTablePrices } from '@/hooks/use-live-table-prices';
 import { useWindowVirtualizer } from '@tanstack/react-virtual';
 import {
     createColumnHelper,
@@ -798,6 +799,10 @@ export function TokenTable({ tokens, categoryId, trendingWindow = '1h' }: TokenT
 
     const rows = table.getRowModel().rows;
     const colCount = table.getVisibleLeafColumns().length;
+
+    // Live prices for the rows in view order; the hook caps how many it streams.
+    const liveTokens = React.useMemo(() => rows.map(row => row.original), [rows]);
+    useLiveTablePrices(liveTokens, variant.columns.showPrice);
 
     React.useLayoutEffect(() => {
         const el = tableTopRef.current;
