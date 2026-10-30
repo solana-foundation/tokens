@@ -20,7 +20,7 @@ export const GET = route(
             const [entries, advisoriesByMint] = yield* Effect.all([
                 v2AssetsGetMarketsByKeys({ keys: keys.map(({ chain, address }) => ({ chain, address })) }),
                 loadAdvisories(),
-            ]);
+            ], { concurrency: 'unbounded' });
             const byKey = new Map(entries.map(entry => [entry.key, entry] as const));
             const response: V2VariantsBatchResponse = { variants: [], missing: [], total: 0 };
             for (const { chain, address, key } of keys) {

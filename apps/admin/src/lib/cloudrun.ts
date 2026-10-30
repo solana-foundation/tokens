@@ -76,8 +76,12 @@ function isLocalGcloudAuthConfigured(): boolean {
     return process.env.TOKENS_CLOUDRUN_LOCAL_GCLOUD_AUTH?.trim().toLowerCase() === 'true';
 }
 
+// The STS and generateIdToken hops run before callCloudRun's own timer starts,
+// so they need a bound of their own.
+const GOOGLE_AUTH_HOP_TIMEOUT_MS = 10_000;
+
 async function fetchJson(url: string, init: RequestInit, context: string): Promise<Record<string, unknown>> {
-    const res = await fetch(url, init);
+    const res = await fetch(url, { ...init, signal: AbortSignal.timeout(GOOGLE_AUTH_HOP_TIMEOUT_MS) });
     const body = await res.text();
     if (!res.ok) {
         throw new Error(`${context} failed: HTTP ${res.status} ${body.slice(0, 512)}`);

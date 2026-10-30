@@ -98,7 +98,7 @@ export function loadEnrichments(
     return Effect.all([
         wants('executionQuality') ? loadExecutionQuality(variants) : Effect.succeed(null),
         wants('pegHealth') ? loadStablecoinHealth(asset, variants) : Effect.succeed(null),
-    ]).pipe(
+    ], { concurrency: 'unbounded' }).pipe(
         Effect.map(([executionQualityByMint, stablecoinHealthByMint]) => ({
             executionQualityByMint,
             stablecoinHealthByMint,

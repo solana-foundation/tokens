@@ -224,7 +224,6 @@ export function fetchJsonWithRetry<T = unknown>(
                 ),
             ),
             Effect.map(result => result.value),
-            Effect.withSpan(`external.${args.service}`),
         );
     });
 }

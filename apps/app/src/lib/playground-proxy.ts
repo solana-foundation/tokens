@@ -9,6 +9,10 @@ import { callCloudRunUsage } from '@/lib/cloudrun';
 
 const LOCAL_API_BASE_URL = 'http://localhost:3002';
 const PLAYGROUND_AUTH_TTL_MS = 60_000;
+// Upper bound on one upstream exchange. Generous because the v2 judge route can
+// legitimately run for several seconds; without it a hung upstream pins the
+// function until the platform kills it.
+const PLAYGROUND_UPSTREAM_TIMEOUT_MS = 30_000;
 
 function logProxyError(message: string, error?: unknown) {
     console.error(message, error);
@@ -254,13 +258,22 @@ async function proxy(
         headers: buildForwardHeaders(request, playgroundHeaders),
         body: hasBody ? request.body : undefined,
         redirect: 'manual',
+        signal: AbortSignal.any([request.signal, AbortSignal.timeout(PLAYGROUND_UPSTREAM_TIMEOUT_MS)]),
         ...(hasBody && request.body ? { duplex: 'half' as const } : {}),
     };
 
+    // The deadline covers headers and body alike: an upstream that sends headers
+    // and then stalls aborts the body read, which must map to the same 504.
     let upstream: Response;
+    let bodyBytes: ArrayBuffer;
     try {
         upstream = await fetch(targetUrl, upstreamInit);
+        bodyBytes = await upstream.arrayBuffer();
     } catch (error) {
+        if (error instanceof Error && (error.name === 'AbortError' || error.name === 'TimeoutError')) {
+            logProxyError('Dashboard API proxy upstream timed out', error);
+            return NextResponse.json({ error: { message: 'Upstream API timed out' } }, { status: 504 });
+        }
         logProxyError('Dashboard API proxy failed to reach upstream', error);
         return NextResponse.json(
             {
@@ -276,8 +289,6 @@ async function proxy(
     stripUnsupportedUpstreamHeaders(responseHeaders);
     stripProxyUnsafeResponseHeaders(responseHeaders);
     responseHeaders.set('cache-control', 'no-store');
-
-    const bodyBytes = await upstream.arrayBuffer();
 
     return new Response(bodyBytes, {
         status: upstream.status,

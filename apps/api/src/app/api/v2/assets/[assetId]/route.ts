@@ -78,7 +78,7 @@ export const GET = route(
                     loadAdvisories(),
                     loadPreStocks(detail.variants),
                     loadEnrichments(include, detail.asset, detail.variants),
-                ]);
+                ], { concurrency: 'unbounded' });
                 const asset = buildAssetFromDetail({
                     request,
                     detail,

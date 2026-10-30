@@ -71,7 +71,7 @@ export const GET = route(
                 const [advisoriesByMint, preStocksByMint] = yield* Effect.all([
                     loadAdvisories(),
                     loadPreStocks(prefetch.variants),
-                ]);
+                ], { concurrency: 'unbounded' });
 
                 const variantsByAsset = new Map<string, V2VariantResult[]>();
                 for (const variant of prefetch.variants) {
