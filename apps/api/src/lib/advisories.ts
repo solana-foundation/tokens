@@ -1,4 +1,4 @@
-import { Effect } from 'effect';
+import { Cause, Effect } from 'effect';
 
 import {
     isAdvisorySource,
@@ -11,9 +11,9 @@ import {
 } from '@tokens/asset-registry';
 import { AssetAdvisoryError } from '@tokens/effect';
 
+import { makeSnapshotCache } from '@/effect/snapshot-cache';
 import {
     assetAdvisoriesList,
-    CloudRunTransportError,
     type AssetAdvisoriesListResult,
     type AssetAdvisoryRow,
     type CloudRunError,
@@ -52,11 +52,6 @@ type AdvisoriesLoader = () => Effect.Effect<AssetAdvisoriesListResult, CloudRunE
 
 const EMPTY_BY_MINT: ReadonlyMap<string, VariantAdvisory> = new Map();
 
-let snapshot: AdvisorySnapshot | null = null;
-let loadedAtMs = 0;
-let inflight: Promise<AdvisorySnapshot> | null = null;
-let lastColdError: CloudRunError | null = null;
-let lastFailureAtMs = 0;
 let loader: AdvisoriesLoader = assetAdvisoriesList;
 
 function toAdvisory(row: AssetAdvisoryRow): VariantAdvisory | null {
@@ -85,91 +80,43 @@ function errorMessage(err: unknown): string {
     return err instanceof Error ? err.message : String(err);
 }
 
-function logRefreshFailure(event: 'asset_advisories_refresh_failed' | 'asset_advisories_load_failed', err: unknown): void {
+function logRefreshFailure(
+    event: 'asset_advisories_refresh_failed' | 'asset_advisories_load_failed',
+    err: unknown,
+    stalenessMs: number | null,
+): void {
     console.error(
         JSON.stringify({
             event,
             side: 'api',
-            staleness_ms: loadedAtMs > 0 ? Date.now() - loadedAtMs : null,
-            stale_over_30m: loadedAtMs > 0 && Date.now() - loadedAtMs > 30 * 60 * 1000,
+            staleness_ms: stalenessMs,
+            stale_over_30m: stalenessMs !== null && stalenessMs > 30 * 60 * 1000,
             error: errorMessage(err),
         }),
     );
 }
 
-/** Effect-typed load: updates the cache on success, records the failure on error. */
-function loadSnapshotEffect(): Effect.Effect<AdvisorySnapshot, CloudRunError> {
-    return loader().pipe(
-        Effect.map(toSnapshot),
-        Effect.tap(next =>
-            Effect.sync(() => {
-                snapshot = next;
-                loadedAtMs = Date.now();
-                lastColdError = null;
-                lastFailureAtMs = 0;
-            }),
+const cache = makeSnapshotCache<AdvisorySnapshot, CloudRunError>({
+    name: 'asset_advisories',
+    ttlMs: TTL_MS,
+    coldRetryBackoffMs: COLD_RETRY_BACKOFF_MS,
+    load: Effect.suspend(() => loader()).pipe(Effect.map(toSnapshot)),
+    onFailure: ({ error, hadSnapshot, stalenessMs }) =>
+        logRefreshFailure(
+            hadSnapshot ? 'asset_advisories_refresh_failed' : 'asset_advisories_load_failed',
+            error,
+            stalenessMs,
         ),
-        Effect.tapError(err =>
-            Effect.sync(() => {
-                lastColdError = err;
-                lastFailureAtMs = Date.now();
-            }),
-        ),
-    );
-}
-
-function startLoad(): Promise<AdvisorySnapshot> {
-    const promise = Effect.runPromise(loadSnapshotEffect()).finally(() => {
-        if (inflight === promise) inflight = null;
-    });
-    inflight = promise;
-    return promise;
-}
-
-function isFresh(): boolean {
-    return snapshot !== null && Date.now() - loadedAtMs < TTL_MS;
-}
-
-function inColdBackoff(): boolean {
-    return snapshot === null && lastFailureAtMs > 0 && Date.now() - lastFailureAtMs < COLD_RETRY_BACKOFF_MS;
-}
-
-function refreshInBackground(): void {
-    if (inflight) return;
-    if (isFresh()) return;
-    if (inColdBackoff()) return;
-    const hadSnapshot = snapshot !== null;
-    // Detached refresh: stale-forever — failures are logged, never thrown.
-    startLoad().catch(err => {
-        logRefreshFailure(hadSnapshot ? 'asset_advisories_refresh_failed' : 'asset_advisories_load_failed', err);
-    });
-}
-
-function coldError(): CloudRunError {
-    return (
-        lastColdError ??
-        new CloudRunTransportError({
-            message: 'asset advisories unavailable',
-            service: 'assets',
-            kind: 'query',
-            callName: 'assetAdvisoriesList',
-        })
-    );
-}
+});
 
 /**
- * Mint → active advisory. Awaits the first load (rejects on cold failure;
- * while in the post-failure backoff window it rejects immediately). Once a
- * snapshot exists it is served last-good and refreshed in the background.
+ * Mint → active advisory. Awaits the first load (fails with the CloudRunError
+ * on a cold failure; while in the post-failure backoff window it fails
+ * immediately with the last one). Once a snapshot exists it is served
+ * last-good and refreshed in the background.
  */
-export async function getAdvisoriesByMint(): Promise<ReadonlyMap<string, VariantAdvisory>> {
-    if (snapshot) {
-        refreshInBackground();
-        return snapshot.byMint;
-    }
-    if (inflight) return (await inflight).byMint;
-    if (inColdBackoff()) throw coldError();
-    return (await startLoad()).byMint;
+export function getAdvisoriesByMint(): Effect.Effect<ReadonlyMap<string, VariantAdvisory>, CloudRunError> {
+    return Effect.map(cache.get, snapshot => snapshot.byMint);
 }
 
 /**
@@ -177,14 +124,12 @@ export async function getAdvisoriesByMint(): Promise<ReadonlyMap<string, Variant
  * exclusion). A cold instance serves an empty map and kicks the first load.
  */
 export function getAdvisoriesByMintSync(): ReadonlyMap<string, VariantAdvisory> {
-    refreshInBackground();
-    return snapshot?.byMint ?? EMPTY_BY_MINT;
+    return cache.peekSync()?.byMint ?? EMPTY_BY_MINT;
 }
 
 /** Last-good revision (0 when cold). Cache-key ingredient for list payloads. */
 export function getAdvisoryRevisionSync(): number {
-    refreshInBackground();
-    return snapshot?.revision ?? 0;
+    return cache.peekSync()?.revision ?? 0;
 }
 
 /**
@@ -192,12 +137,12 @@ export function getAdvisoryRevisionSync(): number {
  * (no annotation, no hiding) and logs `asset_advisories_load_failed`.
  */
 export function loadAdvisoriesOrEmpty(): Effect.Effect<ReadonlyMap<string, VariantAdvisory>, never> {
-    return Effect.promise(() =>
-        getAdvisoriesByMint().catch(err => {
-            logRefreshFailure('asset_advisories_load_failed', err);
-            return EMPTY_BY_MINT;
-        }),
-    );
+    return cache
+        .getOrElse(cause => {
+            logRefreshFailure('asset_advisories_load_failed', Cause.squash(cause), null);
+            return null;
+        })
+        .pipe(Effect.map(snapshot => snapshot?.byMint ?? EMPTY_BY_MINT));
 }
 
 /** Mints whose advisory is `compromised` or `blocked` — never primary, never tradeable. */
@@ -277,10 +222,7 @@ export function summarizeAssetAdvisories(asset: CanonicalAsset): AssetAdvisorySu
  */
 export function requireTradeable(mint: string): Effect.Effect<void, AssetAdvisoryError | CloudRunError> {
     return Effect.gen(function* () {
-        const byMint = yield* Effect.tryPromise({
-            try: () => getAdvisoriesByMint(),
-            catch: () => coldError(),
-        });
+        const byMint = yield* getAdvisoriesByMint();
         const advisory = byMint.get(mint);
         if (!advisory || !isTradeRestrictedAdvisory(advisory)) return;
         return yield* Effect.fail(
@@ -310,16 +252,10 @@ export function __setAdvisoriesForTests(
     rows: AssetAdvisoryRow[] | null,
     options: { revision?: number; loadedAtMs?: number } = {},
 ): void {
-    inflight = null;
-    lastColdError = null;
-    lastFailureAtMs = 0;
-    if (!rows) {
-        snapshot = null;
-        loadedAtMs = 0;
-        return;
-    }
-    snapshot = toSnapshot({ revision: options.revision ?? rows.length, advisories: rows });
-    loadedAtMs = options.loadedAtMs ?? Date.now();
+    cache.setForTests(
+        rows ? toSnapshot({ revision: options.revision ?? rows.length, advisories: rows }) : null,
+        options.loadedAtMs !== undefined ? { loadedAtMs: options.loadedAtMs } : {},
+    );
 }
 
 /** Test seam: replace the RPC (pass `null` to restore the real one). */

@@ -47,7 +47,7 @@ export const POST = route((request: Request) =>
         const rawListId = searchParams.get('list') ?? 'all';
         const listId: CuratedTokenCategoryId = isCuratedTokenCategoryId(rawListId) ? rawListId : 'all';
 
-        const { addresses: allAddresses } = yield* Effect.tryPromise(() => getEffectiveCuratedAddresses(listId));
+        const { addresses: allAddresses } = yield* getEffectiveCuratedAddresses(listId);
 
         const offset = yield* decodeUnknownOrBadRequest(
             NonNegativeIntFromString,

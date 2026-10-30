@@ -93,10 +93,7 @@ export function curatedListSummaries(): Effect.Effect<V2ListSummary[], Error> {
             tapErrorAndDefault('v2.lists.curatedSummaries', null as AssetCollectionSummary[] | null),
         );
         const dbBySlug = new Map((dbSummaries ?? []).map(summary => [summary.slug, summary] as const));
-        const snapshot = yield* Effect.tryPromise({
-            try: () => getCuratedMembershipSnapshot(),
-            catch: error => (error instanceof Error ? error : new Error(String(error))),
-        });
+        const snapshot = yield* getCuratedMembershipSnapshot();
 
         return CURATED_LIST_ORDER.map(slug => {
             const db = dbBySlug.get(slug);

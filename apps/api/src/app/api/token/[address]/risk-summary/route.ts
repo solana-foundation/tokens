@@ -49,7 +49,7 @@ const GET_INTERNAL = route(
                 volume7dUsd,
                 tokenMintTime: null,
                 tokenAddress: address,
-                curatedListSlugs: yield* Effect.promise(() => getCuratedListSlugsForMint(address)),
+                curatedListSlugs: yield* getCuratedListSlugsForMint(address),
             };
 
             const marketScore = computeMarketScore(marketScoreInput);

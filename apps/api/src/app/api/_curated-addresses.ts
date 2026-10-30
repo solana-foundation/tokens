@@ -1,5 +1,8 @@
+import { Effect } from 'effect';
+
 import { ALL_PSEUDO_SLUG, normalizeCuratedListSlug, type CuratedListSlug } from '@tokens/asset-registry/curated-lists';
 
+import type { CloudRunError } from '@/lib/cloudrun';
 import { getCuratedMembershipSnapshot } from '@/lib/curated-membership';
 
 export type CuratedTokenCategoryId = 'all' | CuratedListSlug;
@@ -13,21 +16,22 @@ export type CuratedTokenCategoryId = 'all' | CuratedListSlug;
  * snapshot), and `all` is the snapshot's live union — the materialized `all`
  * collection is gone.
  *
- * Failure semantics: no silent-empty. A cold snapshot failure rejects so the
- * route's `withStaleFallback` (or the module's own last-good cache) serves
- * stale data instead of a hollow response.
+ * Failure semantics: no silent-empty. A cold snapshot failure fails with the
+ * CloudRunError so the route's `withStaleFallback` (or the module's own
+ * last-good cache) serves stale data instead of a hollow response.
  */
-export async function getEffectiveCuratedAddresses(
+export function getEffectiveCuratedAddresses(
     listId: CuratedTokenCategoryId,
-): Promise<{ addresses: string[]; sanctumLstMints: Set<string> }> {
-    const snapshot = await getCuratedMembershipSnapshot();
-    const sanctumLstMints = new Set(snapshot.mintsByList.lsts ?? []);
+): Effect.Effect<{ addresses: string[]; sanctumLstMints: Set<string> }, CloudRunError> {
+    return Effect.map(getCuratedMembershipSnapshot(), snapshot => {
+        const sanctumLstMints = new Set(snapshot.mintsByList.lsts ?? []);
 
-    if (listId === ALL_PSEUDO_SLUG) {
-        return { addresses: [...snapshot.allMints], sanctumLstMints };
-    }
+        if (listId === ALL_PSEUDO_SLUG) {
+            return { addresses: [...snapshot.allMints], sanctumLstMints };
+        }
 
-    const slug = normalizeCuratedListSlug(listId);
-    if (!slug) return { addresses: [], sanctumLstMints };
-    return { addresses: [...(snapshot.mintsByList[slug] ?? [])], sanctumLstMints };
+        const slug = normalizeCuratedListSlug(listId);
+        if (!slug) return { addresses: [], sanctumLstMints };
+        return { addresses: [...(snapshot.mintsByList[slug] ?? [])], sanctumLstMints };
+    });
 }

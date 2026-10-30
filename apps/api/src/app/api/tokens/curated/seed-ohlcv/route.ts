@@ -81,7 +81,7 @@ export const POST = route((request: Request) =>
         );
         const limit = Math.min(limitUnclamped, 200);
 
-        const { addresses: allAddresses } = yield* Effect.tryPromise(() => getEffectiveCuratedAddresses(listId));
+        const { addresses: allAddresses } = yield* getEffectiveCuratedAddresses(listId);
 
         const addresses = allAddresses.slice(offset, offset + limit);
 

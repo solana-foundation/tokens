@@ -77,7 +77,7 @@ export const GET = route(
                 volume7dUsd,
                 tokenMintTime: null,
                 tokenAddress: address,
-                curatedListSlugs: yield* Effect.promise(() => getCuratedListSlugsForMint(address)),
+                curatedListSlugs: yield* getCuratedListSlugsForMint(address),
             };
 
             return {

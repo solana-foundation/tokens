@@ -114,7 +114,7 @@ describe('advisories cache', () => {
         expect(getAdvisoriesByMintSync().size).toBe(0);
         expect(getAdvisoryRevisionSync()).toBe(0);
 
-        const pending = getAdvisoriesByMint();
+        const pending = Effect.runPromise(getAdvisoriesByMint());
         releaseAll();
         const byMint = await pending;
 
@@ -129,8 +129,8 @@ describe('advisories cache', () => {
         const { loader, state, releaseAll } = makeLoader([{ revision: 1, advisories: [rowBlocked] }]);
         __setAdvisoriesLoaderForTests(loader);
 
-        const a = getAdvisoriesByMint();
-        const b = getAdvisoriesByMint();
+        const a = Effect.runPromise(getAdvisoriesByMint());
+        const b = Effect.runPromise(getAdvisoriesByMint());
         getAdvisoriesByMintSync();
         getAdvisoryRevisionSync();
         expect(state.calls).toBe(1);
@@ -146,7 +146,7 @@ describe('advisories cache', () => {
         __setAdvisoriesLoaderForTests(loader);
 
         __setAdvisoriesForTests([rowCompromised], { revision: 1 });
-        expect((await getAdvisoriesByMint()).get(MINT_A)?.status).toBe('compromised');
+        expect((await Effect.runPromise(getAdvisoriesByMint())).get(MINT_A)?.status).toBe('compromised');
         getAdvisoriesByMintSync();
         expect(state.calls).toBe(0);
 
@@ -167,7 +167,7 @@ describe('advisories cache', () => {
         __setAdvisoriesLoaderForTests(loader);
         __setAdvisoriesForTests([rowCompromised], { revision: 5, loadedAtMs: Date.now() - 60_000 });
 
-        const beforeFailure = await getAdvisoriesByMint();
+        const beforeFailure = await Effect.runPromise(getAdvisoriesByMint());
         expect(beforeFailure.get(MINT_A)?.status).toBe('compromised');
         expect(state.calls).toBe(1);
 
@@ -176,20 +176,20 @@ describe('advisories cache', () => {
 
         expect(getAdvisoriesByMintSync().get(MINT_A)?.status).toBe('compromised');
         expect(getAdvisoryRevisionSync()).toBe(5);
-        expect((await getAdvisoriesByMint()).get(MINT_A)?.status).toBe('compromised');
+        expect((await Effect.runPromise(getAdvisoriesByMint())).get(MINT_A)?.status).toBe('compromised');
     });
 
     it('cold failure: getAdvisoriesByMint rejects, loadAdvisoriesOrEmpty yields an empty map, then backs off', async () => {
         const { loader, state, releaseAll } = makeLoader([new Error('upstream down')]);
         __setAdvisoriesLoaderForTests(loader);
 
-        const pending = getAdvisoriesByMint();
+        const pending = Effect.runPromise(getAdvisoriesByMint());
         releaseAll();
         expect(await rejectsWith(pending)).toBe(true);
         expect(state.calls).toBe(1);
 
         // Backoff window: no second RPC, immediate rejection.
-        expect(await rejectsWith(getAdvisoriesByMint())).toBe(true);
+        expect(await rejectsWith(Effect.runPromise(getAdvisoriesByMint()))).toBe(true);
         expect(state.calls).toBe(1);
 
         const empty = await Effect.runPromise(loadAdvisoriesOrEmpty());

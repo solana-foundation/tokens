@@ -80,7 +80,7 @@ export const GET = route(
                 return toRiskSummaryBody(createInsufficientDataResult(NO_SNAPSHOT_REASON));
             }
 
-            const curatedListSlugs = yield* Effect.promise(() => getCuratedListSlugsForMint(address));
+            const curatedListSlugs = yield* getCuratedListSlugsForMint(address);
             const marketScore = computeMarketScore({
                 ...marketScoreInputFromVariantMarket(address, market),
                 curatedListSlugs,

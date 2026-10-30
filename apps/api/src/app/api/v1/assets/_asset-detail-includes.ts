@@ -199,7 +199,7 @@ export function loadRiskInclude(params: {
     const volume7dUsd = estimate7dVolume(volume24hUsd);
 
     return Effect.gen(function* () {
-        const curatedListSlugs = yield* Effect.promise(() => getCuratedListSlugsForMint(params.primaryMint));
+        const curatedListSlugs = yield* getCuratedListSlugsForMint(params.primaryMint);
         const marketScoreInput: MarketScoreInput = {
             liquidityUsd: params.market?.liquidity ?? null,
             marketCapUsd: params.market?.marketCap ?? null,
