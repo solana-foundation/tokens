@@ -412,9 +412,38 @@ jobs:
           docker push "$IMAGE"
           echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
 
+      # prices / usage / admin land at 0% behind a tag and must answer 100
+      # authenticated /health probes through Cloud Run's frontend before any
+      # traffic moves (2026-10-30: the frontend answered ~5% of requests to a
+      # fresh usage revision with its own 404 and a straight-to-100% deploy
+      # became an API-wide 5xx page). Same recipe and rationale as
+      # cloudrun-deploy.yml; the token comes from the auth action because WIF
+      # credentials cannot mint one through gcloud.
+      - name: Resolve service URL for the probe token
+        id: svc
+        if: matrix.service != 'assets'
+        run: |
+          set -euo pipefail
+          url=$(gcloud run services describe "tokens-${{ matrix.service }}-prd-us" \
+            --region=us-east4 --project=${{ vars.GCP_PROJECT }} --format='value(status.url)')
+          [ -n "$url" ] || { echo "::error::could not resolve the service URL for the probe token"; exit 1; }
+          echo "url=$url" >> "$GITHUB_OUTPUT"
+
+      - name: Mint the probe identity token
+        id: probe_token
+        if: matrix.service != 'assets'
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v2
+        with:
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_CLOUDRUN_DEPLOYER_SA }}
+          token_format: id_token
+          id_token_audience: ${{ steps.svc.outputs.url }}
+          id_token_include_email: true
+
       - name: Deploy Cloud Run revision (prd)
         env:
           IMAGE: ${{ steps.build.outputs.image }}
+          PROBE_ID_TOKEN: ${{ steps.probe_token.outputs.id_token }}
         run: |
           set -euo pipefail
           extra=()
@@ -436,16 +465,65 @@ jobs:
               echo "Promote it manually through 10% → 50% → 100% using the assets DB resilience runbook."
             } >> "$GITHUB_STEP_SUMMARY"
           else
-            gcloud run deploy tokens-${{ matrix.service }}-prd-us \
+            svc="tokens-${{ matrix.service }}-prd-us"
+            tag="cand-${GITHUB_SHA:0:12}"
+            gc() { gcloud run services "$@" --region=us-east4 --project=${{ vars.GCP_PROJECT }}; }
+            # "Remove candidate tag" below drops the tag however this step ends.
+            { echo "CANDIDATE_SERVICE=$svc"; echo "CANDIDATE_TAG=$tag"; } >> "$GITHUB_ENV"
+            gcloud run deploy "$svc" \
               --image="$IMAGE" \
               --region=us-east4 \
               --project=${{ vars.GCP_PROJECT }} \
+              --no-traffic \
+              --tag="$tag" \
               --quiet
+            # Read the revision from the SAME tagged traffic entry as the URL:
+            # latestCreatedRevisionName could name a revision an overlapping
+            # manual deploy created, and traffic must go to the one we probed.
+            desc=$(gc describe "$svc" --format=json)
+            rev=$(jq -r --arg t "$tag" '[.status.traffic[] | select(.tag == $t) | .revisionName][0] // empty' <<<"$desc")
+            tag_url=$(jq -r --arg t "$tag" '[.status.traffic[] | select(.tag == $t) | .url][0] // empty' <<<"$desc")
+            if [ -z "$rev" ] || [ -z "$tag_url" ]; then
+              echo "::error::$svc: no revision/URL found for tag $tag; traffic left on the previous revision."
+              exit 1
+            fi
+            if [ -z "${PROBE_ID_TOKEN:-}" ]; then
+              echo "::error::$svc: no identity token for the probe (see the 'Mint the probe identity token' step); traffic left on the previous revision."
+              exit 1
+            fi
+            if ! scripts/probe-cloudrun-revision.sh "$tag_url" 100; then
+              echo "::error::$svc: revision $rev failed the pre-traffic probe (see above); traffic left on the previous revision. Investigate, then re-run the deploy."
+              exit 1
+            fi
+            gc update-traffic "$svc" --to-revisions="$rev=100" --quiet
+            {
+              echo "### $svc"
+              echo "Revision \`$rev\` answered 100/100 authenticated /health probes and now serves 100% of traffic."
+            } >> "$GITHUB_STEP_SUMMARY"
           fi
           if [ "${{ matrix.service }}" = "assets" ] && gcloud run services describe tokens-assets-jobs-prd-us --region=us-east4 --project=${{ vars.GCP_PROJECT }} >/dev/null 2>&1; then
             # Tag + service name are capped at 46 chars; the jobs service name is
             # 25, so the API's resilience-<sha12> tag (23) does not fit here.
             gcloud run deploy tokens-assets-jobs-prd-us --image="$IMAGE" --region=us-east4 --project=${{ vars.GCP_PROJECT }} --update-env-vars=SERVICE_ROLE=worker,PG_POOL_MAX=8,PG_CONNECT_TIMEOUT=3 --no-traffic --tag="res-${GITHUB_SHA:0:12}" --quiet
+          fi
+
+      - name: Remove candidate tag
+        # Runs even when the deploy step failed or the run was cancelled: a
+        # tagged revision on a service with minScale stays warm and reserves
+        # subnet IPs (see #213/#214).
+        if: always() && env.CANDIDATE_TAG != ''
+        run: |
+          set -euo pipefail
+          tagged=$(gcloud run services describe "$CANDIDATE_SERVICE" --region=us-east4 --project=${{ vars.GCP_PROJECT }} --format=json 2>/dev/null \
+            | jq -r --arg t "$CANDIDATE_TAG" '[.status.traffic[]? | select(.tag == $t)] | length' || echo 0)
+          if [ "$tagged" = "0" ]; then
+            echo "$CANDIDATE_SERVICE: tag $CANDIDATE_TAG not present, nothing to clean up"
+            exit 0
+          fi
+          if gcloud run services update-traffic "$CANDIDATE_SERVICE" --region=us-east4 --project=${{ vars.GCP_PROJECT }} --remove-tags="$CANDIDATE_TAG" --quiet; then
+            echo "$CANDIDATE_SERVICE: removed tag $CANDIDATE_TAG"
+          else
+            echo "::warning::$CANDIDATE_SERVICE: could not remove tag $CANDIDATE_TAG; remove it by hand so the revision can scale to zero."
           fi
 
       - uses: oven-sh/setup-bun@v2
@@ -709,8 +787,12 @@ jobs:
             while :; do
               sleep 30
               now=$(date +%s)
-              code=$(curl -s -o /dev/null -m 10 --retry 2 -w '%{http_code}' "$tag_url/health" || echo 000)
-              [ "$code" = "200" ] || fail_and_rollback "$stage" "candidate /health returned $code"
+              # A burst, not one request: Cloud Run's frontend has dropped ~5%
+              # of calls to a fresh revision with its own 404 (2026-10-30). The
+              # assets API is public (allUsers invoker), so the probe runs
+              # unauthenticated and requires 200, exactly as clients see it.
+              scripts/probe-cloudrun-revision.sh "$tag_url" 40 \
+                || fail_and_rollback "$stage" "candidate /health probe failed (see the run log for the status)"
               window=$(( now - start + 90 ))
               fails=$(loki_count "sum(count_over_time({service=\"tokens-smoke\"} | json | event=\`smoke_canary_summary\` | failed_any = \`true\` [${window}s]))")
               [ -n "$fails" ] || fail_and_rollback "$stage" "smoke-canary query failed (Loki unreachable after 3 attempts)"
