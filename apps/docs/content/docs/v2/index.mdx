@@ -3,7 +3,7 @@ title: Overview
 description: API v2 adds community token lists, risk-aware search and resolve, and chain-native multichain assets on the same host and key as v1.
 ---
 
-API v2 is additive: every v1 endpoint keeps working unchanged. v2 covers three things:
+API v2 is additive: every v1 endpoint keeps working unchanged. v2 covers four things:
 
 - **Token lists** — named, ordered sets of Solana mints with an accountable curator. Read ours,
   publish your own, and compose the lists you trust into one corpus.
@@ -11,6 +11,8 @@ API v2 is additive: every v1 endpoint keeps working unchanged. v2 covers three t
   that ranks, warns and suppresses by a policy you can tune, and explains every decision.
 - **Multichain assets** — the curated assets you know from v1, with their tokens on Solana and
   the EVM chains, addressed by `<chain>:<address>`.
+- **Execution research** — venue deep links for a mint, and live cross-router quote comparisons
+  (Jupiter and Titan) at one or more sizes, for an asset's variants or a single mint.
 
 The base URL is `https://api.tokens.xyz/v2`. Every v2 endpoint takes the same `x-api-key` header
 as v1 and needs only the default `assets:read` scope; see [Authentication](/v2/authentication).
@@ -60,6 +62,27 @@ For the long tail of unregistered Solana tokens use [Token lists](/v2/concepts/t
 Read [Multichain assets](/v2/concepts/multichain-assets) for the rules and
 [Migrating from v1](/v2/migrating-from-v1) for the endpoint and field maps.
 
+## Execution
+
+`GET /v2/execution/links` returns venue deep links for buying a token — the building block for a
+"Buy" call-to-action in any app. Callers choose which venues to show; we return our recommendation
+as `primary`.
+
+`GET /v2/execution/evaluate` compares **live quotes across every router we integrate** (Jupiter
+and Titan today) for one mint at one or more sizes: who wins each size, by how many basis points,
+and via which route. Use it for router selection, best-execution evidence, pre-trade sizing, and
+monitoring a router's performance on your flow. Jupiter's candidate comes from quote-only Swap V2,
+where Metis, JupiterZ, Dflow, and OKX compete before the fee-inclusive output is compared with
+Titan.
+
+`GET /v2/execution/route` is the asset-level view: given a canonical asset (`assetId=bitcoin`) and
+a size, it quotes the asset's variant mints, then splits the order across them for the best total
+fill — with the evidence and an edge-vs-single-variant number attached. These endpoints return
+quotes and evidence only; they never build or submit a transaction.
+
+All three require the `execution:read` scope, granted to all keys by default. Read
+[Execution](/v2/endpoints/execution) for the reference.
+
 ## Route index
 
 | Family | Routes | Reference |
@@ -68,6 +91,7 @@ Read [Multichain assets](/v2/concepts/multichain-assets) for the rules and
 | Assets | `GET /v2/assets`, `GET /v2/assets/{assetId}`, `GET /v2/assets/{assetId}/variants` | [Assets](/v2/endpoints/assets) |
 | Variants | `GET /v2/variants/{chain}/{address}`, `GET /v2/variants?keys=` | [Variants](/v2/endpoints/variants) |
 | Search | `GET /v2/search`, `GET /v2/resolve`, `POST /v2/judge` | [Search, Resolve & Judge](/v2/endpoints/search) |
+| Execution | `GET /v2/execution/links`, `GET /v2/execution/evaluate`, `GET /v2/execution/route` | [Execution](/v2/endpoints/execution) |
 | Lists: read | `GET /v2/lists`, `GET /v2/lists/{slug}`, `GET /v2/lists/tokens` | [Lists](/v2/endpoints/lists) |
 | Lists: manage | `GET /v2/lists/check-slug`, `POST /v2/lists`, `PATCH /v2/lists/{slug}`, `DELETE /v2/lists/{slug}`, `POST /v2/lists/{slug}/members`, `PUT /v2/lists/{slug}/members/{mint}`, `DELETE /v2/lists/{slug}/members/{mint}` | [Lists → Managing lists](/v2/endpoints/lists#managing-lists) |
 | Lists: curator search | `GET /v2/lists/search-tokens` | [Lists](/v2/endpoints/lists#get-v2listssearch-tokens) |

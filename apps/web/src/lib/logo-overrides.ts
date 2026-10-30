@@ -167,6 +167,9 @@ const POPULAR_LOGO_BY_MINT: Record<string, string> = {
     // OKX xBTC (Solana mint)
     CtzPWv73Sn1dMGVU3ZtLv9yWSyUAanBni19YWDaznnkn: '/logos/popular/okxbtc.png',
 
+    // Coinbase Wrapped BTC — market data only offers an unreliable ipfs.io URL.
+    cbbtcf3aa214zXHbiAZQwf4122FBYbraNdFqgw4iMij: '/logos/popular/cbbtc.png',
+
     // SpaceX (Ondo Tokenized) — SPCXon. Market data sources have no icon for this mint yet;
     // same Ondo CDN pattern as their other tokenized equities (tslaon, nvdaon, ...).
     wzAyQTorWyoVXuJKj2x8EqKEGJpS13z6EWE9z5Aondo: 'https://cdn.ondo.finance/tokens/logos/spcxon_160x160.png',

@@ -40,6 +40,7 @@ import type {
 } from './handlers/tokensReads';
 import type { TrendingMarketRow, FreshTrendingMarketRow, TrendingReadsRepo } from './handlers/trendingReads';
 import type { FillQualityRow, FillQualityReadsRepo } from './handlers/fillQualityReads';
+import type { DepthCurveReadsRepo } from './handlers/depthCurveReads';
 import type { AssetCollectionMemberRow, AssetCollectionsReadsRepo } from './handlers/assetCollectionsReads';
 import type { TokenListsReadsRepo } from './handlers/tokenListsReads';
 import type { TokenListsMutationsDeps } from './handlers/tokenListsMutations';
@@ -394,6 +395,7 @@ function deps(overrides: Partial<ServerDeps> = {}): ServerDeps {
         tokensReadsRepo: overrides.tokensReadsRepo ?? emptyTokensReadsRepo(),
         trendingReadsRepo: overrides.trendingReadsRepo ?? emptyTrendingReadsRepo(),
         fillQualityReadsRepo: overrides.fillQualityReadsRepo ?? emptyFillQualityReadsRepo(),
+        depthCurveReadsRepo: overrides.depthCurveReadsRepo ?? emptyDepthCurveReadsRepo(),
         assetRiskReadsRepo: { findLatestByMints: async () => [] },
         assetCollectionsReadsRepo: overrides.assetCollectionsReadsRepo ?? emptyAssetCollectionsReadsRepo(),
         tokenListsReadsRepo: overrides.tokenListsReadsRepo ?? emptyTokenListsReadsRepo(),
@@ -3704,6 +3706,14 @@ function emptyTrendingReadsRepo(): TrendingReadsRepo {
 }
 
 function emptyFillQualityReadsRepo(): FillQualityReadsRepo {
+    return {
+        async findLatestByMints() {
+            return [];
+        },
+    };
+}
+
+function emptyDepthCurveReadsRepo(): DepthCurveReadsRepo {
     return {
         async findLatestByMints() {
             return [];

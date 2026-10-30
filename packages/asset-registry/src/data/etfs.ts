@@ -28,7 +28,9 @@ const ETF_OVERRIDES: Record<string, EtfOverride> = {
     '916SDKz7y5ZcEZC9CtnQ5Djs1Y8Yv3UAPb6bak8ondo': { name: 'iShares MSCI Emerging Markets ETF' },
     AbvryMGnaba9oADMZk8Vp2Av6MtczsncGyfWaC4ondo: { name: 'iShares MSCI EAFE ETF' },
     C9J9vZ8N79GzzxFoRkPWCkGtMKU8akg4FhUk4r9ondo: { name: 'iShares Core MSCI EAFE ETF' },
-    cdVNL7wK8mf1UCDqM6zdrziRv4hmvqWhXeTcck2ondo: { name: 'iShares Core MSCI EAFE ETF' },
+    // Live metadata identifies this Ondo mint as IEMG, not IEFA; 'Core MSCI EM'
+    // groups it with the xStocks IEMG tracker under core-msci-em.
+    cdVNL7wK8mf1UCDqM6zdrziRv4hmvqWhXeTcck2ondo: { name: 'Core MSCI EM' },
     cfPLN9WXD2BTkbZhRZMVXPmVSiRo44hJWRtnaC8ondo: { name: 'iShares Core S&P MidCap ETF' },
     CPWkMURVvcnX8hGjqCTb8i5LkzV3VSvyk7SeJi8ondo: { name: 'iShares Core S&P Total US Stock Market ETF' },
     CqW2pd6dCPG9xKZfAsTovzDsMmAGKJSDBNcwM96ondo: { name: 'iShares Core S&P 500 ETF' },

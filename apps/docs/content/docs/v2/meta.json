@@ -20,6 +20,7 @@
     "endpoints/assets",
     "endpoints/variants",
     "endpoints/search",
-    "endpoints/lists"
+    "endpoints/lists",
+    "endpoints/execution"
   ]
 }

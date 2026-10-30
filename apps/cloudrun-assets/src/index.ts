@@ -7,14 +7,19 @@ import {
     makeClickhouseClient,
     makeCoingeckoClient,
     makeCoingeckoFiatRatesClient,
+    makeJupiterQuoteClient,
+    makeJupiterSwapV2QuoteClient,
+    makeJupiterTokenMetadataClient,
     makePreStocksClient,
     makeRwaXyzClient,
     makeSanctumClient,
     makeStonkfunClient,
     makeSolanaDataClient,
+    makeTitanQuoteClient,
     makeWebacyClient,
     makeWebacyDepegClient,
 } from './clients';
+import { makeTitanRestQuoteClient, TITAN_DEMO_BASE_URL } from './titanRestClient';
 import { makePostgresDepegRepo } from './db/depeg';
 import { makePostgresV2AssetsJobsRepo, makePostgresV2AssetsReadsRepo } from './db/v2Assets';
 import { birdeyeChains, type ChainKind } from '@tokens/asset-registry/chains';
@@ -57,6 +62,8 @@ import {
     makePostgresTrendingReadsRepo,
     makePostgresTrendingRepo,
     makePostgresClickhouseExtrasRepo,
+    makePostgresDepthCurveReadsRepo,
+    makePostgresDepthCurvesRepo,
     makePostgresPrestocksReadsRepo,
     makePostgresPrestocksRepo,
     makePostgresStockReadsRepo,
@@ -77,6 +84,9 @@ import type { SeedCronDeps } from './handlers/crons.seed';
 import type { TrendingCronDeps } from './handlers/crons.trending';
 import type { ClickhouseExtrasCronDeps } from './handlers/crons.clickhouse.extras';
 import type { PrestocksCronDeps } from './handlers/crons.prestocks';
+import type { DepthCronDeps } from './handlers/crons.depth';
+import { limitQuoteConcurrency, paceQuoteStarts, type DepthSampleDeps, type LiveQuoteDeps } from './handlers/liveQuotes';
+import { createConcurrencyLimiter } from './concurrencyLimiter';
 import type { LaunchpadCronDeps } from './handlers/crons.launchpad';
 import type { LogoSyncCronDeps } from './handlers/crons.logoSync';
 import type { SolanaDataCronDeps } from './handlers/crons.solanaData';
@@ -126,6 +136,7 @@ let seedCronDeps: SeedCronDeps | undefined;
 let trendingCronDeps: TrendingCronDeps | undefined;
 let clickhouseExtrasCronDeps: ClickhouseExtrasCronDeps | undefined;
 let prestocksCronDeps: PrestocksCronDeps | undefined;
+let depthCronDeps: DepthCronDeps | undefined;
 let launchpadCronDeps: LaunchpadCronDeps | undefined;
 let logoSyncCronDeps: LogoSyncCronDeps | undefined;
 let solanaDataCronDeps: SolanaDataCronDeps | undefined;
@@ -321,6 +332,90 @@ if (birdeyeApiKey) {
     console.warn('[cloudrun-assets] BIRDEYE_API_KEY not set — /jobs/* endpoints disabled');
 }
 
+// Depth sampling has its own credentials (not coupled to BIRDEYE_API_KEY);
+// the job additionally no-ops unless DEPTH_REFRESH_ENABLED=true is set.
+const titanWsUrl = process.env.TITAN_WS_URL?.trim();
+const titanApiKey = process.env.TITAN_API_KEY?.trim();
+if (titanWsUrl && titanApiKey) {
+    depthCronDeps = {
+        quoteSource: makeTitanQuoteClient({ wsUrl: titanWsUrl, authToken: titanApiKey }),
+        repo: makePostgresDepthCurvesRepo(sql),
+        now: () => Date.now(),
+        env: () => process.env,
+    };
+} else {
+    console.warn('[cloudrun-assets] TITAN_WS_URL/TITAN_API_KEY not set — depth /jobs/* disabled');
+}
+
+const jupiterApiKey = process.env.JUPITER_API_KEY?.trim();
+if (!jupiterApiKey) {
+    console.warn(
+        '[cloudrun-assets] JUPITER_API_KEY not set — Jupiter Swap V2 comparison disabled; Lite token metadata remains available',
+    );
+}
+
+// Titan REST (live quote comparison) is configured independently of the
+// WebSocket depth client: different transport, different auth mechanism.
+// TITAN_REST_API_KEY falls back to TITAN_API_KEY so a single credential still
+// works, but the base URL must be explicit — TITAN_DEMO_BASE_URL is Titan's
+// demo cluster, and defaulting to it would quote demo liquidity in production.
+const titanRestApiKey = process.env.TITAN_REST_API_KEY?.trim() || titanApiKey;
+const titanRestBaseUrl = process.env.TITAN_REST_BASE_URL?.trim();
+const titanRestAllowDemo = process.env.TITAN_REST_ALLOW_DEMO?.trim().toLowerCase() === 'true';
+
+let titanRestQuoteSource: ReturnType<typeof makeTitanRestQuoteClient> | undefined;
+if (!titanRestApiKey) {
+    console.warn('[cloudrun-assets] TITAN_REST_API_KEY/TITAN_API_KEY not set — Titan quote comparison disabled');
+} else if (!titanRestBaseUrl && !titanRestAllowDemo) {
+    console.warn(
+        '[cloudrun-assets] TITAN_REST_BASE_URL not set — Titan quote comparison disabled ' +
+            '(set TITAN_REST_ALLOW_DEMO=true to quote Titan’s demo cluster in local dev)',
+    );
+} else {
+    const baseUrl = titanRestBaseUrl ?? TITAN_DEMO_BASE_URL;
+    if (!titanRestBaseUrl) {
+        console.warn(`[cloudrun-assets] Titan quote comparison using the DEMO cluster (${baseUrl})`);
+    }
+    try {
+        titanRestQuoteSource = makeTitanRestQuoteClient({
+            authToken: titanRestApiKey,
+            baseUrl,
+            ...(process.env.TITAN_QUOTE_USER_PUBLIC_KEY?.trim()
+                ? { userPublicKey: process.env.TITAN_QUOTE_USER_PUBLIC_KEY.trim() }
+                : {}),
+        });
+    } catch (error) {
+        console.warn('[cloudrun-assets] Titan REST comparison disabled:', error);
+    }
+}
+
+// Live comparison is separate from the sampled depth source and its WebSocket.
+// Per-provider in-flight caps sized for the cross-variant fanout (up to
+// 6 variants x 2 concurrent amounts): enough parallelism to fill a wide
+// request, low enough that one request cannot 429-storm a provider.
+const jupiterQuoteLimiter = createConcurrencyLimiter(6);
+const titanQuoteLimiter = createConcurrencyLimiter(8);
+const liveQuoteDeps: LiveQuoteDeps = {
+    jupiterTokenMetadataSource: makeJupiterTokenMetadataClient(jupiterApiKey ? { apiKey: jupiterApiKey } : {}),
+    ...(jupiterApiKey
+        ? {
+              // Paced to Jupiter's ~10 req/s paid-tier budget, capped in-flight.
+              jupiterQuoteSource: limitQuoteConcurrency(
+                  paceQuoteStarts(makeJupiterSwapV2QuoteClient({ apiKey: jupiterApiKey }), 120),
+                  jupiterQuoteLimiter,
+              ),
+          }
+        : {}),
+    ...(titanRestQuoteSource ? { titanQuoteSource: limitQuoteConcurrency(titanRestQuoteSource, titanQuoteLimiter) } : {}),
+    now: () => Date.now(),
+};
+const depthSampleDeps: DepthSampleDeps = {
+    quoteSource: depthCronDeps?.quoteSource ?? makeJupiterQuoteClient(jupiterApiKey ? { apiKey: jupiterApiKey } : {}),
+    curvesRepo: makePostgresDepthCurvesRepo(sql),
+    readsRepo: makePostgresDepthCurveReadsRepo(sql),
+    now: () => Date.now(),
+};
+
 let cacheWarmDeps: CacheWarmDeps | undefined;
 if (cronDeps && miscCronDeps && seedCronDeps) {
     cacheWarmDeps = {
@@ -418,6 +513,7 @@ const app = createApp({
     tokensReadsRepo: makePostgresTokensReadsRepo(sql),
     trendingReadsRepo: makePostgresTrendingReadsRepo(sql),
     fillQualityReadsRepo: makePostgresFillQualityReadsRepo(sql),
+    depthCurveReadsRepo: makePostgresDepthCurveReadsRepo(sql),
     assetRiskReadsRepo: makePostgresAssetRiskReadsRepo(sql),
     assetCollectionsReadsRepo: makePostgresAssetCollectionsReadsRepo(sql),
     curatedMembershipSource: curated,
@@ -444,6 +540,9 @@ const app = createApp({
     ...(trendingCronDeps ? { trendingCronDeps } : {}),
     ...(clickhouseExtrasCronDeps ? { clickhouseExtrasCronDeps } : {}),
     ...(prestocksCronDeps ? { prestocksCronDeps } : {}),
+    ...(depthCronDeps ? { depthCronDeps } : {}),
+    liveQuoteDeps,
+    depthSampleDeps,
     ...(launchpadCronDeps ? { launchpadCronDeps } : {}),
     ...(logoSyncCronDeps ? { logoSyncCronDeps } : {}),
     ...(solanaDataCronDeps ? { solanaDataCronDeps } : {}),

@@ -20,6 +20,7 @@ import type { DepegCronDeps } from './handlers/crons.depeg';
 import type { TokensReadsRepo } from './handlers/tokensReads';
 import type { TrendingReadsRepo } from './handlers/trendingReads';
 import type { FillQualityReadsRepo } from './handlers/fillQualityReads';
+import type { DepthCurveReadsRepo } from './handlers/depthCurveReads';
 import type { AssetCollectionsReadsRepo } from './handlers/assetCollectionsReads';
 import type { TokenListsReadsRepo } from './handlers/tokenListsReads';
 import type { TokenListsMutationsDeps } from './handlers/tokenListsMutations';
@@ -319,6 +320,9 @@ const noopTokenListsMutationsDeps: TokenListsMutationsDeps = {
     now: () => 0,
     caps: { batch: 250, membersPerList: 5000, providerLookups: 50, listsPerProject: 100 },
 };
+const noopDepthCurveReadsRepo: DepthCurveReadsRepo = {
+    async findLatestByMints() { return []; },
+};
 const noopAssetCollectionsReadsRepo: AssetCollectionsReadsRepo = {
     async listMembersBySlug() {
         return [];
@@ -362,6 +366,7 @@ const baseDeps = {
     tokensReadsRepo: noopTokensReadsRepo,
     trendingReadsRepo: noopTrendingReadsRepo,
     fillQualityReadsRepo: noopFillQualityReadsRepo,
+    depthCurveReadsRepo: noopDepthCurveReadsRepo,
     assetRiskReadsRepo: { findLatestByMints: async () => [] },
     assetCollectionsReadsRepo: noopAssetCollectionsReadsRepo,
     tokenListsReadsRepo: noopTokenListsReadsRepo,

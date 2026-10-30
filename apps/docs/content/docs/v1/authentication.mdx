@@ -27,6 +27,8 @@ Every v1 endpoint accepts the umbrella scope **`assets:read`**, which is on ever
 
 A request that asks for an include the key cannot read returns `403` with `details.required` and `details.granted`.
 
+v2 execution endpoints require `execution:read`, which is granted to all keys by default.
+
 ## Request IDs
 
 <include>../../shared/request-ids.mdx</include>

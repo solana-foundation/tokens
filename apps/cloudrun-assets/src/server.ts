@@ -142,6 +142,18 @@ import {
 } from './handlers/crons.assetVariants';
 import { seedJobs, type SeedCronDeps, type SeedJobHandler } from './handlers/crons.seed';
 import { prestocksJobs, type PrestocksCronDeps, type PrestocksJobHandler } from './handlers/crons.prestocks';
+import { depthJobs, type DepthCronDeps, type DepthJobHandler } from './handlers/crons.depth';
+import {
+    getLatestByMints as variantDepthCurvesGetLatestByMints,
+    type DepthCurveReadsRepo,
+} from './handlers/depthCurveReads';
+import {
+    depthSampleMints,
+    executionQuoteTokenMetadata,
+    executionQuotesLive,
+    type DepthSampleDeps,
+    type LiveQuoteDeps,
+} from './handlers/liveQuotes';
 import { launchpadJobs, type LaunchpadCronDeps, type LaunchpadJobHandler } from './handlers/crons.launchpad';
 import { logoSyncJobs, type LogoSyncCronDeps, type LogoSyncJobHandler } from './handlers/crons.logoSync';
 import {
@@ -222,6 +234,7 @@ export interface ServerDeps {
     tokensReadsRepo: TokensReadsRepo;
     trendingReadsRepo: TrendingReadsRepo;
     fillQualityReadsRepo: FillQualityReadsRepo;
+    depthCurveReadsRepo: DepthCurveReadsRepo;
     assetRiskReadsRepo: AssetRiskReadsRepo;
     assetCollectionsReadsRepo: AssetCollectionsReadsRepo;
     curatedMembershipSource: CuratedMembershipSource;
@@ -253,6 +266,9 @@ export interface ServerDeps {
     trendingCronDeps?: TrendingCronDeps;
     clickhouseExtrasCronDeps?: ClickhouseExtrasCronDeps;
     prestocksCronDeps?: PrestocksCronDeps;
+    depthCronDeps?: DepthCronDeps;
+    liveQuoteDeps?: LiveQuoteDeps;
+    depthSampleDeps?: DepthSampleDeps;
     launchpadCronDeps?: LaunchpadCronDeps;
     /** First-party logo re-hosting (`/jobs/logo-sync`); absent when GCS_LOGO_BUCKET is unset. */
     logoSyncCronDeps?: LogoSyncCronDeps;
@@ -328,6 +344,7 @@ const ATOMIC_RETRY_QUERY_NAMES = new Set([
     'trendingMarketsList',
     'freshTrendingMarketsList',
     'variantFillQualityGetLatestByMints',
+    'variantDepthCurvesGetLatestByMints',
     'assetRiskGetLatestByMints',
     'assetCollectionsGetMembers',
     'assetCollectionsGetMemberMints',
@@ -576,6 +593,18 @@ export function createApp(deps: ServerDeps) {
     queries.freshTrendingMarketsList = args => freshTrendingMarketsList(deps.trendingReadsRepo, args);
     queries.variantFillQualityGetLatestByMints = args =>
         variantFillQualityGetLatestByMints(deps.fillQualityReadsRepo, args);
+    queries.variantDepthCurvesGetLatestByMints = args =>
+        variantDepthCurvesGetLatestByMints(deps.depthCurveReadsRepo, args);
+    queries.executionQuotesLive = args => {
+        const liveQuoteDeps = deps.liveQuoteDeps;
+        if (!liveQuoteDeps) throw new InvalidArgsError('live quotes are not configured on this service');
+        return executionQuotesLive(liveQuoteDeps, args);
+    };
+    queries.executionQuoteTokenMetadata = args => {
+        const liveQuoteDeps = deps.liveQuoteDeps;
+        if (!liveQuoteDeps) throw new InvalidArgsError('live quotes are not configured on this service');
+        return executionQuoteTokenMetadata(liveQuoteDeps, args);
+    };
     queries.assetRiskGetLatestByMints = args => assetRiskGetLatestByMints(deps.assetRiskReadsRepo, args);
     queries.assetCollectionsGetMembers = args => assetCollectionsGetMembers(deps.assetCollectionsReadsRepo, args);
     queries.assetCollectionsGetMemberMints = args =>
@@ -628,6 +657,14 @@ export function createApp(deps: ServerDeps) {
     queries.ohlcvList = args => listOhlcv(deps.ohlcvReadsRepo, args);
 
     const mutations: Record<string, Handler> = Object.create(null);
+    // Persists curves, so it lives with the mutations. Currently uncalled: the
+    // read-through warm it backed (sample=missing) went away with the graded
+    // evaluate contract. Kept alongside the parked depth cron.
+    mutations.depthSampleMints = args => {
+        const depthSampleDeps = deps.depthSampleDeps;
+        if (!depthSampleDeps) throw new InvalidArgsError('depth sampling is not configured on this service');
+        return depthSampleMints(depthSampleDeps, args);
+    };
     mutations.setAssetDescriptionByAssetId = (args, identity) =>
         setAssetDescriptionByAssetId(deps.repo, args, identity);
 
@@ -799,6 +836,7 @@ export function createApp(deps: ServerDeps) {
     const clickhouseJobsTable: Record<string, ClickhouseJobHandler> = {
         ...clickhouseJobs,
     };
+    const depthJobsTable: Record<string, DepthJobHandler> = { ...depthJobs };
 
     const miscJobsTable: Record<string, MiscJobHandler> = { ...miscJobs };
     const assetVariantsJobsTable: Record<string, AssetVariantsJobHandler> = {
@@ -897,6 +935,11 @@ export function createApp(deps: ServerDeps) {
             has: name => Object.hasOwn(v2AssetsJobsTable, name),
             run: deps.v2AssetsCronDeps ? (name, args) => v2AssetsJobsTable[name]!(deps.v2AssetsCronDeps!, args) : null,
             disabledError: 'v2_assets_jobs_disabled',
+        },
+        {
+            has: name => Object.hasOwn(depthJobsTable, name),
+            run: deps.depthCronDeps ? (name, args) => depthJobsTable[name]!(deps.depthCronDeps!, args) : null,
+            disabledError: 'depth_jobs_disabled',
         },
     ];
 

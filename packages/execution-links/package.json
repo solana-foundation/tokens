@@ -1,0 +1,24 @@
+{
+  "name": "@tokens/execution-links",
+  "version": "0.0.0",
+  "private": true,
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "bun test src"
+  },
+  "license": "MIT",
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "files": [
+    "src"
+  ],
+  "dependencies": {
+    "@tokens/asset-registry": "workspace:*"
+  },
+  "devDependencies": {
+    "@tokens/typescript-config": "workspace:*"
+  }
+}
