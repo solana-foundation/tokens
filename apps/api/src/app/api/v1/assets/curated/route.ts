@@ -930,7 +930,7 @@ export const GET = route(
                         stockPricesGetLatestByAssetIds({ assetIds: chunk }).pipe(
                             tapErrorAndDefault('assets.curated.stockPrices', [], { count: chunk.length }),
                         ),
-                    ]);
+                    ], { concurrency: 'unbounded' });
                     stockInstrumentRows.push(...instrumentRows);
                     stockPriceRows.push(...priceRows);
                 }

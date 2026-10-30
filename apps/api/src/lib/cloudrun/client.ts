@@ -300,7 +300,7 @@ export function makeCloudRunCaller(cfg: CloudRunClientConfig): CloudRunCaller {
             // that count events per provider see one entry per lookup.
             const live = () =>
                 liveCall<T>(base, service, kind, name, args, timeoutMs, options).pipe(
-                    withCloudRunTelemetry(service, kind, name),
+                    withCloudRunTelemetry(service, name),
                 );
 
             // Memo hit: a speculative batch already fetched this exact query
@@ -382,12 +382,10 @@ function emitMemoHit(service: CloudRunService, name: string, ok: boolean, errorT
     );
 }
 
-function withCloudRunTelemetry(service: CloudRunService, kind: CloudRunCallKind, name: string) {
+function withCloudRunTelemetry(service: CloudRunService, name: string) {
     return <A, E>(effect: Effect.Effect<A, E>): Effect.Effect<A, E> =>
         Effect.suspend(() => {
-            if (!shouldLogCloudRunCalls()) {
-                return effect.pipe(Effect.withSpan(`cloudrun.${service}.${name}`));
-            }
+            if (!shouldLogCloudRunCalls()) return effect;
             const startedAt = Date.now();
             const emit = (ok: boolean, status: number | null, errorTag?: string) =>
                 Effect.service(CurrentRequestId).pipe(
@@ -410,8 +408,6 @@ function withCloudRunTelemetry(service: CloudRunService, kind: CloudRunCallKind,
                     const tagged = error as { _tag?: string; status?: number };
                     return emit(false, typeof tagged.status === 'number' ? tagged.status : null, tagged._tag);
                 }),
-                // Spans are inert without a tracer — near-zero cost future-proofing.
-                Effect.withSpan(`cloudrun.${service}.${name}`, { attributes: { 'cloudrun.kind': kind } }),
             );
         });
 }

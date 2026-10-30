@@ -1,6 +1,6 @@
 import 'server-only';
 
-import { Cause, Duration, Effect, Result, Schedule } from 'effect';
+import { Duration, Effect, Result, Schedule } from 'effect';
 import {
     ApiResponseError,
     FetchFailedError,
@@ -12,12 +12,7 @@ import { decodeApiResponse } from '@/effect/api-response';
 type NextFetchInit = RequestInit & { next?: { revalidate?: number } };
 const LOCAL_API_ORIGIN = 'http://localhost:3002';
 
-export type ApiAppFailure =
-    | ApiResponseError
-    | FetchFailedError
-    | JsonParseError
-    | MissingEnvError
-    | Cause.TimeoutError;
+export type ApiAppFailure = ApiResponseError | FetchFailedError | JsonParseError | MissingEnvError;
 
 export interface ApiAppJsonArgs {
     /** API path, e.g. '/api/v1/assets/curated?list=majors'. */
@@ -90,6 +85,17 @@ export function apiAppJson<T = unknown>(args: ApiAppJsonArgs): Effect.Effect<T, 
         }).pipe(
             Effect.flatMap(res => decodeApiResponse<T>(res)),
             Effect.timeout(args.timeout ?? '10 seconds'),
+            // A hung attempt is a transport failure like any other, so it takes
+            // part in the retry policy below (mirrors @tokens/effect fetchJson).
+            Effect.catchTag('TimeoutError', () =>
+                Effect.fail(
+                    new FetchFailedError({
+                        service: 'api',
+                        message: `API ${args.path} timed out`,
+                        cause: 'timeout',
+                    }),
+                ),
+            ),
         );
 
         const retryTimes = Math.max(0, args.retryTimes ?? 0);

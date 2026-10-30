@@ -72,4 +72,28 @@ describe('image-proxy response headers', () => {
         expect(response.status).toBe(403);
         expect(called).toBe(false);
     });
+
+    test('answers 504 when the upstream hangs and the request is aborted', async () => {
+        globalThis.fetch = ((_input: RequestInfo | URL, init?: RequestInit) =>
+            new Promise<Response>((_resolve, reject) => {
+                init?.signal?.addEventListener('abort', () => {
+                    const error = new Error('aborted');
+                    error.name = 'AbortError';
+                    reject(error);
+                });
+            })) as typeof fetch;
+
+        const controller = new AbortController();
+        const pending = GET(
+            new Request(
+                `https://www.tokens.xyz/api/image-proxy?src=${encodeURIComponent('https://storage.googleapis.com/bucket/logo.svg')}`,
+                { signal: controller.signal },
+            ),
+        );
+        setTimeout(() => controller.abort(), 10);
+
+        const response = await pending;
+        expect(response.status).toBe(504);
+        expect(await response.json()).toEqual({ error: 'Upstream image timed out' });
+    });
 });

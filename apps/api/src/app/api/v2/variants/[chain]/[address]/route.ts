@@ -48,7 +48,7 @@ export const GET = route(
                 const [advisoriesByMint, preStocksByMint] = yield* Effect.all([
                     loadAdvisories(),
                     loadPreStocks(detail.variants),
-                ]);
+                ], { concurrency: 'unbounded' });
                 const asset = buildAssetFromDetail({
                     request,
                     detail,

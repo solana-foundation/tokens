@@ -4,6 +4,9 @@ import { extractIpfsRef } from '@/lib/ipfs-ref';
 import { buildAllowedRemoteHosts, fetchWithValidatedRedirects, isAllowedRemoteHost } from '../_remote-asset-fetch';
 
 const MAX_IMAGE_BYTES = 2 * 1024 * 1024; // 2MB (logos only)
+// Upper bound on the whole upstream exchange (every redirect hop reuses the
+// signal), so a stalled logo host cannot pin a function invocation.
+const IMAGE_PROXY_TIMEOUT_MS = 10_000;
 const UPSTREAM_ACCEPT_HEADERS: Readonly<Record<string, string>> = { Accept: 'image/*,*/*;q=0.8' };
 
 function sniffImageContentType(bytes: Uint8Array): string | null {
@@ -122,6 +125,7 @@ export async function GET(request: Request): Promise<Response> {
             {
                 headers: upstreamHeaders,
                 cache: fresh ? 'no-store' : 'force-cache',
+                signal: AbortSignal.any([request.signal, AbortSignal.timeout(IMAGE_PROXY_TIMEOUT_MS)]),
             },
             allowedHosts,
         );
@@ -160,7 +164,14 @@ export async function GET(request: Request): Promise<Response> {
                     : 'public, max-age=86400, s-maxage=86400, stale-while-revalidate=604800',
             ),
         });
-    } catch {
+    } catch (error) {
+        if (isAbortLike(error)) {
+            return NextResponse.json({ error: 'Upstream image timed out' }, { status: 504 });
+        }
         return NextResponse.json({ error: 'Failed to proxy image' }, { status: 502 });
     }
+}
+
+function isAbortLike(error: unknown): boolean {
+    return error instanceof Error && (error.name === 'AbortError' || error.name === 'TimeoutError');
 }

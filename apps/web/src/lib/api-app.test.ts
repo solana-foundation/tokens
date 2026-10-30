@@ -101,15 +101,35 @@ describe('apiAppJson', () => {
         expect(error.cause).toBe('ECONNREFUSED');
     });
 
-    it('fails with TimeoutError when the API hangs', async () => {
+    it('fails with a retryable FetchFailedError when the API hangs', async () => {
         setFetch(
             (_url, init) =>
                 new Promise<Response>((_resolve, reject) => {
                     init?.signal?.addEventListener('abort', () => reject(new Error('aborted')));
                 }),
         );
-        const error = (await failureOf(apiAppJson({ path: '/x', timeout: '20 millis' }))) as { _tag: string };
-        expect(error._tag).toBe('TimeoutError');
+        const error = (await failureOf(apiAppJson({ path: '/x', timeout: '20 millis' }))) as {
+            _tag: string;
+            cause?: string;
+        };
+        expect(error._tag).toBe('FetchFailedError');
+        expect(error.cause).toBe('timeout');
+    });
+
+    it('retries a timed-out attempt when retryTimes is set', async () => {
+        let calls = 0;
+        setFetch((_url, init) => {
+            calls++;
+            if (calls === 1) {
+                return new Promise<Response>((_resolve, reject) => {
+                    init?.signal?.addEventListener('abort', () => reject(new Error('aborted')));
+                });
+            }
+            return Promise.resolve(jsonResponse({ ok: true }));
+        });
+        const result = await Effect.runPromise(apiAppJson({ path: '/x', timeout: '20 millis', retryTimes: 1 }));
+        expect(result).toEqual({ ok: true });
+        expect(calls).toBe(2);
     });
 
     it('fails with MissingEnvError when the platform key is unset', async () => {
