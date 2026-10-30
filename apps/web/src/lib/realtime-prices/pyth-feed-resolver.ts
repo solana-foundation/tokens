@@ -1,70 +1,103 @@
 'use client';
 
-import {
-    HERMES_PUBLIC_ENDPOINT,
-    type HermesPriceFeedMetadata,
-    normalizeHermesSymbol,
-    pickExactCryptoUsdFeedId,
-} from '@/lib/realtime-prices/pyth-feed-selection';
+import type { PythFeedMode, PythFeedSelection } from '@/lib/realtime-prices/pyth-feed-selection';
+import { isSupportedPythTicker, normalizePythTicker } from '@/lib/realtime-prices/pyth-feed-selection';
 
-// Bump this if we change selection heuristics, so old cached IDs don't poison resolution.
-const LOCAL_CACHE_PREFIX = 'TOKENS_HERMES_FEED_ID_V2:';
+/** Browser-side resolver for /api/realtime/pyth-feed with a localStorage cache. */
 
-function buildCacheKey(symbolUpper: string): string {
-    return `${LOCAL_CACHE_PREFIX}${symbolUpper}`;
+// Bump when selection heuristics or the response shape change so stale cache entries are ignored.
+const LOCAL_CACHE_PREFIX = 'TOKENS_PYTH_FEED_V3:';
+const HIT_TTL_MS = 6 * 60 * 60 * 1000;
+const MISS_TTL_MS = 10 * 60 * 1000;
+
+export type ResolvedPythFeedStatus = 'ok' | 'not_entitled' | 'not_found' | 'unconfigured' | 'error';
+
+export interface ResolvedPythFeedResult {
+    status: ResolvedPythFeedStatus;
+    feed: (PythFeedSelection & { entitled: boolean }) | null;
 }
 
-function readCachedFeedId(symbolUpper: string): string | null {
+interface CachedResolution {
+    result: ResolvedPythFeedResult;
+    expiresAtMs: number;
+}
+
+export interface ResolvePythFeedArgs {
+    symbol: string;
+    category?: string | null;
+    mode: PythFeedMode;
+}
+
+function cacheKey(args: ResolvePythFeedArgs, tickerUpper: string): string {
+    const category = (args.category ?? '').trim().toLowerCase();
+    return `${LOCAL_CACHE_PREFIX}${args.mode}:${category}:${tickerUpper}`;
+}
+
+function readCache(key: string): ResolvedPythFeedResult | null {
     try {
-        const raw = window.localStorage.getItem(buildCacheKey(symbolUpper));
-        const id = (raw ?? '').trim();
-        return id ? id : null;
+        const raw = window.localStorage.getItem(key);
+        if (!raw) return null;
+        const parsed = JSON.parse(raw) as CachedResolution;
+        if (!parsed || typeof parsed.expiresAtMs !== 'number' || parsed.expiresAtMs <= Date.now()) return null;
+        return parsed.result ?? null;
     } catch {
         return null;
     }
 }
 
-function writeCachedFeedId(symbolUpper: string, feedId: string): void {
+function writeCache(key: string, result: ResolvedPythFeedResult): void {
     try {
-        window.localStorage.setItem(buildCacheKey(symbolUpper), feedId);
+        const ttl = result.status === 'ok' ? HIT_TTL_MS : MISS_TTL_MS;
+        const entry: CachedResolution = { result, expiresAtMs: Date.now() + ttl };
+        window.localStorage.setItem(key, JSON.stringify(entry));
     } catch {
         // Ignore storage failures (private mode, quota, etc.).
     }
 }
 
-const inFlightBySymbol = new Map<string, Promise<string | null>>();
+const inFlight = new Map<string, Promise<ResolvedPythFeedResult>>();
 
-export async function resolveHermesCryptoUsdFeedId(symbolInput: string): Promise<string | null> {
-    if (typeof window === 'undefined') return null;
+export async function resolvePythFeed(args: ResolvePythFeedArgs): Promise<ResolvedPythFeedResult> {
+    if (typeof window === 'undefined') return { status: 'error', feed: null };
+    const tickerUpper = normalizePythTicker(args.symbol);
+    if (!tickerUpper || !isSupportedPythTicker(tickerUpper)) return { status: 'not_found', feed: null };
 
-    const symbolUpper = normalizeHermesSymbol(symbolInput);
-    if (!symbolUpper) return null;
-
-    const cached = readCachedFeedId(symbolUpper);
+    const key = cacheKey(args, tickerUpper);
+    const cached = readCache(key);
     if (cached) return cached;
 
-    const existing = inFlightBySymbol.get(symbolUpper);
+    const existing = inFlight.get(key);
     if (existing) return existing;
 
-    const promise = (async () => {
+    const promise = (async (): Promise<ResolvedPythFeedResult> => {
         try {
-            const params = new URLSearchParams({ query: symbolUpper, asset_type: 'crypto' });
-            const res = await fetch(`${HERMES_PUBLIC_ENDPOINT}/v2/price_feeds?${params.toString()}`, { method: 'GET' });
-            if (!res.ok) return null;
-            const json = (await res.json()) as unknown;
-            if (!Array.isArray(json)) return null;
+            const params = new URLSearchParams({ symbol: tickerUpper, mode: args.mode });
+            const category = (args.category ?? '').trim().toLowerCase();
+            if (category) params.set('category', category);
+            const res = await fetch(`/api/realtime/pyth-feed?${params.toString()}`, { method: 'GET' });
 
-            const feeds = json as HermesPriceFeedMetadata[];
-            const resolved = pickExactCryptoUsdFeedId(symbolUpper, feeds);
-            if (resolved) writeCachedFeedId(symbolUpper, resolved);
-            return resolved;
+            if (res.status === 503) return { status: 'unconfigured', feed: null };
+            if (res.status === 404) {
+                const result: ResolvedPythFeedResult = { status: 'not_found', feed: null };
+                writeCache(key, result);
+                return result;
+            }
+            if (!res.ok) return { status: 'error', feed: null };
+
+            const json = (await res.json()) as { status?: unknown; feed?: unknown };
+            const feed = (json.feed ?? null) as ResolvedPythFeedResult['feed'];
+            if (!feed || typeof feed.feedId !== 'number') return { status: 'error', feed: null };
+            const status: ResolvedPythFeedStatus = json.status === 'ok' ? 'ok' : 'not_entitled';
+            const result: ResolvedPythFeedResult = { status, feed };
+            writeCache(key, result);
+            return result;
         } catch {
-            return null;
+            return { status: 'error', feed: null };
         } finally {
-            inFlightBySymbol.delete(symbolUpper);
+            inFlight.delete(key);
         }
     })();
 
-    inFlightBySymbol.set(symbolUpper, promise);
+    inFlight.set(key, promise);
     return promise;
 }

@@ -22,7 +22,15 @@ export type TokenSocialVariant = Pick<
 /** The slice of `GET /api/v2/assets/{ref}` the share card / metadata reads. */
 export type TokenSocialAsset = Pick<
     V2AssetResponse,
-    'assetId' | 'name' | 'symbol' | 'coingeckoId' | 'imageUrl' | 'primaryVariant' | 'variants' | 'advisories'
+    | 'assetId'
+    | 'name'
+    | 'symbol'
+    | 'category'
+    | 'coingeckoId'
+    | 'imageUrl'
+    | 'primaryVariant'
+    | 'variants'
+    | 'advisories'
 >;
 
 /**

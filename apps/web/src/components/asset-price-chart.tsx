@@ -16,6 +16,7 @@ interface AssetPriceChartProps {
     mint?: string;
     mode?: 'canonical' | 'variant';
     coingeckoId?: string;
+    category?: string;
     symbol: string;
     realtimeSymbol?: string;
     tokenName?: string;
@@ -30,6 +31,7 @@ export const AssetPriceChart = memo(function AssetPriceChart({
     mint,
     mode = 'variant',
     coingeckoId,
+    category,
     symbol,
     realtimeSymbol,
     tokenName,
@@ -79,8 +81,9 @@ export const AssetPriceChart = memo(function AssetPriceChart({
 
     useRealtimeQuote({
         quoteKey,
-        coingeckoId: isCanonical ? coingeckoId : null,
         symbol: shouldEnableRealtime ? realtimeSymbolTrimmed || symbol : undefined,
+        category,
+        mode: isCanonical ? 'canonical' : 'variant',
         seedPriceUsd,
         enabled: shouldEnableRealtime,
         streamEnabled: shouldEnableRealtime,

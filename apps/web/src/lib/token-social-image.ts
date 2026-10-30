@@ -12,7 +12,7 @@ import { cleanTokenName, getTokenLogoURL } from '@/lib/logo-overrides';
 import { fetchApiAppJsonOrNull } from '@/lib/api-app';
 import type { V2VariantResponse } from '@/lib/api-v2-types';
 import { formatSmallPriceDecimal } from '@/lib/format';
-import { fetchHermesLatestPrice } from '@/lib/realtime-prices/pyth-hermes-server';
+import { fetchPythLatestPrice } from '@/lib/realtime-prices/pyth-pro-server';
 import { requestedVariantFromPathName, type RequestedVariantRef } from '@/lib/requested-variant';
 import {
     readRequestedVariant,
@@ -602,6 +602,7 @@ export async function getTokenSocialImageResponse(request: Request, name: string
         let symbol = normalizeOptionalText(registryAsset?.symbol).toUpperCase() || requestedName.toUpperCase();
 
         let coingeckoId: string | null = normalizeOptionalText(registryAsset?.coingeckoId) || null;
+        let category: string | null = null;
         let fallbackLogoURI: string | undefined;
         let selectedVariant: TokenSocialVariant | null = null;
         let socialAdvisory: AssetAdvisory | null = null;
@@ -629,6 +630,7 @@ export async function getTokenSocialImageResponse(request: Request, name: string
             displayName = cleanTokenName(apiDisplayName || registryAsset?.name || requestedName);
             symbol = (apiSymbol || normalizeOptionalText(registryAsset?.symbol)).toUpperCase() || symbol;
             coingeckoId = normalizeOptionalText(apiAsset?.coingeckoId) || coingeckoId;
+            category = normalizeOptionalText(apiAsset?.category) || null;
             fallbackLogoURI =
                 normalizeOptionalText(apiAsset?.primaryVariant?.logoURI) ||
                 normalizeOptionalText(apiAsset?.imageUrl) ||
@@ -670,7 +672,9 @@ export async function getTokenSocialImageResponse(request: Request, name: string
                 ? fetchVariantOhlcvForOg(asset.assetId, variantWithCandles.address)
                 : Promise.resolve([]),
             asset ? fetchCanonicalChartForOg(asset.assetId) : Promise.resolve([]),
-            selectedVariant ? Promise.resolve(null) : fetchHermesLatestPrice({ coingeckoId, symbol }),
+            selectedVariant
+                ? Promise.resolve(null)
+                : fetchPythLatestPrice({ ticker: symbol, category, mode: 'canonical' }),
         ]);
         const stats = coingeckoId ? (coinLookupId === coingeckoId ? (coinData?.stats ?? null) : null) : null;
 
