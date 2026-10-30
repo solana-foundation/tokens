@@ -1,4 +1,5 @@
 import { InvalidArgsError } from './assets';
+import { resolveLogoUri } from './logoUrl';
 import {
     selectMintMarketSnapshot,
     type MarketSource,
@@ -17,6 +18,7 @@ export interface VariantMarketRow {
     name: string | null;
     decimals: number | null;
     logo_uri: string | null;
+    logo_cdn_url?: string | null;
     price: number | null;
     liquidity: number | null;
     volume_1h_usd: number | null;
@@ -108,7 +110,7 @@ function rowToDocLike(row: VariantMarketRow): VariantMarketDocLike {
     if (name !== undefined) doc.name = name;
     const decimals = nullToUndef(row.decimals);
     if (decimals !== undefined) doc.decimals = decimals;
-    const logoURI = nullToUndef(row.logo_uri);
+    const logoURI = nullToUndef(resolveLogoUri(row));
     if (logoURI !== undefined) doc.logoURI = logoURI;
     const price = nullToUndef(row.price);
     if (price !== undefined) doc.price = price;
@@ -180,10 +182,7 @@ function optionalTokenExtensions(value: unknown): TokenExtensions | undefined {
     return Object.keys(out).length > 0 ? out : undefined;
 }
 
-export async function getLatestByMints(
-    repo: VariantMarketsRepo,
-    args: unknown,
-): Promise<GetLatestByMintsEntry[]> {
+export async function getLatestByMints(repo: VariantMarketsRepo, args: unknown): Promise<GetLatestByMintsEntry[]> {
     if (typeof args !== 'object' || args === null) {
         throw new InvalidArgsError('args must be an object');
     }
@@ -209,68 +208,80 @@ export async function getLatestByMints(
 
     return mints.map(mint => {
         const row = byMint.get(mint);
-        if (!row) return { mint, market: null };
-
-        const selected = selectMintMarketSnapshot(rowToDocLike(row));
-        const source = optionalMarketSource(selected.source);
-        const lastFetchedAt = optionalFiniteNumber(selected.lastFetchedAt);
-        if (!source || lastFetchedAt === undefined) return { mint, market: null };
-
-        const metricsSource = optionalMarketSource(selected.metricsSource);
-        const symbol = optionalString(selected.symbol);
-        const name = optionalString(selected.name);
-        const logoURI = optionalString(selected.logoURI) ?? VARIANT_LOGO_FALLBACK_BY_MINT[mint];
-        const decimals = optionalFiniteNumber(selected.decimals);
-        const price = optionalFiniteNumber(selected.price);
-        const liquidity = optionalFiniteNumber(selected.liquidity);
-        const volume1hUSD = optionalFiniteNumber(selected.volume1hUSD);
-        const volume24hUSD = optionalFiniteNumber(selected.volume24hUSD);
-        const trade1h = optionalFiniteNumber(selected.trade1h);
-        const trade24h = optionalFiniteNumber(selected.trade24h);
-        const uniqueWallet1h = optionalFiniteNumber(selected.uniqueWallet1h);
-        const uniqueWallet24h = optionalFiniteNumber(selected.uniqueWallet24h);
-        const marketCap = optionalFiniteNumber(selected.marketCap);
-        const fdv = optionalFiniteNumber(selected.fdv);
-        const priceChange24hPercent = optionalFiniteNumber(selected.priceChange24hPercent);
-        const priceChange1hPercent = optionalFiniteNumber(selected.priceChange1hPercent);
-        const holder = optionalFiniteNumber(selected.holder);
-        const totalSupply = optionalFiniteNumber(selected.totalSupply);
-        const circulatingSupply = optionalFiniteNumber(selected.circulatingSupply);
-        const lastTradeHumanTime = optionalString(selected.lastTradeHumanTime);
-        const lastTradeAt = optionalFiniteNumber(selected.lastTradeAt);
-        const asOf = optionalFiniteNumber(selected.asOf);
-        const extensions = optionalTokenExtensions(selected.extensions);
-
-        const market: VariantMarketSnapshotResult = {
-            mint,
-            source,
-            lastFetchedAt,
-            ...(metricsSource !== undefined ? { metricsSource } : {}),
-            ...(symbol !== undefined ? { symbol } : {}),
-            ...(name !== undefined ? { name } : {}),
-            ...(decimals !== undefined ? { decimals } : {}),
-            ...(logoURI !== undefined ? { logoURI } : {}),
-            ...(price !== undefined ? { price } : {}),
-            ...(liquidity !== undefined ? { liquidity } : {}),
-            ...(volume1hUSD !== undefined ? { volume1hUSD } : {}),
-            ...(volume24hUSD !== undefined ? { volume24hUSD } : {}),
-            ...(trade1h !== undefined ? { trade1h } : {}),
-            ...(trade24h !== undefined ? { trade24h } : {}),
-            ...(uniqueWallet1h !== undefined ? { uniqueWallet1h } : {}),
-            ...(uniqueWallet24h !== undefined ? { uniqueWallet24h } : {}),
-            ...(marketCap !== undefined ? { marketCap } : {}),
-            ...(fdv !== undefined ? { fdv } : {}),
-            ...(priceChange24hPercent !== undefined ? { priceChange24hPercent } : {}),
-            ...(priceChange1hPercent !== undefined ? { priceChange1hPercent } : {}),
-            ...(holder !== undefined ? { holder } : {}),
-            ...(totalSupply !== undefined ? { totalSupply } : {}),
-            ...(circulatingSupply !== undefined ? { circulatingSupply } : {}),
-            ...(lastTradeHumanTime !== undefined ? { lastTradeHumanTime } : {}),
-            ...(lastTradeAt !== undefined ? { lastTradeAt } : {}),
-            ...(extensions !== undefined ? { extensions } : {}),
-            ...(asOf !== undefined ? { asOf } : {}),
-        };
-
-        return { mint, market };
+        return { mint, market: row ? buildVariantMarketSnapshot(mint, row) : null };
     });
+}
+
+/**
+ * The public market snapshot for one `variant_markets_latest`-shaped row:
+ * provider source selection, first-party logo precedence and finite-number
+ * filtering. Shared with the v2 reads (`v2_variant_markets_latest` carries the
+ * same metric columns keyed by chain + address; pass the address as `mint`).
+ */
+export function buildVariantMarketSnapshot(mint: string, row: VariantMarketRow): VariantMarketSnapshotResult | null {
+    const selected = selectMintMarketSnapshot(rowToDocLike(row));
+    const source = optionalMarketSource(selected.source);
+    const lastFetchedAt = optionalFiniteNumber(selected.lastFetchedAt);
+    if (!source || lastFetchedAt === undefined) return null;
+
+    const metricsSource = optionalMarketSource(selected.metricsSource);
+    const symbol = optionalString(selected.symbol);
+    const name = optionalString(selected.name);
+    // The first-party copy (mint_logos) outranks whatever logo the winning
+    // provider blob carries: selectMintMarketSnapshot picks identity strings
+    // from birdeye/rwa/clickhouse metrics, which hold the raw registry URL.
+    const logoURI =
+        optionalString(row.logo_cdn_url) ?? optionalString(selected.logoURI) ?? VARIANT_LOGO_FALLBACK_BY_MINT[mint];
+    const decimals = optionalFiniteNumber(selected.decimals);
+    const price = optionalFiniteNumber(selected.price);
+    const liquidity = optionalFiniteNumber(selected.liquidity);
+    const volume1hUSD = optionalFiniteNumber(selected.volume1hUSD);
+    const volume24hUSD = optionalFiniteNumber(selected.volume24hUSD);
+    const trade1h = optionalFiniteNumber(selected.trade1h);
+    const trade24h = optionalFiniteNumber(selected.trade24h);
+    const uniqueWallet1h = optionalFiniteNumber(selected.uniqueWallet1h);
+    const uniqueWallet24h = optionalFiniteNumber(selected.uniqueWallet24h);
+    const marketCap = optionalFiniteNumber(selected.marketCap);
+    const fdv = optionalFiniteNumber(selected.fdv);
+    const priceChange24hPercent = optionalFiniteNumber(selected.priceChange24hPercent);
+    const priceChange1hPercent = optionalFiniteNumber(selected.priceChange1hPercent);
+    const holder = optionalFiniteNumber(selected.holder);
+    const totalSupply = optionalFiniteNumber(selected.totalSupply);
+    const circulatingSupply = optionalFiniteNumber(selected.circulatingSupply);
+    const lastTradeHumanTime = optionalString(selected.lastTradeHumanTime);
+    const lastTradeAt = optionalFiniteNumber(selected.lastTradeAt);
+    const asOf = optionalFiniteNumber(selected.asOf);
+    const extensions = optionalTokenExtensions(selected.extensions);
+
+    const market: VariantMarketSnapshotResult = {
+        mint,
+        source,
+        lastFetchedAt,
+        ...(metricsSource !== undefined ? { metricsSource } : {}),
+        ...(symbol !== undefined ? { symbol } : {}),
+        ...(name !== undefined ? { name } : {}),
+        ...(decimals !== undefined ? { decimals } : {}),
+        ...(logoURI !== undefined ? { logoURI } : {}),
+        ...(price !== undefined ? { price } : {}),
+        ...(liquidity !== undefined ? { liquidity } : {}),
+        ...(volume1hUSD !== undefined ? { volume1hUSD } : {}),
+        ...(volume24hUSD !== undefined ? { volume24hUSD } : {}),
+        ...(trade1h !== undefined ? { trade1h } : {}),
+        ...(trade24h !== undefined ? { trade24h } : {}),
+        ...(uniqueWallet1h !== undefined ? { uniqueWallet1h } : {}),
+        ...(uniqueWallet24h !== undefined ? { uniqueWallet24h } : {}),
+        ...(marketCap !== undefined ? { marketCap } : {}),
+        ...(fdv !== undefined ? { fdv } : {}),
+        ...(priceChange24hPercent !== undefined ? { priceChange24hPercent } : {}),
+        ...(priceChange1hPercent !== undefined ? { priceChange1hPercent } : {}),
+        ...(holder !== undefined ? { holder } : {}),
+        ...(totalSupply !== undefined ? { totalSupply } : {}),
+        ...(circulatingSupply !== undefined ? { circulatingSupply } : {}),
+        ...(lastTradeHumanTime !== undefined ? { lastTradeHumanTime } : {}),
+        ...(lastTradeAt !== undefined ? { lastTradeAt } : {}),
+        ...(extensions !== undefined ? { extensions } : {}),
+        ...(asOf !== undefined ? { asOf } : {}),
+    };
+
+    return market;
 }

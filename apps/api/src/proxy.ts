@@ -4,13 +4,15 @@ import { NextResponse } from 'next/server';
 import { logApiError, logHttpRequest } from '@/lib/http-metrics';
 
 // Public routes bypass Clerk auth (API-key gating is enforced in route handlers).
-const isPublicRoute = createRouteMatcher([
+export const PUBLIC_ROUTE_PATTERNS = [
     '/api/health(.*)',
     '/api/v1/health(.*)',
     '/api/v1/assets(.*)',
     '/api/v1/news(.*)',
-    '/api/v2/lists(.*)',
-    '/api/v2/execution(.*)',
+    // Every v2 handler MUST go through `route(..., { platform })` — this
+    // wildcard is what lets API-key callers reach them at all. A v2 handler
+    // without `platform` would be fully unauthenticated.
+    '/api/v2(.*)',
     '/api/token(.*)',
     '/api/coingecko(.*)',
     '/api/x/tokens-feed',
@@ -21,7 +23,11 @@ const isPublicRoute = createRouteMatcher([
     '/api/tokens/by-addresses',
     '/api/tokens/market-snapshots',
     '/api/tokens/descriptions/by-address',
-]);
+    // Scheduler-only; the handler checks a shared secret (CRON_SECRET).
+    '/api/internal/usage-drain',
+];
+
+const isPublicRoute = createRouteMatcher(PUBLIC_ROUTE_PATTERNS);
 
 function parseAuthorizedParties(): string[] | undefined {
     const raw = process.env.CLERK_AUTHORIZED_PARTIES?.trim();

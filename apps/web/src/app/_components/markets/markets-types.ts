@@ -3,7 +3,7 @@ export interface MarketsPaginationState {
     pageSize: number;
     total: number | undefined;
     visibleCount: number;
-    itemLabel: 'markets' | 'tickers';
+    itemLabel: 'markets' | 'tickers' | 'assets';
     isLoading: boolean;
     onPageChange: (pageIndex: number) => void;
     onPageSizeChange: (pageSize: number) => void;

@@ -1,6 +1,7 @@
 import { classifyLiquidityTier, liquidityTierPriority, normalizeLegacyTier } from '@tokens/asset-registry';
 
 import { InvalidArgsError } from './assets';
+import { resolveLogoUri } from './logoUrl';
 import type { VariantMarketRow } from './variantMarkets';
 
 export type AssetVariantKind =
@@ -526,7 +527,7 @@ export async function buildSolanaVariantsForApi(
                       priceChange24hPercent: toFiniteNumberOrNull(freshMarketRow.price_change_24h_percent),
                       priceChange1hPercent: toFiniteNumberOrNull(freshMarketRow.price_change_1h_percent),
                       decimals: toFiniteNumberOrNull(freshMarketRow.decimals),
-                      logoURI: optionalText(freshMarketRow.logo_uri),
+                      logoURI: optionalText(resolveLogoUri(freshMarketRow)),
                       lastFetchedAt: freshMarketRow.last_fetched_at,
                   };
                   if (freshMarketRow.volume_1h_usd !== null) {

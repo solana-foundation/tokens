@@ -1,9 +1,11 @@
+import type { ChainKind } from './chains';
 import { getAsset, getVariantByMint, listAssets } from './registry';
 
 export interface VariantHub {
     id: string;
     label: string;
-    addresses: Array<{ address: string; label?: string }>;
+    /** `chain` absent = solana (static registry hubs are Solana-only). */
+    addresses: Array<{ address: string; label?: string; chain?: ChainKind }>;
 }
 
 function normalizeOptionalLabel(value: string | undefined): string | undefined {

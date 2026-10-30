@@ -1,0 +1,5 @@
+Treat the key like a password:
+
+- Call the API from your server or an edge function and proxy the data to the browser. Never ship the key in frontend code or a public repository.
+- Rotate a key from the dashboard if it leaks. Regenerating a key deactivates the previous one immediately.
+- One key per environment (development, staging, production) keeps usage and rate limits separate.

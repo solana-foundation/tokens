@@ -23,6 +23,10 @@ function makeChainStub(execResult: Array<[Error | null, unknown]> | null = []) {
                 calls.push({ cmd: 'hincrby', args });
                 return obj;
             },
+            hset(...args: unknown[]) {
+                calls.push({ cmd: 'hset', args });
+                return obj;
+            },
             set(...args: unknown[]) {
                 calls.push({ cmd: 'set', args });
                 return obj;
@@ -181,6 +185,15 @@ describe('MemorystorePipeline', () => {
         expectArgs(pipelineCalls[0]!.args, ['usage:day:2026-06-24', 'totalCalls', 1]);
         expect(pipelineCalls[1]!.cmd).toBe('expire');
         expectArgs(pipelineCalls[1]!.args, ['usage:day:2026-06-24', 172_800]);
+    });
+
+    it('emits hset with the field and value as separate arguments', async () => {
+        const { client, pipelineCalls } = makeClientStub({ pipelineExecResult: [[null, 1]] });
+        const pipe = client.pipeline();
+        pipe.hset('usage:v1:dirty', 'usage:v1:day:2026-06-24:prj', 'm_1');
+        await pipe.exec();
+        expect(pipelineCalls[0]!.cmd).toBe('hset');
+        expectArgs(pipelineCalls[0]!.args, ['usage:v1:dirty', 'usage:v1:day:2026-06-24:prj', 'm_1']);
     });
 
     it('throws if any pipeline command surfaced an error', async () => {

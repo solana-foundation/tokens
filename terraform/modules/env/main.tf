@@ -127,6 +127,13 @@ module "cloud_run" {
       PG_POOL_MAX        = "16"
       PG_CONNECT_TIMEOUT = "3"
     } : {},
+    each.value == "assets" ? local.logo_sync_env_vars : {},
+    # The usage service forwards verified Webacy depeg webhooks to the jobs
+    # target (POST /jobs/reconcile-stablecoin-depeg with an OIDC bearer whose
+    # audience is this URL). Resolved by name via the data source below.
+    each.value == "usage" && var.enable_crons ? {
+      TOKENS_CLOUDRUN_ASSETS_JOBS_URL = data.google_cloud_run_v2_service.assets_jobs_target[0].uri
+    } : {},
   )
 
   secret_env_vars = merge(
@@ -138,17 +145,32 @@ module "cloud_run" {
         secret_id = module.secrets.cloudrun_auth_token_secret_id
       }
     },
-    # Usage-service-only secrets: key reveal encryption (dashboard reset/reveal)
-    # and the /hooks/* observability ingest. Versions seeded out-of-band — see
-    # modules/secrets.
+    # Usage-service-only secrets: key reveal encryption (dashboard reset/reveal),
+    # the signed-identity HMAC key, and the /hooks/* ingest (Loki push, Vercel
+    # drain, Clerk + Webacy webhook secrets). Every entry of
+    # usage_hooks_secret_ids is mounted, so a new hooks secret only needs adding
+    # in modules/secrets. Versions seeded out-of-band.
+    #
+    # NOTE: the cloud_run module ignores drift on container env, so adding a
+    # secret here does not change a service that already exists. Wire it on
+    # the live service once per env (then promote the new revision):
+    #   gcloud run services update tokens-usage-<env>-us --region <region> \
+    #     --update-secrets=TOKENS_IDENTITY_SIGNING_SECRET=tokens-identity-signing-secret-<env>:latest
     each.value == "usage" ? merge(
       {
         TOKENS_API_KEY_ENCRYPTION_SECRET = {
           secret_id = module.secrets.api_key_encryption_secret_id
         }
+        TOKENS_IDENTITY_SIGNING_SECRET = {
+          secret_id = module.secrets.identity_signing_secret_id
+        }
       },
       { for name, id in module.secrets.usage_hooks_secret_ids : name => { secret_id = id } }
-    ) : {}
+    ) : {},
+    # Assets logo-sync: Pinata gateway token (version seeded out-of-band).
+    each.value == "assets" ? local.logo_sync_secret_env_vars : {},
+    # Assets registry sync: data.solana.com API key (version seeded out-of-band).
+    each.value == "assets" ? local.solana_data_secret_env_vars : {},
   )
 }
 
@@ -179,35 +201,70 @@ module "cloud_run_assets_jobs" {
   deletion_protection = var.cloud_run_deletion_protection
   startup_probe_path  = "/startup"
 
-  env_vars = {
-    NODE_ENV           = "production"
-    TOKENS_ENV         = var.env
-    GCP_PROJECT        = var.project_id
-    GCP_REGION         = var.region
-    REDIS_HOST         = module.memorystore.host
-    REDIS_PORT         = tostring(module.memorystore.port)
-    SQL_INSTANCE       = module.cloud_sql.connection_name
-    SQL_DATABASE       = module.cloud_sql.database_name
-    SQL_USER           = module.cloud_sql.app_user
-    GCS_LOGO_BUCKET    = "tokens-asset-logos-${var.env}"
-    SERVICE_ROLE       = "worker"
-    PG_POOL_MAX        = "8"
-    PG_CONNECT_TIMEOUT = "3"
-  }
+  env_vars = merge(
+    {
+      NODE_ENV           = "production"
+      TOKENS_ENV         = var.env
+      GCP_PROJECT        = var.project_id
+      GCP_REGION         = var.region
+      REDIS_HOST         = module.memorystore.host
+      REDIS_PORT         = tostring(module.memorystore.port)
+      SQL_INSTANCE       = module.cloud_sql.connection_name
+      SQL_DATABASE       = module.cloud_sql.database_name
+      SQL_USER           = module.cloud_sql.app_user
+      GCS_LOGO_BUCKET    = "tokens-asset-logos-${var.env}"
+      SERVICE_ROLE       = "worker"
+      PG_POOL_MAX        = "8"
+      PG_CONNECT_TIMEOUT = "3"
+    },
+    local.logo_sync_env_vars,
+  )
 
-  secret_env_vars = {
-    DATABASE_URL = {
-      secret_id = module.secrets.database_url_secret_id
-    }
-    TOKENS_CLOUDRUN_AUTH_TOKEN = {
-      secret_id = module.secrets.cloudrun_auth_token_secret_id
-    }
-  }
+  secret_env_vars = merge(
+    {
+      DATABASE_URL = {
+        secret_id = module.secrets.database_url_secret_id
+      }
+      TOKENS_CLOUDRUN_AUTH_TOKEN = {
+        secret_id = module.secrets.cloudrun_auth_token_secret_id
+      }
+    },
+    local.logo_sync_secret_env_vars,
+    local.solana_data_secret_env_vars,
+  )
 }
 
 locals {
   assets_jobs_service_url  = var.route_assets_jobs_to_worker ? module.cloud_run_assets_jobs[0].url : module.cloud_run["assets"].url
   assets_jobs_service_name = var.route_assets_jobs_to_worker ? module.cloud_run_assets_jobs[0].service_name : module.cloud_run["assets"].service_name
+}
+
+# Read-only lookup of the jobs target for the usage service's
+# TOKENS_CLOUDRUN_ASSETS_JOBS_URL. module.cloud_run is a single for_each call,
+# so its "usage" instance cannot reference module.cloud_run["assets"] (or the
+# worker module, which depends on module.cloud_run["assets"].image) without a
+# cycle; resolving the URL by name sidesteps that. The `uri` matches the
+# out-of-band SCHEDULER_OIDC_AUDIENCE pin on the target, which a deterministic
+# run.app URL would not. Guarded by enable_crons so a fresh env bootstraps
+# (crons off) before the target exists.
+data "google_cloud_run_v2_service" "assets_jobs_target" {
+  count = var.enable_crons ? 1 : 0
+
+  project  = var.project_id
+  location = var.region
+  name     = var.route_assets_jobs_to_worker ? "tokens-assets-jobs-${var.env}${var.name_suffix}" : "tokens-assets-${var.env}${var.name_suffix}"
+}
+
+# The usage service (shared Cloud Run runtime SA) invokes the jobs target to
+# forward Webacy depeg webhooks. Cloud Run IAM is checked before the handler's
+# own OIDC verification, which additionally requires the runtime SA's email to
+# be listed in the target's TOKENS_CRON_INVOKER_SA (comma-separated).
+resource "google_cloud_run_v2_service_iam_member" "usage_invokes_assets_jobs" {
+  project  = var.project_id
+  location = var.region
+  name     = local.assets_jobs_service_name
+  role     = "roles/run.invoker"
+  member   = "serviceAccount:${module.iam.cloud_run_runtime_sa_email}"
 }
 
 module "scheduler_tasks" {
@@ -251,7 +308,7 @@ module "scheduler_jobs" {
   service_url      = local.assets_jobs_service_url
   invoker_sa_email = module.iam.scheduler_sa_email
 
-  jobs = concat(local.coingecko_cron_jobs, local.clickhouse_cron_jobs, local.prestocks_cron_jobs, local.depth_cron_jobs, [
+  jobs = concat(local.coingecko_cron_jobs, local.clickhouse_cron_jobs, local.prestocks_cron_jobs, local.depth_cron_jobs, local.launchpad_cron_jobs, local.logo_sync_cron_jobs, local.solana_data_cron_jobs, local.webacy_depeg_cron_jobs, local.v2_assets_cron_jobs, [
     {
       name      = "refresh-asset-variant-markets"
       schedule  = var.env == "stg" ? "15 2 * * *" : "*/10 * * * *"
@@ -548,18 +605,25 @@ module "scheduler_jobs" {
       })
       attempt_deadline = "540s"
     },
+    # refresh-curated-ohlcv-15m: every curated mint, not just the top 50. The
+    # rotation is ~1.5k mints (every LST/yield variant counts); selection=stale
+    # skips mints with no trades since their newest candle, and 500 per run
+    # re-reaches an actively trading mint within one or two runs. Was maxMints=1
+    # every 30 min (13-day rotation), which left less-traded mints' 1D charts
+    # hours to days stale (customer report 2026-10-07).
     {
       name      = "refresh-curated-ohlcv-15m"
-      schedule  = "6,36 * * * *"
+      schedule  = "*/15 * * * *"
       http_path = "/jobs/refresh-curated-ohlcv-15m"
       body_json = jsonencode({
+        selection         = "stale"
         interval          = "15m"
         days              = 1
         priorityCount     = 50
-        maxMints          = 1
-        concurrency       = 2
+        maxMints          = 500
+        concurrency       = 4
         delayMs           = 200
-        selectionWindowMs = 1800000
+        selectionWindowMs = 900000
         upsertChunkSize   = 1000
         budgetMs          = 500000
       })
@@ -570,11 +634,12 @@ module "scheduler_jobs" {
       schedule  = "12,42 * * * *"
       http_path = "/jobs/refresh-curated-ohlcv-1h"
       body_json = jsonencode({
+        selection         = "stale"
         interval          = "1H"
         days              = 90
         priorityCount     = 25
-        maxMints          = 150
-        concurrency       = 2
+        maxMints          = 500
+        concurrency       = 4
         delayMs           = 200
         selectionWindowMs = 1800000
         budgetMs          = 500000
@@ -586,6 +651,7 @@ module "scheduler_jobs" {
       schedule  = var.env == "stg" ? "5 3 * * *" : "40 */6 * * *"
       http_path = "/jobs/refresh-curated-ohlcv-4h"
       body_json = jsonencode({
+        selection         = "stale"
         interval          = "4H"
         days              = 365
         priorityCount     = 25

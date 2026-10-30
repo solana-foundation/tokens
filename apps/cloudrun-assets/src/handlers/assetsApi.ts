@@ -1,6 +1,13 @@
-import { normalizeLegacyTier } from '@tokens/asset-registry';
+import {
+    normalizeLegacyTier,
+    toAssetIndustryOrNull,
+    toAssetRegionOrNull,
+    type AssetIndustry,
+    type AssetRegion,
+} from '@tokens/asset-registry';
 
 import { InvalidArgsError } from './assets';
+import { resolveLogoUri } from './logoUrl';
 
 export type AssetCategory =
     | 'crypto'
@@ -60,6 +67,8 @@ export interface AssetsApiAssetRow {
     is_active: boolean;
     created_at: Date;
     updated_at: Date;
+    region: string | null;
+    industry: string | null;
 }
 
 export interface AssetsApiVariantRow {
@@ -90,6 +99,7 @@ export interface AssetsApiVariantMarketRow {
     name: string | null;
     decimals: number | null;
     logo_uri: string | null;
+    logo_cdn_url?: string | null;
     price: number | null;
     liquidity: number | null;
     volume_5m_usd: number | null;
@@ -208,6 +218,8 @@ export interface AssetApiResult {
     isActive: boolean;
     createdAt: number;
     updatedAt: number;
+    region: AssetRegion | null;
+    industry: AssetIndustry | null;
     name?: string;
     symbol?: string;
     coingeckoId?: string;
@@ -406,6 +418,8 @@ function assetRowToResult(row: AssetsApiAssetRow): AssetApiResult {
         isActive: row.is_active,
         createdAt: row.created_at.getTime(),
         updatedAt: row.updated_at.getTime(),
+        region: toAssetRegionOrNull(row.region),
+        industry: toAssetIndustryOrNull(row.industry),
     };
     if (row.name !== null) result.name = row.name;
     if (row.symbol !== null) result.symbol = row.symbol;
@@ -468,8 +482,7 @@ function variantMarketRowToResult(row: AssetsApiVariantMarketRow): VariantMarket
     if (row.name !== null) out.name = row.name;
     if (row.decimals !== null) out.decimals = row.decimals;
 
-    const logoURITrimmed = typeof row.logo_uri === 'string' && row.logo_uri.trim() ? row.logo_uri : null;
-    const logoURI = logoURITrimmed ?? VARIANT_LOGO_FALLBACK_BY_MINT[row.mint];
+    const logoURI = resolveLogoUri(row) ?? VARIANT_LOGO_FALLBACK_BY_MINT[row.mint];
     if (logoURI !== undefined) out.logoURI = logoURI;
 
     if (row.price !== null) out.price = row.price;

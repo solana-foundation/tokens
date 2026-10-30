@@ -11,8 +11,10 @@ const DEFAULT_ALLOWED_HOSTS = new Set<string>([
     'avatars.githubusercontent.com',
     'cdn.ondo.finance',
     'arweave.net',
-    'ipfs.io',
-    'cf-ipfs.com',
+    // First-party logo copies (logo-sync job → public GCS bucket; img.tokens.xyz is the planned custom host).
+    // Public IPFS gateways are deliberately absent: they 429/403 everyone, so logos are re-hosted instead.
+    'storage.googleapis.com',
+    'img.tokens.xyz',
     'shdw-drive.genesysgo.net',
     '*.arweave.net',
 ]);
@@ -122,6 +124,14 @@ export async function fetchWithValidatedRedirects(
     let current = url;
 
     for (let i = 0; i <= maxRedirects; i++) {
+        // Re-validated on every hop: a redirect from an allowlisted host must not escape to another
+        // scheme, carry credentials, or land on a host outside the allowlist.
+        if (current.protocol !== 'http:' && current.protocol !== 'https:') {
+            throw new Error('Unsupported protocol');
+        }
+        if (current.username || current.password) {
+            throw new Error('Credentials not allowed');
+        }
         if (!isAllowedRemoteHost(current.hostname, allowedHosts)) {
             throw new Error('Host not allowed');
         }

@@ -40,14 +40,6 @@ export interface ClickhouseMintSnapshot {
     asOf: number | null;
 }
 
-export interface ClickhouseTables {
-    database: string;
-    stockTradesTable: string | null;
-    stockInstrumentsTable: string | null;
-    solanaTradesTable: string | null;
-    priceScale: number;
-}
-
 export interface ClickhouseClient {
     fetchStockInstruments(params: { limit: number }): Promise<ClickhouseStockInstrumentRow[]>;
     fetchStockSnapshot(symbol: string): Promise<ClickhouseStockSnapshot | null>;
@@ -58,12 +50,7 @@ export interface ClickhouseClient {
         stableMints: readonly string[];
         asOfMs?: number;
     }): Promise<ClickhouseMintSnapshot[]>;
-    query<T = Record<string, unknown>>(args: {
-        sql: string;
-        params?: Record<string, string | number>;
-    }): Promise<T[]>;
     queryPreset<T = Record<string, unknown>>(name: string, params: Record<string, unknown>): Promise<T[]>;
-    tables(): ClickhouseTables;
 }
 
 export interface StockInstrumentUpsert {

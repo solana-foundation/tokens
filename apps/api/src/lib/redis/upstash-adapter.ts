@@ -31,6 +31,11 @@ class UpstashPipelineAdapter implements RedisPipeline {
         return this;
     }
 
+    hset(key: string, field: string, value: string): this {
+        this.pipe.hset(key, { [field]: value });
+        return this;
+    }
+
     set(key: string, value: string | number, options?: RedisSetOptions): this {
         if (!options) {
             this.pipe.set(key, value);

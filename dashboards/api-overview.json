@@ -92,7 +92,7 @@
       },
       "datasource": {
         "type": "loki",
-        "uid": "grafanacloud-logs"
+        "uid": "tokens-logs"
       },
       "targets": [
         {
@@ -122,7 +122,7 @@
       },
       "datasource": {
         "type": "loki",
-        "uid": "grafanacloud-logs"
+        "uid": "tokens-logs"
       },
       "targets": [
         {
@@ -173,7 +173,7 @@
       },
       "datasource": {
         "type": "loki",
-        "uid": "grafanacloud-logs"
+        "uid": "tokens-logs"
       },
       "targets": [
         {
@@ -225,7 +225,7 @@
       },
       "datasource": {
         "type": "loki",
-        "uid": "grafanacloud-logs"
+        "uid": "tokens-logs"
       },
       "targets": [
         {
@@ -276,7 +276,7 @@
       },
       "datasource": {
         "type": "loki",
-        "uid": "grafanacloud-logs"
+        "uid": "tokens-logs"
       },
       "targets": [
         {
@@ -303,7 +303,7 @@
       },
       "datasource": {
         "type": "loki",
-        "uid": "grafanacloud-logs"
+        "uid": "tokens-logs"
       },
       "targets": [
         {
@@ -337,7 +337,7 @@
       },
       "datasource": {
         "type": "loki",
-        "uid": "grafanacloud-logs"
+        "uid": "tokens-logs"
       },
       "targets": [
         {
@@ -374,7 +374,7 @@
       },
       "datasource": {
         "type": "loki",
-        "uid": "grafanacloud-logs"
+        "uid": "tokens-logs"
       },
       "targets": [
         {
@@ -418,7 +418,7 @@
       },
       "datasource": {
         "type": "loki",
-        "uid": "grafanacloud-logs"
+        "uid": "tokens-logs"
       },
       "targets": [
         {
@@ -445,7 +445,7 @@
       },
       "datasource": {
         "type": "loki",
-        "uid": "grafanacloud-logs"
+        "uid": "tokens-logs"
       },
       "targets": [
         {
@@ -472,7 +472,7 @@
       },
       "datasource": {
         "type": "loki",
-        "uid": "grafanacloud-logs"
+        "uid": "tokens-logs"
       },
       "targets": [
         {
@@ -499,7 +499,7 @@
       },
       "datasource": {
         "type": "loki",
-        "uid": "grafanacloud-logs"
+        "uid": "tokens-logs"
       },
       "targets": [
         {
@@ -527,7 +527,7 @@
       },
       "datasource": {
         "type": "loki",
-        "uid": "grafanacloud-logs"
+        "uid": "tokens-logs"
       },
       "targets": [
         {
@@ -554,7 +554,7 @@
       },
       "datasource": {
         "type": "loki",
-        "uid": "grafanacloud-logs"
+        "uid": "tokens-logs"
       },
       "targets": [
         {
@@ -581,7 +581,7 @@
       },
       "datasource": {
         "type": "loki",
-        "uid": "grafanacloud-logs"
+        "uid": "tokens-logs"
       },
       "targets": [
         {
@@ -608,7 +608,7 @@
       },
       "datasource": {
         "type": "loki",
-        "uid": "grafanacloud-logs"
+        "uid": "tokens-logs"
       },
       "targets": [
         {
@@ -635,7 +635,7 @@
       },
       "datasource": {
         "type": "loki",
-        "uid": "grafanacloud-logs"
+        "uid": "tokens-logs"
       },
       "targets": [
         {
@@ -662,7 +662,7 @@
       },
       "datasource": {
         "type": "loki",
-        "uid": "grafanacloud-logs"
+        "uid": "tokens-logs"
       },
       "targets": [
         {

@@ -2,14 +2,14 @@
     "uid": "tokens-assets-db-timeout-critical",
     "title": "tokens-assets: Postgres connect timeouts > 300/10m",
     "ruleGroup": "tokens-assets-availability",
-    "folderUID": "tokens-xyz",
+    "folderUID": "tokens",
     "noDataState": "OK",
     "execErrState": "OK",
     "for": "2m",
     "data": [
         {
             "refId": "A",
-            "datasourceUid": "grafanacloud-logs",
+            "datasourceUid": "tokens-logs",
             "queryType": "range",
             "relativeTimeRange": { "from": 600, "to": 0 },
             "model": {
@@ -63,5 +63,15 @@
         "summary": "tokens-assets Postgres connection timeout storm",
         "description": "More than 300 normalized final CONNECT_TIMEOUT failures occurred in 10 minutes. Expect degraded curated responses and user-facing 5xx; inspect Cloud Run scale-out, VPC flow logs, and Cloud SQL TLS/reset logs.",
         "runbook_url": "https://github.com/solana-foundation/tokens/blob/main/docs/operations/assets-db-resilience.md"
+    },
+    "notification_settings": {
+        "receiver": "tokens-critical",
+        "group_by": [
+            "grafana_folder",
+            "alertname"
+        ],
+        "group_wait": "30s",
+        "group_interval": "5m",
+        "repeat_interval": "4h"
     }
 }

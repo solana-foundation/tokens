@@ -5,6 +5,7 @@ import { fetchJsonWithRetry, UpstreamHttpError } from '@tokens/effect';
 import {
     COINGECKO_NEWS_CATALOG_FRESHNESS_MS,
     createCoinGeckoNewsNotFoundRecovery,
+    resolveCoinGeckoNewsCoinByMint,
     validateCoinGeckoNewsCoinId,
 } from './coingecko-news';
 
@@ -91,6 +92,69 @@ describe('validateCoinGeckoNewsCoinId', () => {
 
         expect(result).toEqual({ shouldFetch: true });
         expect(lookupCount).toBe(0);
+    });
+});
+
+describe('resolveCoinGeckoNewsCoinByMint', () => {
+    const MINT = 'DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263';
+
+    it('resolves a fresh catalog row with a fetchable validation and no events', async () => {
+        const events: Record<string, unknown>[] = [];
+        const result = await Effect.runPromise(
+            resolveCoinGeckoNewsCoinByMint(MINT, {
+                lookup: () => Effect.succeed({ id: 'bonk', symbol: 'bonk', name: 'Bonk', lastSyncedAt: NOW }),
+                now: () => NOW,
+                emit: entry => void events.push(entry),
+            }),
+        );
+
+        expect(result).toEqual({ coinId: 'bonk', symbol: 'bonk', name: 'Bonk', validation: { shouldFetch: true } });
+        expect(events).toEqual([]);
+    });
+
+    it('emits the skip event for a stale row so the empty feed is explained', async () => {
+        const events: Record<string, unknown>[] = [];
+        const result = await Effect.runPromise(
+            resolveCoinGeckoNewsCoinByMint(MINT, {
+                lookup: () =>
+                    Effect.succeed({
+                        id: 'bonk',
+                        symbol: 'bonk',
+                        name: 'Bonk',
+                        lastSyncedAt: NOW - COINGECKO_NEWS_CATALOG_FRESHNESS_MS - 1,
+                    }),
+                now: () => NOW,
+                emit: entry => void events.push(entry),
+            }),
+        );
+
+        expect(result?.validation).toEqual({ shouldFetch: false, reason: 'stale' });
+        expect(events).toEqual([{ event: 'coingecko_news_skipped', coin_id: 'bonk', mint: MINT, reason: 'stale' }]);
+    });
+
+    it('returns null and emits unresolved for a missing row or a failed lookup', async () => {
+        const events: Record<string, unknown>[] = [];
+        const missing = await Effect.runPromise(
+            resolveCoinGeckoNewsCoinByMint(MINT, {
+                lookup: () => Effect.succeed(null),
+                now: () => NOW,
+                emit: entry => void events.push(entry),
+            }),
+        );
+        const failed = await Effect.runPromise(
+            resolveCoinGeckoNewsCoinByMint(MINT, {
+                lookup: () => Effect.fail(new Error('catalog down')),
+                now: () => NOW,
+                emit: entry => void events.push(entry),
+            }),
+        );
+
+        expect(missing).toBeNull();
+        expect(failed).toBeNull();
+        expect(events).toEqual([
+            { event: 'coingecko_news_mint_unresolved', mint: MINT, reason: 'missing' },
+            { event: 'coingecko_news_mint_unresolved', mint: MINT, reason: 'lookup_unavailable' },
+        ]);
     });
 });
 

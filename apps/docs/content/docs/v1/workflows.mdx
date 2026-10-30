@@ -1,22 +1,20 @@
 ---
-title: Common Workflows
-description: How to combine endpoints to build real integrations.
+title: Workflows
+description: How the v1 endpoints chain together for search pages, wallet grouping, watchlists, trading UI and risk badges.
 ---
 
-This page focuses on _how users typically chain endpoints_, not the full response schema.
+These recipes show which endpoints to call in which order. Parameter and response details are in the reference pages linked from each step.
 
-## Workflow: Search → Canonical asset detail page
+## Search box to asset page
 
-Use this when you have a user search box and want to render a token detail page.
-
-1. Search:
+1. Search as the user types:
 
 ```bash
 curl -sS "$API_BASE_URL/v1/assets/search?q=solana&limit=5" \
   -H "x-api-key: $API_KEY"
 ```
 
-2. Pick `results[0].assetId`, then fetch the canonical asset with includes:
+2. On selection, fetch the asset with the blocks the page needs:
 
 ```bash
 ASSET_ID="solana"
@@ -24,55 +22,39 @@ curl -sS "$API_BASE_URL/v1/assets/$ASSET_ID?include=profile,risk,ohlcv,markets" 
   -H "x-api-key: $API_KEY"
 ```
 
-Why this works well:
+Includes are independent and best-effort, so render each block from its own `ok` flag. Reference: [Search and resolve](/v1/endpoints/search-and-resolve), [Asset detail](/v1/endpoints/asset-detail).
 
-- One endpoint can return `profile`, `risk`, `ohlcv`, and `markets` as separate include blocks.
-- Includes are best-effort: your UI can render what’s available and degrade gracefully.
+## Any reference to a canonical asset
 
-## Workflow: Asset reference → canonical asset mapping
-
-Use this when you start from a Solana mint address (wallet holdings, swap input, onchain events), or when you have an alias / `assetId` and want the canonical mapping.
+Wallet holdings, swap inputs and on-chain events give you mints; users give you tickers and names. `resolve` accepts all of them:
 
 ```bash
-MINT="So11111111111111111111111111111111111111112"
-curl -sS "$API_BASE_URL/v1/assets/resolve?ref=$MINT" \
+curl -sS "$API_BASE_URL/v1/assets/resolve?ref=So11111111111111111111111111111111111111112" \
   -H "x-api-key: $API_KEY"
 ```
 
-Then:
+Branch on the status:
 
-- Use the returned `assetId` to fetch canonical asset data (and optionally includes).
+- `200`: use `assetId` for everything downstream. `resolvedBy` tells you how the match was made.
+- `404` with `details.code: "asset_not_registered"`: the mint is not a variant of a registered asset. Expect this branch for wallet contents. Keep the token as its own row, or track it through a [Token List](/v2/endpoints/lists) in API v2.
 
-## Workflow: Group wallet balances by canonical asset
+## Group wallet balances by asset
 
-Use this when an address has multiple token balances and you want to group variants that represent the same asset, such as USD stablecoins or tokenized Tesla shares.
+Resolve each mint and use the returned `assetId` as the grouping key, so USDC, USDT and PYUSD roll up into `usd` and the Tesla tokens into `tesla`. When you need the other mints in a group, list them:
 
 ```bash
-MINT="EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
-
-curl -sS "$API_BASE_URL/v1/assets/resolve?mint=$MINT" \
-  -H "x-api-key: $API_KEY"
-
-curl -sS "$API_BASE_URL/v1/assets/solana-$MINT" \
+curl -sS "$API_BASE_URL/v1/assets/usd/variants" \
   -H "x-api-key: $API_KEY"
 ```
 
-Both calls identify `usd` as the canonical grouping asset. Use that `assetId` as your grouping key, then fetch `/v1/assets/usd/variants` when you need the other mints in the group.
+Balances whose mint returned `404` have no grouping asset in v1. Reference: [Variants and markets](/v1/endpoints/variants-and-markets).
 
-The detail and collection responses can include `asset.stats.volume30dUSD`, a nullable rolling 30-day USD volume sum for the canonical group. Use it directly when populated instead of summing daily candles client-side.
+## Watchlist snapshots for many mints
 
-## Workflow: Watchlist snapshots (many mints)
+Two batch endpoints return one row per input mint, in input order, and never fail on an unregistered mint:
 
-Use this when you have a list of mints and want to render a watchlist quickly.
-
-### Option A: `variant-markets` (query string, max 50)
-
-```bash
-curl -sS "$API_BASE_URL/v1/assets/variant-markets?mints=$MINT1,$MINT2,$MINT3" \
-  -H "x-api-key: $API_KEY"
-```
-
-### Option B: `market-snapshots` (JSON body, max 250)
+- `GET /v1/assets/variant-markets?mints=...` for up to 50 mints in the query string. Unregistered mints come back with `assetId`, `chain`, `market` and `executionQuality` set to `null`.
+- `POST /v1/assets/market-snapshots` with a JSON body for up to 250 mints. Unregistered mints come back as `token: null, hasMarket: false`.
 
 ```bash
 curl -sS "$API_BASE_URL/v1/assets/market-snapshots" \
@@ -81,38 +63,58 @@ curl -sS "$API_BASE_URL/v1/assets/market-snapshots" \
   -d '{"mints":["MINT1","MINT2","MINT3"]}'
 ```
 
-Practical guidance:
+Both return per-mint figures. Canonical figures for the asset as a whole (reference price, market cap, canonical supply) are on asset detail. Reference: [Batch snapshots](/v1/endpoints/batch-snapshots).
 
-- Use **Option A** for lightweight “is there data cached for these mints?” checks.
-- Use **Option B** when you have larger lists and want a single request/response body.
+## "Where can I trade this?"
 
-## Workflow: Market + tickers for a canonical asset
-
-Use this to build “Where can I trade this?” UI.
-
-1. Markets (DEX markets list for a mint of the asset):
+1. DEX markets for a mint of the asset:
 
 ```bash
 curl -sS "$API_BASE_URL/v1/assets/$ASSET_ID/markets?limit=20" \
   -H "x-api-key: $API_KEY"
 ```
 
-2. Tickers (exchange tickers; requires an external listing ID for the asset):
+2. Centralised exchange tickers, when the asset has an external listing:
 
 ```bash
 curl -sS "$API_BASE_URL/v1/assets/$ASSET_ID/tickers?limit=20" \
   -H "x-api-key: $API_KEY"
 ```
 
-## Workflow: “Risk badge” for a mint
+To compare the asset's variants at a glance, `GET /v1/assets/{assetId}/variant-top-markets` returns the best market per variant. Reference: [Variants and markets](/v1/endpoints/variants-and-markets).
 
-Use this when you have a single mint address and want a fast signal.
+## A one-year chart
+
+```bash
+NOW=$(date +%s)
+curl -sS "$API_BASE_URL/v1/assets/$ASSET_ID/price-chart?interval=1D&from=$((NOW - 365*86400))&to=$NOW" \
+  -H "x-api-key: $API_KEY"
+```
+
+`price-chart` serves the canonical series for the asset (stock-market candles for equities, provider candles for listed crypto) and falls back to the primary variant's on-chain candles. Use `/ohlcv?mint=` when you want one specific token. Always pass `from` for anything other than the default week. Reference: [Charts](/v1/endpoints/charts).
+
+## A risk badge for a mint
 
 ```bash
 curl -sS "$API_BASE_URL/v1/assets/risk-summary?mint=$MINT" \
   -H "x-api-key: $API_KEY"
 ```
 
-Notes:
+- `404 asset_not_registered`: no score exists and retrying will not change that. Show no badge or an "unlisted" state.
+- `200` with `hasInsufficientData: true`: the token is unscored and `grade` is a placeholder. Show "Insufficient data", not the grade.
+- Otherwise show `grade` and `label`, and `caps` as the reasons the score was limited.
 
-- If cached market data is missing, you’ll get an “Insufficient Data” style response.
+For stablecoins, pair the badge with [`pegHealth`](/v1/concepts/stablecoin-health) from `GET /v1/assets/{assetId}/risk-summary`. Reference: [Risk](/v1/endpoints/risk).
+
+## Honour advisories
+
+Every variant object you receive carries `advisory`. Before enabling a trade action, check it:
+
+```ts
+const advisory = variant.advisory;
+if (advisory?.status === 'compromised' || advisory?.status === 'blocked') {
+  disableTrading(advisory.reason, advisory.url);
+}
+```
+
+Direct lookups never hide a flagged mint, so a shared link always lands on the warning. Details: [Advisories](/v1/concepts/advisories).

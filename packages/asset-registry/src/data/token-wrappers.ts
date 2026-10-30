@@ -101,21 +101,6 @@ export const TOKEN_WRAPPER_GROUPS: TokenWrapperGroup[] = [
         ],
     },
     {
-        baseAsset: 'XRP',
-        baseSymbol: 'XRP',
-        coingeckoId: 'ripple',
-        description: 'XRP wrapped for use on Solana',
-        wrappers: [
-            {
-                address: '6UpQcMAb5xMzxc7ZfPaVMgx3KqsvKZdT5U718BzD5We2',
-                symbol: 'wXRP',
-                name: 'Wrapped XRP',
-                deployer: 'Hex Trust',
-                deployerUrl: 'https://www.hextrust.com/services/wrapping/wxrp',
-            },
-        ],
-    },
-    {
         baseAsset: 'Avalanche',
         baseSymbol: 'AVAX',
         coingeckoId: 'avalanche-2',

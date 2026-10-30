@@ -1,0 +1,224 @@
+---
+title: Assets
+description: Curated, chain-agnostic assets with their variants on every chain, per-chain stats, a cross-chain aggregate and the off-chain reference market.
+---
+
+All endpoints below use `https://api.tokens.xyz/v2` with an `x-api-key` header; see
+[Authentication](/v2/authentication). The model (assets vs variants, "all chains by default",
+primary variant selection, how `chainStats`, `aggregate`, `stats` and `referenceMarket` relate)
+is on [Multichain assets](/v2/concepts/multichain-assets); every type named below is in
+[Shared shapes](/v2/concepts/shared-shapes). Tokens are looked up under
+[Variants](/v2/endpoints/variants).
+
+## `GET /v2/assets`
+
+Curated assets from one list (or every curated list) with their primary variant on every chain,
+per-chain stats and the cross-chain aggregate. Rows are ordered by headline 24h volume.
+
+**Auth**: `x-api-key`, scope `assets:read`.
+
+### Query params
+
+- `list` (optional): `all` (default) or a curated slug: `majors`, `currencies`, `lsts`, `rwas`,
+  `etfs`, `metals`, `stocks` (the aliases `stables` and `xstocks` are accepted). Anything else is
+  `400 invalid_list` with the valid values in `details.lists`.
+- `chain` (optional): one chain id. Keeps only assets with at least one variant on that chain
+  and, with `include=variants`, lists only that chain's variants. Stats are unaffected.
+- `category` (optional): one `AssetCategory` (`invalid_category` otherwise).
+- `q` (optional, max 100 chars): case-insensitive substring over id, symbol, name, aliases and
+  variant symbols of the curated set. Unregistered tokens live under
+  [`GET /v2/search`](/v2/endpoints/search).
+- `primaryVariantStrategy` (optional): `liquidity`, `execution_quality` or
+  `stock_redeemability`. Default `liquidity`, except `list=stocks` and equity assets, which
+  default to `stock_redeemability`.
+- `primaryScope` (optional): `executable` (default) or `global`. See
+  [Primary variant and `primaryScope`](/v2/concepts/multichain-assets#primary-variant-and-primaryscope).
+- `include` (optional): `variants` attaches `variants[]` to every row, sorted by liquidity across
+  chains. Anything else is `400 invalid_include`.
+- `limit` (1–500, default 100; clamped), `offset` (default 0). `total` is the full count after
+  filters, so page until `offset + assets.length >= total`.
+
+### Response
+
+```ts
+interface AssetsResponse {
+    assets: V2Asset[]; // each with `rank` set to its position in the full ordering
+    total: number;
+    list: string; // the resolved slug, or "all"
+    primaryVariantStrategy: PrimaryVariantStrategy; // the requested / list default; equities may apply their own
+    primaryScope: 'executable' | 'global';
+}
+```
+
+### Example
+
+```bash
+# Majors with a variant on Base, listing only the Base variants
+curl -sS "$API_BASE_URL/v2/assets?list=majors&chain=base&include=variants&limit=20" \
+  -H "x-api-key: $API_KEY"
+```
+
+```json
+{
+  "assets": [
+    {
+      "assetId": "usd",
+      "name": "US Dollar",
+      "symbol": "USD",
+      "category": "stablecoin",
+      "chains": ["solana", "ethereum", "base", "arbitrum", "polygon", "bnb"],
+      "chainStats": {
+        "solana": { "liquidity": 410000000, "volume24hUSD": 2100000000, "trade24h": 7100000, "marketCap": 9800000000, "fdv": 9800000000, "circulatingSupply": 9800000000, "variantCount": 4, "issuedVariantCount": 2 },
+        "base": { "liquidity": 52000000, "volume24hUSD": 380000000, "trade24h": 1400000, "marketCap": 3900000000, "fdv": 3900000000, "circulatingSupply": 3900000000, "variantCount": 2, "issuedVariantCount": 1 }
+      },
+      "aggregate": { "liquidity": 1800000000, "volume24hUSD": 9400000000, "trade24h": 9200000, "marketCap": 170000000000, "fdv": 170000000000, "circulatingSupply": 170000000000, "variantCount": 14, "issuedVariantCount": 9, "chainCount": 6, "excludedFromSupplyCount": 5 },
+      "referenceMarket": { "source": "coingecko", "coinId": "usd-coin", "price": 0.9998, "marketCap": 171000000000, "circulatingSupply": 171000000000, "totalSupply": 171000000000, "maxSupply": null, "volume24hUSD": 12000000000, "priceChange24hPercent": 0.01, "asOf": 1792800000000, "lastFetchedAt": 1792800030000 },
+      "primaryScope": "executable",
+      "primaryVariantSelection": { "pool": "executable_active", "reason": "liquidity" },
+      "primaryVariant": { "key": "solana:EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", "chain": "solana", "address": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", "symbol": "USDC", "issuance": "native", "rank": 0, "...": "..." },
+      "primaryVariantByChain": { "solana": { "...": "..." }, "base": { "key": "base:0x833589fcd6edb6e08f4c7c32d4f71b54bda02913", "...": "..." } },
+      "variants": [
+        { "key": "base:0x833589fcd6edb6e08f4c7c32d4f71b54bda02913", "chain": "base", "address": "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913", "symbol": "USDC", "issuance": "native", "rank": 2, "explorerUrl": "https://basescan.org/token/0x833589fcd6edb6e08f4c7c32d4f71b54bda02913", "...": "..." }
+      ],
+      "rank": 0,
+      "...": "..."
+    }
+  ],
+  "total": 11,
+  "list": "majors",
+  "primaryVariantStrategy": "liquidity",
+  "primaryScope": "executable"
+}
+```
+
+`chains`, `chainStats` and `aggregate` still describe all six chains even though `chain=base`
+was requested; only `variants[]` was narrowed.
+
+### Notes
+
+- Variants carrying a `blocked` advisory are omitted from every row (`asset.advisories` still
+  names them); an asset whose variants are all blocked is dropped from the list. The detail route
+  serves them.
+- Cached for 60 s (`stale-while-revalidate` 300 s). If the data layer is unavailable the endpoint
+  returns the last healthy payload for the same params (up to 15 minutes old) with a `200`; use
+  `market.lastFetchedAt` (our last successful provider write; `market.asOf` is only set for
+  trade-sourced Solana rows) and `referenceMarket.asOf` as the freshness signals.
+
+## `GET /v2/assets/{assetId}`
+
+One asset with every variant on every chain, per-chain stats, the cross-chain aggregate and the
+off-chain reference market.
+
+**Auth**: `x-api-key`, scope `assets:read`.
+
+### Path params
+
+- `{assetId}`: an asset id (`usd`, `bitcoin`, `tesla`) or an alias; renamed ids are followed. A
+  Solana or `0x` address, or a `<chain>:<address>` key, is `400 invalid_asset_id`; look tokens up
+  under [`GET /v2/variants/{chain}/{address}`](/v2/endpoints/variants#get-v2variantschainaddress).
+  Ids over 120 characters are also `invalid_asset_id`.
+
+### Query params
+
+- `primaryVariantStrategy` (optional), as for the list route.
+- `primaryScope` (optional), as for the list route.
+- `include` (optional): any of `executionQuality`, `pegHealth`, `preStocks`, comma-separated or
+  repeated. Each requested value adds that key to **every** variant in the response
+  (`variants[]`, `primaryVariant` and each `primaryVariantByChain.*`): always present, an object
+  when there is data, `null` when the chain lacks the capability or there is no data for that
+  variant. `executionQuality` needs the chain's `executionQuality` capability; `pegHealth` needs
+  `risk` and a `stablecoin`-category asset; `preStocks` is Solana PreStocks tokens only. Keys you
+  did not ask for are absent. Anything else is `400 invalid_include` (`details.include`,
+  `details.values`).
+
+### Response
+
+```ts
+interface AssetResponse extends V2Asset {
+    variants: V2Variant[]; // always present here, liquidity order across chains
+    resolvedBy: 'assetId' | 'alias' | 'rename';
+}
+```
+
+### Example
+
+```bash
+curl -sS "$API_BASE_URL/v2/assets/usd" -H "x-api-key: $API_KEY"
+
+# Aliases resolve; the body says how
+curl -sS "$API_BASE_URL/v2/assets/usdc" -H "x-api-key: $API_KEY" | jq '{assetId, resolvedBy}'
+# { "assetId": "usd", "resolvedBy": "alias" }
+
+# Peg status on every variant: an object on Solana stablecoins, null on chains without `risk`
+curl -sS "$API_BASE_URL/v2/assets/usd?include=pegHealth" -H "x-api-key: $API_KEY" \
+  | jq '.variants[] | {key, pegHealth}'
+# { "key": "solana:EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", "pegHealth": { "provider": "webacy", "referenceKind": "fixed", "tier": "ok", "deviationPct": -0.01, "updatedAt": 1792800000000, "stale": false } }
+# { "key": "base:0x833589fcd6edb6e08f4c7c32d4f71b54bda02913", "pegHealth": null }
+```
+
+### Notes
+
+- Unknown ids are `404` with `details.code: "asset_not_found"` (`details.assetId`).
+- Unlike the list route, `blocked` variants are **served** here with their advisory attached, so a
+  direct read never hides a flagged sibling.
+- For the `solana` asset only, `variants[]` is bounded: `yield` and `lst` variants need at least
+  $250k liquidity and at most 500 are returned. The
+  [`/variants` sub-route](#get-v2assetsassetidvariants) is never capped.
+- Cached for 60 s (`stale-while-revalidate` 120 s); served from a last-good copy (up to 15
+  minutes old) when the data layer is unavailable. A `404` is a real answer and is never cached as
+  good.
+
+## `GET /v2/assets/{assetId}/variants`
+
+The asset's variants on every chain (or one chain with `chain=`), filterable, sorted and
+paginated. Nothing is capped, so this is the right call for the `solana` asset's LSTs and for any
+UI that pages through variants.
+
+**Auth**: `x-api-key`, scope `assets:read`.
+
+### Path params
+
+- `{assetId}`: as for the detail route (`invalid_asset_id` and `asset_not_found` apply).
+
+### Query params
+
+- `chain` (optional): one chain id.
+- `kind` (optional): one `VariantKind` (`invalid_kind` otherwise).
+- `liquidityTier` (optional): `tier1`, `tier2` or `tier3` (`invalid_liquidity_tier` otherwise).
+- `stockVariantTier` (optional): `share_redeemable`, `cash_redeemable` or `not_redeemable`
+  (`invalid_stock_variant_tier` otherwise).
+- `sort` (optional): `liquidity` (default), `stock_redeemability` (redeemable tiers first, then
+  liquidity) or `execution_quality` (`invalid_sort` otherwise). `execution_quality` is accepted but
+  currently orders by liquidity on every chain; it will use fill-quality scores once they join v2.
+- `limit` (1–1000, default 100; clamped), `offset`.
+
+### Response
+
+```ts
+interface AssetVariantsResponse {
+    assetId: string; // the canonical id, even when an alias was requested
+    variants: V2Variant[];
+    total: number;   // after filters, before pagination
+    sort: 'liquidity' | 'execution_quality' | 'stock_redeemability';
+}
+```
+
+### Example
+
+```bash
+# USD stablecoins on Solana, deepest three
+curl -sS "$API_BASE_URL/v2/assets/usd/variants?chain=solana&limit=3" -H "x-api-key: $API_KEY"
+
+# Tesla: redeemable tokenized shares first
+curl -sS "$API_BASE_URL/v2/assets/tesla/variants?kind=tokenized_equity&sort=stock_redeemability" \
+  -H "x-api-key: $API_KEY"
+```
+
+### Notes
+
+- Each variant's `rank` is its liquidity rank within the **whole** asset across chains,
+  independent of `chain=`, the filters and `sort`, so a Base-only page still tells you where each
+  token sits globally.
+- `blocked` variants are included with their advisory.
+- Cached for 30 s (`stale-while-revalidate` 60 s); last-good copy up to 10 minutes old when the
+  data layer is unavailable.

@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'bun:test';
+import type { StablecoinHealth } from '@tokens/asset-registry';
 
 import { buildAssetDetailResponse } from './_asset-detail-response';
 import { absolutizeLocalLogoUrl } from './_asset-helpers';
@@ -94,6 +95,63 @@ describe('buildAssetDetailResponse', () => {
         const canonicalMarket = result.asset.canonicalMarket as { source: string; marketCap: number | null };
         expect(canonicalMarket.source).toBe('clickhouse_stock');
         expect(canonicalMarket.marketCap).toBe(90 * 1_129_393_151);
+    });
+
+    it('passes canonical supply through on a coingecko canonicalMarket, independent of on-chain stats', () => {
+        const result = buildAssetDetailResponse({
+            asset: {
+                assetId: 'bitcoin',
+                name: 'Bitcoin',
+                symbol: 'BTC',
+                category: 'crypto',
+                aliases: ['btc'],
+                coingeckoId: 'bitcoin',
+                variants: [],
+            },
+            assetDescription: null,
+            primaryVariant: null,
+            token: undefined,
+            tokenByMint: new Map(),
+            fillQualityByMint: new Map(),
+            marketMeta: undefined,
+            marketMetaByMint: new Map(),
+            effectiveStats: null,
+            imageUrl: null,
+            symbols: ['BTC'],
+            stockSymbol: null,
+            canonicalMarket: {
+                source: 'coingecko',
+                coinId: 'bitcoin',
+                price: 81_307,
+                marketCap: 1.63e12,
+                volume24hUSD: 3.8e10,
+                priceChange24hPercent: -2.65,
+                lastFetchedAt: 1_234_500,
+                providerLastUpdatedAt: 999_999,
+                circulatingSupply: 20_049_703,
+                totalSupply: 20_049_721,
+                maxSupply: 21_000_000,
+            },
+            mintRank: new Map(),
+            sanctumActiveMints: null,
+            includeMint: null,
+            variantsMode: '',
+            includesOut: {},
+            hasIncludes: false,
+        });
+
+        const canonicalMarket = result.asset.canonicalMarket as {
+            source: string;
+            circulatingSupply: number | null;
+            totalSupply: number | null;
+            maxSupply: number | null;
+        };
+        expect(canonicalMarket.source).toBe('coingecko');
+        expect(canonicalMarket.circulatingSupply).toBe(20_049_703);
+        expect(canonicalMarket.totalSupply).toBe(20_049_721);
+        expect(canonicalMarket.maxSupply).toBe(21_000_000);
+        // stats stay the on-chain block (null here: no variants, no aggregate).
+        expect(result.asset.stats).toBeNull();
     });
 
     it('includes resolution metadata when present', () => {
@@ -291,5 +349,218 @@ describe('buildAssetDetailResponse', () => {
 
         expect(result.asset.imageUrl).toBe('https://api.tokens.xyz/logos/popular/uniswap.png');
         expect(result.asset.variantGroups.spot[0]?.market?.logoURI).toBe(null);
+    });
+});
+
+describe('buildAssetDetailResponse advisories', () => {
+    const SILV = 'SiLVFMgD3eD2rgK628NbTBq9MnuJF5FW2CRaVyTB35L';
+    const ONDO = 'Es9vMFrzaCERmJfrF4H2FYD4KCoNkYtvdQ7BPP3Qz1n';
+    const BLOCKED = 'DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263';
+    const compromised = { status: 'compromised' as const, reason: 'Issuer exploited', url: 'https://x', since: 2 };
+    const blocked = { status: 'blocked' as const, reason: 'Drainer', url: null, since: 3 };
+
+    function baseParams(asset: Parameters<typeof buildAssetDetailResponse>[0]['asset']) {
+        return {
+            asset,
+            assetDescription: null,
+            token: undefined,
+            tokenByMint: new Map(),
+            fillQualityByMint: new Map(),
+            marketMeta: undefined,
+            marketMetaByMint: new Map(),
+            effectiveStats: null,
+            imageUrl: null,
+            symbols: ['XAG'],
+            stockSymbol: null,
+            canonicalMarket: undefined,
+            mintRank: new Map(),
+            sanctumActiveMints: null,
+            includeMint: null,
+            variantsMode: '',
+            includesOut: {},
+            hasIncludes: false,
+        };
+    }
+
+    it('emits advisory on every variant group row and on the primary; advisories defaults to []', () => {
+        const ondo = {
+            variantId: 'silver:ondo',
+            mint: ONDO,
+            kind: 'wrapped' as const,
+            trustTier: 'tier2' as const,
+            tags: [],
+        };
+        const silv = {
+            variantId: 'silver:silv',
+            mint: SILV,
+            kind: 'wrapped' as const,
+            trustTier: 'tier2' as const,
+            tags: [],
+            advisory: compromised,
+        };
+        const result = buildAssetDetailResponse({
+            ...baseParams({
+                assetId: 'silver',
+                name: 'Silver',
+                symbol: 'XAG',
+                category: 'commodity',
+                aliases: [],
+                variants: [ondo, silv],
+            }),
+            primaryVariant: ondo,
+        });
+
+        expect(result.asset.advisories).toEqual([]);
+        expect(result.asset.primaryVariant?.advisory).toBeNull();
+        expect('advisory' in result.asset.primaryVariant!).toBe(true);
+
+        const byMint = new Map(result.asset.variantGroups.spot.map(v => [v.mint, v] as const));
+        expect(byMint.get(ONDO)?.advisory).toBeNull();
+        expect(byMint.get(SILV)?.advisory).toEqual(compromised);
+    });
+
+    it('carries the advisories summary (including hidden siblings) and a flagged primary keeps its advisory', () => {
+        const silv = {
+            variantId: 'silver:silv',
+            mint: SILV,
+            kind: 'wrapped' as const,
+            trustTier: 'tier2' as const,
+            tags: [],
+            advisory: compromised,
+        };
+        const result = buildAssetDetailResponse({
+            ...baseParams({
+                assetId: 'silver',
+                name: 'Silver',
+                symbol: 'XAG',
+                category: 'commodity',
+                aliases: [],
+                variants: [silv],
+            }),
+            primaryVariant: silv,
+            advisories: [
+                { mint: BLOCKED, variantId: 'silver:blocked', ...blocked },
+                { mint: SILV, variantId: 'silver:silv', ...compromised },
+            ],
+        });
+
+        expect(result.asset.primaryVariant?.advisory?.status).toBe('compromised');
+        expect(result.asset.advisories.map(a => a.mint)).toEqual([BLOCKED, SILV]);
+        expect(result.asset.advisories[0]?.variantId).toBe('silver:blocked');
+        expect(result.asset.advisories[0]?.status).toBe('blocked');
+    });
+});
+
+describe('buildAssetDetailResponse stablecoin pegHealth', () => {
+    const USDC = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
+    const USDT = 'Es9vMFrzaCERmJfrF4H2FYD4KCoNkYtvdQ7BPP3Qz1n';
+    const NOW = 1_800_000_000_000;
+
+    const usdcHealth: StablecoinHealth = {
+        pegHealth: {
+            provider: 'webacy',
+            tier: 'warning',
+            overallRisk: 62.5,
+            deviationPct: -2.4,
+            priceUsd: 0.976,
+            pegUsd: 1,
+            tierSince: NOW - 60_000,
+            updatedAt: NOW - 1_000,
+            stale: false,
+        },
+        structuralHealth: null,
+    };
+
+    const usdc = { variantId: 'usd:usdc', mint: USDC, kind: 'native' as const, trustTier: 'tier1' as const, tags: [] };
+    const usdt = { variantId: 'usd:usdt', mint: USDT, kind: 'native' as const, trustTier: 'tier1' as const, tags: [] };
+
+    function baseParams(asset: Parameters<typeof buildAssetDetailResponse>[0]['asset']) {
+        return {
+            asset,
+            assetDescription: null,
+            token: undefined,
+            tokenByMint: new Map(),
+            fillQualityByMint: new Map(),
+            marketMeta: undefined,
+            marketMetaByMint: new Map(),
+            effectiveStats: null,
+            imageUrl: null,
+            symbols: ['USD'],
+            stockSymbol: null,
+            canonicalMarket: undefined,
+            mintRank: new Map(),
+            sanctumActiveMints: null,
+            includeMint: null,
+            variantsMode: '',
+            includesOut: {},
+            hasIncludes: false,
+        };
+    }
+
+    it('emits compact pegHealth on every variant row and the primary for stablecoin assets (null when no entry)', () => {
+        const result = buildAssetDetailResponse({
+            ...baseParams({
+                assetId: 'usd',
+                name: 'US Dollar',
+                symbol: 'USD',
+                category: 'stablecoin',
+                aliases: ['usd'],
+                variants: [usdc, usdt],
+            }),
+            primaryVariant: usdc,
+            stablecoinHealthByMint: new Map([[USDC, usdcHealth]]),
+        });
+
+        const compact = {
+            provider: 'webacy',
+            referenceKind: 'fixed',
+            tier: 'warning',
+            deviationPct: -2.4,
+            updatedAt: NOW - 1_000,
+            stale: false,
+        };
+        expect(result.asset.primaryVariant?.pegHealth).toEqual(compact);
+        expect('overallRisk' in (result.asset.primaryVariant?.pegHealth as object)).toBe(false);
+
+        const byMint = new Map(result.asset.variantGroups.spot.map(v => [v.mint, v] as const));
+        expect(byMint.get(USDC)?.pegHealth).toEqual(compact);
+        expect(byMint.get(USDT)?.pegHealth).toBeNull();
+        expect('pegHealth' in byMint.get(USDT)!).toBe(true);
+    });
+
+    it('still emits pegHealth: null for stablecoin assets when no map is provided', () => {
+        const result = buildAssetDetailResponse({
+            ...baseParams({
+                assetId: 'usd',
+                name: 'US Dollar',
+                symbol: 'USD',
+                category: 'stablecoin',
+                aliases: ['usd'],
+                variants: [usdc],
+            }),
+            primaryVariant: usdc,
+        });
+
+        expect('pegHealth' in result.asset.primaryVariant!).toBe(true);
+        expect(result.asset.primaryVariant?.pegHealth).toBeNull();
+        expect(result.asset.variantGroups.spot[0]?.pegHealth).toBeNull();
+    });
+
+    it('omits the pegHealth key entirely for non-stablecoin assets, even with a populated map', () => {
+        const result = buildAssetDetailResponse({
+            ...baseParams({
+                assetId: 'silver',
+                name: 'Silver',
+                symbol: 'XAG',
+                category: 'commodity',
+                aliases: [],
+                variants: [usdc],
+            }),
+            primaryVariant: usdc,
+            stablecoinHealthByMint: new Map([[USDC, usdcHealth]]),
+        });
+
+        expect('pegHealth' in result.asset.primaryVariant!).toBe(false);
+        expect('pegHealth' in result.asset.variantGroups.spot[0]!).toBe(false);
     });
 });

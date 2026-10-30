@@ -1,7 +1,9 @@
-import { Suspense } from 'react';
+import { Suspense, type ReactNode } from 'react';
 
 import { fetchApiAppJsonOrNull } from '@/lib/api-app';
+import { normalizePegHealth, normalizeStructuralHealth } from '@/lib/stablecoin-health';
 import { RiskSectionSkeleton, RiskSectionState } from '@/app/_components/risk/risk-section-shell';
+import { StablecoinHealthPanel } from '@/app/_components/risk/stablecoin-health-panel';
 import type { MarketScoreInput } from '@/app/token/[address]/components/token-risk-helpers';
 import type { RiskTag } from '@/app/token/[address]/components/token-risk-display';
 
@@ -20,6 +22,9 @@ interface V1RiskDetailsResponse {
         marketScoreInput?: MarketScoreInput;
         tags?: RiskTag[];
         lastUpdatedAt?: number | null;
+        /** Stablecoin-only Webacy blocks; decoded defensively (older API builds omit them). */
+        pegHealth?: unknown;
+        structuralHealth?: unknown;
     };
 }
 
@@ -52,6 +57,30 @@ async function RiskSectionLoader({ assetId, mint }: { assetId: string; mint: str
         );
     }
 
+    // The stablecoin blocks ride along on the same payload regardless of
+    // whether the market score is ready, so render them above whatever the
+    // risk state resolves to.
+    const pegHealth = normalizePegHealth(data.risk.pegHealth);
+    const structuralHealth = normalizeStructuralHealth(data.risk.structuralHealth);
+    const healthPanel =
+        pegHealth || structuralHealth ? (
+            <StablecoinHealthPanel
+                pegHealth={pegHealth}
+                structuralHealth={structuralHealth}
+                mint={mint}
+                className="mb-4 md:mb-6"
+            />
+        ) : null;
+
+    return (
+        <>
+            {healthPanel}
+            {renderRiskState(data)}
+        </>
+    );
+}
+
+function renderRiskState(data: V1RiskDetailsResponse): ReactNode {
     if (!data.risk.ok) {
         if (data.risk.reason === 'not_configured') {
             return (

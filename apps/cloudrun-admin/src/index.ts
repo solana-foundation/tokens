@@ -1,10 +1,13 @@
-import { registerGracefulShutdown, wrapFetchWithShutdownGuard } from '@tokens/cloudrun-shutdown';
+import { bearerTokenCandidates, registerGracefulShutdown, wrapFetchWithShutdownGuard } from '@tokens/cloudrun-shutdown';
 import { parseAdminClerkUserIds, parseAdminEmails } from './adminAuth';
 import { getSql, makePostgresAdminRepo } from './db';
 import { makePostgresAdminMutationsRepo } from './db/curatedTokensMutations';
 import { makePostgresAdminReadsRepo } from './db/curatedTokensReads';
 import { makePostgresHardDeleteRepo } from './db/hardDelete';
 import { makePostgresTokenListsAdminRepo } from './db/tokenListsAdmin';
+import { makePostgresVariantAdvisoriesRepo } from './db/variantAdvisories';
+import { makePostgresLaunchpadApprovalsRepo } from './db/launchpadApprovals';
+import { makePostgresAssetTagsImportRepo } from './db/assetTagsImport';
 import { makeGcsLogoSigner } from './gcs';
 import { makeGoogleOidcVerifier } from './oidc';
 import { createApp } from './server';
@@ -46,11 +49,14 @@ const app = createApp({
     mutations: makePostgresAdminMutationsRepo(sql),
     hardDelete: makePostgresHardDeleteRepo(sql),
     tokenListsAdmin: makePostgresTokenListsAdminRepo(sql),
+    variantAdvisories: makePostgresVariantAdvisoriesRepo(sql),
+    launchpadApprovals: makePostgresLaunchpadApprovalsRepo(sql),
+    assetTagsImport: makePostgresAssetTagsImportRepo(sql),
     ...(gcsLogoBucket
         ? { logoSigner: makeGcsLogoSigner(gcsLogoBucket, process.env.GCS_LOGO_PUBLIC_BASE_URL?.trim()) }
         : {}),
     adminAllowlist,
-    authToken,
+    authToken: bearerTokenCandidates(authToken, process.env.TOKENS_CLOUDRUN_AUTH_TOKEN_PREVIOUS),
     ...(rpcVerifyOidc ? { rpcVerifyOidc } : {}),
     gcpLogs: {
         ...(process.env.LOKI_PUSH_URL?.trim() ? { lokiPushUrl: process.env.LOKI_PUSH_URL.trim() } : {}),

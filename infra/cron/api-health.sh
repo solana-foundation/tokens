@@ -11,6 +11,9 @@ cd "$REPO_DIR"
 for key in TOKENS_API_KEY TOKENS_API_KEY_STAGING TOKENS_API_PROD_URL TOKENS_API_STAGE_URL TOKENS_APP_PROD_URL TOKENS_APP_STAGE_URL SLACK_ALERT_WEBHOOK_URL GRAFANA_LOKI_URL GRAFANA_LOKI_USER GRAFANA_LOKI_TOKEN; do
   declare "$key=$(doppler secrets get "$key" --plain --project "$DOPPLER_PROJECT" --config "$DOPPLER_CONFIG")"
 done
+for key in SF_LOKI_URL SF_LOKI_USER SF_LOKI_WRITE_TOKEN; do
+  declare "$key=$(doppler secrets get "$key" --plain --project "$DOPPLER_PROJECT" --config "$DOPPLER_CONFIG" 2>/dev/null || true)"
+done
 
 push_smoke_to_loki() {
   local target="$1" status="$2" summary="$3" log_path="$4"
@@ -32,19 +35,26 @@ push_smoke_to_loki() {
   payload=$(jq -nc \
     --arg target "$target" --arg host "$(hostname)" --arg ts "$ts" --arg line "$line" \
     '{streams: [{stream: {service: "tokens-smoke", env: "prd", target: $target, host: $host}, values: [[$ts, $line]]}]}')
-  local auth
-  auth="Basic $(printf '%s:%s' "$GRAFANA_LOKI_USER" "$GRAFANA_LOKI_TOKEN" | base64 -w0)"
-  curl -sS --max-time 10 -o /dev/null -X POST \
-    "$GRAFANA_LOKI_URL/loki/api/v1/push" \
-    -H "Authorization: $auth" \
-    -H 'Content-Type: application/json' \
-    --data "$payload" || true
+  local url user token
+  while IFS='|' read -r url user token; do
+    [ -n "$url" ] && [ -n "$user" ] && [ -n "$token" ] || continue
+    curl -sS --max-time 10 -o /dev/null -X POST \
+      "$url/loki/api/v1/push" \
+      -H "Authorization: Basic $(printf '%s:%s' "$user" "$token" | base64 -w0)" \
+      -H 'Content-Type: application/json' \
+      --data "$payload" || true
+  done <<EOF
+$GRAFANA_LOKI_URL|$GRAFANA_LOKI_USER|$GRAFANA_LOKI_TOKEN
+${SF_LOKI_URL:-}|${SF_LOKI_USER:-}|${SF_LOKI_WRITE_TOKEN:-}
+EOF
 }
 
+# Web probes (public site + its data pages) run against prod only: staging
+# previews have no stable public URL.
 if [ "$TARGET" = "staging" ]; then
-  api_url="$TOKENS_API_STAGE_URL"; app_url="$TOKENS_APP_STAGE_URL"; api_key="$TOKENS_API_KEY_STAGING"
+  api_url="$TOKENS_API_STAGE_URL"; app_url="$TOKENS_APP_STAGE_URL"; api_key="$TOKENS_API_KEY_STAGING"; web_url=""
 else
-  api_url="$TOKENS_API_PROD_URL"; app_url="$TOKENS_APP_PROD_URL"; api_key="$TOKENS_API_KEY"
+  api_url="$TOKENS_API_PROD_URL"; app_url="$TOKENS_APP_PROD_URL"; api_key="$TOKENS_API_KEY"; web_url="https://tokens.xyz"
 fi
 
 SMOKE_LOG="$(mktemp -t tokens-smoke.XXXXXX)"
@@ -53,6 +63,7 @@ trap 'rm -f "$SMOKE_LOG"' EXIT
 probe_status=0
 TOKENS_API_BASE_URL="$api_url" \
 TOKENS_APP_BASE_URL="$app_url" \
+TOKENS_WEB_BASE_URL="$web_url" \
 TOKENS_API_KEY="$api_key" \
   "$HOME/.bun/bin/bun" scripts/smoke-canary.ts > "$SMOKE_LOG" 2>&1 \
   || probe_status=$?

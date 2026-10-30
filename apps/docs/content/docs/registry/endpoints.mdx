@@ -1,0 +1,174 @@
+---
+title: Endpoints
+description: GET /v2/registry and GET /v2/registry/{mint} — the asset registry list and single-mint lookup.
+---
+
+Both endpoints use `https://api.tokens.xyz/v2` with an `x-api-key` header and require only the default
+`assets:read` scope; see [Authentication](/v2/authentication). Error codes and cache windows are on
+[Errors & limits](/v2/errors-and-limits).
+
+## `GET /v2/registry`
+
+The full registry, ordered and paged, with optional taxonomy filters.
+
+- **Scope**: `assets:read`
+- **Query params**:
+  - `limit` — items per page, 1–5000, default 500. The whole registry fits in one page at `limit=5000`.
+  - `offset` — 0-based start position in the ordered registry, default 0.
+  - `group`, `category`, `class` — optional exact-match filters on the three taxonomy tiers
+    (case-sensitive, spelled as returned; at most 80 characters each). Combine freely; `total` reflects
+    the filtered set. Values are on [Taxonomy](/registry/taxonomy).
+
+### Response
+
+```ts
+interface RegistryResponse {
+    generatedAt: string | null; // upstream snapshot timestamp (ISO 8601); null before the first sync
+    syncedAt: number | null;    // our last successful sync, unix ms; null before the first sync
+    total: number;              // items matching the filters (not the page length)
+    items: RegistryItem[];
+}
+
+interface RegistryItem {
+    mint: string;
+    symbol: string;
+    name: string | null;
+    logoURI: string | null;
+    hasTokenPage: boolean;     // the mint is a registered asset; tokens.xyz has a page for it
+    assetId: string | null;    // the registered asset's id: tokens.xyz/{assetId}?solana={mint}; null when hasTokenPage is false
+    group: string | null;      // e.g. "RWA", "Crypto Native", "Stablecoins"
+    category: string | null;   // e.g. "Equities", "Fixed Income", "Fiat-Backed"
+    assetClass: string | null; // e.g. "Stocks", "US Treasuries", "USD Stablecoins"
+    alliumClass: string | null;    // Allium's classification
+    alliumValueUsd: number | null; // Allium's on-chain value, USD
+    rwaClass: string | null;       // RWA.xyz's classification
+    rwaValueUsd: number | null;    // RWA.xyz's on-chain value, USD
+    marketCapUsd: number | null;   // CoinGecko
+    rank: number;                  // upstream row order, 0-based, stable across pages
+}
+```
+
+### Example
+
+```bash
+curl -sS "$API_BASE_URL/v2/registry?group=Stablecoins&limit=5" \
+  -H "x-api-key: $API_KEY"
+```
+
+```json
+{
+  "generatedAt": "2026-10-23T06:00:12.000Z",
+  "syncedAt": 1792565400000,
+  "total": 101,
+  "items": [
+    {
+      "mint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+      "symbol": "USDC",
+      "name": "USD Coin",
+      "logoURI": "https://…",
+      "hasTokenPage": true,
+      "assetId": "usd",
+      "group": "Stablecoins",
+      "category": "Fiat-Backed",
+      "assetClass": "USD Stablecoins",
+      "alliumClass": "stablecoins",
+      "alliumValueUsd": 6686697914.43,
+      "rwaClass": "Stablecoins",
+      "rwaValueUsd": 6686697914.43,
+      "marketCapUsd": 74500000000,
+      "rank": 0
+    }
+  ]
+}
+```
+
+### Notes
+
+- **Ordering.** Items come back in the data team's order and `rank` preserves it across pages: by
+  Allium's value, falling back to RWA.xyz's, descending with empties last, then by market cap. Keep
+  that order if you want to match tokens.xyz; re-sorting by market cap floats market-cap-only assets
+  above the valued RWAs.
+- **Freshness.** The response is cached for 5 minutes and the registry is synced on a schedule, so
+  `generatedAt` can lag the data team by up to about an hour. If the registry backend is unavailable
+  the endpoint serves the last good payload for that query (up to an hour old) with a `200`; treat
+  `syncedAt` as the freshness signal.
+- **Filters.** An unknown filter value is not an error: you get `total: 0` and an empty `items`. A
+  filter longer than 80 characters is `400`.
+- **`assetId`.** A canonical asset id such as `usd` when the mint belongs to a curated asset, or a
+  `solana-{mint}` id when the asset is registered under its own mint (an approved launch coin, for
+  example). It matches `GET /v1/assets/resolve?mint=`. `null` means the mint is not registered, and
+  then `hasTokenPage` is `false`.
+- **Attribution.** `alliumClass` / `alliumValueUsd` are Allium's; `rwaClass` / `rwaValueUsd` are
+  RWA.xyz's. Credit the provider when you display them.
+
+## `GET /v2/registry/{mint}`
+
+One registry asset by mint: the same item as the list plus the data team's row verbatim and the sync
+metadata. This is what the "Response" button on [tokens.xyz/registry](https://tokens.xyz/registry)
+shows.
+
+- **Scope**: `assets:read`
+- **Path**:
+  - `{mint}` — a base58 Solana mint address (32–44 characters). Anything else is `400`.
+- **Query params**: none
+
+### Response
+
+```ts
+interface RegistryAssetResponse extends RegistryItem {
+    upstream: Record<string, unknown>; // the data team's row exactly as delivered
+    generatedAt: string | null;        // upstream snapshot timestamp of this row (ISO 8601)
+    syncedAt: number | null;           // our last sync that saw the row, unix ms
+    provider: {                        // identity fallback stored for mints our own index lacks
+        name: string | null;
+        logoURI: string | null;
+        fetchedAt: number | null;      // unix ms; null when no fallback was needed
+    };
+}
+```
+
+`upstream` keeps the data team's contract untouched: snake_case keys (`token`, `mint_address`, `group`,
+`category`, `class`, `allium_asset_class`, `rwa_asset_class`, `allium_asset_value_usd`,
+`rwa_asset_value_usd`, `coingecko_market_cap`), numerics as strings such as `"6.686697914433202E9"`,
+and it may gain fields without notice. Build on the typed top-level fields; read `upstream` when you
+need the source of record.
+
+### Example
+
+```bash
+curl -sS "$API_BASE_URL/v2/registry/EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v" \
+  -H "x-api-key: $API_KEY" | jq '.upstream'
+```
+
+```json
+{
+  "token": "USDC",
+  "mint_address": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+  "group": "Stablecoins",
+  "category": "Fiat-Backed",
+  "class": "USD Stablecoins",
+  "allium_asset_class": "stablecoins",
+  "allium_asset_value_usd": "6.686697914433202E9",
+  "rwa_asset_class": "Stablecoins",
+  "rwa_asset_value_usd": "6.686697914433202E9",
+  "coingecko_market_cap": "7.45E10"
+}
+```
+
+### Notes
+
+- **Errors.** A path segment that is not a base58 mint is `400` (`BadRequestError`). A well-formed
+  mint that is not an active registry row is `404` (`NotFoundError`, message `"Asset not in registry"`).
+  A `404` is never served from the last-good cache.
+- **Freshness.** Cached for 5 minutes; when the registry backend is unavailable the last good copy of
+  this mint (up to an hour old) is served with a `200`. `generatedAt` and `syncedAt` here describe the
+  row, not the whole registry.
+- **`assetId`.** Same semantics as the list: a canonical id, a `solana-{mint}` id for a per-mint
+  registered asset, or `null` for an unregistered mint. Follow it to
+  [`GET /v1/assets/{assetId}`](/v1/endpoints/asset-detail) or `GET /v2/assets/{assetId}`.
+- **Attribution.** Credit Allium and RWA.xyz when you display their classes or values, whether you
+  read them from the typed fields or from `upstream`.
+
+## Request IDs
+
+<include>../../shared/request-ids.mdx</include>

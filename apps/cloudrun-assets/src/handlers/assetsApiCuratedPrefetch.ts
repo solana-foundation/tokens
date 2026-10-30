@@ -31,6 +31,7 @@
  * handler targets is round-trip latency, not aggregation cost.
  */
 
+import { normalizeCoinGeckoCoinIdForAsset } from '@tokens/asset-registry/coingecko-id';
 import { CURATED_LIST_ORDER, type CuratedListSlug } from '@tokens/asset-registry/curated-lists';
 
 import { createConcurrencyLimiter } from '../concurrencyLimiter';
@@ -157,23 +158,6 @@ export interface CuratedPrefetchArgs {
     additionalCoingeckoIds?: string[];
 }
 
-/**
- * Port of apps/api's normalizeCoinGeckoCoinIdForAsset — kept in sync with
- * the caller so composite-driven and per-call paths agree on which coin
- * IDs to fetch. Applied to every candidate coin id before batching.
- */
-function normalizeCoinGeckoCoinIdForAsset(params: {
-    assetId: string;
-    coinId: string | null | undefined;
-}): string | null {
-    const rawCoinId = (params.coinId ?? '').trim();
-    if (!rawCoinId) return null;
-    const assetId = params.assetId.trim();
-    if (assetId === 'bnb' && rawCoinId === 'bnb') return 'binancecoin';
-    if (assetId === 'tron' && rawCoinId === 'tron-xstock') return 'tron';
-    if (assetId === 'spacex' && rawCoinId === 'spacex-prestocks-2') return null;
-    return rawCoinId;
-}
 
 /**
  * Port of apps/api's missingScoreForMint (curated variant). Callers use it
@@ -416,6 +400,7 @@ export async function assetsApiCuratedPrefetchForApi(
 
     const assets = assetsChunks.flat();
     const variantMarkets = variantMarketsChunks.flat();
+    const variants = variantsChunks.flat();
 
     // Phase 3: reads that depend on phase-2 output — in parallel.
     //
@@ -456,24 +441,55 @@ export async function assetsApiCuratedPrefetchForApi(
         .slice(0, 25)
         .map(entry => entry.mint);
 
-    const [coingeckoPricesChunks, tokenMarketsDocs] = await Promise.all([
-        coingeckoCoinIds.length > 0
-            ? Promise.all(
-                  chunkArray(coingeckoCoinIds, 50).map(chunk =>
-                      runDb(() => coingeckoGetPriceLatestByCoinIds(deps.coingeckoReadsRepo, { coinIds: chunk })).catch(
-                          recoverOptional<CoingeckoPriceBatchEntry[]>([]),
+    // 3c. The route builds its mint universe from every variant of the
+    //     canonical assets (`variants`), not just `memberMints`; the extras
+    //     (e.g. `solana`'s ~1.5k LST variants) used to be gap-filled by the
+    //     route in serial 250-mint round-trips. Cover them here, in parallel
+    //     through the same limiter, and append to the same arrays. The
+    //     tokenMarkets scoring above deliberately stays over `knownMints`.
+    const knownMintSet = new Set(knownMints);
+    const extraMints = uniqueStrings(variants.flatMap(entry => entry.variants.map(variant => variant.mint))).filter(
+        mint => !knownMintSet.has(mint),
+    );
+    const chunkedExtraMints = chunkArray(extraMints, 250);
+
+    const [coingeckoPricesChunks, tokenMarketsDocs, extraVariantMarketsChunks, extraFillQualityChunks] =
+        await Promise.all([
+            coingeckoCoinIds.length > 0
+                ? Promise.all(
+                      chunkArray(coingeckoCoinIds, 50).map(chunk =>
+                          runDb(() =>
+                              coingeckoGetPriceLatestByCoinIds(deps.coingeckoReadsRepo, { coinIds: chunk }),
+                          ).catch(recoverOptional<CoingeckoPriceBatchEntry[]>([])),
                       ),
-                  ),
-              )
-            : Promise.resolve<CoingeckoPriceBatchEntry[][]>([]),
-        scoredMints.length > 0
-            ? runDb(() =>
-                  getTokenMarketsLatestByMints(deps.tokensReadsRepo, {
-                      mints: scoredMints,
-                  }),
-              ).catch(recoverOptional<GetTokenMarketsLatestByMintsEntry[]>([]))
-            : Promise.resolve<GetTokenMarketsLatestByMintsEntry[]>([]),
-    ]);
+                  )
+                : Promise.resolve<CoingeckoPriceBatchEntry[][]>([]),
+            scoredMints.length > 0
+                ? runDb(() =>
+                      getTokenMarketsLatestByMints(deps.tokensReadsRepo, {
+                          mints: scoredMints,
+                      }),
+                  ).catch(recoverOptional<GetTokenMarketsLatestByMintsEntry[]>([]))
+                : Promise.resolve<GetTokenMarketsLatestByMintsEntry[]>([]),
+            Promise.all(
+                chunkedExtraMints.map(chunk =>
+                    runDb(() =>
+                        variantMarketsGetLatestByMints(deps.variantMarketsRepo, {
+                            mints: chunk,
+                        }),
+                    ).catch(recoverOptional<VariantMarketEntry[]>([])),
+                ),
+            ),
+            Promise.all(
+                chunkedExtraMints.map(chunk =>
+                    runDb(() =>
+                        fillQualityGetLatestByMints(deps.fillQualityReadsRepo, {
+                            mints: chunk,
+                        }),
+                    ).catch(recoverOptional<FillQualityEntry[]>([])),
+                ),
+            ),
+        ]);
 
     return {
         listId,
@@ -481,9 +497,9 @@ export async function assetsApiCuratedPrefetchForApi(
         deletedAssetRefs: Array.from(deletedRefSet),
         sanctumLsts,
         assets,
-        variants: variantsChunks.flat(),
-        variantMarkets,
-        fillQuality: fillQualityChunks.flat(),
+        variants,
+        variantMarkets: [...variantMarkets, ...extraVariantMarketsChunks.flat()],
+        fillQuality: [...fillQualityChunks.flat(), ...extraFillQualityChunks.flat()],
         assetAggregates: aggregatesChunks.flat(),
         stockInstruments: stockInstrumentsChunks.flat(),
         stockPrices: stockPricesChunks.flat(),

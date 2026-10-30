@@ -12,6 +12,7 @@ export interface RedisPipeline {
     incr(key: string): this;
     expire(key: string, seconds: number, flag?: RedisExpireFlag): this;
     hincrby(key: string, field: string, delta: number): this;
+    hset(key: string, field: string, value: string): this;
     set(key: string, value: string | number, options?: RedisSetOptions): this;
     exec<TResult extends ReadonlyArray<unknown> = unknown[]>(): Promise<TResult>;
 }

@@ -1,4 +1,5 @@
-import { Effect, Schema } from 'effect';
+import { Duration, Effect, Schema } from 'effect';
+import { CHAINS, type ChainKind } from '@tokens/asset-registry/chains';
 import bs58 from 'bs58';
 import { V1Client as TitanV1Client } from '@titanexchange/sdk-ts';
 import { fetchJsonWithRetry } from '@tokens/effect';
@@ -26,12 +27,9 @@ import type {
     SanctumFetchResult,
     WebacyClient,
 } from './handlers/crons';
-import type {
-    CoingeckoClient,
-    CoingeckoCoinListItem,
-    CoingeckoMarketChartRange,
-} from './handlers/crons.coingecko';
-import { parseCoinListPayload } from './handlers/crons.coingecko';
+import type { CoingeckoClient, CoingeckoCoinListItem, CoingeckoMarketChartRange } from './handlers/crons.coingecko';
+import {
+    type CoingeckoCoinsMarketsRow, parseCoinListPayload } from './handlers/crons.coingecko';
 import type {
     ClickhouseClient,
     ClickhouseMintSnapshot,
@@ -41,6 +39,28 @@ import type {
 } from './handlers/crons.clickhouse';
 import type { BirdeyeMarketsClient, TokenMarketEntry } from './handlers/crons.misc';
 import type { PreStocksApiSnapshot, PreStocksClient } from './handlers/crons.prestocks';
+import {
+    parseStonkfunPairsPayload,
+    parseStonkfunToken,
+    parseStonkfunTokensPayload,
+    type StonkfunClient,
+    type StonkfunFetchResult,
+    type StonkfunPairsResult,
+    type StonkfunToken,
+} from './handlers/crons.launchpad';
+import type { StructuralHealthBatchEntry, WebacyDepegClient } from './handlers/crons.depeg';
+import {
+    BIRDEYE_METADATA_BATCH_SIZE,
+    DEFAULT_SOLANA_DATA_API_URL,
+    parseBirdeyeMetadataPayload,
+    parseSolanaDataAssetsPayload,
+    type BirdeyeMetadataClient,
+    type BirdeyeMetadataResult,
+    type SolanaDataClient,
+    type SolanaDataFetchResult,
+} from './handlers/crons.solanaData';
+import { extractDepegListItems, normalizeDepegItem, type WebacyDepegItem } from './handlers/depegNormalize';
+import { impliedUsdPerUnit, type PegCurrency } from './handlers/pegReference';
 
 // Shadow-mode envelope schemas (warn on mismatch, pass through) — the two
 // highest-traffic blind casts. Row shapes stay unknown/T on purpose.
@@ -55,24 +75,177 @@ const GatewayEnvelopeSchema = Schema.Struct({
     data: Schema.optionalKey(Schema.NullishOr(Schema.Array(Schema.Unknown))),
 });
 
+/**
+ * `x-chain` header for a Birdeye client. The value is the provider slug from
+ * the registry's `CHAINS` table (`bsc` for our `bnb`, …), never our public id.
+ */
+function birdeyeChainHeader(chain: ChainKind | undefined): string {
+    const slug = CHAINS[chain ?? 'solana'].providers.birdeyeChain;
+    if (!slug) throw new Error(`Birdeye does not cover chain ${chain}`);
+    return slug;
+}
+
 interface MakeBirdeyeOptions {
     apiKey: string;
     origin?: string;
     baseUrl?: string;
+    /** Default `solana`. One client instance per chain (the v2 EVM market refresh builds one per covered chain). */
+    chain?: ChainKind;
+    /** Test seam for `fetchMultiPrice`. */
+    fetchImpl?: typeof fetch;
 }
 
-export function makeBirdeyeClient(opts: MakeBirdeyeOptions): BirdeyeClient {
+export interface BirdeyeMultiPriceEntry {
+    mint: string;
+    priceUsd: number;
+    /** Unix ms of Birdeye's price timestamp. */
+    updatedAt: number;
+    liquidityUsd: number | null;
+    isScaledUiToken: boolean;
+}
+
+export type BirdeyeMultiPriceResult =
+    | { ok: true; byMint: Map<string, BirdeyeMultiPriceEntry>; missing: string[] }
+    | { ok: false; status: number; message: string };
+
+/** The one-call-per-batch price feed the peg guard uses; kept off `BirdeyeClient` so its fakes stay small. */
+export interface BirdeyeMultiPriceClient {
+    fetchMultiPrice(mints: readonly string[]): Promise<BirdeyeMultiPriceResult>;
+}
+
+const BIRDEYE_MULTI_PRICE_MAX = 100;
+
+/**
+ * `GET /defi/multi_price` answers `{ success, data: { [mint]: { value,
+ * updateUnixTime (seconds), liquidity, isScaledUiToken } | null } }`. Unknown
+ * mints come back as `null` and land in `missing`.
+ */
+export function parseBirdeyeMultiPrice(json: unknown, requested: readonly string[]): BirdeyeMultiPriceResult {
+    const rec = json && typeof json === 'object' ? (json as Record<string, unknown>) : null;
+    if (!rec || rec.success !== true) {
+        const message = rec && typeof rec.message === 'string' ? rec.message : 'unexpected multi_price payload';
+        return { ok: false, status: 200, message };
+    }
+    const data = rec.data && typeof rec.data === 'object' ? (rec.data as Record<string, unknown>) : {};
+    const byMint = new Map<string, BirdeyeMultiPriceEntry>();
+    const missing: string[] = [];
+    for (const mint of requested) {
+        const entry = data[mint];
+        const e = entry && typeof entry === 'object' ? (entry as Record<string, unknown>) : null;
+        const priceUsd = e ? toFiniteNumberOrNull(e.value) : null;
+        if (!e || priceUsd === null) {
+            missing.push(mint);
+            continue;
+        }
+        const rawTs = toFiniteNumberOrNull(e.updateUnixTime) ?? 0;
+        const updatedAt = rawTs > 0 && rawTs < 1e12 ? rawTs * 1000 : rawTs;
+        byMint.set(mint, {
+            mint,
+            priceUsd,
+            updatedAt,
+            liquidityUsd: toFiniteNumberOrNull(e.liquidity),
+            isScaledUiToken: e.isScaledUiToken === true,
+        });
+    }
+    return { ok: true, byMint, missing };
+}
+
+export function makeBirdeyeClient(
+    opts: MakeBirdeyeOptions,
+): BirdeyeClient & BirdeyeMultiPriceClient & BirdeyeMetadataClient {
     const baseUrl = (opts.baseUrl ?? 'https://public-api.birdeye.so').replace(/\/+$/, '');
+    const fetchImpl = opts.fetchImpl ?? fetch;
     const headers: Record<string, string> = {
         'X-API-KEY': opts.apiKey,
-        'x-chain': 'solana',
+        'x-chain': birdeyeChainHeader(opts.chain),
         Accept: 'application/json',
     };
     if (opts.origin) {
         headers.Origin = opts.origin;
         headers.Referer = opts.origin.endsWith('/') ? opts.origin : `${opts.origin}/`;
     }
+
+    async function multiPriceChunk(chunk: readonly string[]): Promise<BirdeyeMultiPriceResult> {
+        const url = `${baseUrl}/defi/multi_price?list_address=${encodeURIComponent(chunk.join(','))}&include_liquidity=true`;
+        let lastFailure: { status: number; message: string } = { status: 0, message: 'no attempt' };
+        // One retry on 429/5xx; the peg guard runs every 5 minutes so anything
+        // longer just waits for the next tick.
+        for (let attempt = 0; attempt < 2; attempt++) {
+            try {
+                const res = await withExternalTiming('birdeye', url, () =>
+                    fetchImpl(url, { headers, signal: AbortSignal.timeout(EXTERNAL_FETCH_TIMEOUT_MS) }),
+                );
+                const text = await res.text().catch(() => '');
+                let json: unknown = null;
+                try {
+                    json = text ? JSON.parse(text) : null;
+                } catch {
+                    json = null;
+                }
+                if (!res.ok) {
+                    lastFailure = { status: res.status, message: text.slice(0, 300) || res.statusText || 'Request failed' };
+                    if (res.status === 429 || res.status >= 500) continue;
+                    return { ok: false, ...lastFailure };
+                }
+                if (json === null) return { ok: false, status: res.status, message: 'non-JSON response' };
+                return parseBirdeyeMultiPrice(json, chunk);
+            } catch (err) {
+                lastFailure = { status: 0, message: err instanceof Error ? err.message : String(err) };
+            }
+        }
+        return { ok: false, ...lastFailure };
+    }
+
     return {
+        async fetchMultiPrice(mints) {
+            const unique = [...new Set(mints.map(m => m.trim()).filter(Boolean))];
+            if (unique.length === 0) return { ok: true, byMint: new Map(), missing: [] };
+            const byMint = new Map<string, BirdeyeMultiPriceEntry>();
+            const missing: string[] = [];
+            for (let i = 0; i < unique.length; i += BIRDEYE_MULTI_PRICE_MAX) {
+                const chunk = unique.slice(i, i + BIRDEYE_MULTI_PRICE_MAX);
+                const res = await multiPriceChunk(chunk);
+                if (!res.ok) return res;
+                for (const [mint, entry] of res.byMint) byMint.set(mint, entry);
+                missing.push(...res.missing);
+            }
+            return { ok: true, byMint, missing };
+        },
+
+        async fetchTokenMetadataMultiple(mints): Promise<BirdeyeMetadataResult> {
+            // Same retry contract as multiPriceChunk: one retry on 429/5xx, the
+            // registry sync re-queues a failed batch on its next hourly tick.
+            const unique = [...new Set(mints.map(m => m.trim()).filter(Boolean))].slice(0, BIRDEYE_METADATA_BATCH_SIZE);
+            if (unique.length === 0) return { ok: true, byMint: new Map() };
+            const url = `${baseUrl}/defi/v3/token/meta-data/multiple?list_address=${encodeURIComponent(unique.join(','))}`;
+            let lastFailure: { status: number; message: string } = { status: 0, message: 'no attempt' };
+            for (let attempt = 0; attempt < 2; attempt++) {
+                try {
+                    const res = await withExternalTiming('birdeye', url, () =>
+                        fetchImpl(url, { headers, signal: AbortSignal.timeout(EXTERNAL_FETCH_TIMEOUT_MS) }),
+                    );
+                    const text = await res.text().catch(() => '');
+                    let json: unknown = null;
+                    try {
+                        json = text ? JSON.parse(text) : null;
+                    } catch {
+                        json = null;
+                    }
+                    if (!res.ok) {
+                        lastFailure = { status: res.status, message: text.slice(0, 300) || res.statusText || 'Request failed' };
+                        if (res.status === 429 || res.status >= 500) continue;
+                        return { ok: false, ...lastFailure };
+                    }
+                    const byMint = parseBirdeyeMetadataPayload(json, unique);
+                    if (!byMint) return { ok: false, status: res.status, message: 'invalid meta-data payload' };
+                    return { ok: true, byMint };
+                } catch (err) {
+                    lastFailure = { status: 0, message: err instanceof Error ? err.message : String(err) };
+                }
+            }
+            return { ok: false, ...lastFailure };
+        },
+
         async fetchTokenOverview(mint: string): Promise<BirdeyeOverview | null> {
             const url = `${baseUrl}/defi/token_overview?address=${encodeURIComponent(mint)}`;
             const json = await Effect.runPromise(
@@ -276,6 +449,234 @@ export function makeWebacyClient(opts: MakeWebacyOptions): WebacyClient {
     };
 }
 
+interface MakeWebacyDepegOptions {
+    apiKey: string | undefined;
+    baseUrl?: string;
+    fetchImpl?: typeof fetch;
+}
+
+/**
+ * Webacy depeg monitor (`/rwa`) and structural health (`/v3/rwa`) client.
+ * Separate from `makeWebacyClient` so the token-risk fixtures stay untouched.
+ * Never throws: every method reports failures in its result so the jobs can
+ * cache them per token.
+ */
+export function makeWebacyDepegClient(opts: MakeWebacyDepegOptions): WebacyDepegClient {
+    const baseUrl = (opts.baseUrl ?? 'https://api.webacy.com').replace(/\/+$/, '');
+    const apiKey = opts.apiKey?.trim() ?? '';
+    const fetchImpl = opts.fetchImpl ?? fetch;
+
+    type Raw = { ok: true; status: number; data: unknown } | { ok: false; status: number; message: string };
+
+    async function request(
+        url: string,
+        init?: { method: 'POST'; body?: unknown; allowEmpty?: boolean },
+    ): Promise<Raw> {
+        if (!apiKey) return { ok: false, status: 0, message: 'WEBACY_API_KEY not configured' };
+        try {
+            const res = await withExternalTiming('webacy', url, () =>
+                fetchImpl(url, {
+                    method: init?.method ?? 'GET',
+                    headers: {
+                        'x-api-key': apiKey,
+                        Accept: 'application/json',
+                        ...(init?.body !== undefined ? { 'content-type': 'application/json' } : {}),
+                    },
+                    ...(init?.body !== undefined ? { body: JSON.stringify(init.body) } : {}),
+                    signal: AbortSignal.timeout(EXTERNAL_FETCH_TIMEOUT_MS),
+                }),
+            );
+            const text = await res.text().catch(() => '');
+            let json: unknown = null;
+            try {
+                json = text ? JSON.parse(text) : null;
+            } catch {
+                json = null;
+            }
+            if (!res.ok) {
+                return {
+                    ok: false,
+                    status: res.status,
+                    message: json ? JSON.stringify(json).slice(0, 500) : res.statusText || 'Request failed',
+                };
+            }
+            if (json === null) {
+                // Side-effecting endpoints (webhook test deliveries) may answer
+                // 2xx with an empty body; that is a success, not a parse error.
+                if (init?.allowEmpty) return { ok: true, status: res.status, data: null };
+                return { ok: false, status: res.status, message: 'non-JSON response' };
+            }
+            return { ok: true, status: res.status, data: json };
+        } catch (err) {
+            return { ok: false, status: 0, message: err instanceof Error ? err.message : String(err) };
+        }
+    }
+
+    /** All graded tokens on `chain`, keyed by lowercased address (how Webacy stores them). */
+    async function fetchGradesIndex(
+        chain: string,
+    ): Promise<{ ok: true; byLowerAddress: Map<string, unknown> } | { ok: false; status: number; message: string }> {
+        const byLowerAddress = new Map<string, unknown>();
+        for (let page = 1; page <= 10; page++) {
+            const res = await request(
+                `${baseUrl}/v3/rwa/grades?chain=${encodeURIComponent(chain)}&pageSize=200&page=${page}`,
+            );
+            if (!res.ok) {
+                if (page === 1) return { ok: false, status: res.status, message: res.message ?? 'Request failed' };
+                break;
+            }
+            const rows = extractDepegListItems(res.data);
+            for (const row of rows) {
+                const rec = row && typeof row === 'object' ? (row as Record<string, unknown>) : null;
+                const address = rec && typeof rec.address === 'string' ? rec.address.trim().toLowerCase() : null;
+                if (address) byLowerAddress.set(address, row);
+            }
+            const totalPages = readTotalPages(res.data);
+            if (rows.length === 0 || (totalPages !== null && page >= totalPages) || rows.length < 200) break;
+        }
+        return { ok: true, byLowerAddress };
+    }
+
+    return {
+        isConfigured: () => apiKey.length > 0,
+
+        async testWebhookSubscription(subscriptionId) {
+            // Webacy signs and delivers a synthetic `{ test: true }` event to
+            // the subscription's URL, so a 2xx here means the whole pipe
+            // (subscription, URL, secret) is exercised end to end.
+            const url = `${baseUrl}/webhooks/subscriptions/${encodeURIComponent(subscriptionId)}/test`;
+            const res = await request(url, { method: 'POST', allowEmpty: true });
+            if (!res.ok) return res;
+            return { ok: true, status: res.status };
+        },
+
+        async fetchDepegToken({ chain: chainArg, address }) {
+            const chain = toWebacyChainSlug(chainArg);
+            const url = `${baseUrl}/rwa/${encodeURIComponent(address)}?chain=${encodeURIComponent(chain)}`;
+            const res = await request(url);
+            if (!res.ok) return res;
+            // Single-token responses may come bare or wrapped like the list.
+            const candidate = extractDepegListItems(res.data)[0] ?? res.data;
+            const item = normalizeDepegItem(candidate);
+            if (!item) return { ok: false, status: res.status, message: 'unrecognised depeg payload' };
+            // Webacy may echo a checksummed/renamed address; trust what we asked for.
+            return { ok: true, status: res.status, item: { ...item, address } };
+        },
+
+        async fetchDepegList({ chain: chainArg, pageSize, maxPages }) {
+            const chain = toWebacyChainSlug(chainArg);
+            const items: WebacyDepegItem[] = [];
+            const seen = new Set<string>();
+            let pages = 0;
+            let truncated = false;
+            let previousFirst: string | null = null;
+            for (let page = 1; page <= maxPages; page++) {
+                const url = `${baseUrl}/rwa?chain=${encodeURIComponent(chain)}&pageSize=${pageSize}&page=${page}`;
+                const res = await request(url);
+                if (!res.ok) {
+                    // A failed later page after a good first page is a partial list,
+                    // not a failed poll; the shrink guard decides what to do with it.
+                    if (pages === 0) return res;
+                    truncated = true;
+                    break;
+                }
+                pages += 1;
+                const rawItems = extractDepegListItems(res.data);
+                if (rawItems.length === 0) break;
+                // Verified envelope: { items, pagination: { total, page, pageSize, totalPages } }.
+                const totalPages = readTotalPages(res.data);
+                const normalized = rawItems.map(normalizeDepegItem).filter((i): i is WebacyDepegItem => i !== null);
+                const first = normalized[0]?.address ?? null;
+                // Endpoints that ignore `page` return the same page forever.
+                if (first !== null && first === previousFirst) break;
+                previousFirst = first;
+                let added = 0;
+                for (const item of normalized) {
+                    if (seen.has(item.address)) continue;
+                    seen.add(item.address);
+                    items.push(item);
+                    added += 1;
+                }
+                if (added === 0) break;
+                if (rawItems.length < pageSize) break;
+                if (totalPages !== null && page >= totalPages) break;
+                if (page === maxPages) truncated = true;
+            }
+            return { ok: true, items, pages, truncated };
+        },
+
+        async fetchStructuralHealthBatch(requested) {
+            if (requested.length === 0) return [];
+            const addresses = requested.map(({ address, chain }) => ({ address, chain: toWebacyChainSlug(chain) }));
+            if (!apiKey) {
+                // Same shape as the other unconfigured paths; no network call.
+                const res = await request(`${baseUrl}/v3/rwa/grades`);
+                const message = res.ok ? 'not configured' : res.message;
+                return addresses.map(({ address }) => ({ address, ok: false, status: 0, message }));
+            }
+
+            // Verified 2026-09-14: the v3 grade store keys Solana mints in
+            // LOWERCASE (an EVM habit), so GET /v3/rwa/{mint} with the real
+            // base58 casing answers 404 "Grade data not found" while the
+            // lowercased form answers 200. POST /v3/rwa/batch/structural-health
+            // returns criteria only (no composite grade). So: discover coverage
+            // from the paginated grades list (1 call per chain), then fetch the
+            // full per-token detail (drivers + criteria) with the lowercased
+            // address, falling back to the list row if the detail call fails.
+            const out: StructuralHealthBatchEntry[] = [];
+            const byChain = new Map<string, Array<{ address: string }>>();
+            for (const entry of addresses) {
+                const list = byChain.get(entry.chain) ?? [];
+                list.push(entry);
+                byChain.set(entry.chain, list);
+            }
+            for (const [chain, entries] of byChain) {
+                const graded = await fetchGradesIndex(chain);
+                if (!graded.ok) {
+                    for (const { address } of entries) {
+                        out.push({ address, ok: false, status: graded.status, message: graded.message });
+                    }
+                    continue;
+                }
+                for (const { address } of entries) {
+                    const listRow = graded.byLowerAddress.get(address.toLowerCase());
+                    if (!listRow) {
+                        out.push({ address, ok: false, status: 404, message: 'NOT_FOUND' });
+                        continue;
+                    }
+                    const detail = await request(
+                        `${baseUrl}/v3/rwa/${encodeURIComponent(address.toLowerCase())}?chain=${encodeURIComponent(chain)}`,
+                    );
+                    out.push(
+                        detail.ok
+                            ? { address, ok: true, status: detail.status, data: detail.data }
+                            : { address, ok: true, status: 200, data: listRow },
+                    );
+                }
+            }
+            return out;
+        },
+    };
+}
+
+/**
+ * Webacy's chain slug for Solana is `sol` (verified 2026-09-14 against
+ * /rwa, /v3/rwa and the batch endpoint; `solana` is tolerated by /rwa only).
+ * Our own tables key Solana rows by 'solana', so translate at the edge.
+ */
+export function toWebacyChainSlug(chain: string): string {
+    const lower = chain.trim().toLowerCase();
+    return lower === 'solana' ? 'sol' : lower;
+}
+
+function readTotalPages(payload: unknown): number | null {
+    if (!payload || typeof payload !== 'object') return null;
+    const pagination = (payload as Record<string, unknown>).pagination;
+    if (!pagination || typeof pagination !== 'object') return null;
+    const total = (pagination as Record<string, unknown>).totalPages;
+    return typeof total === 'number' && Number.isFinite(total) && total > 0 ? total : null;
+}
+
 function jupiterFiniteNumber(value: unknown): number | null {
     if (typeof value === 'number' && Number.isFinite(value)) return value;
     if (typeof value === 'string') {
@@ -344,6 +745,77 @@ interface MakeCoingeckoOptions {
 const COINGECKO_PRO_BASE_URL = 'https://pro-api.coingecko.com/api/v3';
 const COINGECKO_PUBLIC_BASE_URL = 'https://api.coingecko.com/api/v3';
 
+export interface FiatRateQuote {
+    usdPerUnit: number;
+    source: 'coingecko_usd_coin' | 'coingecko_tether';
+    providerUpdatedAt: number | null;
+}
+
+export type FiatRatesResult =
+    | { ok: true; rates: Map<string, FiatRateQuote> }
+    | { ok: false; status: number; message: string };
+
+/** One CoinGecko call per peg guard run for the fiat pegs; separate from CoingeckoClient so its fakes stay small. */
+export interface FiatRatesClient {
+    fetchUsdPerUnit(currencies: readonly PegCurrency[]): Promise<FiatRatesResult>;
+}
+
+interface MakeCoingeckoFiatRatesOptions {
+    apiKey?: string | undefined;
+    baseUrl?: string;
+    fetchImpl?: typeof fetch;
+}
+
+/**
+ * Implied fiat rates from `simple/price`: quote usd-coin and tether in USD and
+ * every requested currency, then usd_per_unit = price_usd / price_ccy
+ * (`impliedUsdPerUnit` cross-checks the two coins). `precision=full` matters
+ * for IDR and NGN, whose per-dollar quotes run into the thousands.
+ */
+export function makeCoingeckoFiatRatesClient(opts: MakeCoingeckoFiatRatesOptions): FiatRatesClient {
+    const apiKey = opts.apiKey?.trim();
+    const baseUrl = (opts.baseUrl ?? (apiKey ? COINGECKO_PRO_BASE_URL : COINGECKO_PUBLIC_BASE_URL)).replace(/\/+$/, '');
+    const fetchImpl = opts.fetchImpl ?? fetch;
+    const headers: Record<string, string> = { Accept: 'application/json' };
+    if (apiKey) headers['x-cg-pro-api-key'] = apiKey;
+    return {
+        async fetchUsdPerUnit(currencies) {
+            const wanted = [...new Set(currencies.map(c => c.toLowerCase()))].filter(c => c !== 'usd');
+            if (wanted.length === 0) return { ok: true, rates: new Map() };
+            const url = new URL(`${baseUrl}/simple/price`);
+            url.searchParams.set('ids', 'usd-coin,tether');
+            url.searchParams.set('vs_currencies', ['usd', ...wanted].join(','));
+            url.searchParams.set('precision', 'full');
+            url.searchParams.set('include_last_updated_at', 'true');
+            try {
+                const res = await withExternalTiming('coingecko', url.toString(), () =>
+                    fetchImpl(url.toString(), { headers, signal: AbortSignal.timeout(EXTERNAL_FETCH_TIMEOUT_MS) }),
+                );
+                const text = await res.text().catch(() => '');
+                let json: unknown = null;
+                try {
+                    json = text ? JSON.parse(text) : null;
+                } catch {
+                    json = null;
+                }
+                if (!res.ok) return { ok: false, status: res.status, message: text.slice(0, 300) || res.statusText };
+                if (json === null) return { ok: false, status: res.status, message: 'non-JSON response' };
+                const rates = new Map<string, FiatRateQuote>();
+                for (const rate of impliedUsdPerUnit(json, currencies)) {
+                    rates.set(rate.currency, {
+                        usdPerUnit: rate.usdPerUnit,
+                        source: rate.source,
+                        providerUpdatedAt: rate.providerUpdatedAt,
+                    });
+                }
+                return { ok: true, rates };
+            } catch (err) {
+                return { ok: false, status: 0, message: err instanceof Error ? err.message : String(err) };
+            }
+        },
+    };
+}
+
 export function makeCoingeckoClient(opts: MakeCoingeckoOptions): CoingeckoClient {
     const apiKey = opts.apiKey?.trim();
     const baseUrl = (opts.baseUrl ?? (apiKey ? COINGECKO_PRO_BASE_URL : COINGECKO_PUBLIC_BASE_URL)).replace(/\/+$/, '');
@@ -407,13 +879,36 @@ export function makeCoingeckoClient(opts: MakeCoingeckoOptions): CoingeckoClient
             if (!json || typeof json !== 'object' || Array.isArray(json)) {
                 throw new Error(`CoinGecko simple/price returned unexpected payload`);
             }
-            return json as Record<string, {
-                usd?: unknown;
-                usd_market_cap?: unknown;
-                usd_24h_vol?: unknown;
-                usd_24h_change?: unknown;
-                last_updated_at?: unknown;
-            }>;
+            return json as Record<
+                string,
+                {
+                    usd?: unknown;
+                    usd_market_cap?: unknown;
+                    usd_24h_vol?: unknown;
+                    usd_24h_change?: unknown;
+                    last_updated_at?: unknown;
+                }
+            >;
+        },
+
+        async fetchCoinsMarkets(coinIds) {
+            const ids = Array.from(new Set(coinIds.map(s => s.trim()).filter(Boolean)));
+            if (ids.length === 0) return [];
+            const url = new URL(`${baseUrl}/coins/markets`);
+            url.searchParams.set('vs_currency', 'usd');
+            url.searchParams.set('ids', ids.join(','));
+            url.searchParams.set('per_page', '250');
+            url.searchParams.set('page', '1');
+            url.searchParams.set('sparkline', 'false');
+            url.searchParams.set('precision', 'full');
+            const json = await fetchJson(url);
+            if (!Array.isArray(json)) {
+                throw new Error(`CoinGecko coins/markets returned unexpected payload`);
+            }
+            return json.filter(
+                (row): row is CoingeckoCoinsMarketsRow =>
+                    !!row && typeof row === 'object' && typeof (row as { id?: unknown }).id === 'string',
+            );
         },
 
         async fetchMarketChartRange(args): Promise<CoingeckoMarketChartRange> {
@@ -472,75 +967,8 @@ export class ClickhouseApiError extends Error {
 const GATEWAY_TIMEOUT_MS = 30_000;
 
 export interface MakeClickhouseOptions {
-    url: string;
-    username: string;
-    password: string;
-    database: string;
-    stockTradesTable?: string;
-    stockInstrumentsTable?: string;
-    solanaTradesTable?: string;
-    priceScale?: number;
     fetchImpl?: typeof fetch;
     tradingApiUrl?: string;
-}
-
-function quoteIdent(value: string): string {
-    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(value)) {
-        throw new Error(`Invalid ClickHouse identifier: ${value}`);
-    }
-    return `\`${value}\``;
-}
-
-interface ClickhouseQueryRequest {
-    sql: string;
-    params?: Record<string, string | number>;
-}
-
-function buildClickhouseUrl(baseUrl: string, params: Record<string, string | number>): URL {
-    const url = new URL(baseUrl);
-    for (const [k, v] of Object.entries(params)) url.searchParams.set(k, String(v));
-    return url;
-}
-
-async function runClickhouseQuery<T>(
-    opts: MakeClickhouseOptions,
-    request: ClickhouseQueryRequest,
-): Promise<T[]> {
-    const f = opts.fetchImpl ?? fetch;
-    const params: Record<string, string | number> = {
-        database: opts.database,
-        default_format: 'JSONEachRow',
-    };
-    for (const [k, v] of Object.entries(request.params ?? {})) params[`param_${k}`] = v;
-    const url = buildClickhouseUrl(opts.url, params);
-    const auth = `Basic ${Buffer.from(`${opts.username}:${opts.password}`).toString('base64')}`;
-    const res = await withExternalTiming('clickhouse', url.toString(), () =>
-        f(url.toString(), {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'text/plain',
-                Accept: 'application/json',
-                Authorization: auth,
-            },
-            body: request.sql,
-        }),
-    );
-    if (!res.ok) {
-        const text = await res.text().catch(() => '');
-        throw new Error(`ClickHouse HTTP ${res.status}: ${text.slice(0, 500)}`);
-    }
-    const body = await res.text();
-    if (!body) return [];
-    const lines = body.split('\n').filter(Boolean);
-    const out: T[] = [];
-    for (const line of lines) {
-        try {
-            out.push(JSON.parse(line) as T);
-        } catch {
-            continue;
-        }
-    }
-    return out;
 }
 
 function toFiniteOrNull(value: unknown): number | null {
@@ -558,11 +986,6 @@ function pctChange(current: number | null, previous: number | null): number | nu
 }
 
 export function makeClickhouseClient(opts: MakeClickhouseOptions): ClickhouseClient {
-    const database = quoteIdent(opts.database);
-    const stockTradesTable = opts.stockTradesTable ? quoteIdent(opts.stockTradesTable) : null;
-    const stockInstrumentsTable = opts.stockInstrumentsTable ? quoteIdent(opts.stockInstrumentsTable) : null;
-    const solanaTradesTable = opts.solanaTradesTable ? quoteIdent(opts.solanaTradesTable) : null;
-    const priceScale = opts.priceScale && opts.priceScale > 0 ? opts.priceScale : 1;
     const tradingApiUrl = (opts.tradingApiUrl ?? DEFAULT_TRADING_API_URL).replace(/\/+$/, '');
 
     async function queryPreset<T>(name: string, params: Record<string, unknown>): Promise<T[]> {
@@ -580,9 +1003,7 @@ export function makeClickhouseClient(opts: MakeClickhouseOptions): ClickhouseCli
             throw new ClickhouseApiError(`clickhouse-api HTTP ${res.status}: ${text.slice(0, 500)}`, res.status);
         }
         const payload: unknown = await res.json();
-        const decoded = await Effect.runPromise(
-            decodeUpstreamOrWarn(GatewayEnvelopeSchema, 'clickhouse-api')(payload),
-        );
+        const decoded = await Effect.runPromise(decodeUpstreamOrWarn(GatewayEnvelopeSchema, 'clickhouse-api')(payload));
         return ((decoded as { data?: T[] }).data ?? []) as T[];
     }
 
@@ -590,52 +1011,8 @@ export function makeClickhouseClient(opts: MakeClickhouseOptions): ClickhouseCli
         queryPreset,
 
         async fetchStockInstruments(params: { limit: number }): Promise<ClickhouseStockInstrumentRow[]> {
-            if (!stockInstrumentsTable && !stockTradesTable) return [];
             const lim = Math.min(Math.max(Math.floor(params.limit), 1), 10_000);
-            if (stockInstrumentsTable) {
-                interface InstrumentRow {
-                    symbol?: string;
-                    name?: string | null;
-                    assetId?: string | null;
-                    instrumentId?: number | string | null;
-                    dataset?: string | null;
-                }
-                const rows = await runClickhouseQuery<InstrumentRow>(opts, {
-                    sql: `
-                        SELECT toString(symbol) AS symbol,
-                               NULL AS name,
-                               NULL AS assetId,
-                               NULL AS instrumentId,
-                               NULL AS dataset
-                        FROM ${database}.${stockInstrumentsTable}
-                        WHERE length(trim(toString(symbol))) > 0
-                        LIMIT {limit:UInt32}
-                    `,
-                    params: { limit: lim },
-                });
-                return rows
-                    .filter(r => typeof r.symbol === 'string' && r.symbol.trim().length > 0)
-                    .map(r => ({
-                        symbol: String(r.symbol).trim().toUpperCase(),
-                        name: typeof r.name === 'string' && r.name.trim() ? r.name.trim() : null,
-                        assetId: typeof r.assetId === 'string' && r.assetId.trim() ? r.assetId.trim() : null,
-                        instrumentId: toFiniteOrNull(r.instrumentId),
-                        dataset: typeof r.dataset === 'string' && r.dataset.trim() ? r.dataset.trim() : null,
-                    }));
-            }
-            interface TradeSymbolRow {
-                symbol?: string;
-            }
-            const rows = await runClickhouseQuery<TradeSymbolRow>(opts, {
-                sql: `
-                    SELECT DISTINCT toString(symbol) AS symbol
-                    FROM ${database}.${stockTradesTable}
-                    WHERE length(trim(toString(symbol))) > 0
-                    ORDER BY symbol ASC
-                    LIMIT {limit:UInt32}
-                `,
-                params: { limit: lim },
-            });
+            const rows = await queryPreset<{ symbol?: string }>('stock_trade_symbols', { limit: lim });
             return rows
                 .filter(r => typeof r.symbol === 'string' && r.symbol.trim().length > 0)
                 .map(r => ({
@@ -648,7 +1025,6 @@ export function makeClickhouseClient(opts: MakeClickhouseOptions): ClickhouseCli
         },
 
         async fetchStockSnapshot(symbol: string): Promise<ClickhouseStockSnapshot | null> {
-            if (!stockTradesTable) return null;
             interface LatestRow {
                 time?: number | string;
                 price?: number | string;
@@ -668,20 +1044,10 @@ export function makeClickhouseClient(opts: MakeClickhouseOptions): ClickhouseCli
                 asOfSec: Math.max(0, Math.floor(asOf - 24 * 60 * 60)),
             });
             const prevPrice = toFiniteOrNull(prevRows[0]?.price);
-            const volumeRows = await runClickhouseQuery<VolumeRow>(opts, {
-                sql: `
-                    SELECT sum((toFloat64(price) / {priceScale:Float64}) * toFloat64(size)) AS volume
-                    FROM ${database}.${stockTradesTable}
-                    WHERE symbol = {symbol:String}
-                      AND ts_event >= toDateTime({from:UInt32})
-                      AND ts_event <= toDateTime({to:UInt32})
-                `,
-                params: {
-                    symbol: normSymbol,
-                    priceScale,
-                    from: Math.max(0, Math.floor(asOf - 24 * 60 * 60)),
-                    to: Math.floor(asOf),
-                },
+            const volumeRows = await queryPreset<VolumeRow>('stock_volume', {
+                symbol: normSymbol,
+                fromSec: Math.max(0, Math.floor(asOf - 24 * 60 * 60)),
+                toSec: Math.floor(asOf),
             });
             const volume24hUsd = toFiniteOrNull(volumeRows[0]?.volume);
             const priceChange24hPercent =
@@ -722,7 +1088,6 @@ export function makeClickhouseClient(opts: MakeClickhouseOptions): ClickhouseCli
             stableMints: readonly string[];
             asOfMs?: number;
         }): Promise<ClickhouseMintSnapshot[]> {
-            if (!solanaTradesTable) return [];
             if (args.mints.length === 0) return [];
             interface MintSnapshotRow {
                 mint?: string;
@@ -765,19 +1130,6 @@ export function makeClickhouseClient(opts: MakeClickhouseOptions): ClickhouseCli
                 });
         },
 
-        async query(args) {
-            return runClickhouseQuery(opts, { sql: args.sql, ...(args.params ? { params: args.params } : {}) });
-        },
-
-        tables() {
-            return {
-                database: opts.database,
-                stockTradesTable: opts.stockTradesTable ?? null,
-                stockInstrumentsTable: opts.stockInstrumentsTable ?? null,
-                solanaTradesTable: opts.solanaTradesTable ?? null,
-                priceScale,
-            };
-        },
     };
 }
 
@@ -857,6 +1209,9 @@ interface MakeRwaXyzOptions {
     baseUrl?: string;
     apiVersion?: string;
 }
+
+const RWAXYZ_TIMEOUT: Duration.Input = '5 seconds';
+const RWAXYZ_MAX_RETRIES = 0;
 
 interface RwaXyzListResponseShape<T> {
     results?: T[];
@@ -980,8 +1335,7 @@ function buildRwaXyzTokenSnapshot(raw: RwaXyzTokenRaw, payloadJson: string): Rwa
 }
 
 function buildRwaXyzAssetSnapshot(raw: RwaXyzAssetRaw, payloadJson: string): RwaXyzAssetSnapshot | null {
-    const assetId =
-        rwaAsFiniteNumber(raw.asset_id) ?? rwaAsFiniteNumber(raw.id);
+    const assetId = rwaAsFiniteNumber(raw.asset_id) ?? rwaAsFiniteNumber(raw.id);
     if (assetId === null) return null;
     const snap: RwaXyzAssetSnapshot = { assetId, payloadJson };
     const name = rwaAsNonEmptyString(raw.name);
@@ -1024,8 +1378,8 @@ export function makeRwaXyzClient(opts: MakeRwaXyzOptions): RwaXyzClient {
                 url,
                 service: 'rwaxyz',
                 init: { headers },
-                maxRetries: 2,
-                timeout: '30 seconds',
+                maxRetries: RWAXYZ_MAX_RETRIES,
+                timeout: RWAXYZ_TIMEOUT,
             }),
         );
     }
@@ -1089,22 +1443,39 @@ function preStocksNonEmptyString(value: unknown): string | null {
     return typeof value === 'string' && value.trim() ? value.trim() : null;
 }
 
+function parsePreStocksEntry(value: unknown): PreStocksApiSnapshot | null {
+    if (typeof value !== 'object' || value === null) return null;
+    const raw = value as Record<string, unknown>;
+    const mint = preStocksNonEmptyString(raw.contract_address);
+    const symbol = preStocksNonEmptyString(raw.symbol);
+    if (!mint || !symbol) return null;
+    return {
+        symbol,
+        name: preStocksNonEmptyString(raw.name),
+        mint,
+        markPriceUsd: preStocksFiniteNumber(raw.markPrice),
+        markValuationUsd: preStocksFiniteNumber(raw.markValuation),
+        tokenPriceUsd: preStocksFiniteNumber(raw.tokenPrice),
+        impliedValuationUsd: preStocksFiniteNumber(raw.impliedValuation),
+        supply: preStocksFiniteNumber(raw.supply),
+        imageUrl: preStocksNonEmptyString(raw.image),
+        externalUrl: preStocksNonEmptyString(raw.external_url),
+    };
+}
+
 export function makePreStocksClient(opts: MakePreStocksOptions = {}): PreStocksClient {
     const baseUrl = (opts.baseUrl ?? 'https://prestocks.com').replace(/\/+$/, '');
     const fetchImpl = opts.fetchImpl ?? fetch;
 
     return {
-        async fetchBySymbol(symbol: string): Promise<PreStocksApiSnapshot | null> {
-            const cleaned = symbol.trim().toUpperCase();
-            if (!/^[A-Z0-9]+$/.test(cleaned)) return null;
-            const url = `${baseUrl}/api/${cleaned}`;
+        async fetchAll(): Promise<PreStocksApiSnapshot[]> {
+            const url = `${baseUrl}/api/prestocks`;
             const res = await withExternalTiming('prestocks', url, () =>
                 fetchImpl(url, {
                     headers: { Accept: 'application/json' },
                     signal: AbortSignal.timeout(PRESTOCKS_TIMEOUT_MS),
                 }),
             );
-            if (res.status === 404) return null;
             const text = await res.text().catch(() => '');
             if (!res.ok || !text) {
                 throw new Error(`PreStocks request failed: HTTP ${res.status} ${res.statusText}`);
@@ -1116,25 +1487,10 @@ export function makePreStocksClient(opts: MakePreStocksOptions = {}): PreStocksC
                 // eslint-disable-next-line no-control-regex
                 json = JSON.parse(text.replace(/[\u0000-\u001f]/g, ' '));
             } catch {
-                throw new Error(`PreStocks response is not valid JSON for ${cleaned}`);
+                throw new Error('PreStocks response is not valid JSON');
             }
-            if (typeof json !== 'object' || json === null) return null;
-            const raw = json as Record<string, unknown>;
-            const mint = preStocksNonEmptyString(raw.contract_address);
-            const symbolOut = preStocksNonEmptyString(raw.symbol);
-            if (!mint || !symbolOut) return null;
-            return {
-                symbol: symbolOut,
-                name: preStocksNonEmptyString(raw.name),
-                mint,
-                markPriceUsd: preStocksFiniteNumber(raw.markPrice),
-                markValuationUsd: preStocksFiniteNumber(raw.markValuation),
-                tokenPriceUsd: preStocksFiniteNumber(raw.tokenPrice),
-                impliedValuationUsd: preStocksFiniteNumber(raw.impliedValuation),
-                supply: preStocksFiniteNumber(raw.supply),
-                imageUrl: preStocksNonEmptyString(raw.image),
-                externalUrl: preStocksNonEmptyString(raw.external_url),
-            };
+            if (!Array.isArray(json)) throw new Error('PreStocks response is not an array');
+            return json.flatMap(entry => parsePreStocksEntry(entry) ?? []);
         },
     };
 }
@@ -1163,9 +1519,10 @@ export function makeBirdeyeMarketsClient(opts: MakeBirdeyeMarketsOptions): Birde
             });
             const url = `${baseUrl}/defi/v2/markets?${params.toString()}`;
             const res = await withExternalTiming('birdeye', url, () => fetch(url, { headers }));
-            const json = (await res.json().catch(() => null)) as
-                | { success?: unknown; data?: { items?: unknown[]; markets?: unknown[] } }
-                | null;
+            const json = (await res.json().catch(() => null)) as {
+                success?: unknown;
+                data?: { items?: unknown[]; markets?: unknown[] };
+            } | null;
             if (!res.ok || !json || json.success !== true || !json.data) {
                 throw new Error(`Birdeye markets failed: HTTP ${res.status} ${res.statusText}`);
             }
@@ -1181,6 +1538,143 @@ export function makeBirdeyeMarketsClient(opts: MakeBirdeyeMarketsOptions): Birde
                 byAddress.set(market.address, market);
             }
             return Array.from(byAddress.values());
+        },
+    };
+}
+
+interface MakeStonkfunOptions {
+    baseUrl?: string;
+}
+
+const STONKFUN_PAGE_SIZE = 100;
+
+/**
+ * stonk.fun public API (no auth, 300 req/min per IP). Pages `GET /tokens`
+ * (graduated, by market cap) and returns the whole set or nothing: a failure
+ * on any page aborts the run so the sync never deactivates rows off a
+ * truncated list.
+ */
+export function makeStonkfunClient(opts: MakeStonkfunOptions = {}): StonkfunClient {
+    const baseUrl = (opts.baseUrl ?? 'https://www.stonkfun.xyz/api/public/v1').replace(/\/+$/, '');
+
+    async function getJson(url: URL): Promise<{ ok: true; payload: unknown } | { ok: true; notFound: true } | Exclude<StonkfunFetchResult, { ok: true }>> {
+        let res: Response;
+        try {
+            res = await withExternalTiming('stonkfun', url.toString(), () =>
+                fetch(url, {
+                    headers: { Accept: 'application/json' },
+                    signal: AbortSignal.timeout(EXTERNAL_FETCH_TIMEOUT_MS),
+                }),
+            );
+        } catch (err) {
+            return { ok: false, reason: 'error', message: err instanceof Error ? err.message : String(err) };
+        }
+        if (res.status === 404) return { ok: true, notFound: true };
+        if (!res.ok) return { ok: false, reason: 'http_error', status: res.status };
+        try {
+            return { ok: true, payload: await res.json() };
+        } catch {
+            return { ok: false, reason: 'invalid_payload' };
+        }
+    }
+
+    /**
+     * Pages `GET /tokens` and returns the whole set or nothing: a failure on
+     * any page aborts the run so the sync never deactivates rows off a
+     * truncated list.
+     */
+    async function fetchTokenPages(params: Record<string, string>, maxPages: number): Promise<StonkfunFetchResult> {
+        const items: StonkfunToken[] = [];
+        const pageCap = Math.max(1, Math.floor(maxPages));
+        let totalPages: number | null = null;
+        for (let page = 1; page <= pageCap; page++) {
+            if (totalPages !== null && page > totalPages) break;
+            const url = new URL(`${baseUrl}/tokens`);
+            for (const [key, value] of Object.entries(params)) url.searchParams.set(key, value);
+            url.searchParams.set('pageSize', String(STONKFUN_PAGE_SIZE));
+            url.searchParams.set('page', String(page));
+            const res = await getJson(url);
+            if (!res.ok) return res;
+            if ('notFound' in res) return { ok: false, reason: 'http_error', status: 404 };
+            const parsed = parseStonkfunTokensPayload(res.payload);
+            if (!parsed) return { ok: false, reason: 'invalid_payload' };
+            items.push(...parsed.items);
+            if (parsed.totalPages !== null) totalPages = parsed.totalPages;
+            if (parsed.items.length === 0) break;
+        }
+        return { ok: true, items };
+    }
+
+    return {
+        fetchGraduatedTokens({ maxPages }) {
+            return fetchTokenPages({ status: 'graduated', sort: 'marketCap' }, maxPages);
+        },
+        fetchGraduatedTokensByQuote(quoteMint, { maxPages }) {
+            return fetchTokenPages({ status: 'graduated', sort: 'marketCap', quoteMint }, maxPages);
+        },
+        async fetchPairs(): Promise<StonkfunPairsResult> {
+            const url = new URL(`${baseUrl}/pairs`);
+            url.searchParams.set('launchable', 'true');
+            const res = await getJson(url);
+            if (!res.ok) return res;
+            if ('notFound' in res) return { ok: false, reason: 'http_error', status: 404 };
+            const pairs = parseStonkfunPairsPayload(res.payload);
+            return pairs ? { ok: true, pairs } : { ok: false, reason: 'invalid_payload' };
+        },
+        async fetchToken(mint) {
+            const res = await getJson(new URL(`${baseUrl}/tokens/${encodeURIComponent(mint)}`));
+            if (!res.ok) return res;
+            if ('notFound' in res) return { ok: true, items: [] };
+            // `GET /tokens/{mint}` nests the coin under data.token (launch record beside it).
+            const payload = res.payload as { data?: { token?: unknown } } | null;
+            const token = parseStonkfunToken(payload?.data?.token ?? payload?.data ?? null);
+            return { ok: true, items: token ? [token] : [] };
+        },
+    };
+}
+
+interface MakeSolanaDataOptions {
+    apiKey: string;
+    /** Override for tests / staging mirrors; defaults to data.solana.com/v1/assets. */
+    baseUrl?: string;
+    fetchImpl?: typeof fetch;
+}
+
+/**
+ * Project Canon asset registry (data.solana.com, `x-api-key`; ~3.3k rows in one
+ * body, no pagination, 10 req/s limit). All-or-nothing: the sync deactivates
+ * rows the upstream stopped returning, so a partial body must never look like
+ * a smaller registry. Never throws; failures come back in the result.
+ */
+export function makeSolanaDataClient(opts: MakeSolanaDataOptions): SolanaDataClient {
+    const url = (opts.baseUrl ?? DEFAULT_SOLANA_DATA_API_URL).trim();
+    const apiKey = opts.apiKey.trim();
+    const fetchImpl = opts.fetchImpl ?? fetch;
+
+    return {
+        async fetchAssets(): Promise<SolanaDataFetchResult> {
+            if (!apiKey) return { ok: false, reason: 'error', message: 'SOLANA_DATA_API_KEY not configured' };
+            let res: Response;
+            try {
+                res = await withExternalTiming('solana-data', url, () =>
+                    fetchImpl(url, {
+                        headers: { 'x-api-key': apiKey, Accept: 'application/json' },
+                        signal: AbortSignal.timeout(EXTERNAL_FETCH_TIMEOUT_MS),
+                    }),
+                );
+            } catch (err) {
+                return { ok: false, reason: 'error', message: err instanceof Error ? err.message : String(err) };
+            }
+            if (!res.ok) return { ok: false, reason: 'http_error', status: res.status };
+            let json: unknown;
+            try {
+                json = await res.json();
+            } catch {
+                return { ok: false, reason: 'invalid_payload' };
+            }
+            const payload = parseSolanaDataAssetsPayload(json);
+            if (!payload) return { ok: false, reason: 'invalid_payload' };
+            return { ok: true, ...payload };
         },
     };
 }

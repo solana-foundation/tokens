@@ -17,8 +17,15 @@ resource "google_compute_network" "vpc" {
 }
 
 resource "google_compute_subnetwork" "subnet" {
-  name                     = "tokens-subnet-${var.env}${var.name_suffix}"
-  ip_cidr_range            = "10.20.0.0/24"
+  name = "tokens-subnet-${var.env}${var.name_suffix}"
+  # Cloud Run direct VPC egress reserves addresses from this range in /28
+  # blocks per service and holds them for the life of the revisions that used
+  # them. The original /24 (14 usable blocks) filled up by 2026-10-17 and every
+  # prod deploy then failed with "no sufficient IP addresses in the VPC
+  # network". /22 leaves headroom for ~60 blocks; nothing else lives in
+  # 10.20.0.0/22 in either env (PSA ranges are 172.20/16 prd, 10.174/16 stg).
+  # Expanding a subnet is an in-place update; it can never be shrunk back.
+  ip_cidr_range            = "10.20.0.0/22"
   region                   = var.region
   network                  = google_compute_network.vpc.id
   private_ip_google_access = true
@@ -68,6 +75,10 @@ resource "google_compute_router_nat" "nat" {
   nat_ip_allocate_option             = "MANUAL_ONLY"
   nat_ips                            = [google_compute_address.nat_static.self_link]
   source_subnetwork_ip_ranges_to_nat = "ALL_SUBNETWORKS_ALL_IP_RANGES"
+  enable_dynamic_port_allocation     = true
+  min_ports_per_vm                   = 64
+  max_ports_per_vm                   = 16384
+  tcp_time_wait_timeout_sec          = 30
 
   log_config {
     enable = true

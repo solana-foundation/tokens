@@ -7,6 +7,7 @@
 import { computeMarketScore } from '@/lib/token-risk-helpers';
 
 import { claimCredibilityScore, buildAttestations, normalizeClaim } from './claims';
+import { marketScoreInputFromRiskMarket } from './risk';
 import type { CollisionVerdict } from './protected-symbols';
 import type { PolicyDocument } from './policies';
 import type { Attestation, EnrichedCandidate, QueryInterpretation, ScoreComponents } from './types';
@@ -21,13 +22,7 @@ function logScale(value: number | null, floor: number, ceiling: number): number 
     return Math.round(100 * clamp01(Math.log10(value / floor) / Math.log10(ceiling / floor)));
 }
 
-export type MatchKind =
-    | 'mint'
-    | 'exact_symbol'
-    | 'exact_name'
-    | 'symbol_prefix'
-    | 'name_contains'
-    | 'weak';
+export type MatchKind = 'mint' | 'exact_symbol' | 'exact_name' | 'symbol_prefix' | 'name_contains' | 'weak';
 
 export function classifyMatch(candidate: EnrichedCandidate, interpretation: QueryInterpretation): MatchKind {
     if (interpretation.intent === 'mint') {
@@ -35,6 +30,10 @@ export function classifyMatch(candidate: EnrichedCandidate, interpretation: Quer
     }
 
     const query = interpretation.normalizedQuery;
+    // No query (POST /v2/judge without `q`): nothing can match, ranking is
+    // credibility alone. Without this an empty query would equal a missing
+    // symbol's empty normalization.
+    if (!query) return 'weak';
     const symbol = normalizeClaim(candidate.symbol).normalized;
     const name = normalizeClaim(candidate.name).normalized;
     const registrySymbol = normalizeClaim(candidate.registry?.symbol).normalized;
@@ -61,17 +60,7 @@ function riskComponent(candidate: EnrichedCandidate): number {
         return Math.max(0, Math.min(100, candidate.risk.marketScore));
     }
 
-    const computed = computeMarketScore({
-        liquidityUsd: candidate.liquidityUsd,
-        marketCapUsd: candidate.marketCapUsd,
-        holderCount: candidate.holderCount,
-        top10HoldersPercent: candidate.top10HoldersPercent,
-        volume24hUsd: candidate.volume24hUsd,
-        volume7dUsd: null,
-        tokenMintTime: candidate.tokenMintTime,
-        tokenAddress: candidate.mint,
-        curatedListSlugs: candidate.curatedListIds,
-    });
+    const computed = computeMarketScore(marketScoreInputFromRiskMarket(candidate));
 
     // Unknown is neutral, not bad: candidates outside the risk-refresh rotation
     // shouldn't be punished for missing data (gates handle the dangerous cases).
@@ -99,9 +88,12 @@ export function computeComponents(
     const attestations = attestationsOverride ?? buildAttestations(candidate, nowMs);
 
     const volumeScore = logScale(candidate.volume24hUsd, 100, 50_000_000);
+    // Distinct wallets resist wash trading; when known they share the
+    // activity read with raw volume so a bot-only market cannot max it out.
+    const walletScore = candidate.uniqueWallet24h === null ? null : logScale(candidate.uniqueWallet24h, 10, 50_000);
+    const tradedScore = walletScore === null ? volumeScore : Math.round(0.6 * volumeScore + 0.4 * walletScore);
     const executionScore = candidate.fillQuality?.executionScore ?? null;
-    const activity =
-        executionScore !== null ? Math.round(0.7 * volumeScore + 0.3 * executionScore) : volumeScore;
+    const activity = executionScore !== null ? Math.round(0.7 * tradedScore + 0.3 * executionScore) : tradedScore;
 
     return {
         matchQuality: MATCH_SCORES[interpretation.intent][match],

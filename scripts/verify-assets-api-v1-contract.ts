@@ -45,6 +45,48 @@ function assertNullableString(value: unknown, path: string): void {
     assert(typeof value === 'string', `${path} must be a string or null`);
 }
 
+const ADVISORY_STATUSES = new Set(['caution', 'compromised', 'blocked']);
+const ADVISORY_SOURCES = new Set(['admin', 'webacy_depeg', 'peg_guard']);
+
+/** `advisory` must be present on every variant object: `null` or `{ status, reason, url, since }`. */
+function assertVariantAdvisory(variant: Record<string, unknown>, path: string): string | null {
+    assert('advisory' in variant, `${path}.advisory must exist (null allowed)`);
+    const advisory = variant.advisory;
+    if (advisory === null) return null;
+    assertObject(advisory, `${path}.advisory`);
+    assert(
+        typeof advisory.status === 'string' && ADVISORY_STATUSES.has(advisory.status),
+        `${path}.advisory.status must be one of caution|compromised|blocked`,
+    );
+    assert(typeof advisory.reason === 'string', `${path}.advisory.reason must be a string`);
+    assertNullableString(advisory.url, `${path}.advisory.url`);
+    assert(typeof advisory.since === 'number', `${path}.advisory.since must be a number`);
+    if (advisory.source !== undefined) {
+        assert(
+            typeof advisory.source === 'string' && ADVISORY_SOURCES.has(advisory.source),
+            `${path}.advisory.source must be one of admin|webacy_depeg|peg_guard when present`,
+        );
+    }
+    return advisory.status;
+}
+
+/** `advisories` must be an array on every asset object (empty when nothing is flagged). */
+function assertAssetAdvisories(asset: Record<string, unknown>, path: string): void {
+    assert(Array.isArray(asset.advisories), `${path}.advisories must be an array`);
+    for (let i = 0; i < asset.advisories.length; i++) {
+        const entry = asset.advisories[i];
+        assertObject(entry, `${path}.advisories[${i}]`);
+        assert(typeof entry.mint === 'string', `${path}.advisories[${i}].mint must be a string`);
+        assert(typeof entry.variantId === 'string', `${path}.advisories[${i}].variantId must be a string`);
+        assertVariantAdvisory({ advisory: entry }, `${path}.advisories[${i}]`);
+    }
+}
+
+/** List surfaces hide `blocked` mints; only detail/variants may serve them. */
+function assertNotBlocked(status: string | null, path: string): void {
+    assert(status !== 'blocked', `${path} must not surface a blocked variant on a list surface`);
+}
+
 function assertNoKeys(obj: Record<string, unknown>, forbiddenKeys: string[], path: string): void {
     for (const key of forbiddenKeys) {
         assert(!(key in obj), `${path} must not include \`${key}\``);
@@ -133,14 +175,22 @@ async function verifySearch(baseUrl: string, apiKey: string, prefix: string, q: 
         assertNoKeys(row, ['aliases', 'symbols'], `search.results[${i}]`);
         const assetId = row.assetId;
         assertNotMintAssetId(assetId, `search.results[${i}].assetId`);
+        assertNullableString(row.region, `search.results[${i}].region`);
+        assertNullableString(row.industry, `search.results[${i}].industry`);
         assertStatsSnapshot(row.stats ?? null, `search.results[${i}].stats`);
         assertCanonicalMarketSnapshot(row.canonicalMarket, `search.results[${i}].canonicalMarket`);
+
+        assertAssetAdvisories(row, `search.results[${i}]`);
 
         const primary = row.primaryVariant ?? null;
         if (primary !== null) {
             assertObject(primary, `search.results[${i}].primaryVariant`);
             assert('market' in primary, `search.results[${i}].primaryVariant.market must exist (null allowed)`);
             assertMarketSnapshot(primary.market ?? null, `search.results[${i}].primaryVariant.market`);
+            assertNotBlocked(
+                assertVariantAdvisory(primary, `search.results[${i}].primaryVariant`),
+                `search.results[${i}].primaryVariant`,
+            );
         }
 
         assetIds.push(assetId);
@@ -179,14 +229,22 @@ async function verifyCurated(baseUrl: string, apiKey: string, prefix: string): P
         assertNoKeys(row, ['aliases', 'symbols', 'variants'], `curated.assets[${i}]`);
         const assetId = row.assetId;
         assertNotMintAssetId(assetId, `curated.assets[${i}].assetId`);
+        assertNullableString(row.region, `curated.assets[${i}].region`);
+        assertNullableString(row.industry, `curated.assets[${i}].industry`);
         assertStatsSnapshot(row.stats ?? null, `curated.assets[${i}].stats`);
         assertCanonicalMarketSnapshot(row.canonicalMarket, `curated.assets[${i}].canonicalMarket`);
+
+        assertAssetAdvisories(row, `curated.assets[${i}]`);
 
         const primary = row.primaryVariant ?? null;
         if (primary !== null) {
             assertObject(primary, `curated.assets[${i}].primaryVariant`);
             assert('market' in primary, `curated.assets[${i}].primaryVariant.market must exist (null allowed)`);
             assertMarketSnapshot(primary.market ?? null, `curated.assets[${i}].primaryVariant.market`);
+            assertNotBlocked(
+                assertVariantAdvisory(primary, `curated.assets[${i}].primaryVariant`),
+                `curated.assets[${i}].primaryVariant`,
+            );
         }
 
         assetIds.push(assetId);
@@ -203,6 +261,7 @@ async function verifyCurated(baseUrl: string, apiKey: string, prefix: string): P
         const row = withVariants.assets[i];
         const path = `curated(variants=all).assets[${i}]`;
         assertObject(row, path);
+        assertAssetAdvisories(row, path);
         assert(Array.isArray(row.variants), `${path}.variants must be an array`);
         for (let j = 0; j < row.variants.length; j++) {
             const variant = row.variants[j];
@@ -210,10 +269,12 @@ async function verifyCurated(baseUrl: string, apiKey: string, prefix: string): P
             assert(typeof variant.mint === 'string', `${path}.variants[${j}].mint must be a string`);
             assert('market' in variant, `${path}.variants[${j}].market must exist (null allowed)`);
             assertMarketSnapshot(variant.market ?? null, `${path}.variants[${j}].market`);
+            assertNotBlocked(assertVariantAdvisory(variant, `${path}.variants[${j}]`), `${path}.variants[${j}]`);
         }
         const primary = row.primaryVariant ?? null;
         if (primary !== null) {
             assertObject(primary, `${path}.primaryVariant`);
+            assertVariantAdvisory(primary, `${path}.primaryVariant`);
             assert(
                 row.variants.some(
                     variant =>
@@ -234,6 +295,8 @@ async function verifyDetail(baseUrl: string, apiKey: string, prefix: string, ass
     assertObject(data, 'detail response');
     assertObject(data.asset, 'detail.asset');
     assertNotMintAssetId(data.asset.assetId, 'detail.asset.assetId');
+    assertNullableString(data.asset.region, 'detail.asset.region');
+    assertNullableString(data.asset.industry, 'detail.asset.industry');
     assertCanonicalMarketSnapshot(
         (data.asset as Record<string, unknown>).canonicalMarket,
         'detail.asset.canonicalMarket',
@@ -245,6 +308,64 @@ async function verifyDetail(baseUrl: string, apiKey: string, prefix: string, ass
         assertObject(primary, 'detail.asset.primaryVariant');
         assert('market' in primary, 'detail.asset.primaryVariant.market must exist (null allowed)');
         assertMarketSnapshot((primary as Record<string, unknown>).market ?? null, 'detail.asset.primaryVariant.market');
+        assertVariantAdvisory(primary, 'detail.asset.primaryVariant');
+    }
+
+    // Advisory invariants: `asset.advisories` always an array; every variant
+    // group row carries `advisory` (detail keeps `blocked` visible — no
+    // assertNotBlocked here).
+    assertAssetAdvisories(data.asset, 'detail.asset');
+    const variantGroups = (data.asset as Record<string, unknown>).variantGroups;
+    if (variantGroups !== undefined) {
+        assertObject(variantGroups, 'detail.asset.variantGroups');
+        for (const [group, rows] of Object.entries(variantGroups)) {
+            assert(Array.isArray(rows), `detail.asset.variantGroups.${group} must be an array`);
+            for (let i = 0; i < rows.length; i++) {
+                const variant = rows[i];
+                assertObject(variant, `detail.asset.variantGroups.${group}[${i}]`);
+                assertVariantAdvisory(variant, `detail.asset.variantGroups.${group}[${i}]`);
+            }
+        }
+    }
+}
+
+/**
+ * Optional: when a mint is known to be flagged (ADVISORY_MINT env), the detail
+ * endpoint must still 200 with the advisory attached — never a 404 — and, if
+ * the status is `blocked`, search must not surface it.
+ */
+async function verifyFlaggedMint(baseUrl: string, apiKey: string, prefix: string, mint: string): Promise<void> {
+    const resolved = await verifyResolve(baseUrl, apiKey, prefix, mint);
+    const data = await fetchJson(
+        baseUrl,
+        `${prefix}/assets/${encodeURIComponent(resolved)}?mint=${encodeURIComponent(mint)}`,
+        apiKey,
+    );
+    assertObject(data, 'flagged detail response');
+    assertObject(data.asset, 'flagged detail.asset');
+    assertAssetAdvisories(data.asset, 'flagged detail.asset');
+    const flagged = (data.asset.advisories as Array<Record<string, unknown>>).find(entry => entry.mint === mint);
+    assert(flagged !== undefined, `flagged detail.asset.advisories must include ${mint}`);
+    const primary = data.asset.primaryVariant;
+    assertObject(primary, 'flagged detail.asset.primaryVariant');
+    assert(primary.mint === mint, 'flagged detail must select the requested mint as primaryVariant');
+    const status = assertVariantAdvisory(primary, 'flagged detail.asset.primaryVariant');
+    assert(status !== null, 'flagged detail.asset.primaryVariant.advisory must be set');
+
+    if (status === 'blocked') {
+        const search = await fetchJson(baseUrl, `${prefix}/assets/search?q=${encodeURIComponent(mint)}&limit=20`, apiKey);
+        assertObject(search, 'flagged search response');
+        assert(Array.isArray(search.results), 'flagged search.results must be an array');
+        for (const row of search.results) {
+            assertObject(row, 'flagged search row');
+            const rowPrimary = row.primaryVariant;
+            if (rowPrimary && typeof rowPrimary === 'object') {
+                assert(
+                    (rowPrimary as Record<string, unknown>).mint !== mint,
+                    'blocked mint must not appear as a search primaryVariant',
+                );
+            }
+        }
     }
 }
 
@@ -263,6 +384,52 @@ async function verifyDetailAssetId(
         `detail.asset.assetId for ${ref} must be ${expectedAssetId}`,
     );
     assertNotMintAssetId((data.asset as Record<string, unknown>).assetId, 'detail.asset.assetId');
+}
+
+async function fetchStatus(
+    baseUrl: string,
+    path: string,
+    apiKey: string,
+    init: RequestInit = {},
+): Promise<{ status: number; body: unknown }> {
+    const url = new URL(path, baseUrl);
+    const res = await fetch(url, { ...init, headers: { 'x-api-key': apiKey, ...(init.headers ?? {}) } });
+    const text = await res.text();
+    return { status: res.status, body: text ? (JSON.parse(text) as unknown) : null };
+}
+
+function assertNotRegistered(result: { status: number; body: unknown }, mint: string, path: string): void {
+    assert(result.status === 404, `${path} must be 404 for an unregistered mint, got ${result.status}`);
+    assertObject(result.body, `${path} body`);
+    assertObject(result.body.error, `${path}.error`);
+    assert(result.body.error._tag === 'NotFoundError', `${path}.error._tag must be NotFoundError`);
+    assertObject(result.body.error.details, `${path}.error.details`);
+    assert(result.body.error.details.code === 'asset_not_registered', `${path}.error.details.code must be asset_not_registered`);
+    assert(result.body.error.details.mint === mint, `${path}.error.details.mint must echo the mint`);
+    assert(typeof result.body.error.details.hint === 'string', `${path}.error.details.hint must be a string`);
+}
+
+async function verifyUnregisteredMint(baseUrl: string, apiKey: string, prefix: string, mint: string): Promise<void> {
+    const m = encodeURIComponent(mint);
+    const paths = [
+        `${prefix}/assets/resolve?mint=${m}`,
+        `${prefix}/assets/${m}`,
+        `${prefix}/assets/solana-${m}`,
+        `${prefix}/assets/solana-${m}/price-chart?interval=1D`,
+        `${prefix}/assets/risk-summary?mint=${m}`,
+    ];
+    for (const path of paths) {
+        assertNotRegistered(await fetchStatus(baseUrl, path, apiKey), mint, path);
+    }
+    const snapshots = await fetchStatus(baseUrl, `${prefix}/assets/market-snapshots`, apiKey, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ mints: [mint] }),
+    });
+    assert(snapshots.status === 200, `market-snapshots must be 200, got ${snapshots.status}`);
+    assert(Array.isArray(snapshots.body) && snapshots.body.length === 1, 'market-snapshots must keep one row per input');
+    const rowOut = snapshots.body[0] as Record<string, unknown>;
+    assert(rowOut.address === mint && rowOut.token === null, 'market-snapshots must answer an unregistered mint with token: null');
 }
 
 async function verifyResolve(baseUrl: string, apiKey: string, prefix: string, ref: string): Promise<string> {
@@ -336,11 +503,25 @@ async function main(): Promise<void> {
     );
     await verifyDetail(baseUrl, apiKey, prefix, resolvedAnduril);
 
-    // Optional singleton mint check (for tokens outside a canonical asset).
-    const singletonMint = process.env.SINGLETON_MINT?.trim() ?? '';
-    if (singletonMint) {
-        const singletonAssetId = await verifyResolve(baseUrl, apiKey, prefix, singletonMint);
-        await verifyDetail(baseUrl, apiKey, prefix, singletonAssetId);
+    // Optional unregistered-mint check: v1 serves registered assets only, so
+    // a mint outside the registry must 404 with `asset_not_registered` on every
+    // mint-keyed route and come back as `token: null` from market-snapshots.
+    // EXPECT_SINGLETONS=1 runs the pre-rule expectation instead (a deployment
+    // with TOKENS_V1_REGISTERED_ONLY=off).
+    const unregisteredMint = process.env.UNREGISTERED_MINT?.trim() ?? process.env.SINGLETON_MINT?.trim() ?? '';
+    if (unregisteredMint) {
+        if (/^(1|true|yes)$/i.test(process.env.EXPECT_SINGLETONS ?? '')) {
+            const singletonAssetId = await verifyResolve(baseUrl, apiKey, prefix, unregisteredMint);
+            await verifyDetail(baseUrl, apiKey, prefix, singletonAssetId);
+        } else {
+            await verifyUnregisteredMint(baseUrl, apiKey, prefix, unregisteredMint);
+        }
+    }
+
+    // Optional flagged-mint check (skipped when no fixture mint is flagged).
+    const advisoryMint = process.env.ADVISORY_MINT?.trim() ?? '';
+    if (advisoryMint) {
+        await verifyFlaggedMint(baseUrl, apiKey, prefix, advisoryMint);
     }
 
     console.log('Assets API v1 contract verification passed.');

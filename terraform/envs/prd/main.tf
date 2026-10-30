@@ -101,6 +101,21 @@ module "env" {
   enable_crons         = true
   enable_load_balancer = true
   domain               = "api.tokens.xyz"
+
+  # Assets logo-sync (docs/operations/logo-sync.md). Pinata dedicated gateway
+  # for IPFS-hosted artwork; tokens-pinata-gateway-token-prd version seeded
+  # 2026-09-22. Cloud Run env is ignore_changes, so the live value is pushed
+  # with gcloud (see the runbook) — this records the desired state.
+  pinata_gateway_host = "yellow-key-catshark-460.mypinata.cloud"
+  # logo_public_base_url = "https://img.tokens.xyz"  # after the img host fronts the bucket
+
+  # Stablecoin depeg advisories GO LIVE (shadow since 2026-10-07; see
+  # docs/operations/asset-advisory-runbook.md). These flip the scheduler
+  # bodies; the assets worker's WEBACY_DEPEG_DRY_RUN / PEG_GUARD_DRY_RUN
+  # (webhook-triggered runs) are Cloud Run env under ignore_changes and are
+  # flipped with gcloud alongside this (prod: env update, then update-traffic).
+  webacy_depeg_dry_run = false
+  peg_guard_dry_run    = false
 }
 
 output "wif_provider" {
@@ -159,6 +174,15 @@ output "cloudrun_auth_token_secret_id" {
 
 output "cloudrun_auth_token_value" {
   value     = module.env.cloudrun_auth_token_value
+  sensitive = true
+}
+
+output "identity_signing_secret_id" {
+  value = module.env.identity_signing_secret_id
+}
+
+output "identity_signing_secret_value" {
+  value     = module.env.identity_signing_secret_value
   sensitive = true
 }
 

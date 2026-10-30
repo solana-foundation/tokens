@@ -1,4 +1,5 @@
 import postgres, { type Sql } from 'postgres';
+import { onPostgresNotice } from '@tokens/cloudrun-shutdown/postgres-notice';
 
 import { CURATED_LIST_SLUGS, type CuratedListSlug } from '@tokens/asset-registry/curated-lists';
 import type {
@@ -26,6 +27,8 @@ import type {
 import type { ActiveStockMapping, ClickhouseRepo } from './handlers/crons.clickhouse';
 import type { MiscJobsRepo } from './handlers/crons.misc';
 import type { AssetDeletionTombstonesRepo } from './handlers/assetDeletionTombstones';
+import type { AssetAdvisoriesRepo, AssetAdvisoryRow } from './handlers/assetAdvisoriesReads';
+import type { StablecoinHealthReadsRepo, StablecoinHealthRow } from './handlers/stablecoinHealthReads';
 import type { SanctumLstRow, SanctumLstsRepo } from './handlers/sanctumLsts';
 import type { AssetMarketRow, AssetMarketsRepo } from './handlers/assetMarkets';
 import type { VariantMarketRow, VariantMarketsRepo } from './handlers/variantMarkets';
@@ -34,6 +37,27 @@ import type { StockInstrumentRow, StockPriceRow, StockReadsRepo } from './handle
 import type { OhlcvCandleRow, OhlcvReadsRepo, TimeInterval } from './handlers/ohlcvReads';
 import type { PrestocksPriceRow, PrestocksReadsRepo } from './handlers/prestocksReads';
 import type { PrestocksRepo } from './handlers/crons.prestocks';
+import type { LaunchpadJobsRepo, LaunchpadTokenUpsert } from './handlers/crons.launchpad';
+import type {
+    ListLogoSyncCandidatesArgs,
+    LogoSyncCandidate,
+    LogoSyncFailure,
+    LogoSyncRepo,
+    LogoSyncSuccess,
+} from './handlers/crons.logoSync';
+import type { LaunchpadReadsRepo, LaunchpadTokenRow } from './handlers/launchpadReads';
+import type {
+    SolanaDataAssetUpsert,
+    SolanaDataJobsRepo,
+    SolanaDataProviderMetadataUpdate,
+} from './handlers/crons.solanaData';
+import type {
+    SolanaDataAssetDetailRow,
+    SolanaDataAssetReadRow,
+    SolanaDataAssetsListFilters,
+    SolanaDataReadsRepo,
+} from './handlers/solanaDataReads';
+import type { TokenUpsertFromBirdeye } from './handlers/tokenUpsert';
 import type {
     AssetsApiAssetMarketRow,
     AssetsApiAssetRow,
@@ -63,6 +87,7 @@ import type { TrendingMarketRow, FreshTrendingMarketRow, TrendingReadsRepo } fro
 import type { FillQualityRow, FillQualityReadsRepo } from './handlers/fillQualityReads';
 import type { DepthCronRepo } from './handlers/crons.depth';
 import type { DepthCurveReadsRepo, DepthCurveRow } from './handlers/depthCurveReads';
+import type { AssetRiskReadsRepo, AssetRiskRow } from './handlers/assetRiskReads';
 import type { AssetCollectionMemberRow, AssetCollectionsReadsRepo } from './handlers/assetCollectionsReads';
 import type {
     TokenListMemberRow,
@@ -84,11 +109,11 @@ import type { ClickhouseExtrasRepo } from './handlers/crons.clickhouse.extras';
 
 let cached: Sql | null = null;
 
-function positiveIntegerEnv(name: string, fallback: number): number {
-    const raw = process.env[name]?.trim();
+function integerEnv(env: NodeJS.ProcessEnv, name: string, fallback: number, min: number): number {
+    const raw = env[name]?.trim();
     if (!raw) return fallback;
     const parsed = Number(raw);
-    if (!Number.isInteger(parsed) || parsed < 1) {
+    if (!Number.isInteger(parsed) || parsed < min) {
         console.warn(
             JSON.stringify({
                 event: 'env_invalid_value',
@@ -102,18 +127,63 @@ function positiveIntegerEnv(name: string, fallback: number): number {
     return parsed;
 }
 
+export type PostgresServiceRole = 'api' | 'worker';
+
+/**
+ * Worker-only session timeouts (ms). `lock_timeout` turns a write blocked
+ * behind another transaction (an admin hard delete holds `peg_guard_latest`
+ * rows, for one) into "canceling statement due to lock timeout" instead of an
+ * indefinite hang; `statement_timeout` frees a wedged connection within one
+ * Cloud Run request window (540s). Both are below any legitimate worker
+ * statement; incident 2026-10-12 (peg guard silent for 50 minutes) is why.
+ * The API role sets neither: its reads already run under the request path's
+ * own retry/last-good machinery.
+ */
+const WORKER_LOCK_TIMEOUT_MS = 30_000;
+const WORKER_STATEMENT_TIMEOUT_MS = 300_000;
+
+export interface PostgresSessionOptions {
+    max: number;
+    idle_timeout: number;
+    connect_timeout: number;
+    /** Startup parameters; postgres.js forwards every key as a session GUC. */
+    connection: Record<string, string>;
+}
+
+/** Pure so the per-role options are testable; `getSql` feeds it `process.env`. */
+export function buildPostgresOptions(env: NodeJS.ProcessEnv, serviceRole: PostgresServiceRole): PostgresSessionOptions {
+    const connection: Record<string, string> = {
+        application_name: serviceRole === 'worker' ? 'cloudrun-assets-jobs' : 'cloudrun-assets',
+    };
+    if (serviceRole === 'worker') {
+        // 0 disables either timeout.
+        const lockTimeoutMs = integerEnv(env, 'PG_LOCK_TIMEOUT_MS', WORKER_LOCK_TIMEOUT_MS, 0);
+        const statementTimeoutMs = integerEnv(env, 'PG_STATEMENT_TIMEOUT_MS', WORKER_STATEMENT_TIMEOUT_MS, 0);
+        if (lockTimeoutMs > 0) connection.lock_timeout = String(lockTimeoutMs);
+        if (statementTimeoutMs > 0) connection.statement_timeout = String(statementTimeoutMs);
+    }
+    return {
+        max: integerEnv(env, 'PG_POOL_MAX', serviceRole === 'worker' ? 8 : 16, 1),
+        idle_timeout: integerEnv(env, 'PG_IDLE_TIMEOUT', 240, 1),
+        connect_timeout: integerEnv(env, 'PG_CONNECT_TIMEOUT', 3, 1),
+        connection,
+    };
+}
+
 export function getSql(): Sql {
     if (cached) return cached;
     const url = process.env.DATABASE_URL?.trim();
     if (!url) throw new Error('DATABASE_URL must be set');
-    const serviceRole = process.env.SERVICE_ROLE?.trim() === 'worker' ? 'worker' : 'api';
+    const serviceRole: PostgresServiceRole = process.env.SERVICE_ROLE?.trim() === 'worker' ? 'worker' : 'api';
+    const options = buildPostgresOptions(process.env, serviceRole);
     cached = postgres(url, {
-        max: positiveIntegerEnv('PG_POOL_MAX', serviceRole === 'worker' ? 8 : 16),
-        idle_timeout: positiveIntegerEnv('PG_IDLE_TIMEOUT', 240),
-        connect_timeout: positiveIntegerEnv('PG_CONNECT_TIMEOUT', 3),
-        connection: {
-            application_name: serviceRole === 'worker' ? 'cloudrun-assets-jobs' : 'cloudrun-assets',
-        },
+        max: options.max,
+        idle_timeout: options.idle_timeout,
+        connect_timeout: options.connect_timeout,
+        onnotice: onPostgresNotice,
+        // postgres.js types `connection` as its known parameters only; arbitrary
+        // GUCs (lock_timeout, statement_timeout) are accepted at runtime.
+        connection: options.connection as unknown as NonNullable<Parameters<typeof postgres>[1]>['connection'],
         types: {
             bigint: {
                 to: 20,
@@ -126,6 +196,13 @@ export function getSql(): Sql {
     return cached;
 }
 
+/**
+ * Prefix tsquery for the full-text branches of the search queries. Every
+ * consumer evaluates it once through a `WITH tq AS MATERIALIZED (...)` CTE:
+ * inlined into the WHERE/ORDER BY, Postgres re-ran `to_tsquery` per scanned
+ * row and a stop-word-only query ("a", "the") raised one NOTICE per row per
+ * call site (see @tokens/cloudrun-shutdown/postgres-notice).
+ */
 export function buildPrefixTsQuery(query: string): string | null {
     const tokens = query
         .trim()
@@ -142,7 +219,7 @@ export function makePostgresAssetsRepo(sql: Sql): AssetsRepo {
             const rows = await sql<AssetRow[]>`
                 SELECT id, asset_id, category, name, symbol, aliases,
                        coingecko_id, description, image_url, is_active,
-                       created_at, updated_at
+                       created_at, updated_at, region, industry
                 FROM assets
                 WHERE asset_id = ${assetId}
                 LIMIT 1
@@ -155,7 +232,7 @@ export function makePostgresAssetsRepo(sql: Sql): AssetsRepo {
             const rows = await sql<AssetRow[]>`
                 SELECT id, asset_id, category, name, symbol, aliases,
                        coingecko_id, description, image_url, is_active,
-                       created_at, updated_at
+                       created_at, updated_at, region, industry
                 FROM assets
                 WHERE asset_id IN ${sql(assetIds)}
             `;
@@ -172,34 +249,49 @@ export function makePostgresAssetsRepo(sql: Sql): AssetsRepo {
             return rows;
         },
 
-        async findAliasesByFuzzy(query, limit) {
+        async findAliasesByFuzzy(query, limit, filter) {
             const tsq = buildPrefixTsQuery(query) ?? 'noresultsentinel:*';
             const pattern = `%${query}%`;
+            // The asset predicates ride along via a JOIN only when a filter is
+            // set, so the unfiltered query keeps its plan (and its semantics
+            // for aliases whose asset row is gone).
+            const hasFilter = Boolean(filter?.category || filter?.region || filter?.industry);
             const rows = await sql<AssetAliasRow[]>`
-                SELECT alias, normalized, asset_id, priority
-                FROM asset_aliases
-                WHERE to_tsvector('english', alias) @@ to_tsquery('english', ${tsq})
-                   OR alias ILIKE ${pattern}
-                ORDER BY ts_rank_cd(to_tsvector('english', alias), to_tsquery('english', ${tsq})) DESC,
-                         priority DESC,
-                         length(alias) ASC,
-                         alias ASC
+                WITH tq AS MATERIALIZED (SELECT to_tsquery('english', ${tsq}) AS q)
+                SELECT al.alias, al.normalized, al.asset_id, al.priority
+                FROM asset_aliases al
+                CROSS JOIN tq
+                ${hasFilter ? sql`JOIN assets a ON a.asset_id = al.asset_id` : sql``}
+                WHERE (to_tsvector('english', al.alias) @@ tq.q
+                   OR al.alias ILIKE ${pattern})
+                  ${filter?.category ? sql`AND a.category = ${filter.category}` : sql``}
+                  ${filter?.region ? sql`AND a.region = ${filter.region}` : sql``}
+                  ${filter?.industry ? sql`AND a.industry = ${filter.industry}` : sql``}
+                ORDER BY ts_rank_cd(to_tsvector('english', al.alias), tq.q) DESC,
+                         al.priority DESC,
+                         length(al.alias) ASC,
+                         al.alias ASC
                 LIMIT ${limit}
             `;
             return rows;
         },
 
-        async findAssetsByNameFuzzy(query, limit) {
+        async findAssetsByNameFuzzy(query, limit, filter) {
             const tsq = buildPrefixTsQuery(query) ?? 'noresultsentinel:*';
             const pattern = `%${query}%`;
             const rows = await sql<AssetRow[]>`
+                WITH tq AS MATERIALIZED (SELECT to_tsquery('english', ${tsq}) AS q)
                 SELECT id, asset_id, category, name, symbol, aliases,
                        coingecko_id, description, image_url, is_active,
-                       created_at, updated_at
+                       created_at, updated_at, region, industry
                 FROM assets
-                WHERE to_tsvector('english', coalesce(name, '')) @@ to_tsquery('english', ${tsq})
-                   OR coalesce(name, '') ILIKE ${pattern}
-                ORDER BY ts_rank_cd(to_tsvector('english', coalesce(name, '')), to_tsquery('english', ${tsq})) DESC,
+                CROSS JOIN tq
+                WHERE (to_tsvector('english', coalesce(name, '')) @@ tq.q
+                   OR coalesce(name, '') ILIKE ${pattern})
+                  ${filter?.category ? sql`AND category = ${filter.category}` : sql``}
+                  ${filter?.region ? sql`AND region = ${filter.region}` : sql``}
+                  ${filter?.industry ? sql`AND industry = ${filter.industry}` : sql``}
+                ORDER BY ts_rank_cd(to_tsvector('english', coalesce(name, '')), tq.q) DESC,
                          length(coalesce(name, '')) ASC,
                          asset_id ASC
                 LIMIT ${limit}
@@ -207,17 +299,22 @@ export function makePostgresAssetsRepo(sql: Sql): AssetsRepo {
             return rows;
         },
 
-        async findAssetsBySymbolFuzzy(query, limit) {
+        async findAssetsBySymbolFuzzy(query, limit, filter) {
             const tsq = buildPrefixTsQuery(query) ?? 'noresultsentinel:*';
             const pattern = `%${query}%`;
             const rows = await sql<AssetRow[]>`
+                WITH tq AS MATERIALIZED (SELECT to_tsquery('english', ${tsq}) AS q)
                 SELECT id, asset_id, category, name, symbol, aliases,
                        coingecko_id, description, image_url, is_active,
-                       created_at, updated_at
+                       created_at, updated_at, region, industry
                 FROM assets
-                WHERE to_tsvector('english', coalesce(symbol, '')) @@ to_tsquery('english', ${tsq})
-                   OR coalesce(symbol, '') ILIKE ${pattern}
-                ORDER BY ts_rank_cd(to_tsvector('english', coalesce(symbol, '')), to_tsquery('english', ${tsq})) DESC,
+                CROSS JOIN tq
+                WHERE (to_tsvector('english', coalesce(symbol, '')) @@ tq.q
+                   OR coalesce(symbol, '') ILIKE ${pattern})
+                  ${filter?.category ? sql`AND category = ${filter.category}` : sql``}
+                  ${filter?.region ? sql`AND region = ${filter.region}` : sql``}
+                  ${filter?.industry ? sql`AND industry = ${filter.industry}` : sql``}
+                ORDER BY ts_rank_cd(to_tsvector('english', coalesce(symbol, '')), tq.q) DESC,
                          length(coalesce(symbol, '')) ASC,
                          asset_id ASC
                 LIMIT ${limit}
@@ -233,6 +330,23 @@ export function makePostgresAssetsRepo(sql: Sql): AssetsRepo {
                 LIMIT 1
             `;
             return rows[0] ?? null;
+        },
+
+        async listAssetIdRenames(normalizedAssetIds) {
+            if (normalizedAssetIds !== undefined && normalizedAssetIds.length === 0) return [];
+            // See the seed repo's `listAssetIdRenames`: an `assetId`-kind alias
+            // that no longer matches its asset's id marks an admin rename.
+            const rows = await sql<{ from_id: string; to_id: string }[]>`
+                SELECT al.normalized AS from_id, al.asset_id AS to_id
+                FROM asset_aliases al
+                WHERE al.kind = 'assetId'
+                  AND al.normalized <> lower(al.asset_id)
+                  ${normalizedAssetIds !== undefined ? sql`AND al.normalized IN ${sql([...normalizedAssetIds])}` : sql``}
+                  AND EXISTS (SELECT 1 FROM assets a WHERE a.asset_id = al.asset_id)
+                ORDER BY al.updated_at ASC, al.id ASC
+                LIMIT 5000
+            `;
+            return rows.map(r => ({ from: r.from_id, to: r.to_id }));
         },
 
         async isDeletedRef(normalizedRef) {
@@ -262,7 +376,7 @@ export function makePostgresAssetsRepo(sql: Sql): AssetsRepo {
             const rows = await sql<AssetRow[]>`
                 SELECT id, asset_id, category, name, symbol, aliases,
                        coingecko_id, description, image_url, is_active,
-                       created_at, updated_at
+                       created_at, updated_at, region, industry
                 FROM assets
                 WHERE category = ${category} AND is_active = true
                 ORDER BY asset_id ASC
@@ -275,7 +389,7 @@ export function makePostgresAssetsRepo(sql: Sql): AssetsRepo {
             const rows = await sql<AssetRow[]>`
                 SELECT id, asset_id, category, name, symbol, aliases,
                        coingecko_id, description, image_url, is_active,
-                       created_at, updated_at
+                       created_at, updated_at, region, industry
                 FROM assets
                 WHERE is_active = true
                   AND coingecko_id IS NOT NULL
@@ -316,7 +430,8 @@ export function makePostgresCacheWarmAssetsRepo(sql: Sql): CacheWarmAssetsRepo {
     };
 }
 
-function randomId(prefix: string): string {
+/** Exported for the per-domain repos under `src/db/` (e.g. db/depeg.ts). */
+export function randomId(prefix: string): string {
     return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
 }
 
@@ -324,8 +439,8 @@ const CURATED_MEMBERSHIP_TTL_MS = Number(process.env.CURATED_MEMBERSHIP_TTL_MS) 
 /** Coingecko curated-id cache keeps its historical 1h refresh cadence. */
 const CURATED_COINGECKO_IDS_TTL_MS = Number(process.env.CURATED_MINTS_TTL_MS) || 60 * 60_000;
 
-const CURATED_COLLECTION_SLUGS: readonly string[] = CURATED_LIST_SLUGS;
-const CURATED_COLLECTION_SLUGS_SQL_LITERAL = `ARRAY[${CURATED_COLLECTION_SLUGS.map(s => `'${s}'`).join(',')}]::text[]`;
+export const CURATED_COLLECTION_SLUGS: readonly string[] = CURATED_LIST_SLUGS;
+export const CURATED_COLLECTION_SLUGS_SQL_LITERAL = `ARRAY[${CURATED_COLLECTION_SLUGS.map(s => `'${s}'`).join(',')}]::text[]`;
 const NORMAL_CURATED_SLUGS: readonly CuratedListSlug[] = CURATED_LIST_SLUGS.filter(slug => slug !== 'lsts');
 const NORMAL_CURATED_SLUGS_SQL_LITERAL = `ARRAY[${NORMAL_CURATED_SLUGS.map(s => `'${s}'`).join(',')}]::text[]`;
 
@@ -735,6 +850,10 @@ async function findRwaXyzTokenLatestByNetworkAndAddressImpl(
 
 export function makePostgresJobsRepo(sql: Sql): JobsRepo {
     return {
+        async upsertTokenFromBirdeye(args) {
+            await upsertTokenFromBirdeyeSql(sql, args);
+        },
+
         async upsertVariantMarketFromBirdeye(args) {
             const birdeyeJson = {
                 source: 'birdeye',
@@ -1721,6 +1840,42 @@ export function makePostgresJobsRepo(sql: Sql): JobsRepo {
             };
         },
 
+        async listStaleOhlcvMints(interval, intervalSeconds, candidates, attemptedBeforeMs, limit) {
+            if (candidates.length === 0) return [];
+            // A mint whose last trade (variant market snapshot, ms epoch) falls
+            // inside the bucket of its newest stored candle has nothing newer to
+            // fetch — skip it so the slots go to mints that actually traded.
+            // Unknown last trade or no stored candle ⇒ eligible.
+            const rows = await sql<{ address: string }[]>`
+                SELECT c.address
+                FROM unnest(${sql.array([...candidates])}::text[]) WITH ORDINALITY AS c(address, ord)
+                LEFT JOIN ohlcv_refresh_state s
+                       ON s.address = c.address AND s.interval = ${interval}
+                LEFT JOIN variant_markets_latest vm
+                       ON vm.mint = c.address
+                WHERE (s.last_attempted_at IS NULL OR s.last_attempted_at < ${attemptedBeforeMs})
+                  AND (
+                        s.last_candle_time IS NULL
+                     OR vm.last_trade_at IS NULL
+                     OR (vm.last_trade_at / 1000.0) >= (s.last_candle_time + ${intervalSeconds})::double precision
+                  )
+                ORDER BY s.last_attempted_at ASC NULLS FIRST, c.ord ASC
+                LIMIT ${Math.min(Math.max(limit, 1), 500)}
+            `;
+            return rows.map(r => r.address);
+        },
+
+        async touchOhlcvRefreshState(args) {
+            await sql`
+                INSERT INTO ohlcv_refresh_state (address, interval, last_attempted_at, last_refreshed_at, last_candle_time)
+                VALUES (${args.address}, ${args.interval}, ${args.attemptedAt}, ${args.refreshedAt}, ${args.lastCandleTime})
+                ON CONFLICT (address, interval) DO UPDATE
+                SET last_attempted_at = EXCLUDED.last_attempted_at,
+                    last_refreshed_at = COALESCE(EXCLUDED.last_refreshed_at, ohlcv_refresh_state.last_refreshed_at),
+                    last_candle_time  = COALESCE(EXCLUDED.last_candle_time, ohlcv_refresh_state.last_candle_time)
+            `;
+        },
+
         async upsertOhlcvCandles(address, interval, candles): Promise<OhlcvUpsertResult> {
             if (candles.length === 0) return { inserted: 0, updated: 0, skipped: 0 };
             const byTime = new Map<number, OhlcvCandle>();
@@ -1806,8 +1961,35 @@ export function makePostgresJobsRepo(sql: Sql): JobsRepo {
 
 export function makePostgresCoingeckoCuratedSource(sql: Sql): CoingeckoCuratedSource & { warmup(): Promise<void> } {
     let cachedIds: string[] | null = null;
+    let cachedPriceIds: string[] | null = null;
     let loadedAtMs = 0;
     let inflight: Promise<void> | null = null;
+
+    async function loadPriceIds(curated: readonly string[]): Promise<string[]> {
+        // Curated ids first (the curated order is also the price priority), then
+        // every other active asset's reference id, then the coins active variants
+        // link to. Prices are the one CoinGecko read that must cover all of them.
+        const rows = await sql<{ coin_id: string; is_variant: boolean }[]>`
+            SELECT trim(a.coingecko_id) AS coin_id, false AS is_variant
+            FROM assets a
+            WHERE a.is_active = true AND a.coingecko_id IS NOT NULL AND length(trim(a.coingecko_id)) > 0
+            UNION
+            SELECT v.coingecko_id AS coin_id, true AS is_variant
+            FROM v2_asset_variants v
+            JOIN assets a ON a.asset_id = v.asset_id AND a.is_active = true
+            WHERE v.is_active = true AND v.coingecko_id IS NOT NULL
+            ORDER BY is_variant ASC, coin_id ASC
+        `;
+        const seen = new Set(curated);
+        const out = [...curated];
+        for (const row of rows) {
+            const coinId = row.coin_id?.trim();
+            if (!coinId || seen.has(coinId)) continue;
+            seen.add(coinId);
+            out.push(coinId);
+        }
+        return out;
+    }
 
     async function load(): Promise<void> {
         const rows = await sql<{ coingecko_id: string }[]>`
@@ -1836,6 +2018,13 @@ export function makePostgresCoingeckoCuratedSource(sql: Sql): CoingeckoCuratedSo
             out.push(coinId);
         }
         cachedIds = out;
+        try {
+            cachedPriceIds = await loadPriceIds(out);
+        } catch (err) {
+            // The v2 tables may not exist yet (pre-0033 env): prices then cover curated ids only.
+            console.error('[cloudrun-assets] price coin ids load failed; falling back to curated', err);
+            cachedPriceIds = out;
+        }
         loadedAtMs = Date.now();
     }
 
@@ -1858,6 +2047,10 @@ export function makePostgresCoingeckoCuratedSource(sql: Sql): CoingeckoCuratedSo
         getCuratedCoinIdsInOrder(): string[] {
             refreshIfStale();
             return cachedIds ?? [];
+        },
+        getPriceCoinIdsInOrder(): string[] {
+            refreshIfStale();
+            return cachedPriceIds ?? cachedIds ?? [];
         },
     };
 }
@@ -2004,7 +2197,8 @@ export function makePostgresCoingeckoRepo(sql: Sql): CoingeckoRepo {
             await sql`
                 INSERT INTO coingecko_prices_latest (
                     id, coin_id, price_usd, market_cap_usd, volume_24h_usd,
-                    price_change_24h_percent, provider_last_updated_at, last_fetched_at
+                    price_change_24h_percent, provider_last_updated_at, last_fetched_at,
+                    circulating_supply, total_supply, max_supply, fdv_usd
                 )
                 VALUES (
                     ${randomId('cgprice')},
@@ -2014,7 +2208,11 @@ export function makePostgresCoingeckoRepo(sql: Sql): CoingeckoRepo {
                     ${args.volume24hUsd},
                     ${args.priceChange24hPercent},
                     ${args.providerLastUpdatedAt},
-                    ${args.lastFetchedAt}
+                    ${args.lastFetchedAt},
+                    ${args.circulatingSupply ?? null},
+                    ${args.totalSupply ?? null},
+                    ${args.maxSupply ?? null},
+                    ${args.fdvUsd ?? null}
                 )
                 ON CONFLICT (coin_id) DO UPDATE
                 SET price_usd                = EXCLUDED.price_usd,
@@ -2022,7 +2220,13 @@ export function makePostgresCoingeckoRepo(sql: Sql): CoingeckoRepo {
                     volume_24h_usd           = EXCLUDED.volume_24h_usd,
                     price_change_24h_percent = EXCLUDED.price_change_24h_percent,
                     provider_last_updated_at = EXCLUDED.provider_last_updated_at,
-                    last_fetched_at          = EXCLUDED.last_fetched_at
+                    last_fetched_at          = EXCLUDED.last_fetched_at,
+                    -- Supply changes slowly and only /coins/markets carries it; a
+                    -- /simple/price fallback tick must not wipe a known value.
+                    circulating_supply       = COALESCE(EXCLUDED.circulating_supply, coingecko_prices_latest.circulating_supply),
+                    total_supply             = COALESCE(EXCLUDED.total_supply, coingecko_prices_latest.total_supply),
+                    max_supply               = COALESCE(EXCLUDED.max_supply, coingecko_prices_latest.max_supply),
+                    fdv_usd                  = COALESCE(EXCLUDED.fdv_usd, coingecko_prices_latest.fdv_usd)
             `;
         },
 
@@ -2058,6 +2262,122 @@ export function makePostgresCoingeckoRepo(sql: Sql): CoingeckoRepo {
                 LIMIT 1
             `;
             return rows.length > 0;
+        },
+        async listAssetsForCoinIdValidation(limit) {
+            const rows = await sql<
+                {
+                    asset_id: string;
+                    category: string;
+                    coingecko_id: string | null;
+                    admin_edited_at: number | string | bigint | null;
+                    mints: unknown;
+                }[]
+            >`
+                SELECT a.asset_id, a.category, a.coingecko_id, a.admin_edited_at,
+                       coalesce(
+                           jsonb_agg(jsonb_build_object('mint', av.mint, 'liquidity', vml.liquidity) ORDER BY av.mint)
+                               FILTER (WHERE av.mint IS NOT NULL),
+                           '[]'::jsonb
+                       ) AS mints
+                FROM assets a
+                LEFT JOIN asset_variants av
+                    ON av.asset_id = a.asset_id AND av.chain = 'solana' AND av.is_active = true
+                LEFT JOIN variant_markets_latest vml ON vml.mint = av.mint
+                WHERE a.is_active = true
+                  AND NOT EXISTS (SELECT 1 FROM asset_deletion_tombstones dt WHERE dt.asset_id = a.asset_id)
+                GROUP BY a.asset_id, a.category, a.coingecko_id, a.admin_edited_at
+                ORDER BY a.asset_id ASC
+                LIMIT ${Math.max(1, Math.floor(limit))}
+            `;
+            return rows.map(row => {
+                const parsed = typeof row.mints === 'string' ? JSON.parse(row.mints) : row.mints;
+                const mints = Array.isArray(parsed) ? parsed : [];
+                return {
+                    assetId: row.asset_id,
+                    category: row.category,
+                    coingeckoId: row.coingecko_id,
+                    adminEditedAt:
+                        row.admin_edited_at === null || row.admin_edited_at === undefined ? null : Number(row.admin_edited_at),
+                    solanaMints: mints.flatMap((m: unknown) => {
+                        if (typeof m !== 'object' || m === null) return [];
+                        const mint = (m as { mint?: unknown }).mint;
+                        const liquidity = (m as { liquidity?: unknown }).liquidity;
+                        if (typeof mint !== 'string' || !mint) return [];
+                        return [{ mint, liquidity: typeof liquidity === 'number' && Number.isFinite(liquidity) ? liquidity : null }];
+                    }),
+                };
+            });
+        },
+        async findKnownCoins(coinIds) {
+            const out = new Map<string, { solanaMint: string | null }>();
+            if (coinIds.length === 0) return out;
+            const rows = await sql<{ coin_id: string; solana: string | null }[]>`
+                SELECT coin_id, nullif(platforms->>'solana', '') AS solana
+                FROM coingecko_coins
+                WHERE coin_id IN ${sql(coinIds as string[])}
+            `;
+            for (const row of rows) out.set(row.coin_id, { solanaMint: row.solana });
+            return out;
+        },
+        async findCoinsBySolanaMints(mints) {
+            if (mints.length === 0) return [];
+            const rows = await sql<{ mint: string; coin_id: string; last_synced_at: number | string | bigint | null }[]>`
+                SELECT platforms->>'solana' AS mint, coin_id, last_synced_at
+                FROM coingecko_coins
+                WHERE platforms->>'solana' IN ${sql(mints as string[])}
+                ORDER BY platforms->>'solana', last_synced_at DESC, coin_id ASC
+            `;
+            return rows.map(row => ({
+                mint: row.mint,
+                coinId: row.coin_id,
+                lastSyncedAt: row.last_synced_at === null ? null : Number(row.last_synced_at),
+            }));
+        },
+        async repairAssetCoinId(args) {
+            return await sql.begin(async tx => {
+                const updated = await tx<{ asset_id: string }[]>`
+                    UPDATE assets
+                    SET coingecko_id = ${args.coinId}, updated_at = now()
+                    WHERE asset_id = ${args.assetId} AND admin_edited_at IS NULL
+                    RETURNING asset_id
+                `;
+                if (updated.length === 0) return false;
+                await tx`DELETE FROM asset_aliases WHERE asset_id = ${args.assetId} AND kind = 'coingeckoId'`;
+                const now = new Date(args.nowMs);
+                await tx`
+                    INSERT INTO asset_aliases (id, normalized, alias, asset_id, kind, priority, created_at, updated_at)
+                    VALUES (${randomId('aal')}, ${args.coinId.toLowerCase()}, ${args.coinId}, ${args.assetId}, 'coingeckoId', 700, ${now}, ${now})
+                    ON CONFLICT (asset_id, normalized, kind) DO UPDATE SET
+                        alias = EXCLUDED.alias, priority = EXCLUDED.priority, updated_at = EXCLUDED.updated_at
+                `;
+                return true;
+            });
+        },
+        async upsertCoinIdAudit(rows) {
+            if (rows.length === 0) return;
+            await sql`
+                INSERT INTO asset_coingecko_id_audit (asset_id, status, current_id, suggested_id, candidates, note, checked_at, updated_at)
+                SELECT r.asset_id, r.status, r.current_id, r.suggested_id, r.candidates, r.note, r.checked_at, now()
+                FROM jsonb_to_recordset(${sql.json(
+                    rows.map(r => ({
+                        asset_id: r.assetId,
+                        status: r.status,
+                        current_id: r.currentId,
+                        suggested_id: r.suggestedId,
+                        candidates: r.candidates,
+                        note: r.note,
+                        checked_at: r.checkedAt,
+                    })) as never,
+                )}) AS r(asset_id text, status text, current_id text, suggested_id text, candidates jsonb, note text, checked_at bigint)
+                ON CONFLICT (asset_id) DO UPDATE SET
+                    status = EXCLUDED.status,
+                    current_id = EXCLUDED.current_id,
+                    suggested_id = EXCLUDED.suggested_id,
+                    candidates = EXCLUDED.candidates,
+                    note = EXCLUDED.note,
+                    checked_at = EXCLUDED.checked_at,
+                    updated_at = now()
+            `;
         },
         async getOhlcvBounds(coinId, interval) {
             const rows = await sql<{ min_time: number | null; max_time: number | null }[]>`
@@ -2364,6 +2684,37 @@ export function makePostgresClickhouseRepo(sql: Sql): ClickhouseRepo {
     };
 }
 
+/** Shared `tokens` identity upsert (misc refresh cron + launchpad sync). */
+async function upsertTokenFromBirdeyeSql(sql: Sql, args: TokenUpsertFromBirdeye): Promise<void> {
+    await sql`
+        INSERT INTO tokens (
+            id, address, symbol, name, decimals, logo_uri,
+            price, price_change_24h_percent, price_change_1h_percent,
+            volume_24h_usd, liquidity, market_cap,
+            last_fetched_at
+        )
+        VALUES (
+            ${randomId('tok')}, ${args.address}, ${args.symbol}, ${args.name}, ${args.decimals},
+            ${args.logoUri ?? null},
+            ${args.price ?? null}, ${args.priceChange24hPercent ?? null}, ${args.priceChange1hPercent ?? null},
+            ${args.volume24hUSD ?? null}, ${args.liquidity ?? null}, ${args.marketCap ?? null},
+            ${args.lastFetchedAt}
+        )
+        ON CONFLICT (address) DO UPDATE SET
+            symbol = EXCLUDED.symbol,
+            name = EXCLUDED.name,
+            decimals = EXCLUDED.decimals,
+            logo_uri = COALESCE(EXCLUDED.logo_uri, tokens.logo_uri),
+            price = COALESCE(EXCLUDED.price, tokens.price),
+            price_change_24h_percent = COALESCE(EXCLUDED.price_change_24h_percent, tokens.price_change_24h_percent),
+            price_change_1h_percent = COALESCE(EXCLUDED.price_change_1h_percent, tokens.price_change_1h_percent),
+            volume_24h_usd = COALESCE(EXCLUDED.volume_24h_usd, tokens.volume_24h_usd),
+            liquidity = COALESCE(EXCLUDED.liquidity, tokens.liquidity),
+            market_cap = COALESCE(EXCLUDED.market_cap, tokens.market_cap),
+            last_fetched_at = EXCLUDED.last_fetched_at
+    `;
+}
+
 export function makePostgresMiscJobsRepo(sql: Sql): MiscJobsRepo {
     return {
         async listStaleTokenAddresses(beforeLastFetchedAt, limit) {
@@ -2379,33 +2730,7 @@ export function makePostgresMiscJobsRepo(sql: Sql): MiscJobsRepo {
         },
 
         async upsertTokenFromBirdeye(args) {
-            await sql`
-                INSERT INTO tokens (
-                    id, address, symbol, name, decimals, logo_uri,
-                    price, price_change_24h_percent, price_change_1h_percent,
-                    volume_24h_usd, liquidity, market_cap,
-                    last_fetched_at
-                )
-                VALUES (
-                    ${randomId('tok')}, ${args.address}, ${args.symbol}, ${args.name}, ${args.decimals},
-                    ${args.logoUri ?? null},
-                    ${args.price ?? null}, ${args.priceChange24hPercent ?? null}, ${args.priceChange1hPercent ?? null},
-                    ${args.volume24hUSD ?? null}, ${args.liquidity ?? null}, ${args.marketCap ?? null},
-                    ${args.lastFetchedAt}
-                )
-                ON CONFLICT (address) DO UPDATE SET
-                    symbol = EXCLUDED.symbol,
-                    name = EXCLUDED.name,
-                    decimals = EXCLUDED.decimals,
-                    logo_uri = COALESCE(EXCLUDED.logo_uri, tokens.logo_uri),
-                    price = COALESCE(EXCLUDED.price, tokens.price),
-                    price_change_24h_percent = COALESCE(EXCLUDED.price_change_24h_percent, tokens.price_change_24h_percent),
-                    price_change_1h_percent = COALESCE(EXCLUDED.price_change_1h_percent, tokens.price_change_1h_percent),
-                    volume_24h_usd = COALESCE(EXCLUDED.volume_24h_usd, tokens.volume_24h_usd),
-                    liquidity = COALESCE(EXCLUDED.liquidity, tokens.liquidity),
-                    market_cap = COALESCE(EXCLUDED.market_cap, tokens.market_cap),
-                    last_fetched_at = EXCLUDED.last_fetched_at
-            `;
+            await upsertTokenFromBirdeyeSql(sql, args);
         },
 
         async getTokenMarketsLastFetchedAtByMint(mint) {
@@ -2461,13 +2786,75 @@ export function makePostgresAssetDeletionTombstonesRepo(sql: Sql): AssetDeletion
     };
 }
 
+export function makePostgresAssetAdvisoriesRepo(sql: Sql): AssetAdvisoriesRepo {
+    return {
+        async listAll() {
+            const rows = await sql<AssetAdvisoryRow[]>`
+                SELECT mint, status, reason, url, set_at, updated_at, source
+                FROM asset_variant_advisories
+                ORDER BY mint
+            `;
+            return rows;
+        },
+    };
+}
+
+export function makePostgresStablecoinHealthReadsRepo(sql: Sql): StablecoinHealthReadsRepo {
+    return {
+        async findLatestByMints(mints) {
+            if (mints.length === 0) return [];
+            // Webacy's depeg/structural tables and peg_guard_latest key Solana
+            // rows by chain = 'solana' (unlike the older webacy_*_latest caches,
+            // which use 'sol'). The handler picks Webacy or the peg guard per mint.
+            const rows = await sql<StablecoinHealthRow[]>`
+                SELECT v.mint,
+                       d.ok               AS depeg_ok,
+                       d.tier             AS depeg_tier,
+                       d.overall_risk     AS depeg_overall_risk,
+                       d.deviation_pct    AS depeg_deviation_pct,
+                       d.price_usd        AS depeg_price_usd,
+                       d.peg_usd          AS depeg_peg_usd,
+                       d.tier_since_at    AS depeg_tier_since_at,
+                       d.last_fetched_at  AS depeg_last_fetched_at,
+                       d.last_ok_at       AS depeg_last_ok_at,
+                       d.error_message    AS depeg_error_message,
+                       g.ok               AS pg_ok,
+                       g.tier             AS pg_tier,
+                       g.peg_currency     AS pg_peg_currency,
+                       g.reference_kind   AS pg_reference_kind,
+                       g.deviation_pct    AS pg_deviation_pct,
+                       g.price_usd        AS pg_price_usd,
+                       g.peg_usd          AS pg_peg_usd,
+                       g.liquidity_usd    AS pg_liquidity_usd,
+                       g.tier_since_at    AS pg_tier_since_at,
+                       g.last_fetched_at  AS pg_last_fetched_at,
+                       g.last_ok_at       AS pg_last_ok_at,
+                       g.error_message    AS pg_error_message,
+                       s.ok               AS sh_ok,
+                       s.composite_grade  AS sh_composite_grade,
+                       s.composite_score  AS sh_composite_score,
+                       s.category_scores  AS sh_category_scores,
+                       s.last_fetched_at  AS sh_last_fetched_at,
+                       s.last_ok_at       AS sh_last_ok_at
+                FROM unnest(${sql.array([...mints])}::text[]) AS v(mint)
+                LEFT JOIN webacy_depeg_latest d ON d.chain = 'solana' AND d.address = v.mint
+                LEFT JOIN peg_guard_latest g ON g.chain = 'solana' AND g.address = v.mint
+                LEFT JOIN webacy_structural_health_latest s ON s.chain = 'solana' AND s.address = v.mint
+                WHERE d.address IS NOT NULL OR g.address IS NOT NULL OR s.address IS NOT NULL
+            `;
+            return rows;
+        },
+    };
+}
+
 export function makePostgresSanctumLstsRepo(sql: Sql): SanctumLstsRepo {
     return {
         async listActive(limit) {
             const rows = await sql<SanctumLstRow[]>`
                 SELECT mint, symbol, symbol_lower, name, logo_uri, website_url,
                        tvl_usd, apy, source_rank, is_active,
-                       last_seen_at, last_synced_at, created_at, updated_at
+                       last_seen_at, last_synced_at, created_at, updated_at,
+                       ${sql.unsafe(logoCdnColumn('sanctum_lsts_latest.mint'))}
                 FROM sanctum_lsts_latest
                 WHERE is_active = true
                 ORDER BY source_rank ASC
@@ -2489,7 +2876,8 @@ export function makePostgresSanctumLstsRepo(sql: Sql): SanctumLstsRepo {
             const rows = await sql<SanctumLstRow[]>`
                 SELECT mint, symbol, symbol_lower, name, logo_uri, website_url,
                        tvl_usd, apy, source_rank, is_active,
-                       last_seen_at, last_synced_at, created_at, updated_at
+                       last_seen_at, last_synced_at, created_at, updated_at,
+                       ${sql.unsafe(logoCdnColumn('sanctum_lsts_latest.mint'))}
                 FROM sanctum_lsts_latest
                 WHERE mint = ${mint}
                 LIMIT 1
@@ -2512,7 +2900,8 @@ export function makePostgresSanctumLstsRepo(sql: Sql): SanctumLstsRepo {
             const rows = await sql<SanctumLstRow[]>`
                 SELECT mint, symbol, symbol_lower, name, logo_uri, website_url,
                        tvl_usd, apy, source_rank, is_active,
-                       last_seen_at, last_synced_at, created_at, updated_at
+                       last_seen_at, last_synced_at, created_at, updated_at,
+                       ${sql.unsafe(logoCdnColumn('sanctum_lsts_latest.mint'))}
                 FROM sanctum_lsts_latest
                 WHERE symbol_lower = ${symbolLower}
                   AND is_active = true
@@ -2692,7 +3081,7 @@ export function makePostgresAssetsApiRepo(sql: Sql): AssetsApiRepo {
             const rows = await sql<AssetsApiAssetRow[]>`
                 SELECT asset_id, category, name, symbol, aliases,
                        coingecko_id, description, image_url, is_active,
-                       created_at, updated_at
+                       created_at, updated_at, region, industry
                 FROM assets
                 WHERE asset_id = ${assetId}
                 LIMIT 1
@@ -2725,7 +3114,8 @@ export function makePostgresAssetsApiRepo(sql: Sql): AssetsApiRepo {
                        price_change_24h_percent, price_change_1h_percent,
                        holder, total_supply, circulating_supply,
                        last_trade_human_time, extensions,
-                       as_of, last_trade_at, last_fetched_at, overview_last_fetched_at
+                       as_of, last_trade_at, last_fetched_at, overview_last_fetched_at,
+                       ${sql.unsafe(logoCdnColumn('variant_markets_latest.mint'))}
                 FROM variant_markets_latest
                 WHERE mint = ${mint}
                 LIMIT 1
@@ -2747,7 +3137,8 @@ export function makePostgresAssetsApiRepo(sql: Sql): AssetsApiRepo {
                        price_change_24h_percent, price_change_1h_percent,
                        holder, total_supply, circulating_supply,
                        last_trade_human_time, extensions,
-                       as_of, last_trade_at, last_fetched_at, overview_last_fetched_at
+                       as_of, last_trade_at, last_fetched_at, overview_last_fetched_at,
+                       ${sql.unsafe(logoCdnColumn('variant_markets_latest.mint'))}
                 FROM variant_markets_latest
                 WHERE mint IN ${sql(mints)}
             `;
@@ -2849,6 +3240,29 @@ function sqlFragmentColumns(cols: readonly string[]): string {
     return cols.join(', ');
 }
 
+/**
+ * First-party logo copy for a row (migration 0023). A correlated PK lookup
+ * rather than a JOIN so the bare-column fragments above stay unambiguous
+ * (`WHERE mint IN ...` would otherwise collide with `mint_logos.mint`).
+ * Handlers prefer it via `resolveLogoUri` (handlers/logoUrl.ts).
+ */
+export function logoCdnColumn(keyExpr: string): string {
+    return `(SELECT ml.logo_cdn_url FROM mint_logos ml WHERE ml.mint = ${keyExpr}) AS logo_cdn_url`;
+}
+
+/**
+ * Admin-curated `assets.region` / `assets.industry` (migration 0032) for rows
+ * that only carry a denormalized `asset_id` (trending snapshots copy
+ * category/symbol/name at cron time and would otherwise lag admin edits by a
+ * cycle). Correlated unique-index lookups for the same reason as above.
+ */
+function assetTagColumns(keyExpr: string): readonly string[] {
+    return [
+        `(SELECT a.region FROM assets a WHERE a.asset_id = ${keyExpr}) AS region`,
+        `(SELECT a.industry FROM assets a WHERE a.asset_id = ${keyExpr}) AS industry`,
+    ];
+}
+
 export function makePostgresCoingeckoReadsRepo(sql: Sql): CoingeckoReadsRepo {
     return {
         async findCoinByCoinId(coinId) {
@@ -2861,14 +3275,30 @@ export function makePostgresCoingeckoReadsRepo(sql: Sql): CoingeckoReadsRepo {
             `;
             return rows[0] ?? null;
         },
+        async findCoinBySolanaMint(mint) {
+            // Point read on the expression index from migration 0034. CoinGecko
+            // occasionally lists two coins on one contract; prefer the freshest.
+            const rows = await sql<CoingeckoCoinRow[]>`
+                SELECT id, coin_id, symbol, name, platforms,
+                       last_synced_at, coin, last_metadata_fetched_at, created_at
+                FROM coingecko_coins
+                WHERE platforms->>'solana' = ${mint}
+                  AND platforms->>'solana' <> ''
+                ORDER BY last_synced_at DESC, coin_id ASC
+                LIMIT 1
+            `;
+            return rows[0] ?? null;
+        },
         async searchCoinsById(query, limit) {
             const tsq = buildPrefixTsQuery(query) ?? 'noresultsentinel:*';
             const pattern = `%${query}%`;
             const prefix = `${query}%`;
             const rows = await sql<CoingeckoCoinSearchRow[]>`
+                WITH tq AS MATERIALIZED (SELECT to_tsquery('english', ${tsq}) AS q)
                 SELECT coin_id, symbol, name, platforms, coin
                 FROM coingecko_coins
-                WHERE to_tsvector('english', coin_id) @@ to_tsquery('english', ${tsq})
+                CROSS JOIN tq
+                WHERE to_tsvector('english', coin_id) @@ tq.q
                    OR coin_id ILIKE ${pattern}
                 ORDER BY
                     CASE
@@ -2876,7 +3306,7 @@ export function makePostgresCoingeckoReadsRepo(sql: Sql): CoingeckoReadsRepo {
                         WHEN lower(coin_id) LIKE lower(${prefix}) THEN 1
                         ELSE 2
                     END,
-                    ts_rank_cd(to_tsvector('english', coin_id), to_tsquery('english', ${tsq})) DESC,
+                    ts_rank_cd(to_tsvector('english', coin_id), tq.q) DESC,
                     length(coin_id) ASC,
                     coin_id ASC
                 LIMIT ${limit}
@@ -2888,9 +3318,11 @@ export function makePostgresCoingeckoReadsRepo(sql: Sql): CoingeckoReadsRepo {
             const pattern = `%${query}%`;
             const prefix = `${query}%`;
             const rows = await sql<CoingeckoCoinSearchRow[]>`
+                WITH tq AS MATERIALIZED (SELECT to_tsquery('english', ${tsq}) AS q)
                 SELECT coin_id, symbol, name, platforms, coin
                 FROM coingecko_coins
-                WHERE to_tsvector('english', symbol) @@ to_tsquery('english', ${tsq})
+                CROSS JOIN tq
+                WHERE to_tsvector('english', symbol) @@ tq.q
                    OR symbol ILIKE ${pattern}
                 ORDER BY
                     CASE
@@ -2898,7 +3330,7 @@ export function makePostgresCoingeckoReadsRepo(sql: Sql): CoingeckoReadsRepo {
                         WHEN lower(symbol) LIKE lower(${prefix}) THEN 1
                         ELSE 2
                     END,
-                    ts_rank_cd(to_tsvector('english', symbol), to_tsquery('english', ${tsq})) DESC,
+                    ts_rank_cd(to_tsvector('english', symbol), tq.q) DESC,
                     length(symbol) ASC,
                     symbol ASC
                 LIMIT ${limit}
@@ -2910,9 +3342,11 @@ export function makePostgresCoingeckoReadsRepo(sql: Sql): CoingeckoReadsRepo {
             const pattern = `%${query}%`;
             const prefix = `${query}%`;
             const rows = await sql<CoingeckoCoinSearchRow[]>`
+                WITH tq AS MATERIALIZED (SELECT to_tsquery('english', ${tsq}) AS q)
                 SELECT coin_id, symbol, name, platforms, coin
                 FROM coingecko_coins
-                WHERE to_tsvector('english', name) @@ to_tsquery('english', ${tsq})
+                CROSS JOIN tq
+                WHERE to_tsvector('english', name) @@ tq.q
                    OR name ILIKE ${pattern}
                 ORDER BY
                     CASE
@@ -2920,7 +3354,7 @@ export function makePostgresCoingeckoReadsRepo(sql: Sql): CoingeckoReadsRepo {
                         WHEN lower(name) LIKE lower(${prefix}) THEN 1
                         ELSE 2
                     END,
-                    ts_rank_cd(to_tsvector('english', name), to_tsquery('english', ${tsq})) DESC,
+                    ts_rank_cd(to_tsvector('english', name), tq.q) DESC,
                     length(name) ASC,
                     name ASC
                 LIMIT ${limit}
@@ -2943,7 +3377,8 @@ export function makePostgresCoingeckoReadsRepo(sql: Sql): CoingeckoReadsRepo {
         async findPriceLatestByCoinId(coinId) {
             const rows = await sql<CoingeckoPriceLatestRow[]>`
                 SELECT coin_id, price_usd, market_cap_usd, volume_24h_usd,
-                       price_change_24h_percent, provider_last_updated_at, last_fetched_at
+                       price_change_24h_percent, provider_last_updated_at, last_fetched_at,
+                       circulating_supply, total_supply, max_supply, fdv_usd
                 FROM coingecko_prices_latest
                 WHERE coin_id = ${coinId}
                 LIMIT 1
@@ -2954,7 +3389,8 @@ export function makePostgresCoingeckoReadsRepo(sql: Sql): CoingeckoReadsRepo {
             if (coinIds.length === 0) return [];
             const rows = await sql<CoingeckoPriceLatestRow[]>`
                 SELECT coin_id, price_usd, market_cap_usd, volume_24h_usd,
-                       price_change_24h_percent, provider_last_updated_at, last_fetched_at
+                       price_change_24h_percent, provider_last_updated_at, last_fetched_at,
+                       circulating_supply, total_supply, max_supply, fdv_usd
                 FROM coingecko_prices_latest
                 WHERE coin_id IN ${sql(coinIds)}
             `;
@@ -3004,6 +3440,7 @@ const VARIANT_MARKET_COLUMNS = sqlFragmentColumns([
     'last_trade_at',
     'last_fetched_at',
     'overview_last_fetched_at',
+    logoCdnColumn('variant_markets_latest.mint'),
 ]);
 
 export function makePostgresStockReadsRepo(sql: Sql): StockReadsRepo {
@@ -3170,6 +3607,7 @@ const TOKEN_COLUMNS = sqlFragmentColumns([
     'market_cap',
     'last_fetched_at',
     'created_at',
+    logoCdnColumn('tokens.address'),
 ]);
 
 const TRENDING_MARKET_COLUMNS = sqlFragmentColumns([
@@ -3205,6 +3643,8 @@ const TRENDING_MARKET_COLUMNS = sqlFragmentColumns([
     'last_trade_at',
     'as_of',
     'last_computed_at',
+    logoCdnColumn('trending_markets.mint'),
+    ...assetTagColumns('trending_markets.asset_id'),
 ]);
 
 const FRESH_TRENDING_MARKET_COLUMNS = sqlFragmentColumns([
@@ -3243,6 +3683,8 @@ const FRESH_TRENDING_MARKET_COLUMNS = sqlFragmentColumns([
     'rank',
     'category_rank',
     'last_computed_at',
+    logoCdnColumn('fresh_trending_markets.mint'),
+    ...assetTagColumns('fresh_trending_markets.asset_id'),
 ]);
 
 const FILL_QUALITY_COLUMNS = sqlFragmentColumns([
@@ -3306,9 +3748,11 @@ export function makePostgresTokensReadsRepo(sql: Sql): TokensReadsRepo {
             const pattern = `%${query}%`;
             const prefix = `${query}%`;
             const rows = await sql<TokenRow[]>`
+                WITH tq AS MATERIALIZED (SELECT to_tsquery('english', ${tsq}) AS q)
                 SELECT ${sql.unsafe(TOKEN_COLUMNS)}
                 FROM tokens
-                WHERE to_tsvector('english', coalesce(symbol, '')) @@ to_tsquery('english', ${tsq})
+                CROSS JOIN tq
+                WHERE to_tsvector('english', coalesce(symbol, '')) @@ tq.q
                    OR coalesce(symbol, '') ILIKE ${pattern}
                 ORDER BY
                     CASE
@@ -3316,7 +3760,7 @@ export function makePostgresTokensReadsRepo(sql: Sql): TokensReadsRepo {
                         WHEN lower(coalesce(symbol, '')) LIKE lower(${prefix}) THEN 1
                         ELSE 2
                     END,
-                    ts_rank_cd(to_tsvector('english', coalesce(symbol, '')), to_tsquery('english', ${tsq})) DESC,
+                    ts_rank_cd(to_tsvector('english', coalesce(symbol, '')), tq.q) DESC,
                     length(coalesce(symbol, '')) ASC,
                     symbol ASC
                 LIMIT ${limit}
@@ -3328,9 +3772,11 @@ export function makePostgresTokensReadsRepo(sql: Sql): TokensReadsRepo {
             const pattern = `%${query}%`;
             const prefix = `${query}%`;
             const rows = await sql<TokenRow[]>`
+                WITH tq AS MATERIALIZED (SELECT to_tsquery('english', ${tsq}) AS q)
                 SELECT ${sql.unsafe(TOKEN_COLUMNS)}
                 FROM tokens
-                WHERE to_tsvector('english', coalesce(name, '')) @@ to_tsquery('english', ${tsq})
+                CROSS JOIN tq
+                WHERE to_tsvector('english', coalesce(name, '')) @@ tq.q
                    OR coalesce(name, '') ILIKE ${pattern}
                 ORDER BY
                     CASE
@@ -3338,7 +3784,7 @@ export function makePostgresTokensReadsRepo(sql: Sql): TokensReadsRepo {
                         WHEN lower(coalesce(name, '')) LIKE lower(${prefix}) THEN 1
                         ELSE 2
                     END,
-                    ts_rank_cd(to_tsvector('english', coalesce(name, '')), to_tsquery('english', ${tsq})) DESC,
+                    ts_rank_cd(to_tsvector('english', coalesce(name, '')), tq.q) DESC,
                     length(coalesce(name, '')) ASC,
                     name ASC
                 LIMIT ${limit}
@@ -3379,16 +3825,29 @@ export function makePostgresTokensReadsRepo(sql: Sql): TokensReadsRepo {
 
 export function makePostgresTrendingReadsRepo(sql: Sql): TrendingReadsRepo {
     return {
+        // Trade-restricted advisories (compromised/blocked) are filtered in SQL
+        // so pagination stays exact and a freshly set advisory drops the mint
+        // from trending on the next read, not the next cron run.
         async listTrending(category) {
             const rows = category
                 ? await sql<TrendingMarketRow[]>`
                     SELECT ${sql.unsafe(TRENDING_MARKET_COLUMNS)}
                     FROM trending_markets
                     WHERE category = ${category}
+                      AND NOT EXISTS (
+                          SELECT 1 FROM asset_variant_advisories adv
+                          WHERE adv.mint = trending_markets.mint
+                            AND adv.status IN ('compromised', 'blocked')
+                      )
                 `
                 : await sql<TrendingMarketRow[]>`
                     SELECT ${sql.unsafe(TRENDING_MARKET_COLUMNS)}
                     FROM trending_markets
+                    WHERE NOT EXISTS (
+                          SELECT 1 FROM asset_variant_advisories adv
+                          WHERE adv.mint = trending_markets.mint
+                            AND adv.status IN ('compromised', 'blocked')
+                      )
                 `;
             return rows;
         },
@@ -3398,11 +3857,59 @@ export function makePostgresTrendingReadsRepo(sql: Sql): TrendingReadsRepo {
                     SELECT ${sql.unsafe(FRESH_TRENDING_MARKET_COLUMNS)}
                     FROM fresh_trending_markets
                     WHERE category = ${category}
+                      AND NOT EXISTS (
+                          SELECT 1 FROM asset_variant_advisories adv
+                          WHERE adv.mint = fresh_trending_markets.mint
+                            AND adv.status IN ('compromised', 'blocked')
+                      )
                 `
                 : await sql<FreshTrendingMarketRow[]>`
                     SELECT ${sql.unsafe(FRESH_TRENDING_MARKET_COLUMNS)}
                     FROM fresh_trending_markets
+                    WHERE NOT EXISTS (
+                          SELECT 1 FROM asset_variant_advisories adv
+                          WHERE adv.mint = fresh_trending_markets.mint
+                            AND adv.status IN ('compromised', 'blocked')
+                      )
                 `;
+            return rows;
+        },
+    };
+}
+
+export function makePostgresAssetRiskReadsRepo(sql: Sql): AssetRiskReadsRepo {
+    return {
+        async findLatestByMints(mints) {
+            if (mints.length === 0) return [];
+            // The older webacy_*_latest caches key Solana rows by chain = 'sol'
+            // and address = mint. The /tokens payload keeps token_risk and
+            // token_info under risk.details (older rows at the root); only the
+            // objects the judge needs are lifted out, the rest never leaves Postgres.
+            const rows = await sql<AssetRiskRow[]>`
+                SELECT r.mint, r.asset_id, r.ok, r.tags,
+                       r.lp_locked_percent, r.top_10_holders_percent, r.holder_count,
+                       r.token_mint_time, r.risk_score_10, r.safety_score_10, r.last_fetched_at,
+                       CASE WHEN t.ok THEN COALESCE(
+                           t.payload_json::jsonb #> '{risk,details,token_risk}',
+                           t.payload_json::jsonb #> '{details,token_risk}',
+                           t.payload_json::jsonb -> 'token_risk'
+                       ) END AS token_risk,
+                       CASE WHEN t.ok THEN COALESCE(
+                           t.payload_json::jsonb #> '{risk,details,token_info}',
+                           t.payload_json::jsonb #> '{details,token_info}',
+                           t.payload_json::jsonb -> 'token_info'
+                       ) END AS token_info,
+                       CASE WHEN t.ok THEN COALESCE(
+                           t.payload_json::jsonb #> '{risk,details,buy_sell_taxes}',
+                           t.payload_json::jsonb #> '{details,buy_sell_taxes}',
+                           t.payload_json::jsonb -> 'buy_sell_taxes'
+                       ) END AS buy_sell_taxes,
+                       CASE WHEN l.ok THEN l.payload_json::jsonb END AS trading_lite
+                FROM asset_risk_latest r
+                LEFT JOIN webacy_token_latest t ON t.chain = 'sol' AND t.address = r.mint
+                LEFT JOIN webacy_trading_lite_latest l ON l.chain = 'sol' AND l.address = r.mint
+                WHERE r.mint IN ${sql(mints)}
+            `;
             return rows;
         },
     };
@@ -3598,6 +4105,7 @@ export function makePostgresTokenListsReadsRepo(sql: Sql): TokenListsReadsRepo {
                        m.symbol,
                        m.name,
                        m.logo_uri,
+                       ml.logo_cdn_url,
                        m.decimals,
                        EXISTS (
                            SELECT 1
@@ -3610,6 +4118,7 @@ export function makePostgresTokenListsReadsRepo(sql: Sql): TokenListsReadsRepo {
                        ) AS verified
                 FROM token_list_members m
                 JOIN token_lists tl ON tl.id = m.list_id
+                LEFT JOIN mint_logos ml ON ml.mint = m.mint
                 WHERE tl.slug = ${slug}
                 ORDER BY m.rank ASC, m.mint ASC
                 LIMIT ${limit} OFFSET ${offset}
@@ -4107,6 +4616,22 @@ export function makePostgresSeedRepo(sql: Sql): SeedRepo {
             `;
             return rows.map(r => r.normalized_ref);
         },
+        async listAssetIdRenames(assetIds) {
+            if (assetIds.length === 0) return [];
+            // An `assetId`-kind alias that no longer matches its asset's id is
+            // the marker an admin rename leaves behind (cloudrun-admin
+            // `renameAssetId`). Orphaned markers (asset gone) are ignored.
+            const rows = await sql<{ from_id: string; to_id: string }[]>`
+                SELECT al.normalized AS from_id, al.asset_id AS to_id
+                FROM asset_aliases al
+                WHERE al.kind = 'assetId'
+                  AND al.normalized IN ${sql([...assetIds])}
+                  AND al.normalized <> lower(al.asset_id)
+                  AND EXISTS (SELECT 1 FROM assets a WHERE a.asset_id = al.asset_id)
+                ORDER BY al.updated_at ASC, al.id ASC
+            `;
+            return rows.map(r => ({ from: r.from_id, to: r.to_id }));
+        },
         async lowerCollectionMemberAddedAtByMint(mint, addedAtMs) {
             const rows = await sql<{ id: string }[]>`
                 UPDATE asset_collection_members AS acm
@@ -4275,14 +4800,16 @@ function isUniqueViolation(err: unknown): boolean {
 export function makePostgresAdminActionsRepo(sql: Sql): AdminActionsRepo {
     return {
         async findAssetByAssetId(assetId) {
-            const rows = await sql<{ asset_id: string; category: string }[]>`
-                SELECT asset_id, category
+            const rows = await sql<{ asset_id: string; category: string; coingecko_id: string | null }[]>`
+                SELECT asset_id, category, coingecko_id
                 FROM assets
                 WHERE asset_id = ${assetId}
                 LIMIT 1
             `;
             const row = rows[0];
-            return row ? { assetId: row.asset_id, category: row.category } : null;
+            return row
+                ? { assetId: row.asset_id, category: row.category, coingeckoId: row.coingecko_id?.trim() || null }
+                : null;
         },
 
         async listCollectionSlugsForAssetId(assetId) {
@@ -5059,6 +5586,630 @@ export function makePostgresClickhouseExtrasRepo(sql: Sql): ClickhouseExtrasRepo
                 symbol: r.symbol,
                 normalizedSymbol: r.normalized_symbol,
             }));
+        },
+    };
+}
+
+export function makePostgresLaunchpadJobsRepo(sql: Sql): LaunchpadJobsRepo {
+    return {
+        async listActiveLaunchpadCount(launchpad) {
+            const rows = await sql<{ count: number }[]>`
+                SELECT COUNT(*)::int AS count
+                FROM launchpad_tokens_latest
+                WHERE launchpad = ${launchpad} AND is_active = true
+            `;
+            return rows[0]?.count ?? 0;
+        },
+
+        async upsertLaunchpadTokenLatest(args: LaunchpadTokenUpsert) {
+            await sql`
+                INSERT INTO launchpad_tokens_latest (
+                    id, launchpad, mint, quote_mint, quote_symbol, symbol, name, logo_uri,
+                    pool, status, mode, creator,
+                    price_usd, market_cap_usd, fdv_usd, liquidity_usd, volume_24h_usd, price_change_24h,
+                    launched_at, graduated_at, links_json,
+                    source_rank, raw_json, is_active, last_seen_at, last_synced_at, updated_at
+                )
+                VALUES (
+                    ${randomId('lpt')}, ${args.launchpad}, ${args.mint}, ${args.quoteMint},
+                    ${args.quoteSymbol ?? null}, ${args.symbol ?? null}, ${args.name ?? null}, ${args.logoURI ?? null},
+                    ${args.pool ?? null}, ${args.status ?? null}, ${args.mode ?? null}, ${args.creator ?? null},
+                    ${args.priceUsd ?? null}, ${args.marketCapUsd ?? null}, ${args.fdvUsd ?? null},
+                    ${args.liquidityUsd ?? null}, ${args.volume24hUsd ?? null}, ${args.priceChange24h ?? null},
+                    ${args.launchedAt ?? null}, ${args.graduatedAt ?? null}, ${args.linksJson ?? null},
+                    ${args.sourceRank}, ${args.rawJson}, ${args.isActive},
+                    ${args.lastSeenAt}, ${args.lastSyncedAt}, NOW()
+                )
+                ON CONFLICT (launchpad, mint) DO UPDATE SET
+                    quote_mint = EXCLUDED.quote_mint,
+                    quote_symbol = EXCLUDED.quote_symbol,
+                    symbol = EXCLUDED.symbol,
+                    name = EXCLUDED.name,
+                    logo_uri = EXCLUDED.logo_uri,
+                    pool = EXCLUDED.pool,
+                    status = EXCLUDED.status,
+                    mode = EXCLUDED.mode,
+                    creator = EXCLUDED.creator,
+                    price_usd = EXCLUDED.price_usd,
+                    market_cap_usd = EXCLUDED.market_cap_usd,
+                    fdv_usd = EXCLUDED.fdv_usd,
+                    liquidity_usd = EXCLUDED.liquidity_usd,
+                    volume_24h_usd = EXCLUDED.volume_24h_usd,
+                    price_change_24h = EXCLUDED.price_change_24h,
+                    launched_at = EXCLUDED.launched_at,
+                    graduated_at = EXCLUDED.graduated_at,
+                    links_json = EXCLUDED.links_json,
+                    source_rank = EXCLUDED.source_rank,
+                    raw_json = EXCLUDED.raw_json,
+                    is_active = EXCLUDED.is_active,
+                    last_seen_at = EXCLUDED.last_seen_at,
+                    last_synced_at = EXCLUDED.last_synced_at,
+                    updated_at = NOW()
+            `;
+        },
+
+        async deactivateMissingLaunchpadTokens(launchpad, activeMints, lastSyncedAt) {
+            if (activeMints.length === 0) {
+                const rows = await sql<{ count: number }[]>`
+                    WITH updated AS (
+                        UPDATE launchpad_tokens_latest
+                        SET is_active = false, last_synced_at = ${lastSyncedAt}, updated_at = NOW()
+                        WHERE launchpad = ${launchpad} AND is_active = true
+                        RETURNING 1
+                    )
+                    SELECT COUNT(*)::int AS count FROM updated
+                `;
+                return rows[0]?.count ?? 0;
+            }
+            const rows = await sql<{ count: number }[]>`
+                WITH updated AS (
+                    UPDATE launchpad_tokens_latest
+                    SET is_active = false, last_synced_at = ${lastSyncedAt}, updated_at = NOW()
+                    WHERE launchpad = ${launchpad}
+                      AND is_active = true
+                      AND mint NOT IN ${sql([...activeMints])}
+                    RETURNING 1
+                )
+                SELECT COUNT(*)::int AS count FROM updated
+            `;
+            return rows[0]?.count ?? 0;
+        },
+
+        async listApprovedMints(launchpad) {
+            const rows = await sql<{ mint: string }[]>`
+                SELECT mint FROM launchpad_mint_approvals WHERE launchpad = ${launchpad}
+            `;
+            return rows.map(r => r.mint);
+        },
+
+        async listSyncedStates(launchpad, mints) {
+            const out = new Map<string, { isActive: boolean }>();
+            for (const part of chunkStrings(mints, 500)) {
+                const rows = await sql<{ mint: string; is_active: boolean }[]>`
+                    SELECT mint, is_active FROM launchpad_tokens_latest
+                    WHERE launchpad = ${launchpad} AND mint IN ${sql([...part])}
+                `;
+                for (const row of rows) out.set(row.mint, { isActive: row.is_active });
+            }
+            return out;
+        },
+
+        async findApproval(launchpad, mint) {
+            const rows = await sql<{ note: string | null; approved_at: string | number }[]>`
+                SELECT note, approved_at FROM launchpad_mint_approvals
+                WHERE launchpad = ${launchpad} AND mint = ${mint}
+                LIMIT 1
+            `;
+            const row = rows[0];
+            return row ? { note: row.note, approvedAt: Number(row.approved_at) } : null;
+        },
+
+        async findQuoteAssetByMint(mint) {
+            const rows = await sql<
+                { asset_id: string; symbol: string | null; name: string | null; image_url: string | null }[]
+            >`
+                SELECT a.asset_id, a.symbol, a.name, a.image_url
+                FROM asset_variants av
+                JOIN assets a ON a.asset_id = av.asset_id
+                WHERE av.mint = ${mint} AND av.is_active = true
+                ORDER BY av.id ASC
+                LIMIT 1
+            `;
+            const row = rows[0];
+            return row ? { assetId: row.asset_id, symbol: row.symbol, name: row.name, imageUrl: row.image_url } : null;
+        },
+
+        async filterMintsKnownTokens(mints) {
+            const found: string[] = [];
+            for (const part of chunkStrings(mints, 500)) {
+                const rows = await sql<{ address: string }[]>`
+                    SELECT address FROM tokens WHERE address IN ${sql([...part])}
+                `;
+                for (const row of rows) found.push(row.address);
+            }
+            return found;
+        },
+
+        async filterMintsWithVariantMarket(mints) {
+            const found: string[] = [];
+            for (const part of chunkStrings(mints, 500)) {
+                const rows = await sql<{ mint: string }[]>`
+                    SELECT mint FROM variant_markets_latest WHERE mint IN ${sql([...part])}
+                `;
+                for (const row of rows) found.push(row.mint);
+            }
+            return found;
+        },
+
+        async upsertTokenFromBirdeye(args) {
+            await upsertTokenFromBirdeyeSql(sql, args);
+        },
+    };
+}
+
+export function makePostgresLaunchpadReadsRepo(sql: Sql): LaunchpadReadsRepo {
+    return {
+        async listActiveByQuoteMints(quoteMints, limit) {
+            if (quoteMints.length === 0) return [];
+            const out: LaunchpadTokenRow[] = [];
+            for (const part of chunkStrings(quoteMints, 500)) {
+                // Approved-only: the public surface never sees a coin without an
+                // admin approval row (see migration 0022).
+                const rows = await sql<LaunchpadTokenRow[]>`
+                    SELECT l.launchpad, l.mint, l.quote_mint, l.quote_symbol, l.symbol, l.name, l.logo_uri,
+                           ml.logo_cdn_url,
+                           l.pool, l.status, l.mode,
+                           l.price_usd, l.market_cap_usd, l.fdv_usd, l.liquidity_usd, l.volume_24h_usd,
+                           l.price_change_24h, l.launched_at, l.graduated_at, l.source_rank, l.last_synced_at
+                    FROM launchpad_tokens_latest l
+                    JOIN launchpad_mint_approvals a ON a.launchpad = l.launchpad AND a.mint = l.mint
+                    LEFT JOIN mint_logos ml ON ml.mint = l.mint
+                    WHERE l.is_active = true
+                      AND l.quote_mint IN ${sql([...part])}
+                    ORDER BY l.volume_24h_usd DESC NULLS LAST, l.source_rank ASC
+                    LIMIT ${limit}
+                `;
+                out.push(...rows);
+            }
+            if (quoteMints.length <= 500) return out;
+            out.sort((a, b) => (b.volume_24h_usd ?? -1) - (a.volume_24h_usd ?? -1) || a.source_rank - b.source_rank);
+            return out.slice(0, limit);
+        },
+
+        async listApprovedActiveMints(mints) {
+            if (mints.length === 0) return [];
+            const out: string[] = [];
+            for (const part of chunkStrings(mints, 500)) {
+                const rows = await sql<{ mint: string }[]>`
+                    SELECT DISTINCT a.mint
+                    FROM launchpad_mint_approvals a
+                    JOIN launchpad_tokens_latest l ON l.launchpad = a.launchpad AND l.mint = a.mint
+                    WHERE l.is_active = true
+                      AND a.mint IN ${sql([...part])}
+                `;
+                for (const row of rows) out.push(row.mint);
+            }
+            return out;
+        },
+    };
+}
+
+/** Ranked in the same order the sync tries them; lower wins in DISTINCT ON. */
+const LOGO_SOURCE_TABLES_SQL = `
+    SELECT mint, logo_uri AS source_url, 1 AS src_rank, 'variant_markets_latest' AS source_table, last_fetched_at
+      FROM variant_markets_latest
+     WHERE logo_uri IS NOT NULL AND logo_uri <> ''
+    UNION ALL
+    SELECT address, logo_uri, 2, 'tokens', last_fetched_at
+      FROM tokens
+     WHERE logo_uri IS NOT NULL AND logo_uri <> ''
+    UNION ALL
+    SELECT mint, logo_uri, 3, 'sanctum_lsts_latest', last_synced_at
+      FROM sanctum_lsts_latest
+     WHERE is_active = true AND logo_uri IS NOT NULL AND logo_uri <> ''
+    UNION ALL
+    SELECT mint, logo_uri, 4, 'launchpad_tokens_latest', last_synced_at
+      FROM launchpad_tokens_latest
+     WHERE is_active = true AND logo_uri IS NOT NULL AND logo_uri <> ''
+    UNION ALL
+    SELECT m.mint, m.logo_uri, 5, 'token_list_members', m.added_at
+      FROM token_list_members m
+      JOIN token_lists tl ON tl.id = m.list_id AND tl.status = 'published'
+     WHERE m.logo_uri IS NOT NULL AND m.logo_uri <> ''
+    UNION ALL
+    SELECT mint, provider_logo_uri, 6, 'solana_data_assets_latest', provider_fetched_at
+      FROM solana_data_assets_latest
+     WHERE is_active = true AND provider_logo_uri IS NOT NULL AND provider_logo_uri <> ''
+`;
+
+function timestamptzToMs(value: unknown): number | null {
+    if (value === null || value === undefined) return null;
+    if (value instanceof Date) return value.getTime();
+    if (typeof value === 'number') return value;
+    const parsed = new Date(String(value)).getTime();
+    return Number.isFinite(parsed) ? parsed : null;
+}
+
+export function makePostgresLogoSyncRepo(sql: Sql): LogoSyncRepo {
+    return {
+        async listCandidates(args: ListLogoSyncCandidatesArgs) {
+            const curated = [...args.curatedMints];
+            const explicit = args.mints && args.mints.length > 0 ? [...args.mints] : null;
+            const publicPrefix = `${args.publicBaseUrl.replace(/\/$/, '')}%`;
+            const rows = await sql<
+                {
+                    mint: string;
+                    source_url: string;
+                    source_table: string | null;
+                    logo_source_hash: string | null;
+                    logo_cdn_url: string | null;
+                    source_kind: string | null;
+                    logo_synced_at: unknown;
+                    attempts: number | null;
+                }[]
+            >`
+                WITH curated AS (
+                    SELECT c.mint, c.ord
+                    FROM unnest(${sql.array(curated)}::text[]) WITH ORDINALITY AS c(mint, ord)
+                ),
+                sources AS (${sql.unsafe(LOGO_SOURCE_TABLES_SQL)}),
+                best AS (
+                    SELECT DISTINCT ON (s.mint) s.mint, s.source_url, s.source_table, s.src_rank
+                    FROM sources s
+                    WHERE (s.source_url ~* '^https?://' OR s.source_url ~* '^ipfs://')
+                      AND s.source_url NOT LIKE ${publicPrefix}
+                      AND s.source_url NOT LIKE 'https://storage.googleapis.com/tokens-asset-logos-%'
+                      AND s.source_url !~* '^https?://(www\\.)?tokens\\.xyz/'
+                      AND s.source_url !~* '^https?://api\\.tokens\\.xyz/'
+                      AND s.source_url !~* '^https?://token\\.solana\\.com/'
+                      AND (
+                          ${explicit ? sql`s.mint IN ${sql(explicit)}` : sql`true`}
+                      )
+                      AND (
+                          s.mint IN (SELECT mint FROM curated)
+                          OR ${explicit ? sql`true` : sql`false`}
+                          OR s.last_fetched_at >= ${args.tailSinceMs}
+                      )
+                    ORDER BY s.mint, s.src_rank
+                )
+                SELECT b.mint, b.source_url, b.source_table,
+                       ml.logo_source_hash, ml.logo_cdn_url, ml.source_kind, ml.logo_synced_at, ml.attempts
+                FROM best b
+                LEFT JOIN curated c ON c.mint = b.mint
+                LEFT JOIN mint_logos ml ON ml.mint = b.mint
+                -- Eligibility:
+                --   * never attempted;
+                --   * upstream URL differs from the published copy's source, unless that very URL
+                --     is the one currently failing (then it waits out the backoff like any failure);
+                --   * no copy yet, or the copy is older than resyncDays — except an IPFS ref whose
+                --     copy came from the CID itself (pinata/origin): content-addressed, immutable;
+                --   * and in every retry case the failure backoff (1..7 days × attempts) has elapsed.
+                WHERE ${args.force ? sql`true` : sql`false`}
+                   OR ml.mint IS NULL
+                   OR (
+                          ml.source_url IS DISTINCT FROM b.source_url
+                          AND (
+                              ml.failed_source_url IS DISTINCT FROM b.source_url
+                              OR ml.last_attempt_at <
+                                  to_timestamp(${args.nowMs} / 1000.0)
+                                  - make_interval(days => LEAST(GREATEST(ml.attempts, 1), 7))
+                          )
+                      )
+                   OR (
+                          (ml.logo_cdn_url IS NULL
+                           OR (ml.logo_synced_at < to_timestamp(${args.resyncBeforeMs} / 1000.0)
+                               AND NOT (
+                                   ml.source_kind IN ('pinata', 'origin')
+                                   AND (b.source_url ~* '^ipfs://'
+                                        OR b.source_url ~* '^https?://[^/]+/ipfs/'
+                                        OR b.source_url ~* '^https?://[a-z0-9]+\\.ipfs\\.')
+                               )))
+                          AND ml.last_attempt_at <
+                              to_timestamp(${args.nowMs} / 1000.0)
+                              - make_interval(days => LEAST(GREATEST(ml.attempts, 1), 7))
+                      )
+                ORDER BY (c.ord IS NULL) ASC, c.ord ASC NULLS LAST, (ml.mint IS NULL) DESC, b.src_rank ASC, b.mint ASC
+                LIMIT ${args.limit}
+            `;
+            return rows.map(
+                (row): LogoSyncCandidate => ({
+                    mint: row.mint,
+                    source_url: row.source_url,
+                    source_table: row.source_table,
+                    logo_source_hash: row.logo_source_hash,
+                    logo_cdn_url: row.logo_cdn_url,
+                    source_kind: row.source_kind,
+                    logo_synced_at: timestamptzToMs(row.logo_synced_at),
+                    attempts: Number(row.attempts ?? 0),
+                }),
+            );
+        },
+        async recordSuccess(row: LogoSyncSuccess) {
+            await sql`
+                INSERT INTO mint_logos (
+                    mint, source_url, source_table, source_kind, logo_source_hash, logo_cdn_url,
+                    content_type, logo_synced_at, last_attempt_at, attempts, last_error, updated_at
+                ) VALUES (
+                    ${row.mint}, ${row.sourceUrl}, ${row.sourceTable}, ${row.sourceKind}, ${row.sourceHash}, ${row.cdnUrl},
+                    ${row.contentType}, to_timestamp(${row.nowMs} / 1000.0), to_timestamp(${row.nowMs} / 1000.0), 0, NULL,
+                    to_timestamp(${row.nowMs} / 1000.0)
+                )
+                ON CONFLICT (mint) DO UPDATE SET
+                    source_url = EXCLUDED.source_url,
+                    source_table = EXCLUDED.source_table,
+                    source_kind = EXCLUDED.source_kind,
+                    logo_source_hash = EXCLUDED.logo_source_hash,
+                    logo_cdn_url = EXCLUDED.logo_cdn_url,
+                    content_type = EXCLUDED.content_type,
+                    logo_synced_at = EXCLUDED.logo_synced_at,
+                    last_attempt_at = EXCLUDED.last_attempt_at,
+                    attempts = 0,
+                    last_error = NULL,
+                    failed_source_url = NULL,
+                    updated_at = EXCLUDED.updated_at
+            `;
+        },
+        async recordFailure(row: LogoSyncFailure) {
+            // Never un-publishes a working copy, and never rewrites `source_url` while a copy
+            // exists (it is the source of the published bytes). The attempted URL goes to
+            // `failed_source_url`; attempts restart when a *different* URL starts failing.
+            await sql`
+                INSERT INTO mint_logos (
+                    mint, source_url, source_table, failed_source_url, last_attempt_at, attempts, last_error, updated_at
+                ) VALUES (
+                    ${row.mint}, ${row.sourceUrl}, ${row.sourceTable}, ${row.sourceUrl},
+                    to_timestamp(${row.nowMs} / 1000.0), 1, ${row.error}, to_timestamp(${row.nowMs} / 1000.0)
+                )
+                ON CONFLICT (mint) DO UPDATE SET
+                    source_url = CASE WHEN mint_logos.logo_cdn_url IS NULL THEN EXCLUDED.source_url ELSE mint_logos.source_url END,
+                    source_table = CASE WHEN mint_logos.logo_cdn_url IS NULL THEN EXCLUDED.source_table ELSE mint_logos.source_table END,
+                    failed_source_url = EXCLUDED.failed_source_url,
+                    last_attempt_at = EXCLUDED.last_attempt_at,
+                    attempts = CASE
+                        WHEN mint_logos.failed_source_url IS DISTINCT FROM EXCLUDED.failed_source_url THEN 1
+                        ELSE mint_logos.attempts + 1
+                    END,
+                    last_error = EXCLUDED.last_error,
+                    updated_at = EXCLUDED.updated_at
+            `;
+        },
+    };
+}
+
+// ---------------------------------------------------------------------------
+// Project Canon asset registry (`solana_data_assets_latest`, migration 0031).
+// Sync side: crons.solanaData.ts; read side: solanaDataReads.ts.
+// ---------------------------------------------------------------------------
+
+export function makePostgresSolanaDataJobsRepo(sql: Sql): SolanaDataJobsRepo {
+    return {
+        async listActiveCount() {
+            const rows = await sql<{ count: number }[]>`
+                SELECT COUNT(*)::int AS count FROM solana_data_assets_latest WHERE is_active = true
+            `;
+            return rows[0]?.count ?? 0;
+        },
+
+        async upsertLatest(rows: readonly SolanaDataAssetUpsert[]) {
+            if (rows.length === 0) return;
+            const values = rows.map(row => ({
+                mint: row.mint,
+                symbol: row.symbol,
+                group_name: row.groupName,
+                category: row.category,
+                asset_class: row.assetClass,
+                allium_asset_class: row.alliumClass,
+                rwa_asset_class: row.rwaClass,
+                allium_asset_value_usd: row.alliumValueUsd,
+                rwa_asset_value_usd: row.rwaValueUsd,
+                coingecko_market_cap_usd: row.marketCapUsd,
+                source_rank: row.sourceRank,
+                source_generated_at: row.sourceGeneratedAt,
+                raw_json: row.rawJson,
+                is_active: true,
+                last_seen_at: row.lastSeenAt,
+                last_synced_at: row.lastSyncedAt,
+            }));
+            // The SET list deliberately omits provider_name / provider_logo_uri /
+            // provider_fetched_at: the Birdeye fallback is owned by the provider
+            // phase and must survive every hourly upsert. The WHERE makes an
+            // older run's write a no-op on rows a newer run already touched
+            // (there is no job lock; last_seen_at is the run's start time).
+            await sql`
+                INSERT INTO solana_data_assets_latest ${sql(values)}
+                ON CONFLICT (mint) DO UPDATE SET
+                    symbol = EXCLUDED.symbol,
+                    group_name = EXCLUDED.group_name,
+                    category = EXCLUDED.category,
+                    asset_class = EXCLUDED.asset_class,
+                    allium_asset_class = EXCLUDED.allium_asset_class,
+                    rwa_asset_class = EXCLUDED.rwa_asset_class,
+                    allium_asset_value_usd = EXCLUDED.allium_asset_value_usd,
+                    rwa_asset_value_usd = EXCLUDED.rwa_asset_value_usd,
+                    coingecko_market_cap_usd = EXCLUDED.coingecko_market_cap_usd,
+                    source_rank = EXCLUDED.source_rank,
+                    source_generated_at = EXCLUDED.source_generated_at,
+                    raw_json = EXCLUDED.raw_json,
+                    is_active = true,
+                    last_seen_at = EXCLUDED.last_seen_at,
+                    last_synced_at = EXCLUDED.last_synced_at,
+                    updated_at = NOW()
+                WHERE solana_data_assets_latest.last_seen_at <= EXCLUDED.last_seen_at
+            `;
+        },
+
+        async deactivateMissing(mints, lastSyncedAt) {
+            if (mints.length === 0) return 0;
+            // Collect the active set first so the NOT IN never has to carry
+            // 3.3k parameters in one statement. Rows a newer run has already
+            // seen (last_seen_at >= this run's start) are left alone: there is
+            // no job lock, so a slow hourly run must not undo a manual backfill
+            // that landed a fresher snapshot while it was in flight.
+            const active = await sql<{ mint: string }[]>`
+                SELECT mint FROM solana_data_assets_latest
+                WHERE is_active = true AND last_seen_at < ${lastSyncedAt}
+            `;
+            const present = new Set(mints);
+            const missing = active.map(row => row.mint).filter(mint => !present.has(mint));
+            if (missing.length === 0) return 0;
+            let deactivated = 0;
+            for (const part of chunkStrings(missing, 500)) {
+                const rows = await sql<{ count: number }[]>`
+                    WITH updated AS (
+                        UPDATE solana_data_assets_latest
+                        SET is_active = false, last_synced_at = ${lastSyncedAt}, updated_at = NOW()
+                        WHERE is_active = true
+                          AND last_seen_at < ${lastSyncedAt}
+                          AND mint IN ${sql([...part])}
+                        RETURNING 1
+                    )
+                    SELECT COUNT(*)::int AS count FROM updated
+                `;
+                deactivated += rows[0]?.count ?? 0;
+            }
+            return deactivated;
+        },
+
+        async listMintsNeedingProviderMetadata(limit, staleBeforeMs) {
+            if (limit <= 0) return [];
+            const rows = await sql<{ mint: string }[]>`
+                SELECT r.mint
+                FROM solana_data_assets_latest r
+                LEFT JOIN variant_markets_latest vm ON vm.mint = r.mint
+                LEFT JOIN tokens t ON t.address = r.mint
+                WHERE r.is_active = true
+                  AND (r.provider_fetched_at IS NULL OR r.provider_fetched_at < ${staleBeforeMs})
+                  AND COALESCE(
+                        NULLIF(vm.logo_uri, ''),
+                        NULLIF(t.logo_uri, ''),
+                        -- A mint_logos copy that logo-sync made FROM this table's
+                        -- provider_logo_uri is not an independent source: the mint
+                        -- must keep refreshing so a changed upstream logo/name lands.
+                        (SELECT ml.logo_cdn_url FROM mint_logos ml
+                          WHERE ml.mint = r.mint AND ml.source_table IS DISTINCT FROM 'solana_data_assets_latest')
+                      ) IS NULL
+                ORDER BY r.source_rank ASC
+                LIMIT ${limit}
+            `;
+            return rows.map(row => row.mint);
+        },
+
+        async updateProviderMetadata(rows: readonly SolanaDataProviderMetadataUpdate[]) {
+            if (rows.length === 0) return;
+            const payload = rows.map(row => ({
+                mint: row.mint,
+                name: row.name,
+                logo_uri: row.logoURI,
+                fetched_at: row.fetchedAt,
+            }));
+            await sql`
+                UPDATE solana_data_assets_latest AS r
+                SET provider_name = v.name,
+                    provider_logo_uri = v.logo_uri,
+                    provider_fetched_at = v.fetched_at,
+                    updated_at = NOW()
+                FROM jsonb_to_recordset(${sql.json(payload as never)})
+                    AS v(mint text, name text, logo_uri text, fetched_at bigint)
+                WHERE r.mint = v.mint
+            `;
+        },
+    };
+}
+
+/**
+ * Canonical tokens.xyz asset id for a registry mint: the active curated asset
+ * that owns the mint (`asset_variants` → `assets`, tombstones excluded), lowest
+ * id first so a mint listed under two assets resolves the same way every read.
+ * Null when no curated asset owns the mint; the API maps those to singleton ids.
+ */
+function registryAssetIdColumn(mintExpr: string): string {
+    return `(
+        SELECT av.asset_id
+        FROM asset_variants av
+        JOIN assets a ON a.asset_id = av.asset_id AND a.is_active = true
+        WHERE av.mint = ${mintExpr}
+          AND av.is_active = true
+          AND NOT EXISTS (SELECT 1 FROM asset_deletion_tombstones dt WHERE dt.asset_id = av.asset_id)
+        ORDER BY av.asset_id ASC
+        LIMIT 1
+    ) AS asset_id`;
+}
+
+export function makePostgresSolanaDataReadsRepo(sql: Sql): SolanaDataReadsRepo {
+    return {
+        async listActive(filters: SolanaDataAssetsListFilters) {
+            // One statement: `meta` always yields a row, so an offset past the end
+            // still reports total / timestamps (the page columns come back null).
+            return sql<SolanaDataAssetReadRow[]>`
+                WITH filtered AS (
+                    SELECT r.*
+                    FROM solana_data_assets_latest r
+                    WHERE r.is_active = true
+                      ${filters.group !== undefined ? sql`AND r.group_name = ${filters.group}` : sql``}
+                      ${filters.category !== undefined ? sql`AND r.category = ${filters.category}` : sql``}
+                      ${filters.assetClass !== undefined ? sql`AND r.asset_class = ${filters.assetClass}` : sql``}
+                ),
+                meta AS (
+                    SELECT COUNT(*)::int AS total,
+                           MAX(last_synced_at) AS meta_last_synced_at,
+                           MAX(source_generated_at) AS meta_source_generated_at
+                    FROM filtered
+                ),
+                page AS (
+                    SELECT f.mint, f.symbol,
+                           COALESCE(NULLIF(vm.name, ''), NULLIF(t.name, ''), f.provider_name) AS name,
+                           COALESCE(NULLIF(vm.logo_uri, ''), NULLIF(t.logo_uri, ''), f.provider_logo_uri) AS logo_uri,
+                           ${sql.unsafe(logoCdnColumn('f.mint'))},
+                           (
+                               t.address IS NOT NULL
+                               OR vm.mint IS NOT NULL
+                               OR EXISTS (SELECT 1 FROM asset_variants av WHERE av.mint = f.mint AND av.is_active = true)
+                           ) AS has_token_page,
+                           ${sql.unsafe(registryAssetIdColumn('f.mint'))},
+                           f.group_name, f.category, f.asset_class,
+                           f.allium_asset_class, f.rwa_asset_class,
+                           f.allium_asset_value_usd, f.rwa_asset_value_usd, f.coingecko_market_cap_usd,
+                           f.source_rank
+                    FROM filtered f
+                    LEFT JOIN variant_markets_latest vm ON vm.mint = f.mint
+                    LEFT JOIN tokens t ON t.address = f.mint
+                    ORDER BY f.source_rank ASC
+                    LIMIT ${filters.limit} OFFSET ${filters.offset}
+                )
+                SELECT meta.total, meta.meta_last_synced_at, meta.meta_source_generated_at, page.*
+                FROM meta
+                LEFT JOIN page ON true
+                ORDER BY page.source_rank ASC NULLS LAST
+            `;
+        },
+
+        async findActiveByMint(mint: string) {
+            // Same identity resolution as the page query, for one row, plus the
+            // stored upstream snapshot (`raw_json`) and the provider fallback.
+            const rows = await sql<SolanaDataAssetDetailRow[]>`
+                SELECT r.mint, r.symbol,
+                       COALESCE(NULLIF(vm.name, ''), NULLIF(t.name, ''), r.provider_name) AS name,
+                       COALESCE(NULLIF(vm.logo_uri, ''), NULLIF(t.logo_uri, ''), r.provider_logo_uri) AS logo_uri,
+                       ${sql.unsafe(logoCdnColumn('r.mint'))},
+                       (
+                           t.address IS NOT NULL
+                           OR vm.mint IS NOT NULL
+                           OR EXISTS (SELECT 1 FROM asset_variants av WHERE av.mint = r.mint AND av.is_active = true)
+                       ) AS has_token_page,
+                       ${sql.unsafe(registryAssetIdColumn('r.mint'))},
+                       r.group_name, r.category, r.asset_class,
+                       r.allium_asset_class, r.rwa_asset_class,
+                       r.allium_asset_value_usd, r.rwa_asset_value_usd, r.coingecko_market_cap_usd,
+                       r.source_rank,
+                       r.raw_json, r.source_generated_at, r.last_synced_at,
+                       r.provider_name, r.provider_logo_uri, r.provider_fetched_at
+                FROM solana_data_assets_latest r
+                LEFT JOIN variant_markets_latest vm ON vm.mint = r.mint
+                LEFT JOIN tokens t ON t.address = r.mint
+                WHERE r.mint = ${mint} AND r.is_active = true
+                LIMIT 1
+            `;
+            return rows[0] ?? null;
         },
     };
 }

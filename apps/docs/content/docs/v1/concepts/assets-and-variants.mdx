@@ -1,0 +1,176 @@
+---
+title: Assets and variants
+description: Canonical assets, Solana mint variants, how the primary variant is chosen, and what counts as a registered asset.
+---
+
+## Two ids
+
+- **`assetId`** names a canonical asset: the thing people mean, independent of which token represents it. Examples: `solana`, `usd`, `bitcoin`, `tesla`, `gold`.
+- **`mint`** is a Solana token address (base58). One asset usually has several mints: USDC, USDT and PYUSD are all variants of `usd`; the xStock and Ondo Tesla tokens are both variants of `tesla`.
+
+Anything that takes an `{assetId}` path parameter also accepts an alias (`btc`), a raw mint, or the `solana-<mint>` form, and resolves it to the registered asset. `GET /v1/assets/resolve` does the same without fetching the asset.
+
+Most asset routes accept an optional `mint` query parameter to pick a specific variant. It must belong to the asset, otherwise the response is `400`. When you reach an asset through a mint reference and pass no `mint`, that mint becomes the default variant for per-variant computations.
+
+## Variants
+
+A variant object appears everywhere a mint does: `asset.primaryVariant`, `asset.variantGroups.*[]`, `/variants` rows and the batch snapshot rows.
+
+```ts
+type VariantKind =
+  | 'native' | 'wrapped' | 'bridged' | 'spot' | 'stablecoin' | 'lst' | 'tokenized_equity'
+  | 'basket' | 'etf' | 'yield' | 'leveraged';
+type LiquidityTier = 'tier1' | 'tier2' | 'tier3';
+type StockVariantTier = 'share_redeemable' | 'cash_redeemable' | 'not_redeemable';
+
+interface Variant {
+  variantId: string;          // "<assetId>:<label>", stable
+  mint: string;
+  kind: VariantKind;
+  liquidityTier: LiquidityTier;
+  trustTier: LiquidityTier;   // deprecated alias of liquidityTier, kept for compatibility
+  tags: string[];
+  issuer?: string;
+  issuerUrl?: string;
+  label?: string;             // e.g. "xStock", "Wormhole"
+  symbol?: string;
+  name?: string;
+  stockVariantTier?: StockVariantTier; // tokenized equities only
+  advisory: VariantAdvisory | null;    // see Advisories
+  market: VariantMarket | null;        // cached per-mint snapshot, see below
+  executionQuality: VariantExecutionQuality | null;
+  pegHealth?: CompactPegHealth | null; // asset detail, stablecoin assets only; see Stablecoin health
+  preStocks?: {                        // asset detail, PreStocks tokens only
+    symbol: string;
+    markPriceUsd: number | null;
+    markValuationUsd: number | null;
+    impliedValuationUsd: number | null;
+    premiumToMarkPercent: number | null;
+    lastFetchedAt: number;             // unix ms
+  };
+  rank?: number;                       // asset detail: 0-based position after liquidity ranking
+}
+
+interface VariantMarket {
+  source?: 'birdeye' | 'rwa_xyz' | 'clickhouse_trades';
+  metricsSource?: 'birdeye' | 'rwa_xyz' | 'clickhouse_trades';
+  price: number | null;
+  liquidity: number | null;
+  volume1hUSD?: number | null;
+  volume24hUSD: number | null;
+  trade1h?: number | null;
+  trade24h?: number | null;
+  uniqueWallet1h?: number | null;
+  uniqueWallet24h?: number | null;
+  marketCap: number | null;
+  fdv: number | null;
+  holder: number | null;
+  totalSupply: number | null;        // on-chain supply of this mint
+  circulatingSupply: number | null;  // on-chain supply of this mint
+  priceChange24hPercent: number | null;
+  priceChange1hPercent: number | null;
+  decimals: number | null;
+  logoURI: string | null;
+  lastTradeAt: number | null;        // unix ms
+  asOf: number | null;               // unix seconds of the trade snapshot the metrics came from
+  lastFetchedAt: number | null;      // unix ms
+}
+```
+
+`metricsSource: "clickhouse_trades"` marks rows whose volume, trade and wallet counts come from direct USD-stable Solana trades; the other sources are the named providers. `logoURI` is a per-token icon; when tokens.xyz holds a first-party copy it points at tokens.xyz storage (a 256px WebP) rather than an upstream URL.
+
+### Spot-like variants
+
+Aggregates and primary selection consider the **spot-like** kinds: `native`, `wrapped`, `bridged`, `spot`, `stablecoin`, `lst`, `tokenized_equity` and `basket`. Derivatives (`etf`, `yield`, `leveraged`) are listed but never aggregated into `stats` or chosen as primary. If an asset has no spot-like variant, aggregates fall back to all variants.
+
+### Liquidity tiers
+
+`liquidityTier` is derived from the variant's market liquidity: `tier1` above $10M, `tier2` from $2.5M, `tier3` below that or unknown. `trustTier` mirrors it and is deprecated; `trustTier=experimental` is still accepted as a filter and means `tier3`.
+
+## The primary variant
+
+`asset.primaryVariant` is the mint the API would route to. It is chosen deterministically from the spot-like variants after a 24h activity filter, and the strategy is configurable with `primaryVariantStrategy` on asset detail, search and curated:
+
+| Strategy                        | Picks                                                                                                                                              |
+| ------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `liquidity` (default)           | The most liquid variant.                                                                                                                           |
+| `execution_quality`             | Liquidity still ranks, but cached fill-quality evidence (`executionQuality`) can break close calls within a conservative liquidity-ratio cap.       |
+| `stock_redeemability`           | Equities only: prefers `share_redeemable` over `cash_redeemable` over `not_redeemable` when the higher tier is within 5x of the more liquid one.    |
+
+Every strategy falls back in the same order: liquidity, liquidity tier, 24h volume, curated rank, then a deterministic mint tie-break. Variants flagged `compromised` or `blocked` are skipped while another eligible variant exists. `asset.primaryVariantStrategy` echoes the strategy used.
+
+### Execution quality
+
+Some Solana variants carry a cached fill-quality block:
+
+```ts
+interface VariantExecutionQuality {
+  source: 'clickhouse_fill_quality';
+  range: '24h';
+  horizon: '5s';
+  quoteMint: string;          // USDC
+  volume24hUSD: number;
+  trade24h: number;
+  botVolume24hUSD: number;
+  botTrade24h: number;
+  botVolumeRatio: number;
+  fee24hUSD: number;
+  feeBps: number;
+  flowSourceCount: number;
+  markoutPnl24hUSD: number | null;
+  markoutCount: number | null;
+  markoutBps: number | null;
+  executionScore: number;     // 0-100
+  isEligibleForPrimary: boolean;
+  asOf: number | null;        // unix seconds
+  lastComputedAt: number;     // unix ms
+}
+```
+
+`executionScore` combines 24h fill volume, trade count, flow-source coverage, bot volume ratio and fee bps. `isEligibleForPrimary` says whether the row is fresh and active enough to influence selection. The `markout*` fields are raw data and do not affect ranking. Coverage is limited to curated mints quoted in USDC.
+
+### Stock variant tiers
+
+Tokenized equities may carry `stockVariantTier`:
+
+- `share_redeemable`: the issuer documents redemption into the underlying share entitlement.
+- `cash_redeemable`: redemption is for cash, stablecoin or underlying value rather than share delivery.
+- `not_redeemable`: no verified redemption path.
+
+The tier is descriptive issuer metadata for routing and display. It is not legal, tax, accounting or investment advice.
+
+## Aggregate stats and the canonical market
+
+`asset.stats` aggregates the spot-like variants on Solana: `price`, `liquidity`, `volume24hUSD`, nullable `volume30dUSD` (a rolling 30-day sum, so you do not need to add candles yourself), `marketCap`, `priceChange1hPercent`, `priceChange24hPercent`, and the on-Solana `totalSupply` and `circulatingSupply`. For BTC that supply is the few thousand BTC wrapped on Solana, not Bitcoin's supply.
+
+`asset.canonicalMarket` is the off-chain reference for the asset as a whole, named by `source`:
+
+| `source`           | Used for                      | Carries                                                                                                        |
+| ------------------ | ----------------------------- | -------------------------------------------------------------------------------------------------------------- |
+| `coingecko`        | Crypto assets                 | Price, market cap, and the canonical `circulatingSupply`, `totalSupply`, `maxSupply` (`null` when uncapped).    |
+| `clickhouse_stock` | Public equities and ETFs      | Share price and the company's market cap.                                                                      |
+| `prestocks`        | Tokenized pre-IPO equities    | `marketCap` as the implied company valuation, plus `markPriceUsd`, `markValuationUsd`, `impliedValuationUsd`, `premiumToMarkPercent` and `mint`. |
+
+Add a default arm when you switch on `source`; new sources are additive. For mapped equities `stats.price`, `stats.volume24hUSD` and `stats.priceChange24hPercent` come from the stock market rather than from the Solana variants.
+
+## Region and industry tags
+
+Every asset row carries `region` and `industry` (`string | null`): single-valued, admin-curated tags from a fixed vocabulary. Crypto natives, LSTs and per-mint `solana-<mint>` assets are untagged. Search and curated accept both as exact-match filters that combine with AND; an unknown value returns `400` with the allowed list under `details.regions` or `details.industries`, and any filter excludes untagged assets.
+
+- `region`: `north_america`, `latin_america`, `europe`, `middle_east`, `africa`, `asia`, `oceania`, `global`
+- `industry`: `software`, `semiconductors`, `internet`, `hardware`, `defense`, `aerospace`, `manufacturing`, `automotive`, `energy`, `materials`, `utilities`, `banking`, `fintech`, `asset_management`, `insurance`, `pharma`, `biotech`, `healthcare`, `retail`, `consumer_goods`, `food_beverage`, `media`, `telecom`, `travel_leisure`, `real_estate`, `crypto_mining`, `crypto_exchange`, `crypto_treasury`, `conglomerate`, `index_fund`
+
+Region is the issuer's home market; thematic ETFs take their theme and broad funds are `index_fund`. New slugs may be added over time.
+
+## Registered assets only
+
+v1 serves the assets the Tokens team has registered and nothing else. A mint counts as registered when it is:
+
+- a variant of a curated asset,
+- in the compiled asset registry,
+- a Sanctum liquid-staking token (these resolve to `solana`), or
+- an approved launch coin.
+
+A few registered assets, such as approved launch coins, are exposed under a per-mint id of the form `solana-<mint>` and carry a single variant. That is the only place you will see that id form; unknown mints are never turned into assets.
+
+A mint outside this set returns `404` with `details.code: "asset_not_registered"` on `resolve`, `risk-summary` and every `/v1/assets/{assetId}` route, and a `null` row on the batch endpoints. The response does not change with time, so do not retry. To get identity and market data for such tokens, add them to a [Token List](/v2/endpoints/lists) in API v2 and read `GET /v2/lists/tokens?lists={slug}`. The envelope is on [Errors and limits](/v1/errors-and-limits#unregistered-assets).

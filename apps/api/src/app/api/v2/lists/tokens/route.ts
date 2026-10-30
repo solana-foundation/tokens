@@ -3,6 +3,8 @@ import { Effect } from 'effect';
 import { route } from '@/effect/next-route';
 import { withStaleFallback } from '@/effect/stale-response-cache';
 import { BadRequestError, decodeLimit, decodeOffset, tapErrorAndDefault } from '@tokens/effect';
+import { isHiddenAdvisory, type VariantAdvisory } from '@tokens/asset-registry';
+import { loadAdvisoriesOrEmpty } from '@/lib/advisories';
 import { tokenListsGetBySlug, tokenListsGetMembers, type TokenListMember } from '@/lib/cloudrun';
 
 import { getEffectiveCuratedAddresses } from '../../../_curated-addresses';
@@ -11,6 +13,7 @@ import {
     curatedListMeta,
     hydrateCommunityMembers,
     normalizeCuratedSlug,
+    visibleListMints,
     type V2ListSummary,
     type V2ListToken,
 } from '../_shared';
@@ -30,13 +33,19 @@ interface ResolvedList {
  * failures propagate to the stale-fallback wrapper (a hollow list must not
  * overwrite the last good composition).
  */
-function resolveCurated(curatedId: NonNullable<ReturnType<typeof normalizeCuratedSlug>>) {
+function resolveCurated(
+    curatedId: NonNullable<ReturnType<typeof normalizeCuratedSlug>>,
+    advisories: ReadonlyMap<string, VariantAdvisory>,
+) {
     return Effect.gen(function* () {
         const meta = yield* curatedListMeta(curatedId);
         const { addresses } = yield* Effect.tryPromise({
             try: () => getEffectiveCuratedAddresses(curatedId),
             catch: error => (error instanceof Error ? error : new Error(String(error))),
         });
+        // `blocked` mints are hidden from list surfaces; drop them here so the
+        // union, its `total`, and per-list `tokenCount` agree.
+        const visible = visibleListMints(addresses, advisories);
         const resolved: ResolvedList = {
             summary: {
                 slug: curatedId,
@@ -44,10 +53,10 @@ function resolveCurated(curatedId: NonNullable<ReturnType<typeof normalizeCurate
                 description: meta.description,
                 curated: true,
                 owner: CURATED_OWNER,
-                tokenCount: addresses.length,
+                tokenCount: visible.length,
                 updatedAt: null,
             },
-            mints: addresses,
+            mints: visible,
             membersByMint: new Map(),
         };
         return resolved;
@@ -58,7 +67,7 @@ function resolveCurated(curatedId: NonNullable<ReturnType<typeof normalizeCurate
 const COMPOSE_MEMBER_FETCH_CAP = 5000;
 const COMPOSE_MEMBER_PAGE = 2000;
 
-function resolveCommunity(slug: string) {
+function resolveCommunity(slug: string, advisories: ReadonlyMap<string, VariantAdvisory>) {
     return Effect.gen(function* () {
         const detail = yield* tokenListsGetBySlug({ slug });
         // Unlisted lists compose by direct slug — hidden from discovery only.
@@ -79,6 +88,10 @@ function resolveCommunity(slug: string) {
         // say so instead of silently under-reporting membership.
         const truncated = detail.tokenCount > COMPOSE_MEMBER_FETCH_CAP;
         if (members.length > COMPOSE_MEMBER_FETCH_CAP) members = members.slice(0, COMPOSE_MEMBER_FETCH_CAP);
+        // Hide `blocked` members; the stored count is reduced by the hidden
+        // members we fetched (exact unless the list was truncated above).
+        const visibleMembers = members.filter(m => !isHiddenAdvisory(advisories.get(m.mint)));
+        const hiddenCount = members.length - visibleMembers.length;
         const resolved: ResolvedList = {
             summary: {
                 slug: detail.slug,
@@ -87,12 +100,12 @@ function resolveCommunity(slug: string) {
                 description: null,
                 curated: false,
                 owner: { projectId: detail.ownerProjectId },
-                tokenCount: detail.tokenCount,
+                tokenCount: Math.max(0, detail.tokenCount - hiddenCount),
                 updatedAt: detail.updatedAt,
                 ...(truncated ? { truncated: true } : {}),
             },
-            mints: members.map(m => m.mint),
-            membersByMint: new Map(members.map(m => [m.mint, m] as const)),
+            mints: visibleMembers.map(m => m.mint),
+            membersByMint: new Map(visibleMembers.map(m => [m.mint, m] as const)),
         };
         return resolved;
     });
@@ -136,12 +149,15 @@ export const GET = route(
             const offset = yield* decodeOffset(url.searchParams.get('offset'));
 
             const main = Effect.gen(function* () {
+                const advisories = yield* loadAdvisoriesOrEmpty();
                 const resolved: Array<{ slug: string; list: ResolvedList | null }> = [];
                 for (const slug of slugs) {
                     const curatedId = normalizeCuratedSlug(slug);
                     const list = curatedId
-                        ? yield* resolveCurated(curatedId)
-                        : yield* resolveCommunity(slug).pipe(tapErrorAndDefault(`v2.lists.compose.${slug}`, null));
+                        ? yield* resolveCurated(curatedId, advisories)
+                        : yield* resolveCommunity(slug, advisories).pipe(
+                              tapErrorAndDefault(`v2.lists.compose.${slug}`, null),
+                          );
                     resolved.push({ slug, list });
                 }
 
@@ -189,7 +205,7 @@ export const GET = route(
                         verified: true,
                     };
                 });
-                const hydrated = yield* hydrateCommunityMembers(pageMembers);
+                const hydrated = yield* hydrateCommunityMembers(pageMembers, { advisories });
                 const tokens = hydrated.map((token, index): V2ListToken & { lists: string[] } => {
                     const { note: _note, addedAt: _addedAt, ...rest } = token;
                     return {

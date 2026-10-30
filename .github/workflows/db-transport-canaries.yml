@@ -34,15 +34,15 @@ jobs:
     timeout-minutes: 25
     environment: production
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v4
 
       - id: auth
-        uses: google-github-actions/auth@71f986410dfbc7added4569d411d040a91dc6935 # v2
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v2
         with:
           workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
           service_account: ${{ vars.GCP_TF_DEPLOYER_SA }}
 
-      - uses: google-github-actions/setup-gcloud@77e7a554d41e2ee56fc945c52dfd3f33d12def9a # v2
+      - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v2
 
       - name: Remove canaries
         if: inputs.action == 'remove'
@@ -71,11 +71,13 @@ jobs:
           echo "BUN_IMAGE=$BUN_IMAGE" >> "$GITHUB_ENV"
           echo "NODE_IMAGE=$NODE_IMAGE" >> "$GITHUB_ENV"
 
+      # The connector range must not overlap any subnet; the Cloud Run subnet
+      # is 10.20.0.0/22 (terraform/modules/network), so this sits just above it.
       - name: Ensure connector
         if: inputs.action == 'deploy'
         run: |
           gcloud compute networks vpc-access connectors describe "$CONNECTOR" --region="$REGION" --project="$PROJECT" >/dev/null 2>&1 || \
-            gcloud compute networks vpc-access connectors create "$CONNECTOR" --region="$REGION" --project="$PROJECT" --network="$NETWORK" --range=10.20.1.0/28 --min-instances=2 --max-instances=3 --machine-type=e2-micro --quiet
+            gcloud compute networks vpc-access connectors create "$CONNECTOR" --region="$REGION" --project="$PROJECT" --network="$NETWORK" --range=10.20.4.0/28 --min-instances=2 --max-instances=3 --machine-type=e2-micro --quiet
 
       - name: Deploy canary services
         if: inputs.action == 'deploy'

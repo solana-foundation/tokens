@@ -30,14 +30,21 @@ function asset(overrides: Partial<AssetRow> = {}): AssetRow {
         description: null,
         imageUrl: null,
         isActive: true,
+        region: null,
+        industry: null,
         ...overrides,
     };
 }
 
 function variant(overrides: Partial<VariantWithMarketRow> = {}): VariantWithMarketRow {
+    const mint = overrides.mint ?? MINT_A;
     return {
         assetId: 'bitcoin',
-        mint: MINT_A,
+        chain: 'solana',
+        address: mint,
+        mint,
+        origin: 'v1',
+        decimals: null,
         variantId: 'bitcoin:wbtc',
         kind: 'wrapped',
         trustTier: 'tier1',
@@ -48,16 +55,39 @@ function variant(overrides: Partial<VariantWithMarketRow> = {}): VariantWithMark
         stockVariantTier: null,
         isActive: true,
         market: null,
+        advisory: null,
+        pegHealth: null,
+        structuralHealth: null,
         ...overrides,
     };
 }
+
+const PEG_HEALTH = {
+    provider: 'tokens' as const,
+    tier: 'warning' as const,
+    deviationPct: -2.4,
+    ok: true,
+    errorMessage: null,
+    updatedAt: 1_750_000_000_000,
+};
+const STRUCTURAL_HEALTH = { grade: 'B+' as const, updatedAt: 1_749_000_000_000 };
 
 interface FakeState {
     assets?: AssetRow[];
     variants?: VariantWithMarketRow[];
     customAliases?: Array<{ assetId: string; alias: string }>;
+    assetIdAliases?: Array<{ assetId: string; normalized: string }>;
     members?: Array<{ slug: 'majors' | 'currencies' | 'rwas' | 'etfs' | 'metals' | 'stocks'; assetId: string }>;
-    markets?: Record<string, { symbol: string | null; name: string | null; logoURI: string | null; liquidity: number | null; lastFetchedAt: number | null }>;
+    markets?: Record<
+        string,
+        {
+            symbol: string | null;
+            name: string | null;
+            logoURI: string | null;
+            liquidity: number | null;
+            lastFetchedAt: number | null;
+        }
+    >;
 }
 
 function makeRepo(state: FakeState = {}): { repo: AdminReadsRepo; calls: Record<string, unknown[]> } {
@@ -79,9 +109,23 @@ function makeRepo(state: FakeState = {}): { repo: AdminReadsRepo; calls: Record<
         listCustomAliases: async () => state.customAliases ?? [],
         listCustomAliasesByAssetId: async assetId =>
             (state.customAliases ?? []).filter(a => a.assetId === assetId).map(a => a.alias),
+        listAssetIdAliasesByAssetId: async assetId =>
+            (state.assetIdAliases ?? []).filter(a => a.assetId === assetId).map(a => a.normalized),
         listCollectionMembers: async () => state.members ?? [],
         getAssetByAssetId: async assetId => (state.assets ?? []).find(a => a.assetId === assetId) ?? null,
-        getVariantByMint: async mint => (state.variants ?? []).find(v => v.mint === mint) ?? null,
+        getVariantByMint: async mint =>
+            (state.variants ?? []).find(v => v.chain === 'solana' && v.mint === mint) ?? null,
+        getVariantByRef: async ref => {
+            track('getVariantByRef', ref);
+            return (
+                (state.variants ?? []).find(
+                    v =>
+                        v.chain === ref.chain &&
+                        v.address === ref.address &&
+                        (ref.assetId === undefined || v.assetId === ref.assetId),
+                ) ?? null
+            );
+        },
         getMarketByMint: async mint => state.markets?.[mint] ?? null,
         searchAssets: async args => {
             track('searchAssets', args);
@@ -102,7 +146,13 @@ function makeDeps(state: FakeState = {}): { deps: AdminReadsDeps; calls: Record<
 }
 
 describe('authz (reads)', () => {
-    const handlers: Array<[string, (deps: AdminReadsDeps, args: unknown, identity: { clerkUserId: string } | null) => Promise<unknown>, unknown]> = [
+    const handlers: Array<
+        [
+            string,
+            (deps: AdminReadsDeps, args: unknown, identity: { clerkUserId: string } | null) => Promise<unknown>,
+            unknown,
+        ]
+    > = [
         ['listCanonicalAssets', listCanonicalAssets, {}],
         ['listVariantsByAssetIds', listVariantsByAssetIds, { assetIds: ['bitcoin'] }],
         ['getCanonicalEditor', getCanonicalEditor, { assetId: 'bitcoin' }],
@@ -129,12 +179,24 @@ describe('listCanonicalAssets', () => {
                     mint: MINT_A,
                     variantId: 'bitcoin:wbtc',
                     label: 'WBTC',
-                    market: { symbol: 'WBTC', name: 'Wrapped BTC', logoURI: 'https://img/wbtc.png', liquidity: 100, lastFetchedAt: 111 },
+                    market: {
+                        symbol: 'WBTC',
+                        name: 'Wrapped BTC',
+                        logoURI: 'https://img/wbtc.png',
+                        liquidity: 100,
+                        lastFetchedAt: 111,
+                    },
                 }),
                 variant({
                     mint: MINT_B,
                     variantId: 'bitcoin:cbbtc',
-                    market: { symbol: 'cbBTC', name: 'Coinbase BTC', logoURI: 'https://img/cbbtc.png', liquidity: 900, lastFetchedAt: 222 },
+                    market: {
+                        symbol: 'cbBTC',
+                        name: 'Coinbase BTC',
+                        logoURI: 'https://img/cbbtc.png',
+                        liquidity: 900,
+                        lastFetchedAt: 222,
+                    },
                 }),
             ],
             customAliases: [{ assetId: 'bitcoin', alias: 'digital gold' }],
@@ -186,7 +248,9 @@ describe('listCanonicalAssets', () => {
     });
 
     it('omits optional keys and falls back to em-dash for blank name/symbol', async () => {
-        const { deps } = makeDeps({ assets: [asset({ assetId: 'mystery', name: '  ', symbol: null, coingeckoId: null })] });
+        const { deps } = makeDeps({
+            assets: [asset({ assetId: 'mystery', name: '  ', symbol: null, coingeckoId: null })],
+        });
         const rows = await listCanonicalAssets(deps, {}, ADMIN);
         const row = rows[0]!;
         expect(row.name).toBe('—');
@@ -201,7 +265,17 @@ describe('listCanonicalAssets', () => {
     it('prefers asset imageUrl over override and variant logos', async () => {
         const { deps } = makeDeps({
             assets: [asset({ imageUrl: ' https://img/custom.png ' })],
-            variants: [variant({ market: { symbol: null, name: null, logoURI: 'https://img/v.png', liquidity: 1, lastFetchedAt: null } })],
+            variants: [
+                variant({
+                    market: {
+                        symbol: null,
+                        name: null,
+                        logoURI: 'https://img/v.png',
+                        liquidity: 1,
+                        lastFetchedAt: null,
+                    },
+                }),
+            ],
         });
         const rows = await listCanonicalAssets(deps, {}, ADMIN);
         expect(rows[0]!.imageUrl).toBe('https://img/custom.png');
@@ -213,7 +287,13 @@ describe('listCanonicalAssets', () => {
             variants: [
                 variant({
                     assetId: 'random-token',
-                    market: { symbol: null, name: null, logoURI: 'https://img/v.png', liquidity: 1, lastFetchedAt: null },
+                    market: {
+                        symbol: null,
+                        name: null,
+                        logoURI: 'https://img/v.png',
+                        liquidity: 1,
+                        lastFetchedAt: null,
+                    },
                 }),
             ],
         });
@@ -268,7 +348,13 @@ describe('listVariantsByAssetIds', () => {
                     issuer: 'Issuer Inc',
                     issuerUrl: 'https://issuer.example',
                     stockVariantTier: 'share_redeemable',
-                    market: { symbol: 'BIG', name: 'Big BTC', logoURI: 'https://img/big.png', liquidity: 20_000_000, lastFetchedAt: 42 },
+                    market: {
+                        symbol: 'BIG',
+                        name: 'Big BTC',
+                        logoURI: 'https://img/big.png',
+                        liquidity: 20_000_000,
+                        lastFetchedAt: 42,
+                    },
                 }),
             ],
         });
@@ -279,7 +365,11 @@ describe('listVariantsByAssetIds', () => {
         const [big, small] = result[0]!.variants;
         expect(big).toEqual({
             assetId: 'bitcoin',
+            chain: 'solana',
+            address: MINT_B,
             mint: MINT_B,
+            origin: 'v1',
+            explorerUrl: `https://explorer.solana.com/address/${MINT_B}`,
             variantId: 'bitcoin:big',
             kind: 'wrapped',
             liquidityTier: 'tier1',
@@ -295,6 +385,9 @@ describe('listVariantsByAssetIds', () => {
             logoURI: 'https://img/big.png',
             isActive: true,
             lastFetchedAt: 42,
+            advisory: null,
+            pegHealth: null,
+            structuralHealth: null,
         });
         expect(small!.liquidityTier).toBe('tier3');
         expect(small!.trustTier).toBe('tier3'); // trustTier mirrors liquidityTier
@@ -302,6 +395,34 @@ describe('listVariantsByAssetIds', () => {
         expect('lastFetchedAt' in small!).toBe(false);
         expect('logoURI' in small!).toBe(false);
         expect('label' in small!).toBe(false);
+    });
+
+    it('carries advisory source, pegHealth and structuralHealth through to the editor rows', async () => {
+        const advisory = {
+            status: 'caution' as const,
+            reason: 'Trading 2.40% below peg',
+            url: null,
+            since: 1_700_000_000_000,
+            source: 'webacy_depeg' as const,
+        };
+        const { deps } = makeDeps({
+            variants: [
+                variant({ mint: MINT_A, advisory, pegHealth: PEG_HEALTH, structuralHealth: STRUCTURAL_HEALTH }),
+                variant({ mint: MINT_B, variantId: 'bitcoin:plain' }),
+            ],
+        });
+        const result = await listVariantsByAssetIds(deps, { assetIds: ['bitcoin'] }, ADMIN);
+        const rows = result[0]!.variants;
+        const monitored = rows.find(row => row.mint === MINT_A)!;
+        const plain = rows.find(row => row.mint === MINT_B)!;
+        expect(monitored.advisory).toEqual(advisory);
+        expect(monitored.pegHealth).toEqual(PEG_HEALTH);
+        expect(monitored.structuralHealth).toEqual(STRUCTURAL_HEALTH);
+        // Always present (null, never omitted) so the UI can treat undefined as "old server build".
+        expect(plain.advisory).toBeNull();
+        expect(plain.pegHealth).toBeNull();
+        expect(plain.structuralHealth).toBeNull();
+        expect('pegHealth' in plain && 'structuralHealth' in plain).toBe(true);
     });
 
     it('returns an empty array without hitting the repo when no ids survive normalization', async () => {
@@ -338,7 +459,13 @@ describe('getCanonicalEditor', () => {
             assets: [asset({ imageUrl: null })],
             variants: [
                 variant({
-                    market: { symbol: 'WBTC', name: 'Wrapped', logoURI: 'https://img/v.png', liquidity: 10, lastFetchedAt: 5 },
+                    market: {
+                        symbol: 'WBTC',
+                        name: 'Wrapped',
+                        logoURI: 'https://img/v.png',
+                        liquidity: 10,
+                        lastFetchedAt: 5,
+                    },
                 }),
             ],
             customAliases: [{ assetId: 'bitcoin', alias: 'digital gold' }],
@@ -357,10 +484,23 @@ describe('getCanonicalEditor', () => {
                 fallbackImageUrl: '/logos/popular/bitcoin.png',
                 fallbackLogoSource: 'override',
                 isActive: true,
+                region: null,
+                industry: null,
+                registryAssetId: 'bitcoin',
             },
             aliases: ['digital gold'],
             collections: ['majors'],
         });
+    });
+
+    it('returns region/industry tags and coerces unknown stored values to null', async () => {
+        const tagged = makeDeps({ assets: [asset({ region: 'asia', industry: 'semiconductors' })] });
+        const taggedResult = await getCanonicalEditor(tagged.deps, { assetId: 'bitcoin' }, ADMIN);
+        expect(taggedResult?.asset).toMatchObject({ region: 'asia', industry: 'semiconductors' });
+
+        const legacy = makeDeps({ assets: [asset({ region: 'mars', industry: 'Defense' })] });
+        const legacyResult = await getCanonicalEditor(legacy.deps, { assetId: 'bitcoin' }, ADMIN);
+        expect(legacyResult?.asset).toMatchObject({ region: null, industry: null });
     });
 
     it('falls back to the best-variant logo when there is no override', async () => {
@@ -369,7 +509,13 @@ describe('getCanonicalEditor', () => {
             variants: [
                 variant({
                     assetId: 'random-token',
-                    market: { symbol: null, name: null, logoURI: 'https://img/v.png', liquidity: 1, lastFetchedAt: null },
+                    market: {
+                        symbol: null,
+                        name: null,
+                        logoURI: 'https://img/v.png',
+                        liquidity: 1,
+                        lastFetchedAt: null,
+                    },
                 }),
             ],
         });
@@ -382,7 +528,16 @@ describe('getCanonicalEditor', () => {
 
     it("reports 'url' with an 'override'/'variant'/'none' fallback when imageUrl is set", async () => {
         const { deps } = makeDeps({
-            assets: [asset({ assetId: 'random-token', name: 'Random', symbol: 'RND', coingeckoId: null, imageUrl: 'https://img/a.png', description: 'desc' })],
+            assets: [
+                asset({
+                    assetId: 'random-token',
+                    name: 'Random',
+                    symbol: 'RND',
+                    coingeckoId: null,
+                    imageUrl: 'https://img/a.png',
+                    description: 'desc',
+                }),
+            ],
         });
         const result = await getCanonicalEditor(deps, { assetId: 'random-token' }, ADMIN);
         expect(result?.asset.imageUrl).toBe('https://img/a.png');
@@ -391,6 +546,29 @@ describe('getCanonicalEditor', () => {
         expect(result?.asset.fallbackLogoSource).toBe('none');
         expect(result?.asset.description).toBe('desc');
         expect(result && 'fallbackImageUrl' in result.asset).toBe(false);
+    });
+
+    it('omits registryAssetId for an asset the static registry does not define', async () => {
+        const { deps } = makeDeps({
+            assets: [asset({ assetId: 'random-token', name: 'Random', symbol: 'RND', coingeckoId: null })],
+            assetIdAliases: [{ assetId: 'random-token', normalized: 'random-token' }],
+        });
+        const result = await getCanonicalEditor(deps, { assetId: 'random-token' }, ADMIN);
+        expect(result && 'registryAssetId' in result.asset).toBe(false);
+    });
+
+    it('reports the former registry id for a renamed registry asset', async () => {
+        const { deps } = makeDeps({
+            assets: [asset({ assetId: 'btc-renamed' })],
+            assetIdAliases: [
+                { assetId: 'btc-renamed', normalized: 'btc-renamed' },
+                { assetId: 'btc-renamed', normalized: 'bitcoin' },
+                { assetId: 'other-asset', normalized: 'ethereum' },
+            ],
+        });
+        const result = await getCanonicalEditor(deps, { assetId: 'btc-renamed' }, ADMIN);
+        expect(result?.asset.assetId).toBe('btc-renamed');
+        expect(result?.asset.registryAssetId).toBe('bitcoin');
     });
 });
 
@@ -414,23 +592,52 @@ describe('getVariantEditor', () => {
         expect(result).toEqual({
             variant: {
                 assetId: 'bitcoin',
+                chain: 'solana',
+                address: MINT_A,
                 mint: MINT_A,
+                origin: 'v1',
+                decimals: null,
                 variantId: 'bitcoin:wbtc',
                 kind: 'wrapped',
                 trustTier: 'tier1',
                 tags: ['wrapped'],
                 label: 'WBTC',
                 isActive: true,
+                advisory: null,
+                pegHealth: null,
+                structuralHealth: null,
             },
             canonical: { assetId: 'bitcoin', name: 'Bitcoin', symbol: 'BTC' },
             market: { symbol: 'WBTC' },
         });
     });
 
+    it('carries the active advisory through to the editor row', async () => {
+        const advisory = {
+            status: 'compromised' as const,
+            reason: 'Treasury exploited',
+            url: 'https://x.test/p',
+            since: 1_700_000_000_000,
+        };
+        const { deps } = makeDeps({ assets: [asset()], variants: [variant({ advisory })] });
+        const result = await getVariantEditor(deps, { mint: MINT_A }, ADMIN);
+        expect(result?.variant.advisory).toEqual(advisory);
+    });
+
     it('returns market: null when there is no market row', async () => {
         const { deps } = makeDeps({ assets: [asset()], variants: [variant({ market: null })] });
         const result = await getVariantEditor(deps, { mint: MINT_A }, ADMIN);
         expect(result?.market).toBeNull();
+    });
+
+    it('carries pegHealth and structuralHealth through to the editor row', async () => {
+        const { deps } = makeDeps({
+            assets: [asset()],
+            variants: [variant({ pegHealth: PEG_HEALTH, structuralHealth: STRUCTURAL_HEALTH })],
+        });
+        const result = await getVariantEditor(deps, { mint: MINT_A }, ADMIN);
+        expect(result?.variant.pegHealth).toEqual(PEG_HEALTH);
+        expect(result?.variant.structuralHealth).toEqual(STRUCTURAL_HEALTH);
     });
 });
 
@@ -461,7 +668,13 @@ describe('previewMint', () => {
     it('suggests solana-<mint> when the mint is unknown and reports market presence', async () => {
         const { deps } = makeDeps({
             markets: {
-                [MINT_A]: { symbol: 'NEW', name: 'New Token', logoURI: 'https://img/new.png', liquidity: 1, lastFetchedAt: 77 },
+                [MINT_A]: {
+                    symbol: 'NEW',
+                    name: 'New Token',
+                    logoURI: 'https://img/new.png',
+                    liquidity: 1,
+                    lastFetchedAt: 77,
+                },
             },
         });
         expect(await previewMint(deps, { mint: MINT_A }, ADMIN)).toEqual({
@@ -485,5 +698,120 @@ describe('previewMint', () => {
             symbol: 'BTC',
             hasMarketData: false,
         });
+    });
+});
+
+/* ------------------------------------------------------------------------- *
+ * Multichain rows
+ * ------------------------------------------------------------------------- */
+
+const EVM_ADDRESS = '0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48';
+
+function evmVariant(overrides: Partial<VariantWithMarketRow> = {}): VariantWithMarketRow {
+    return variant({
+        assetId: 'usdc',
+        chain: 'ethereum',
+        address: EVM_ADDRESS,
+        mint: EVM_ADDRESS,
+        origin: 'coingecko',
+        decimals: 6,
+        variantId: 'ethereum:' + EVM_ADDRESS,
+        kind: 'native',
+        trustTier: 'tier3',
+        tags: ['category:stablecoin'],
+        ...overrides,
+    });
+}
+
+describe('listVariantsByAssetIds (multichain)', () => {
+    it('carries chain / address / origin / explorerUrl / decimals and keeps Solana rows first', async () => {
+        const { deps } = makeDeps({
+            variants: [
+                evmVariant({
+                    market: { symbol: 'USDC', name: 'USD Coin', logoURI: null, liquidity: 99_000_000, lastFetchedAt: 7 },
+                }),
+                variant({
+                    assetId: 'usdc',
+                    mint: MINT_B,
+                    variantId: 'usdc:sol',
+                    market: { symbol: 'USDC', name: 'USD Coin', logoURI: null, liquidity: 1_000, lastFetchedAt: 5 },
+                }),
+                evmVariant({ chain: 'base', origin: 'admin', variantId: 'base:' + EVM_ADDRESS, isActive: false }),
+            ],
+        });
+        const result = await listVariantsByAssetIds(deps, { assetIds: ['usdc'] }, ADMIN);
+        const rows = result[0]!.variants;
+        expect(rows.map(r => [r.chain, r.origin, r.isActive])).toEqual([
+            ['solana', 'v1', true],
+            ['ethereum', 'coingecko', true],
+            ['base', 'admin', false],
+        ]);
+        const eth = rows[1]!;
+        expect(eth.address).toBe(EVM_ADDRESS);
+        expect(eth.mint).toBe(EVM_ADDRESS);
+        expect(eth.explorerUrl).toBe('https://etherscan.io/token/' + EVM_ADDRESS);
+        expect(eth.decimals).toBe(6);
+        expect(eth.liquidityTier).toBe('tier1');
+        expect(rows[0]!.explorerUrl).toBe('https://explorer.solana.com/address/' + MINT_B);
+        expect('decimals' in rows[0]!).toBe(false);
+    });
+});
+
+describe('listCanonicalAssets (multichain)', () => {
+    it('counts EVM variants and searches their addresses, but keeps a Solana representativeMint', async () => {
+        const { deps } = makeDeps({
+            assets: [asset({ assetId: 'usdc', name: 'USD Coin', symbol: 'USDC', coingeckoId: 'usd-coin' })],
+            variants: [
+                evmVariant({
+                    market: { symbol: 'USDC', name: 'USD Coin', logoURI: null, liquidity: 99_000_000, lastFetchedAt: 7 },
+                }),
+                variant({
+                    assetId: 'usdc',
+                    mint: MINT_B,
+                    variantId: 'usdc:sol',
+                    market: { symbol: 'USDC', name: 'USD Coin', logoURI: null, liquidity: 1_000, lastFetchedAt: 5 },
+                }),
+            ],
+        });
+        const [row] = await listCanonicalAssets(deps, {}, ADMIN);
+        expect(row!.variantCount).toBe(2);
+        expect(row!.representativeMint).toBe(MINT_B);
+        expect(row!.searchHints).toContain(EVM_ADDRESS);
+        expect(row!.searchHints).toContain('ethereum:' + EVM_ADDRESS);
+    });
+});
+
+describe('getVariantEditor (multichain)', () => {
+    it('looks up EVM variants by { chain, address, assetId } and normalizes the address', async () => {
+        const { deps, calls } = makeDeps({
+            assets: [asset({ assetId: 'usdc', name: 'USD Coin', symbol: 'USDC' })],
+            variants: [evmVariant({ label: 'USDC' })],
+        });
+        const result = await getVariantEditor(
+            deps,
+            { chain: 'ethereum', address: '0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48', assetId: 'usdc' },
+            ADMIN,
+        );
+        expect(calls.getVariantByRef?.[0]).toEqual({ chain: 'ethereum', address: EVM_ADDRESS, assetId: 'usdc' });
+        expect(result?.variant).toMatchObject({
+            assetId: 'usdc',
+            chain: 'ethereum',
+            address: EVM_ADDRESS,
+            mint: EVM_ADDRESS,
+            origin: 'coingecko',
+            decimals: 6,
+            label: 'USDC',
+        });
+        expect(result?.canonical).toEqual({ assetId: 'usdc', name: 'USD Coin', symbol: 'USDC' });
+    });
+
+    it('keeps the legacy { mint } lookup on Solana and treats a malformed EVM address as unknown', async () => {
+        const { deps, calls } = makeDeps({ assets: [asset()], variants: [variant()] });
+        expect((await getVariantEditor(deps, { mint: MINT_A }, ADMIN))?.variant.chain).toBe('solana');
+        expect(calls.getVariantByRef?.[0]).toEqual({ chain: 'solana', address: MINT_A });
+        expect(await getVariantEditor(deps, { chain: 'base', address: 'nope', assetId: 'usdc' }, ADMIN)).toBeNull();
+        await expect(getVariantEditor(deps, { chain: 'tron', address: EVM_ADDRESS }, ADMIN)).rejects.toBeInstanceOf(
+            InvalidArgsError,
+        );
     });
 });

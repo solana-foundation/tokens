@@ -108,11 +108,11 @@ function HighlightStatCard({ card }: { card: HighlightCard }) {
               ? scrubbedPrice === null
                   ? formatLargeNumber(card.token.volume1hUSD)
                   : formatPrice(scrubbedPrice)
-            : card.metric === 'volume24h'
-              ? scrubbedPrice === null
-                  ? formatLargeNumber(card.token.volume24hUSD)
-                  : formatPrice(scrubbedPrice)
-              : null;
+              : card.metric === 'volume24h'
+                ? scrubbedPrice === null
+                    ? formatLargeNumber(card.token.volume24hUSD)
+                    : formatPrice(scrubbedPrice)
+                : null;
     const metricClass = isPercentMetric ? (isPositive ? 'text-emerald-700' : 'text-red-600') : 'text-text-extra-high';
 
     const content = (
@@ -221,7 +221,9 @@ function TokenLogo({ token }: { token: Token }) {
     const [hasError, setHasError] = useState(false);
     const symbol = token.symbol?.trim() || token.name?.trim() || '??';
     const initials = symbol.slice(0, 2).toUpperCase();
-    const resolvedLogoURI = normalizeLogoSrc(getTokenLogoURLWithSecondarySymbol(token.symbol, token.name, token.logoURI));
+    const resolvedLogoURI = normalizeLogoSrc(
+        getTokenLogoURLWithSecondarySymbol(token.symbol, token.name, token.logoURI),
+    );
 
     if (!resolvedLogoURI || hasError) {
         return (

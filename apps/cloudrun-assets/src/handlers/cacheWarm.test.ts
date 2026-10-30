@@ -80,6 +80,7 @@ function makeState(overrides: Partial<FakeState> = {}): FakeState {
 
 function makeJobsRepo(state: FakeState): JobsRepo {
     return {
+        async upsertTokenFromBirdeye() {},
         async upsertVariantMarketFromBirdeye(args) {
             state.upsertedBirdeye.push(args.mint);
         },
@@ -160,6 +161,10 @@ function makeJobsRepo(state: FakeState): JobsRepo {
         async pruneApiRequestEventsForProject() {
             return 0;
         },
+        async listStaleOhlcvMints() {
+            return [];
+        },
+        async touchOhlcvRefreshState() {},
         async getOhlcvBounds(address, interval) {
             return state.ohlcvBoundsByKey?.[`${address}\n${interval}`] ?? { minTime: null, maxTime: null };
         },
@@ -177,6 +182,19 @@ function makeCoingeckoRepo(state: FakeState): CoingeckoRepo {
         async hasFreshCoinListRows() {
             return true;
         },
+        async listAssetsForCoinIdValidation() {
+            return [];
+        },
+        async findKnownCoins() {
+            return new Map();
+        },
+        async findCoinsBySolanaMints() {
+            return [];
+        },
+        async repairAssetCoinId() {
+            return false;
+        },
+        async upsertCoinIdAudit() {},
         async upsertCoinListBatch(coins) {
             return { inserted: coins.length, updated: 0, skipped: 0 };
         },
@@ -247,7 +265,7 @@ function makeCronDeps(state: FakeState): CronDeps {
             },
         },
         coingeckoRepo: makeCoingeckoRepo(state),
-        coingeckoCurated: { getCuratedCoinIdsInOrder: () => [] },
+        coingeckoCurated: { getCuratedCoinIdsInOrder: () => [], getPriceCoinIdsInOrder: () => [] },
         coingecko: {
             async fetchCoinList() {
                 return [];
@@ -265,6 +283,9 @@ function makeCronDeps(state: FakeState): CronDeps {
                 const out: Record<string, { usd?: unknown }> = {};
                 for (const id of coinIds) out[id] = { usd: 1 };
                 return out;
+            },
+            async fetchCoinsMarkets() {
+                return [];
             },
             async fetchMarketChartRange(args) {
                 state.cgMarketChartFetches.push(args.coinId);
@@ -321,19 +342,9 @@ function makeClickhouseClient(state: FakeState): ClickhouseClient {
         async fetchSolanaMintSnapshots() {
             return [];
         },
-        async query() {
-            return [];
-        },
         async queryPreset() {
             return [];
         },
-        tables: () => ({
-            database: 'db',
-            stockTradesTable: 'stock_trades',
-            stockInstrumentsTable: 'stock_instruments',
-            solanaTradesTable: 'solana_trades',
-            priceScale: 1e9,
-        }),
     };
 }
 
@@ -472,6 +483,9 @@ function makeSeedDeps(state: FakeState): SeedCronDeps {
             },
             async deleteCollectionCascade() {
                 return 0;
+            },
+            async listAssetIdRenames() {
+                return [];
             },
             async listTombstonedRefs() {
                 return [];

@@ -1,0 +1,220 @@
+---
+title: Risk-aware search
+description: The judgment pipeline behind /v2/search, /v2/resolve and /v2/judge — policies, gate overrides, and the reasons, warnings and suppressedBy codes that explain every result.
+---
+
+`GET /v2/search`, `GET /v2/resolve` and `POST /v2/judge` share one pipeline. This page explains how it
+judges; the routes are on [Search, Resolve & Judge](/v2/endpoints/search).
+
+## The judgment pipeline
+
+Candidates come from three sources, merged and deduped by mint: a live market-data provider for
+long-tail coverage, the token index, and the curated asset registry — or, on `POST /v2/judge`, from
+the caller (`caller`). Each candidate then passes through four stages:
+
+1. **Intent classification** — is the query a mint address, a ticker or a name?
+   (`interpretation.intent`). A mint address is a lookup, never fuzzy.
+2. **Hard gates** — a policy decides which candidates are *suppressed*. Suppressed rows are
+   returned under `suppressed[]` with the gate that fired; nothing is silently hidden.
+3. **Weighted score** — the survivors are ranked (`score.total`, `score.components`).
+4. **Explanations** — every ranked result carries `reasons`, `warnings` and `badges`; every
+   suppressed row carries `suppressedBy`.
+
+### Bring your own candidates
+
+`POST /v2/judge` skips candidate gathering: you send the mints your own search returned (optionally
+with the symbol, name and market fields it gave you) and the pipeline runs from the enrichment step.
+Caller fields are claims with the same trust as a live-provider hit — the protected-symbol index,
+dynamic dominance and attestations evaluate them against the registry and our snapshots, and our
+data wins wherever we have it. Without `q` no candidate can match-score and ranking is credibility
+alone.
+
+### What every candidate is enriched with
+
+Any mint gets the same read-out. Each input is resolved in order: our stored snapshot (market rows,
+and the holder/authority facts we collect for curated and registry mints) → a live provider lookup
+when we hold no row (cached per mint for ten minutes) → the caller's claim. Every result carries
+`dataSources` saying which tier supplied its `market`, `holders` and `security` inputs
+(`snapshot` | `provider` | `caller` | `none`), so a verdict is never mistaken for one built on
+more data than it had.
+
+Beyond price, liquidity, volume and market cap, the pipeline reads: top-10 holder share and mint
+time (concentration warnings, age gates, the impersonation heuristic), distinct trading wallets
+(a wash-resistant activity signal), circulating vs. total supply, time of last trade, execution
+quality including how many venues contributed, and the authority facts — whether the supply can
+still be minted, accounts frozen or metadata rewritten, whether transfers are taxed, how much of
+the liquidity is locked, and how much the deployer, snipers and bundlers hold. Unknown is always
+`null` and never reads as "safe".
+
+### Category bands
+
+Registry-attested assets are judged on their category's scale rather than the AMM memecoin scale
+the absolute constants describe. Tokenized equities, ETFs and RWAs settle off-AMM and are thin by
+design (the curated median is ~24K of DEX liquidity); stablecoins are the opposite. A band changes
+the `low_liquidity` bar, the `deep_liquidity` / `sustained_activity` attestations and the
+"real standing" test the impersonation and dominance heuristics use. The `band:<category>` badge
+says which table applied. Unattested mints keep the default scale on purpose: an unknown token with
+24K of liquidity *is* thin.
+
+### Provider deadline
+
+The live provider gets a bounded slice of each uncached request (about 500 ms). When it is late,
+the request is answered from the token index and the registry and `sources.provider` reads
+`degraded`; the provider call is not cancelled, and its result still refreshes the candidate cache
+after the response, so repeating the query inside the cache window returns the full set. A
+`degraded` source on a small share of unique queries is therefore normal, not an outage: it means
+the long tail was slow for that one request. A provider error inside the deadline is reported the
+same way. Index and registry candidates are never affected.
+
+## Policies and overrides
+
+A policy is a declarative bundle of hard gates, score weights and a refusal bar. Presets:
+
+| Gate | `strict` | `default` | `degen` |
+|---|---|---|---|
+| `minLiquidityUsd` | 10 000 | 1 000 | none |
+| `requireMarketData` | true | false | false |
+| `suppressImpersonation` | true | true | false |
+| `minMarketScore` | none | none | none |
+| `minAgeDays` | 1 | none | none |
+| `requireRegistry` (`verifiedOnly`) | false | false | false |
+| `suppressUnsafeAuthorities` | true | false | false |
+
+`/v2/search` and `/v2/resolve` default to `default`; the curator search
+`GET /v2/lists/search-tokens` defaults to `strict`.
+
+Each gate can be overridden per request:
+
+| Param | Accepts | Effect |
+|---|---|---|
+| `minLiquidityUsd` | number ≥ 0, or `none` | Suppress below this liquidity (`gate_min_liquidity`). Registry-attested mints are exempt |
+| `minAgeDays` | integer ≥ 0, or `none` | Suppress tokens younger than this (`gate_new_token`) |
+| `minMarketScore` | integer 0–100, or `none` | Suppress tokens whose *known* score is below this (`gate_min_market_score`) |
+| `requireMarketData` | `true`, `false` | Suppress tokens with no market snapshot (`gate_no_market_data`) |
+| `suppressImpersonation` | `true`, `false` | Suppress likely impersonators of a protected symbol (`gate_impersonation`) |
+| `verifiedOnly` | `true`, `false` | Suppress mints without a curated-registry variant (`gate_unverified`) |
+| `suppressUnsafeAuthorities` | `true`, `false` | Suppress unattested mints whose supply can still be minted or whose accounts can be frozen (`gate_unsafe_authorities`). Registry and curated assets are exempt: stablecoin issuers and tokenized-stock issuers legitimately keep both |
+
+`none`, `null` and `off` all disable a numeric gate; booleans also accept `1`/`0` and `yes`/`no`.
+Out-of-range numbers and unknown `policy` values are `400`s; an invalid `policy` echoes the valid
+ids in `details.policies`.
+
+Overrides change only the gate you name; score weights and the refusal bar always come from the
+preset. The response's `policy.gates` is the effective document and `policy.overrides` lists what
+you changed, so any result is reproducible from its own envelope.
+
+Two rules are **not** overridable under any preset:
+
+- **Advisory gates**: mints carrying a `blocked` or `compromised` advisory are always suppressed
+  (`gate_advisory_blocked`, `gate_advisory_compromised`). A `caution` advisory is a warning, not a
+  gate. See [Advisories](/v1/concepts/advisories).
+- **Tombstones**: mints editorially deleted from the corpus are always suppressed
+  (`gate_tombstoned`).
+
+Registry-attested assets bypass the liquidity gate: it exists to filter scams and unknowns, not to
+hide verified assets that settle off-AMM (RFQ or primary-issuance tokenized stocks and funds). Thin
+tradability on those shows as a `low_liquidity` warning instead.
+
+## Reading the output
+
+- **`reasons`** explain rank. **`warnings`** are caution signals on a token that is still ranked.
+  **`suppressed[].suppressedBy`** names the gate that removed a candidate. All three vocabularies
+  are enumerated below and are a stable contract: new codes may be added, existing ones are not
+  renamed.
+- **`suppressed`** rows are never truncated by `limit`. Loosen the gate, or switch to `degen`, to
+  see them ranked instead.
+- **`badges`** are free-form labels: `curated:<list>` for curated membership, `tier1`, `tier2`,
+  `tier3`, `grade:A|B|C` (the same market grade v1 exposes, computed from the token's own
+  liquidity, market cap, holders, volume and age) and `advisory:<status>`. A token with too little
+  market data to score carries no `grade:` badge.
+- **`claims.attestations`** are the evidence behind claim credibility: `curated_list`,
+  `registry_variant`, `market_dominance`, `deep_liquidity`, `sustained_activity`,
+  `established_age`, `broad_holder_base`, each with a human-readable `detail`.
+- **`verified`** is `true` when a curated-registry variant exists for the mint.
+
+## Explanation codes
+
+### `reasons`
+
+| Code | Meaning |
+|---|---|
+| `mint_match` | Query was this exact mint address |
+| `exact_symbol_match` | Symbol equals the normalized query |
+| `exact_name_match` | Name equals the normalized query |
+| `symbol_prefix_match` | Symbol starts with the query |
+| `name_match` | Name contains the query |
+| `alias_match` | Reserved for alias matches; not emitted |
+| `curated_list_member` | Mint is in one of the curated lists |
+| `registry_variant` | Mint is a curated-registry variant |
+| `market_leader` | Dominant market among the candidates claiming this symbol |
+| `deep_liquidity` | Liquidity of at least $1M |
+| `high_activity` | 24h volume of at least $250k |
+| `established_token` | First seen at least 90 days ago |
+| `strong_execution_quality` | Execution-quality score of at least 70 (tight, deep markets) |
+
+### `warnings`
+
+| Code | Meaning |
+|---|---|
+| `low_liquidity` | Liquidity below $10k, still ranked (the mint is registry-attested or the gate is off) |
+| `no_market_data` | No market snapshot available |
+| `possible_impersonation` | Claims a protected symbol, is not the protected holder, is not registry-attested, and is young or shallow |
+| `symbol_collision` | Claims a protected symbol without being its holder, but is established enough not to look like an impersonator |
+| `suspicious_characters` | Homoglyphs or invisible characters in the symbol or name |
+| `new_token` | Younger than 7 days |
+| `stale_data` | Market data older than 30 minutes |
+| `high_bot_volume` | More than 60% of volume attributed to bots |
+| `concentrated_holders` | Top-10 holders own more than 50% of supply (registry-attested mints exempt) |
+| `unverified` | No curated-registry variant for this mint |
+| `weak_market_score` | Known market score below 40 |
+| `advisory_caution` | The mint carries a `caution` advisory; see [Advisories](/v1/concepts/advisories) |
+
+### `suppressedBy`
+
+| Code | Gate | Overridable |
+|---|---|---|
+| `gate_tombstoned` | Mint editorially deleted from the corpus | no |
+| `gate_advisory_blocked` | Mint carries a `blocked` advisory | no |
+| `gate_advisory_compromised` | Mint carries a `compromised` advisory | no |
+| `gate_min_liquidity` | Below `minLiquidityUsd` (registry-attested mints exempt) | `minLiquidityUsd` |
+| `gate_no_market_data` | No market snapshot and `requireMarketData` is on | `requireMarketData` |
+| `gate_impersonation` | Likely impersonator of a protected symbol | `suppressImpersonation` |
+| `gate_min_market_score` | Known market score below `minMarketScore` | `minMarketScore` |
+| `gate_new_token` | Younger than `minAgeDays` | `minAgeDays` |
+| `gate_unverified` | Not in the curated registry and `verifiedOnly=true` | `verifiedOnly` |
+
+## Resolve: confidence or refusal
+
+`GET /v2/resolve` runs the same pipeline over a fixed candidate window and answers with one of
+three statuses, always with HTTP `200` when the request is valid:
+
+- `resolved` — the best candidate clears the policy's refusal bar **and** beats the runner-up by a
+  margin. `best.confidence` is 0–1; an exact mint paste is `1`.
+- `ambiguous` — several credible claimers exist, typical for an unprotected symbol shared by
+  unrelated tokens. Show `candidates` (at most 5, best first) and let the user pick.
+- `no_confident_match` — nothing clears the bar. A confident-looking wrong answer is the worst
+  possible output, so "I don't know" is a first-class response.
+
+Each policy has its own refusal bar: `strict` refuses most readily, `degen` least.
+- `active_wallets` — at least 1,000 distinct wallets traded the token in the last 24 hours.
+- `locked_liquidity` — at least 80% of the liquidity is locked or burned.
+- `mint_authority_active` — the supply can still be minted (unattested mints only).
+- `freeze_authority_active` — token accounts can be frozen (unattested mints only).
+- `mutable_metadata` — the symbol/name/logo can still be rewritten (unattested mints only).
+- `transfer_tax` — transfers carry a fee (Token-2022 transfer fee or a buy/sell tax).
+- `low_lp_locked` — less than 50% of the liquidity is locked.
+- `dev_holding_high` — the deployer holds more than 10% of the supply.
+- `sniper_bundle_heavy` — snipers and bundlers together hold more than 20% of the supply.
+- `thin_float` — less than 10% of the total supply is circulating.
+- `no_recent_trades` — no trade observed in the last 24 hours.
+- `toxic_flow` — markouts show fills are consistently adverse (execution-quality data).
+- `gate_unsafe_authorities` — `suppressUnsafeAuthorities` is on and the unattested mint keeps a mint or freeze authority.
+
+## Cost
+
+Unique queries can reach the live provider, so `/v2/search`, `/v2/resolve` and
+`/v2/lists/search-tokens` share a per-key budget of 120 calls per 10 minutes by default. The three
+routes also share a server-side cache of each normalized query's candidate set (about 45 seconds);
+a hit is reported as `sources.cache: 'hit'` and is not charged. Only the candidate *set* is cached:
+market data, advisories and tombstones are applied live on every call. See
+[Provider lookup budget](/v2/errors-and-limits#provider-lookup-budget).

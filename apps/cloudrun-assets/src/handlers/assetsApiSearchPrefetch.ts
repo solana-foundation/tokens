@@ -34,6 +34,9 @@
  * not aggregation cost.
  */
 
+import { normalizeCoinGeckoCoinIdForAsset } from '@tokens/asset-registry/coingecko-id';
+import { isAssetIndustry, isAssetRegion, type AssetIndustry, type AssetRegion } from '@tokens/asset-registry';
+
 import type { AssetCategory, AssetResult, AssetsRepo, GetByAssetIdsEntry } from './assets';
 import { ASSET_CATEGORIES, InvalidArgsError } from './assets';
 import { getByAssetIds, search as assetsSearch } from './assets';
@@ -105,6 +108,9 @@ export interface SearchPrefetchArgs {
     query: string;
     /** Optional category filter (constrains the assets search). */
     category?: AssetCategory;
+    /** Optional admin-curated tag filters (constrain the assets search; AND-combined). */
+    region?: AssetRegion;
+    industry?: AssetIndustry;
     /** Cap for downstream results — the route uses `Math.min(limit * 2, 50)`. */
     searchLimit: number;
     /** Cap for the tokensSearchTokens call — same effective range as searchLimit. */
@@ -253,22 +259,7 @@ function looksLikeSolanaMintAddress(value: string): boolean {
     return /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(value);
 }
 
-/**
- * Port of apps/api's `normalizeCoinGeckoCoinIdForAsset` — kept in sync so the
- * composite and per-call paths agree on which coin IDs to fetch.
- */
-function normalizeCoinGeckoCoinIdForAsset(params: {
-    assetId: string;
-    coinId: string | null | undefined;
-}): string | null {
-    const rawCoinId = (params.coinId ?? '').trim();
-    if (!rawCoinId) return null;
-    const assetId = params.assetId.trim();
-    if (assetId === 'bnb' && rawCoinId === 'bnb') return 'binancecoin';
-    if (assetId === 'tron' && rawCoinId === 'tron-xstock') return 'tron';
-    if (assetId === 'spacex' && rawCoinId === 'spacex-prestocks-2') return null;
-    return rawCoinId;
-}
+export { normalizeCoinGeckoCoinIdForAsset } from '@tokens/asset-registry/coingecko-id';
 
 /**
  * Mirrors the search route's `missingScoreForMint` — decides which mints
@@ -300,6 +291,17 @@ export async function assetsApiSearchPrefetchForApi(
         throw new InvalidArgsError('category must be a valid asset category');
     }
     const category = (categoryRaw ?? null) as AssetCategory | null;
+    const regionRaw = readOptionalString(a, 'region');
+    if (regionRaw !== undefined && !isAssetRegion(regionRaw)) {
+        throw new InvalidArgsError('region must be a valid asset region');
+    }
+    const region: AssetRegion | null = regionRaw !== undefined && isAssetRegion(regionRaw) ? regionRaw : null;
+    const industryRaw = readOptionalString(a, 'industry');
+    if (industryRaw !== undefined && !isAssetIndustry(industryRaw)) {
+        throw new InvalidArgsError('industry must be a valid asset industry');
+    }
+    const industry: AssetIndustry | null =
+        industryRaw !== undefined && isAssetIndustry(industryRaw) ? industryRaw : null;
     const searchLimit = readOptionalNumber(a, 'searchLimit') ?? 40;
     const tokensLimit = readOptionalNumber(a, 'tokensLimit') ?? 40;
     const includeSanctum = readOptionalBoolean(a, 'includeSanctum') ?? true;
@@ -337,6 +339,8 @@ export async function assetsApiSearchPrefetchForApi(
         assetsSearch(deps.assetsRepo, {
             query: effectiveAssetQuery,
             ...(category ? { category } : {}),
+            ...(region ? { region } : {}),
+            ...(industry ? { industry } : {}),
             limit: searchLimit,
         }),
         tokenMints.length > 0
@@ -485,7 +489,9 @@ export async function assetsApiSearchPrefetchForApi(
     const variantMarkets = variantMarketsChunks.flat();
 
     // DEX-market fallback: same scoring heuristic as the route so both paths
-    // pick the same missing set.
+    // pick the same missing set. Scored over `combinedMints` ONLY — the
+    // phase-3b variant-mint extras below must not widen this input, or the
+    // server would pick a different top-25 than it does today.
     const variantMarketByMint = new Map<string, VariantMarketEntry>();
     for (const entry of variantMarkets) variantMarketByMint.set(entry.mint, entry);
     const scoredMints = combinedMints
@@ -494,11 +500,40 @@ export async function assetsApiSearchPrefetchForApi(
         .sort((a, b) => b.score - a.score)
         .slice(0, 25)
         .map(entry => entry.mint);
-    const tokenMarketsDocs = scoredMints.length > 0
-        ? await getTokenMarketsLatestByMints(deps.tokensReadsRepo, { mints: scoredMints }).catch(
-              (): GetTokenMarketsLatestByMintsEntry[] => [],
-          )
-        : [];
+
+    // Phase 3b: the route builds its mint universe from every variant of the
+    // combined assets (`variantsByAssetId`), not just `combinedMints`. Those
+    // extra mints (e.g. `solana`'s ~1.5k LST variants) used to be gap-filled by
+    // the route in serial 250-mint round-trips; cover them here instead, in
+    // parallel, so the route's gap-fill finds nothing left to fetch. Rows are
+    // appended to the same arrays, so the response shape is unchanged.
+    const combinedMintSet = new Set(combinedMints);
+    const extraMints = uniqueStrings(
+        variantsByAssetId.flatMap(entry => entry.variants.map(variant => variant.mint)),
+    ).filter(mint => !combinedMintSet.has(mint));
+    const chunkedExtraMints = chunkArray(extraMints, 250);
+
+    const [tokenMarketsDocs, extraVariantMarketsChunks, extraFillQualityChunks] = await Promise.all([
+        scoredMints.length > 0
+            ? getTokenMarketsLatestByMints(deps.tokensReadsRepo, { mints: scoredMints }).catch(
+                  (): GetTokenMarketsLatestByMintsEntry[] => [],
+              )
+            : Promise.resolve<GetTokenMarketsLatestByMintsEntry[]>([]),
+        Promise.all(
+            chunkedExtraMints.map(chunk =>
+                variantMarketsGetLatestByMints(deps.variantMarketsRepo, { mints: chunk }).catch(
+                    (): VariantMarketEntry[] => [],
+                ),
+            ),
+        ),
+        Promise.all(
+            chunkedExtraMints.map(chunk =>
+                fillQualityGetLatestByMints(deps.fillQualityReadsRepo, { mints: chunk }).catch(
+                    (): FillQualityEntry[] => [],
+                ),
+            ),
+        ),
+    ]);
 
     return {
         sanctumMatch,
@@ -508,8 +543,8 @@ export async function assetsApiSearchPrefetchForApi(
         variantsByTokenMint,
         extraAssets,
         variantsByAssetId,
-        variantMarkets,
-        fillQuality: fillQualityChunks.flat(),
+        variantMarkets: [...variantMarkets, ...extraVariantMarketsChunks.flat()],
+        fillQuality: [...fillQualityChunks.flat(), ...extraFillQualityChunks.flat()],
         assetAggregates: aggregatesChunks.flat(),
         stockInstruments,
         stockPrices,

@@ -3,8 +3,9 @@ title: Execution
 description: Venue deep links and pre-trade depth evaluation for buy/sell flows.
 ---
 
-All endpoints on this page are Platform API endpoints authenticated with `x-api-key` and
-require the `execution:read` scope (granted to all keys by default).
+All endpoints below use `https://api.tokens.xyz/v2` with an `x-api-key` header; see
+[Authentication](/v2/authentication). They require the `execution:read` scope (granted to all keys
+by default) and return quotes, links and evidence only — they never build or submit a transaction.
 
 ## `GET /v2/execution/links`
 

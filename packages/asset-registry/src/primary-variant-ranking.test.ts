@@ -5,6 +5,7 @@ import {
     IMPACT_GRADES,
     IMPACT_GRADE_MAX_BPS,
     interpolateImpactBps,
+    hasPrimaryActivity,
     isSpotLikeVariantKind,
     pickPrimaryVariantWithRanking,
     rankVariantsWithReasons,
@@ -599,5 +600,136 @@ describe('gradeImpactBps', () => {
     it('pins the avoid cutoff to the size-aware impact floor', () => {
         expect(IMPACT_GRADE_MAX_BPS.poor).toBe(SIZE_AWARE_IMPACT_FLOOR_BPS);
         expect(IMPACT_GRADES).toEqual(['excellent', 'good', 'fair', 'poor', 'avoid']);
+    });
+});
+
+describe('pickPrimaryVariantWithRanking advisory gate', () => {
+    const advisory = (status: 'caution' | 'compromised' | 'blocked') => ({
+        status,
+        reason: 'test',
+        url: null,
+        since: NOW * 1000,
+    });
+
+    it('never picks a compromised spot variant while an unflagged etf sibling exists', () => {
+        // The SILV shape: a flagged wrapped variant with 100x the liquidity of
+        // the only clean sibling, which is an etf wrapper (not spot-like).
+        const silv: AssetVariant = { ...variant(MINT_A, 'silver:silv'), kind: 'wrapped', advisory: advisory('compromised') };
+        const etf: AssetVariant = { ...variant(MINT_B, 'silver:ondo-etf'), kind: 'etf' };
+
+        const result = pickPrimaryVariantWithRanking({
+            asset: asset([silv, etf]),
+            mintRank: new Map(),
+            marketByMint: new Map([
+                [MINT_A, market({ liquidity: 1_000_000 })],
+                [MINT_B, market({ liquidity: 6_000 })],
+            ]),
+        });
+
+        expect(result.variant?.mint).toBe(MINT_B);
+        expect(result.reason).toBe('advisory_filter');
+    });
+
+    it('excludes blocked variants and caller-supplied excludeMints', () => {
+        const blocked: AssetVariant = { ...variant(MINT_A, 'x:a'), advisory: advisory('blocked') };
+        const excluded: AssetVariant = variant(MINT_B, 'x:b');
+        const clean: AssetVariant = variant(MINT_C, 'x:c');
+
+        const result = pickPrimaryVariantWithRanking({
+            asset: asset([blocked, excluded, clean]),
+            mintRank: new Map(),
+            excludeMints: new Set([MINT_B]),
+            marketByMint: new Map([
+                [MINT_A, market({ liquidity: 3_000_000 })],
+                [MINT_B, market({ liquidity: 2_000_000 })],
+                [MINT_C, market({ liquidity: 1_000 })],
+            ]),
+        });
+
+        expect(result.variant?.mint).toBe(MINT_C);
+        expect(result.reason).toBe('advisory_filter');
+    });
+
+    it('does not exclude caution variants', () => {
+        const caution: AssetVariant = { ...variant(MINT_A, 'x:a'), advisory: advisory('caution') };
+        const clean: AssetVariant = variant(MINT_B, 'x:b');
+
+        const selected = pick({
+            variants: [caution, clean],
+            marketByMint: new Map([
+                [MINT_A, market({ liquidity: 3_000_000 })],
+                [MINT_B, market({ liquidity: 1_000 })],
+            ]),
+        });
+
+        expect(selected?.mint).toBe(MINT_A);
+    });
+
+    it('falls back to the full pool when every variant is flagged', () => {
+        const a: AssetVariant = { ...variant(MINT_A, 'x:a'), advisory: advisory('compromised') };
+        const b: AssetVariant = { ...variant(MINT_B, 'x:b'), advisory: advisory('blocked') };
+
+        const result = pickPrimaryVariantWithRanking({
+            asset: asset([a, b]),
+            mintRank: new Map(),
+            marketByMint: new Map([
+                [MINT_A, market({ liquidity: 3_000_000 })],
+                [MINT_B, market({ liquidity: 1_000 })],
+            ]),
+        });
+
+        expect(result.variant?.mint).toBe(MINT_A);
+        // Ranking ran over the full pool: the advisory gate did not shrink it.
+        expect(result.reason).not.toBe('advisory_filter');
+    });
+
+    it('reports only_candidate when the single variant is unflagged', () => {
+        const result = pickPrimaryVariantWithRanking({
+            asset: asset([variant(MINT_A, 'x:a')]),
+            mintRank: new Map(),
+        });
+        expect(result.reason).toBe('only_candidate');
+    });
+});
+
+describe('pickPrimaryVariantWithRanking missingActivity', () => {
+    // MINT_A has no market data at all; MINT_B trades, but below the activity minimums.
+    const quiet = market({ liquidity: 1_700, volume24hUSD: 44, trade24h: 2 });
+    const run = (missingActivity?: 'pass' | 'fail') =>
+        pickPrimaryVariantWithRanking({
+            asset: asset([variant(MINT_A, 'x:unpriced'), variant(MINT_B, 'x:quiet')]),
+            mintRank: new Map(),
+            marketByMint: new Map([[MINT_B, quiet]]),
+            options: { nowSeconds: NOW, strategy: 'liquidity', missingActivity },
+        }).variant;
+
+    it('lets an unpriced variant through the activity gate by default (v1 behaviour)', () => {
+        expect(run()?.mint).toBe(MINT_A);
+        expect(run('pass')?.mint).toBe(MINT_A);
+    });
+
+    it("drops the unpriced variant with 'fail', so the quiet one wins on liquidity", () => {
+        expect(run('fail')?.mint).toBe(MINT_B);
+    });
+
+    it("still prefers an active variant over an unpriced one with 'fail'", () => {
+        const selected = pickPrimaryVariantWithRanking({
+            asset: asset([variant(MINT_A, 'x:unpriced'), variant(MINT_B, 'x:active')]),
+            mintRank: new Map(),
+            marketByMint: new Map([[MINT_B, market({ liquidity: 10 })]]),
+            options: { nowSeconds: NOW, missingActivity: 'fail' },
+        }).variant;
+        expect(selected?.mint).toBe(MINT_B);
+    });
+});
+
+describe('hasPrimaryActivity', () => {
+    it('needs known volume and trades above the gate minimums', () => {
+        expect(hasPrimaryActivity(market())).toBe(true);
+        expect(hasPrimaryActivity(market({ volume24hUSD: 99 }))).toBe(false);
+        expect(hasPrimaryActivity(market({ trade24h: 4 }))).toBe(false);
+        expect(hasPrimaryActivity(market({ trade24h: null }))).toBe(false);
+        expect(hasPrimaryActivity(null)).toBe(false);
+        expect(hasPrimaryActivity(undefined)).toBe(false);
     });
 });

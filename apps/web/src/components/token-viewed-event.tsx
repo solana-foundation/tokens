@@ -2,11 +2,15 @@
 
 import * as React from 'react';
 
+import type { ChainKind } from '@tokens/asset-registry/chains';
+
 import { trackEvent } from '@/lib/posthog-client';
 
 interface TokenViewedEventProps {
     tokenAddress: string;
-    tokenAddressType?: 'solana' | 'coingecko';
+    tokenAddressType?: ChainKind | 'coingecko';
+    /** Chain of the viewed variant (null on a canonical view without an active variant). */
+    tokenChain?: ChainKind | null;
     tokenSymbol: string;
     tokenName: string;
     tokenPrice?: number | null;
@@ -15,12 +19,15 @@ interface TokenViewedEventProps {
     hasCoingeckoId?: boolean;
     coingeckoId?: string;
     source?: string;
+    /** Active advisory status on the viewed mint, when any. */
+    advisoryStatus?: string | null;
 }
 
 // Client-side analytics event so we capture a real distinct_id/session.
 export function TokenViewedEvent({
     tokenAddress,
     tokenAddressType,
+    tokenChain,
     tokenSymbol,
     tokenName,
     tokenPrice,
@@ -29,11 +36,13 @@ export function TokenViewedEvent({
     hasCoingeckoId,
     coingeckoId,
     source,
+    advisoryStatus,
 }: TokenViewedEventProps) {
     React.useEffect(() => {
         trackEvent('token_viewed', {
             token_address: tokenAddress,
             ...(tokenAddressType ? { token_address_type: tokenAddressType } : {}),
+            ...(tokenChain ? { token_chain: tokenChain } : {}),
             token_symbol: tokenSymbol,
             token_name: tokenName,
             token_price: tokenPrice ?? undefined,
@@ -42,13 +51,16 @@ export function TokenViewedEvent({
             ...(typeof hasCoingeckoId === 'boolean' ? { has_coingecko_id: hasCoingeckoId } : {}),
             ...(coingeckoId ? { coingecko_id: coingeckoId } : {}),
             ...(source ? { source } : {}),
+            ...(advisoryStatus ? { advisory_status: advisoryStatus } : {}),
         });
     }, [
+        advisoryStatus,
         coingeckoId,
         hasCoingeckoId,
         source,
         tokenAddress,
         tokenAddressType,
+        tokenChain,
         tokenMarketCap,
         tokenName,
         tokenPrice,

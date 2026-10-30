@@ -107,3 +107,23 @@ describe('fetchJsonWithRetry HTTP recovery', () => {
         expect(error._tag).toBe(tag);
     });
 });
+
+describe('fetchJsonWithRetry telemetry timing', () => {
+    it('times the request from when it runs, not from when the Effect was built', async () => {
+        respond(200, JSON.stringify({ ok: true }), 'OK');
+        const effect = fetchJsonWithRetry<{ ok: boolean }>({
+            url: 'https://api.example.com/v1/thing',
+            service: 'example',
+            maxRetries: 0,
+        });
+
+        await new Promise(resolve => setTimeout(resolve, 80));
+        await Effect.runPromise(effect);
+
+        const event = logs
+            .map(line => JSON.parse(line) as Record<string, unknown>)
+            .find(line => line.event === 'external_call');
+        expect(event).toMatchObject({ event: 'external_call', ok: true });
+        expect(event?.duration_ms as number).toBeLessThan(60);
+    });
+});

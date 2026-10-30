@@ -24,6 +24,9 @@
         "verify:lists-api-v2": "bun scripts/verify-lists-api-v2-contract.ts",
         "verify:execution-api-v2": "bun scripts/verify-execution-api-v2-contract.ts",
         "test:depth-local": "bun scripts/test-depth-local.ts",
+        "verify:assets-api-v2": "bun scripts/verify-assets-api-v2-contract.ts",
+        "dev:run-worker-job": "bun scripts/dev-run-worker-job.ts",
+        "dev:mint-platform-key": "bun scripts/dev-mint-platform-key.ts",
         "verify:asset-registry-hubs": "bun scripts/audit-asset-registry-hubs.ts",
         "format": "prettier --write \"**/*.{ts,tsx,md}\"",
         "postinstall": "node scripts/patch-liveline.mjs && node scripts/setup-git-hooks.mjs",
@@ -34,7 +37,7 @@
     },
     "dependencies": {
         "@clickhouse/client": "^1.23.1",
-        "hono": "^4.13.0"
+        "hono": "^4.13.13"
     },
     "devDependencies": {
         "@grafana/lezer-logql": "0.3.0",
@@ -43,7 +46,7 @@
         "@tokens/asset-registry": "workspace:*",
         "@tokens/token-risk-helpers": "workspace:*",
         "dialkit": "^1.4.3",
-        "effect": "4.0.0-rc.108",
+        "effect": "4.1.0",
         "motion": "^12.43.0",
         "postgres": "^3.4.9",
         "prettier": "^3.9.6",
@@ -51,16 +54,16 @@
         "typescript": "^5.9.3"
     },
     "overrides": {
-        "next": "16.3.0",
-        "effect": "4.0.0-rc.108",
-        "vite": "6.4.3",
+        "next": "16.4.1",
+        "js-yaml": "4.3.2",
+        "effect": "4.1.0",
+        "vite": "6.4.5",
         "@babel/core": "7.29.7",
         "@clerk/backend": "2.33.5",
         "@clerk/clerk-react": "5.61.8",
         "@clerk/shared": "3.47.7",
         "@clerk/types": "4.101.25",
-        "dompurify": "3.4.13",
-        "js-yaml": "4.3.1",
+        "dompurify": "3.4.17",
         "js-cookie": "3.0.8",
         "nanoid": "3.3.18",
         "postcss": "8.5.23",
@@ -68,19 +71,21 @@
         "uuid": "11.1.1",
         "ws": "8.21.0",
         "lodash": "4.18.1",
-        "brace-expansion": "5.0.9",
+        "brace-expansion": "5.0.12",
         "flatted": "3.4.2",
         "path-to-regexp": "8.4.2",
         "picomatch": "2.3.2",
         "esbuild": "0.28.1",
         "fast-xml-parser": "5.10.1",
-        "sharp": "0.35.3"
+        "sharp": "0.35.5",
+        "source-map-js": "1.2.2",
+        "zod": "4.6.7"
     },
     "packageManager": "bun@1.3.6",
     "engines": {
         "node": ">=20"
     },
     "patchedDependencies": {
-        "brace-expansion@5.0.9": "patches/brace-expansion@5.0.9.patch"
+        "brace-expansion@5.0.12": "patches/brace-expansion@5.0.12.patch"
     }
 }

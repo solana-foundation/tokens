@@ -1,4 +1,4 @@
-import { registerGracefulShutdown, wrapFetchWithShutdownGuard } from '@tokens/cloudrun-shutdown';
+import { bearerTokenCandidates, registerGracefulShutdown, wrapFetchWithShutdownGuard } from '@tokens/cloudrun-shutdown';
 import { computeMarketScore, type MarketScoreInput } from '@tokens/token-risk-helpers';
 import {
     makeBirdeyeClient,
@@ -6,20 +6,32 @@ import {
     makeBirdeyeOhlcvClient,
     makeClickhouseClient,
     makeCoingeckoClient,
+    makeCoingeckoFiatRatesClient,
     makeJupiterQuoteClient,
     makeJupiterSwapV2QuoteClient,
     makeJupiterTokenMetadataClient,
     makePreStocksClient,
     makeRwaXyzClient,
     makeSanctumClient,
+    makeStonkfunClient,
+    makeSolanaDataClient,
     makeTitanQuoteClient,
     makeWebacyClient,
+    makeWebacyDepegClient,
 } from './clients';
 import { makeTitanRestQuoteClient, TITAN_DEMO_BASE_URL } from './titanRestClient';
+import { makePostgresDepegRepo } from './db/depeg';
+import { makePostgresV2AssetsJobsRepo, makePostgresV2AssetsReadsRepo } from './db/v2Assets';
+import { birdeyeChains, type ChainKind } from '@tokens/asset-registry/chains';
+import type { BirdeyeClient } from './handlers/crons';
+import type { V2AssetsCronDeps } from './handlers/crons.v2Assets';
+import { makePostgresPegGuardRepo } from './db/pegGuard';
 import { parseAdminClerkUserIds, parseAdminEmails } from './adminAuth';
 import {
     getSql,
     makePostgresAdminActionsRepo,
+    makePostgresAssetAdvisoriesRepo,
+    makePostgresStablecoinHealthReadsRepo,
     makePostgresAssetCollectionsReadsRepo,
     makePostgresAssetDeletionTombstonesRepo,
     makePostgresAssetMarketsRepo,
@@ -33,11 +45,17 @@ import {
     makePostgresCoingeckoRepo,
     makePostgresCuratedMembershipSource,
     makePostgresFillQualityReadsRepo,
+    makePostgresAssetRiskReadsRepo,
     makePostgresJobsRepo,
+    makePostgresLaunchpadJobsRepo,
+    makePostgresLaunchpadReadsRepo,
+    makePostgresLogoSyncRepo,
     makePostgresMiscJobsRepo,
     makePostgresOhlcvReadsRepo,
     makePostgresSanctumLstsRepo,
     makePostgresSeedRepo,
+    makePostgresSolanaDataJobsRepo,
+    makePostgresSolanaDataReadsRepo,
     makePostgresTokenListsMutationsRepo,
     makePostgresTokenListsReadsRepo,
     makePostgresTokensReadsRepo,
@@ -69,6 +87,13 @@ import type { PrestocksCronDeps } from './handlers/crons.prestocks';
 import type { DepthCronDeps } from './handlers/crons.depth';
 import { limitQuoteConcurrency, paceQuoteStarts, type DepthSampleDeps, type LiveQuoteDeps } from './handlers/liveQuotes';
 import { createConcurrencyLimiter } from './concurrencyLimiter';
+import type { LaunchpadCronDeps } from './handlers/crons.launchpad';
+import type { LogoSyncCronDeps } from './handlers/crons.logoSync';
+import type { SolanaDataCronDeps } from './handlers/crons.solanaData';
+import { makeSharpLogoNormalizer } from './handlers/logoImage';
+import { makeGcsLogoStore } from './logoStore';
+import type { LaunchpadAdminDeps } from './handlers/launchpadAdminActions';
+import type { DepegCronDeps } from './handlers/crons.depeg';
 import { makeGoogleOidcVerifier } from './oidc';
 import { createApp, type ServiceRole } from './server';
 
@@ -97,14 +122,11 @@ const birdeyeApiKey = process.env.BIRDEYE_API_KEY?.trim();
 const sanctumApiKey = process.env.SANCTUM_API_KEY?.trim();
 const webacyApiKey = process.env.WEBACY_API_KEY?.trim();
 const rwaApiKey = process.env.RWA_API_KEY?.trim();
+const solanaDataApiKey = process.env.SOLANA_DATA_API_KEY?.trim();
+const solanaDataApiUrl = process.env.SOLANA_DATA_API_URL?.trim();
 
 const cronInvokerSa = process.env.TOKENS_CRON_INVOKER_SA?.trim() || undefined;
 const cronAudience = process.env.SCHEDULER_OIDC_AUDIENCE?.trim() || undefined;
-
-const clickhouseUrl = process.env.CLICKHOUSE_URL?.trim();
-const clickhouseUser = process.env.CLICKHOUSE_USER?.trim();
-const clickhousePassword = process.env.CLICKHOUSE_PASSWORD?.trim();
-const clickhouseDatabase = process.env.CLICKHOUSE_DATABASE?.trim();
 
 let cronDeps: CronDeps | undefined;
 let clickhouseCronDeps: (CronDeps & ClickhouseCronDeps) | undefined;
@@ -115,6 +137,11 @@ let trendingCronDeps: TrendingCronDeps | undefined;
 let clickhouseExtrasCronDeps: ClickhouseExtrasCronDeps | undefined;
 let prestocksCronDeps: PrestocksCronDeps | undefined;
 let depthCronDeps: DepthCronDeps | undefined;
+let launchpadCronDeps: LaunchpadCronDeps | undefined;
+let logoSyncCronDeps: LogoSyncCronDeps | undefined;
+let solanaDataCronDeps: SolanaDataCronDeps | undefined;
+let depegCronDeps: DepegCronDeps | undefined;
+let v2AssetsCronDeps: V2AssetsCronDeps | undefined;
 let verifyOidc: ReturnType<typeof makeGoogleOidcVerifier> | undefined;
 
 // Effective curated membership is served on the read path too (the
@@ -133,13 +160,16 @@ if (birdeyeApiKey) {
         process.exit(1);
     }
     const coingeckoCurated = makePostgresCoingeckoCuratedSource(sql);
+    // Held separately because CronDeps.birdeye is typed as the narrower
+    // BirdeyeClient; the peg guard needs the multi-price half of this instance.
+    const birdeye = makeBirdeyeClient({
+        apiKey: birdeyeApiKey,
+        ...(process.env.BIRDEYE_ORIGIN ? { origin: process.env.BIRDEYE_ORIGIN } : {}),
+    });
     const baseDeps: CronDeps = {
         repo: makePostgresJobsRepo(sql),
         curated,
-        birdeye: makeBirdeyeClient({
-            apiKey: birdeyeApiKey,
-            ...(process.env.BIRDEYE_ORIGIN ? { origin: process.env.BIRDEYE_ORIGIN } : {}),
-        }),
+        birdeye,
         birdeyeOhlcv: makeBirdeyeOhlcvClient({
             apiKey: birdeyeApiKey,
             ...(process.env.BIRDEYE_ORIGIN ? { origin: process.env.BIRDEYE_ORIGIN } : {}),
@@ -157,33 +187,12 @@ if (birdeyeApiKey) {
         console.error('[cloudrun-assets] coingecko curated warmup failed', err);
     });
     cronDeps = baseDeps;
-    if (clickhouseUrl && clickhouseUser && clickhousePassword && clickhouseDatabase) {
-        clickhouseCronDeps = {
-            ...baseDeps,
-            clickhouseRepo: makePostgresClickhouseRepo(sql),
-            clickhouse: makeClickhouseClient({
-                url: clickhouseUrl,
-                username: clickhouseUser,
-                password: clickhousePassword,
-                database: clickhouseDatabase,
-                ...(process.env.CLICKHOUSE_STOCK_TRADES_TABLE
-                    ? { stockTradesTable: process.env.CLICKHOUSE_STOCK_TRADES_TABLE.trim() }
-                    : {}),
-                ...(process.env.CLICKHOUSE_STOCK_INSTRUMENTS_TABLE
-                    ? { stockInstrumentsTable: process.env.CLICKHOUSE_STOCK_INSTRUMENTS_TABLE.trim() }
-                    : {}),
-                ...(process.env.CLICKHOUSE_SOLANA_TRADES_TABLE
-                    ? { solanaTradesTable: process.env.CLICKHOUSE_SOLANA_TRADES_TABLE.trim() }
-                    : {}),
-                ...(process.env.CLICKHOUSE_STOCK_PRICE_SCALE
-                    ? { priceScale: Number(process.env.CLICKHOUSE_STOCK_PRICE_SCALE) }
-                    : {}),
-            }),
-            env: () => process.env,
-        };
-    } else {
-        console.warn('[cloudrun-assets] CLICKHOUSE_* not fully set — clickhouse /jobs/* disabled');
-    }
+    clickhouseCronDeps = {
+        ...baseDeps,
+        clickhouseRepo: makePostgresClickhouseRepo(sql),
+        clickhouse: makeClickhouseClient({}),
+        env: () => process.env,
+    };
     miscCronDeps = {
         base: cronDeps,
         repo: makePostgresMiscJobsRepo(sql),
@@ -211,32 +220,95 @@ if (birdeyeApiKey) {
         repo: makePostgresPrestocksRepo(sql),
         now: () => Date.now(),
     };
-    if (clickhouseUrl && clickhouseUser && clickhousePassword && clickhouseDatabase) {
-        clickhouseExtrasCronDeps = {
-            clickhouse: makeClickhouseClient({
-                url: clickhouseUrl,
-                username: clickhouseUser,
-                password: clickhousePassword,
-                database: clickhouseDatabase,
-                ...(process.env.CLICKHOUSE_STOCK_TRADES_TABLE
-                    ? { stockTradesTable: process.env.CLICKHOUSE_STOCK_TRADES_TABLE.trim() }
-                    : {}),
-                ...(process.env.CLICKHOUSE_STOCK_INSTRUMENTS_TABLE
-                    ? { stockInstrumentsTable: process.env.CLICKHOUSE_STOCK_INSTRUMENTS_TABLE.trim() }
-                    : {}),
-                ...(process.env.CLICKHOUSE_SOLANA_TRADES_TABLE
-                    ? { solanaTradesTable: process.env.CLICKHOUSE_SOLANA_TRADES_TABLE.trim() }
-                    : {}),
-                ...(process.env.CLICKHOUSE_STOCK_PRICE_SCALE
-                    ? { priceScale: Number(process.env.CLICKHOUSE_STOCK_PRICE_SCALE) }
-                    : {}),
+    // stonk.fun needs no API key; the sync only runs where Birdeye is available
+    // because new coins get their identity (decimals/logo) from Birdeye.
+    launchpadCronDeps = {
+        base: baseDeps,
+        repo: makePostgresLaunchpadJobsRepo(sql),
+        stonkfun: makeStonkfunClient(),
+    };
+    // Project Canon asset registry (data.solana.com). Lives in this block because
+    // the provider phase fills missing logos from Birdeye; the sync itself only
+    // needs the data team's key.
+    if (solanaDataApiKey) {
+        solanaDataCronDeps = {
+            repo: makePostgresSolanaDataJobsRepo(sql),
+            solanaData: makeSolanaDataClient({
+                apiKey: solanaDataApiKey,
+                ...(solanaDataApiUrl ? { baseUrl: solanaDataApiUrl } : {}),
             }),
-            repo: makePostgresClickhouseExtrasRepo(sql),
-            curated,
+            birdeye,
             now: () => Date.now(),
-            env: () => process.env,
         };
+    } else {
+        console.warn('[cloudrun-assets] SOLANA_DATA_API_KEY not set — /jobs/sync-solana-data-assets disabled');
     }
+    // First-party logo copies land in the public asset-logo bucket (same one
+    // cloudrun-admin signs uploads for) via the runtime SA's default
+    // credentials, so the only optional inputs are the Pinata gateway.
+    const gcsLogoBucket = process.env.GCS_LOGO_BUCKET?.trim();
+    if (gcsLogoBucket) {
+        const pinataGatewayHost = process.env.PINATA_GATEWAY_HOST?.trim();
+        const pinataGatewayToken = process.env.PINATA_GATEWAY_TOKEN?.trim();
+        const jupiterTokenApiUrl = process.env.JUPITER_TOKEN_API_URL?.trim();
+        logoSyncCronDeps = {
+            base: baseDeps,
+            repo: makePostgresLogoSyncRepo(sql),
+            store: makeGcsLogoStore(gcsLogoBucket, process.env.GCS_LOGO_PUBLIC_BASE_URL?.trim()),
+            normalizer: makeSharpLogoNormalizer(),
+            ...(pinataGatewayHost ? { pinataGatewayHost } : {}),
+            ...(pinataGatewayToken ? { pinataGatewayToken } : {}),
+            ...(jupiterTokenApiUrl ? { jupiterTokenApiUrl } : {}),
+        };
+        if (!pinataGatewayHost) {
+            console.warn('[cloudrun-assets] PINATA_GATEWAY_HOST not set — logo-sync skips the Pinata source for IPFS logos');
+        }
+    } else {
+        console.warn('[cloudrun-assets] GCS_LOGO_BUCKET not set — /jobs/logo-sync disabled');
+    }
+    // The depeg job group only needs Birdeye (the peg guard prices from it);
+    // the Webacy jobs share the token-risk key and return webacy_not_configured
+    // via the client's isConfigured() when it is missing.
+    // v2 multichain: one Birdeye client per covered chain (the `x-chain` header
+    // is per instance), sharing the key with the Solana crons.
+    const birdeyeByChain: Partial<Record<ChainKind, BirdeyeClient>> = Object.fromEntries(
+        birdeyeChains().map(chain => [
+            chain,
+            makeBirdeyeClient({
+                apiKey: birdeyeApiKey,
+                chain,
+                ...(process.env.BIRDEYE_ORIGIN ? { origin: process.env.BIRDEYE_ORIGIN } : {}),
+            }),
+        ]),
+    );
+    v2AssetsCronDeps = {
+        repo: makePostgresV2AssetsJobsRepo(sql),
+        birdeyeByChain,
+        now: () => Date.now(),
+    };
+    depegCronDeps = {
+        webacyDepeg: makeWebacyDepegClient({ apiKey: webacyApiKey ?? '' }),
+        repo: makePostgresDepegRepo(sql),
+        curated,
+        now: () => Date.now(),
+        pegGuard: {
+            birdeye,
+            repo: makePostgresPegGuardRepo(sql),
+            // Fiat pegs (EURC, tGBP, ...) are judged against a CoinGecko-implied
+            // rate; the key is the same one the markets refresh uses.
+            fiatRates: makeCoingeckoFiatRatesClient({ apiKey: process.env.COINGECKO_API_KEY?.trim() }),
+        },
+    };
+    if (!webacyApiKey) {
+        console.warn('[cloudrun-assets] WEBACY_API_KEY not set: Webacy depeg jobs disabled (peg guard still runs)');
+    }
+    clickhouseExtrasCronDeps = {
+        clickhouse: makeClickhouseClient({}),
+        repo: makePostgresClickhouseExtrasRepo(sql),
+        curated,
+        now: () => Date.now(),
+        env: () => process.env,
+    };
     seedCronDeps = {
         repo: makePostgresSeedRepo(sql),
         now: () => Date.now(),
@@ -380,13 +452,29 @@ if (adminAllowlist.clerkUserIds.size === 0 && adminAllowlist.emails.size === 0) 
 }
 
 let adminActionsDeps: AdminActionsDeps | undefined;
-if (cronDeps && miscCronDeps && seedCronDeps) {
+// stonk.fun lookups for the admin Launches page; needs only the allowlist,
+// the provider client, and the DB (no Birdeye), so it is always available.
+const launchpadAdminDeps: LaunchpadAdminDeps = {
+    adminAllowlist,
+    stonkfun: makeStonkfunClient(),
+    repo: makePostgresLaunchpadJobsRepo(sql),
+    curated,
+    // "Sync now" can fetch identity for a brand-new coin only when Birdeye is configured.
+    ...(cronDeps ? { identity: { birdeye: cronDeps.birdeye, baseRepo: cronDeps.repo } } : {}),
+    now: () => Date.now(),
+};
+const v2AssetsReadsRepo = makePostgresV2AssetsReadsRepo(sql);
+// v2AssetsCronDeps is built in the same Birdeye block as cronDeps, so the
+// admin actions (which mirror into / write the v2 tables) share its gate.
+if (cronDeps && miscCronDeps && seedCronDeps && v2AssetsCronDeps) {
     adminActionsDeps = {
         adminAllowlist,
         repo: makePostgresAdminActionsRepo(sql),
         seedRepo: seedCronDeps.repo,
         cron: cronDeps,
         misc: miscCronDeps,
+        v2: v2AssetsCronDeps,
+        v2Reads: v2AssetsReadsRepo,
         now: () => Date.now(),
     };
 } else {
@@ -416,6 +504,8 @@ const app = createApp({
     repo: makePostgresAssetsRepo(sql),
     assetsApiRepo: makePostgresAssetsApiRepo(sql),
     deletionTombstonesRepo: makePostgresAssetDeletionTombstonesRepo(sql),
+    assetAdvisoriesRepo: makePostgresAssetAdvisoriesRepo(sql),
+    stablecoinHealthReadsRepo: makePostgresStablecoinHealthReadsRepo(sql),
     sanctumLstsRepo: makePostgresSanctumLstsRepo(sql),
     assetMarketsRepo: makePostgresAssetMarketsRepo(sql),
     variantMarketsRepo: makePostgresVariantMarketsRepo(sql),
@@ -424,6 +514,7 @@ const app = createApp({
     trendingReadsRepo: makePostgresTrendingReadsRepo(sql),
     fillQualityReadsRepo: makePostgresFillQualityReadsRepo(sql),
     depthCurveReadsRepo: makePostgresDepthCurveReadsRepo(sql),
+    assetRiskReadsRepo: makePostgresAssetRiskReadsRepo(sql),
     assetCollectionsReadsRepo: makePostgresAssetCollectionsReadsRepo(sql),
     curatedMembershipSource: curated,
     tokenListsReadsRepo: makePostgresTokenListsReadsRepo(sql),
@@ -432,7 +523,10 @@ const app = createApp({
     stockReadsRepo: makePostgresStockReadsRepo(sql),
     ohlcvReadsRepo: makePostgresOhlcvReadsRepo(sql),
     prestocksReadsRepo: makePostgresPrestocksReadsRepo(sql),
-    authToken,
+    launchpadReadsRepo: makePostgresLaunchpadReadsRepo(sql),
+    v2AssetsReadsRepo,
+    solanaDataReadsRepo: makePostgresSolanaDataReadsRepo(sql),
+    authToken: bearerTokenCandidates(authToken, process.env.TOKENS_CLOUDRUN_AUTH_TOKEN_PREVIOUS),
     serviceRole,
     checkDatabase: async () => {
         await sql`SELECT 1`;
@@ -449,6 +543,12 @@ const app = createApp({
     ...(depthCronDeps ? { depthCronDeps } : {}),
     liveQuoteDeps,
     depthSampleDeps,
+    ...(launchpadCronDeps ? { launchpadCronDeps } : {}),
+    ...(logoSyncCronDeps ? { logoSyncCronDeps } : {}),
+    ...(solanaDataCronDeps ? { solanaDataCronDeps } : {}),
+    launchpadAdminDeps,
+    ...(depegCronDeps ? { depegCronDeps } : {}),
+    ...(v2AssetsCronDeps ? { v2AssetsCronDeps } : {}),
     ...(cacheWarmDeps ? { cacheWarmDeps } : {}),
     ...(adminActionsDeps ? { adminActionsDeps } : {}),
     tokenListsAdminDeps: { adminAllowlist, lists: tokenListsMutationsDeps },

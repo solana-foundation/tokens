@@ -1,5 +1,26 @@
 {
   "title": "API v2",
-  "defaultOpen": false,
-  "pages": ["overview", "---Reference---", "./endpoints"]
+  "description": "Multichain assets and variants",
+  "icon": "Layers",
+  "root": true,
+  "pages": [
+    "index",
+    "quickstart",
+    "authentication",
+    "errors-and-limits",
+    "---Concepts---",
+    "concepts/multichain-assets",
+    "concepts/token-lists",
+    "concepts/risk-aware-search",
+    "concepts/shared-shapes",
+    "---Guides---",
+    "migrating-from-v1",
+    "---Reference---",
+    "endpoints/chains",
+    "endpoints/assets",
+    "endpoints/variants",
+    "endpoints/search",
+    "endpoints/lists",
+    "endpoints/execution"
+  ]
 }

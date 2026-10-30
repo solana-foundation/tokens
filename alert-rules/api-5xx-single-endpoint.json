@@ -2,14 +2,14 @@
   "uid": "tokens-api-5xx-single-endpoint",
   "title": "tokens-api: single endpoint erroring",
   "ruleGroup": "tokens-api-availability",
-  "folderUID": "tokens-xyz",
+  "folderUID": "tokens",
   "noDataState": "OK",
   "execErrState": "OK",
   "for": "10m",
   "data": [
     {
       "refId": "A",
-      "datasourceUid": "grafanacloud-logs",
+      "datasourceUid": "tokens-logs",
       "queryType": "range",
       "relativeTimeRange": {
         "from": 900,
@@ -88,5 +88,15 @@
     "summary": "tokens-api: one endpoint is repeatedly 5xxing",
     "description": "A single endpoint has returned more than 30 5xx responses over the last 15 minutes (label: endpoint). Data-dependent or caller-specific breakage \u2014 investigate, but no page unless it spreads (the 5xx-ratio pager requires 2+ endpoints).",
     "runbook_url": "https://example.com/runbooks/api-5xx-single-endpoint"
+  },
+  "notification_settings": {
+    "receiver": "tokens-slack",
+    "group_by": [
+      "grafana_folder",
+      "alertname"
+    ],
+    "group_wait": "30s",
+    "group_interval": "5m",
+    "repeat_interval": "4h"
   }
 }

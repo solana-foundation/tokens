@@ -1,0 +1,81 @@
+---
+title: News
+description: A filterable feed of market news and @tokens posts, global or per token.
+---
+
+Uses `https://api.tokens.xyz/v1` with an `x-api-key` header and the `assets:read` scope; see [Authentication](/v1/authentication).
+
+## `GET /v1/news/feed`
+
+Market news from CoinGecko merged with posts from `@tokens` on X.
+
+- **Global mode**: pass no token params. The feed is global news, recent `@tokens` posts, or both, depending on `source`.
+- **Token mode**: pass `coin_id`, `mint` or matching terms. The feed is news about that coin plus `@tokens` posts that match the terms.
+
+### Query params
+
+| Param           | Type                         | Default | Notes                                                                                                                                   |
+| --------------- | ---------------------------- | ------- | --------------------------------------------------------------------------------------------------------------------------------------- |
+| `limit`         | integer 1 to 50              | `10`    | Larger values are clamped.                                                                                                              |
+| `source`        | `all`, `news`, `tweets`      | `all`   |                                                                                                                                         |
+| `tweet_reserve` | integer 0 to `limit`         | `3`     | Slots reserved for matching `@tokens` posts when `source=all`. Ignored for single-source feeds.                                         |
+| `coin_id`       | CoinGecko coin id            |         | For example `bitcoin`.                                                                                                                  |
+| `mint`          | Solana mint                  |         | Resolved to a CoinGecko coin id server-side, so it works for mints that are not registered assets. Ignored for coin resolution when `coin_id` is set. |
+| `symbol`, `name`| string                       |         | Terms used to match `@tokens` posts.                                                                                                    |
+| `asset_id`      | string                       |         | An additional matching term.                                                                                                            |
+| `terms`         | comma-separated strings      |         | Additional matching terms.                                                                                                              |
+| `term`          | string, repeatable           |         | Same as `terms`, one per parameter.                                                                                                     |
+
+### Response
+
+```ts
+interface NewsFeedResponse {
+  items: Array<{
+    title: string;
+    url: string;
+    image: string;
+    author: string;
+    posted_at: string;                 // ISO 8601
+    type: 'news';
+    source_name: string;
+    related_coin_ids: string[];
+    feed_source: 'coingecko' | 'x';
+  }>;
+  meta: {
+    mode: 'global' | 'token';
+    source: 'all' | 'news' | 'tweets';
+    coin_id: string | null;
+    coin_id_source: 'param' | 'mint' | null;
+    mint: string | null;
+    terms: string[];
+    limit: number;
+    tweet_reserve: number;
+    counts: { items: number; coingecko_candidates: number; x_candidates: number };
+  };
+}
+```
+
+### Notes
+
+- `mint` must be a base58 Solana mint; any other shape returns `400`. A well-formed mint that CoinGecko does not list falls back to the global feed with `meta.coin_id: null` rather than failing. The mint-to-coin mapping syncs weekly, so a brand-new listing can take up to a week to resolve.
+- `meta.coin_id_source` says where the coin id came from: `param`, `mint`, or `null` when there is none.
+- Unknown or stale `coin_id` values produce no CoinGecko items; with `source=all` matching X items may still be returned.
+- Provider content is best-effort. Upstream failures return an empty or partial feed with `200`.
+- Not cached.
+
+### Examples
+
+```bash
+curl -sS "$API_BASE_URL/v1/news/feed?source=all&limit=25&tweet_reserve=3" \
+  -H "x-api-key: $API_KEY"
+```
+
+```bash
+curl -sS "$API_BASE_URL/v1/news/feed?coin_id=bitcoin&symbol=BTC&name=Bitcoin&source=news&limit=50" \
+  -H "x-api-key: $API_KEY"
+```
+
+```bash
+curl -sS "$API_BASE_URL/v1/news/feed?mint=DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263&limit=50" \
+  -H "x-api-key: $API_KEY"
+```

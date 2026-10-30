@@ -1,0 +1,177 @@
+---
+title: Risk
+description: A quick market-based risk score per mint, the full scoring inputs, and stablecoin health.
+---
+
+All endpoints below use `https://api.tokens.xyz/v1` with an `x-api-key` header; see [Authentication](/v1/authentication). The mint must be a variant of a registered asset; otherwise the response is `404` with `details.code: "asset_not_registered"` and nothing is scored.
+
+## Shapes
+
+```ts
+interface MarketScore {
+  score: number;                     // 0-100
+  grade: 'A' | 'B' | 'C';            // A at 85 and above, B at 70 and above, else C
+  label: string;                     // 'Established' | 'Speculative' | 'Trusted Launch' | 'Weak Metrics' | 'Insufficient Data'
+  tone: 'risk' | 'warning' | 'safe' | 'info';
+  isTrustedLaunch: boolean;
+  caps: string[];                    // factors that capped the score, e.g. "Low Market Cap (<$100K)"
+  borderlineSignals: string[];
+  hasInsufficientData: boolean;      // true when the token could not be scored
+  insufficientDataReason: string | null;
+  components: Record<
+    'liquidityHealth' | 'holderDistribution' | 'tradingActivity' | 'holderCount',
+    { score: number; status: 'risk' | 'warning' | 'safe' | 'info'; hasData: boolean }
+  >;
+  tokenAgeDays: number | null;
+}
+
+interface MarketScoreInput {
+  tokenAddress: string;
+  liquidityUsd: number | null;
+  marketCapUsd: number | null;
+  volume24hUsd: number | null;
+  volume7dUsd: number | null;        // estimated from 24h volume
+  holderCount: number | null;
+  top10HoldersPercent: number | null;
+  tokenMintTime: string | null;
+  curatedListSlugs?: string[];
+}
+```
+
+**Check `hasInsufficientData` before reading the grade.** When it is `true` the token is unscored: `score`, `grade` and `tone` are placeholders (`0`, `"C"`, `"risk"`), not an assessment, and an unscored token is never reported with a passing grade. Native SOL always scores `100` / `A`.
+
+The score is computed from the mint's cached market snapshot. A registered mint without one is scored from a live market read, which is best-effort: when the provider is unavailable or the key's live-read budget for the current 10-minute window is spent, the response is still `200` with `hasInsufficientData: true`.
+
+## `GET /v1/assets/risk-summary`
+
+The quick score for a mint. Accepts either the `assets:read` or the `assets:risk:read` scope.
+
+### Query params
+
+| Param               | Type        | Notes                       |
+| ------------------- | ----------- | --------------------------- |
+| `mint` or `address` | Solana mint | Required.                   |
+
+### Response
+
+```ts
+interface RiskSummaryByMintResponse {
+  score: number;
+  grade: 'A' | 'B' | 'C';
+  label: string;
+  tone: 'risk' | 'warning' | 'safe' | 'info';
+  isTrustedLaunch: boolean;
+  caps: string[];
+  hasInsufficientData: boolean;
+  insufficientDataReason: string | null;
+}
+```
+
+```json
+{
+  "score": 88,
+  "grade": "A",
+  "label": "Established",
+  "tone": "safe",
+  "isTrustedLaunch": false,
+  "caps": [],
+  "hasInsufficientData": false,
+  "insufficientDataReason": null
+}
+```
+
+### Notes
+
+- Cached for 30 seconds.
+
+### Example
+
+```bash
+curl -sS "$API_BASE_URL/v1/assets/risk-summary?mint=$MINT" \
+  -H "x-api-key: $API_KEY"
+```
+
+## `GET /v1/assets/{assetId}/risk-summary`
+
+The score for one variant of an asset, with stablecoin health. `{assetId}` accepts an id, alias, mint or `solana-<mint>`.
+
+### Query params
+
+| Param  | Type        | Default             | Notes                                                                 |
+| ------ | ----------- | ------------------- | --------------------------------------------------------------------- |
+| `mint` | Solana mint | the primary variant | When the path itself is a mint reference, that mint is the default.   |
+
+### Response
+
+```ts
+interface AssetRiskSummaryResponse {
+  assetId: string;
+  mint: string;
+  risk:
+    | {
+        ok: true;
+        marketScore: MarketScore;
+        pegHealth: PegHealth | null;                 // stablecoins only
+        structuralHealth: { provider: 'webacy'; grade: StructuralGrade; updatedAt: number; stale: boolean } | null;
+        lastUpdatedAt: number | null;                // unix ms
+      }
+    | { ok: false; reason: 'not_found'; message: string };
+}
+```
+
+`PegHealth` and `StructuralGrade` are on [Stablecoin health](/v1/concepts/stablecoin-health#shapes).
+
+### Notes
+
+- `ok: false` is returned only when the mint has neither a cached snapshot nor a live market.
+- Not cached.
+
+### Example
+
+```bash
+curl -sS "$API_BASE_URL/v1/assets/usd/risk-summary?mint=EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v" \
+  -H "x-api-key: $API_KEY"
+```
+
+## `GET /v1/assets/{assetId}/risk-details`
+
+The same score with every input, for transparency and debugging.
+
+### Query params
+
+Same as `/risk-summary`.
+
+### Response
+
+```ts
+interface AssetRiskDetailsResponse {
+  assetId: string;
+  mint: string;
+  risk:
+    | {
+        ok: true;
+        marketScore: MarketScore;
+        marketScoreInput: MarketScoreInput;
+        tags: string[];                              // currently always []
+        advisory: VariantAdvisory | null;
+        pegHealth: PegHealth | null;                 // stablecoins only
+        structuralHealth: StructuralHealth | null;   // stablecoins only, full block
+        lastUpdatedAt: number | null;                // unix ms
+      }
+    | { ok: false; reason: 'not_found'; message: string };
+}
+```
+
+`VariantAdvisory` is on [Advisories](/v1/concepts/advisories#shapes); `StructuralHealth` is on [Stablecoin health](/v1/concepts/stablecoin-health#shapes).
+
+### Notes
+
+- Pair `advisory` with `pegHealth`: a `warning` or `critical` peg tier normally arrives with a `caution` advisory from the matching monitor.
+- Not cached.
+
+### Example
+
+```bash
+curl -sS "$API_BASE_URL/v1/assets/usd/risk-details" \
+  -H "x-api-key: $API_KEY"
+```

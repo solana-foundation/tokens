@@ -163,7 +163,17 @@ const POPULAR_LOGO_BY_MINT: Record<string, string> = {
     CtzPWv73Sn1dMGVU3ZtLv9yWSyUAanBni19YWDaznnkn: '/logos/popular/okxbtc.png',
 };
 
-const PRESTOCK_LOGO_SLUGS = new Set(['anduril', 'anthropic', 'kalshi', 'openai', 'polymarket', 'spacex', 'xai']);
+const PRESTOCK_LOGO_SLUGS = new Set([
+    'anduril',
+    'anthropic',
+    'figureai',
+    'kalshi',
+    'neuralink',
+    'openai',
+    'polymarket',
+    'oura',
+    'spacex',
+]);
 
 function toAlnumLower(value: string): string {
     return value.toLowerCase().replace(/[^a-z0-9]/g, '');

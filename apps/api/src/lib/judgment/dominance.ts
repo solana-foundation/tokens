@@ -20,6 +20,7 @@
  * always wins where it has coverage.
  */
 
+import { bandFor } from './bands';
 import { normalizeClaim } from './claims';
 import type { ProtectedSymbolEntry, ProtectedSymbolIndex } from './protected-symbols';
 import type { EnrichedCandidate } from './types';
@@ -50,7 +51,10 @@ export interface DominanceResult {
 
 function isEligibleLeader(candidate: EnrichedCandidate): boolean {
     if (candidate.tombstoned) return false;
-    return (candidate.liquidityUsd ?? 0) >= DOMINANCE_MIN_LEADER_LIQUIDITY_USD;
+    // The default band's bar is DOMINANCE_MIN_LEADER_LIQUIDITY_USD; registry
+    // assets lead their symbol on their own band's standing bar.
+    const bar = Math.min(DOMINANCE_MIN_LEADER_LIQUIDITY_USD, bandFor(candidate).standingLiquidityUsd);
+    return (candidate.liquidityUsd ?? 0) >= bar;
 }
 
 /**
@@ -80,9 +84,7 @@ export function withDynamicDominance(
         // one mint in this result set.
         if (group.length < 2) continue;
 
-        const sorted = [...group].sort(
-            (a, b) => (b.liquidityUsd ?? 0) - (a.liquidityUsd ?? 0),
-        );
+        const sorted = [...group].sort((a, b) => (b.liquidityUsd ?? 0) - (a.liquidityUsd ?? 0));
         const leader = sorted[0]!;
         const runnerUp = sorted[1]!;
         if (!isEligibleLeader(leader)) continue;

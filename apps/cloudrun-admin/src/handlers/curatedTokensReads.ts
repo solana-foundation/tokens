@@ -14,8 +14,33 @@
  * `x-tokens-identity` caller (defense in depth on top of the Next.js proxy).
  */
 
-import { classifyLiquidityTier, getCanonicalFallbackLogoPath } from '@tokens/asset-registry';
-import type { AssetCategory, LiquidityTier, StockVariantTier, VariantKind } from '@tokens/asset-registry';
+import {
+    classifyLiquidityTier,
+    getAsset as getRegistryAsset,
+    getCanonicalFallbackLogoPath,
+    toAssetIndustryOrNull,
+    toAssetRegionOrNull,
+} from '@tokens/asset-registry';
+import type {
+    AssetCategory,
+    AssetIndustry,
+    AssetRegion,
+    LiquidityTier,
+    PegProvider,
+    PegReferenceKind,
+    PegTier,
+    StockVariantTier,
+    StructuralGrade,
+    VariantAdvisory,
+    VariantKind,
+} from '@tokens/asset-registry';
+import {
+    CHAIN_KINDS,
+    explorerTokenUrl,
+    isChainKind,
+    normalizeAddressForChain,
+    type ChainKind,
+} from '@tokens/asset-registry/chains';
 
 import {
     CURATED_CATEGORY_SLUGS,
@@ -24,6 +49,7 @@ import {
     looksLikeSolanaMintAddress,
     optionalBoolean,
     optionalNumber,
+    optionalString,
     requireString,
     requireStringArray,
     resolveCanonicalLogoState,
@@ -32,6 +58,7 @@ import {
     type LogoSource,
     type StoredTrustTier,
 } from './shared';
+import { InvalidArgsError } from './errors';
 import { requireAdmin, type AdminAllowlist } from '../adminAuth';
 import type { CallerIdentity } from '../server';
 
@@ -48,6 +75,9 @@ export interface AssetRow {
     description: string | null;
     imageUrl: string | null;
     isActive: boolean;
+    /** Admin-curated segmentation tags (migration 0032); raw column text. */
+    region: string | null;
+    industry: string | null;
 }
 
 export interface VariantMarketRow {
@@ -58,9 +88,57 @@ export interface VariantMarketRow {
     lastFetchedAt: number | null;
 }
 
+/**
+ * Latest peg observation for a stablecoin mint: Webacy (`webacy_depeg_latest`)
+ * while it covers the mint, else the in-house peg guard (`peg_guard_latest`).
+ */
+export interface VariantPegHealthRow {
+    /** `webacy` or `tokens` (in-house peg guard). Optional for builds that predate 0020. */
+    provider?: PegProvider;
+    /** ISO 4217 code of the peg when the observer knows it; optional for builds that predate peg guard phase 2. */
+    pegCurrency?: string | null;
+    /**
+     * What the tier was judged against: a fixed 1.00, a CoinGecko-implied fiat
+     * rate (`fx`) or the token's own high-water price (`high_water`). Webacy
+     * rows are always `fixed`; null for peg guard rows written before phase 2.
+     * Optional for builds that predate peg guard phase 2 (treat as `fixed`).
+     */
+    referenceKind?: PegReferenceKind | null;
+    tier: PegTier;
+    /** Signed percent from peg; negative = below peg. */
+    deviationPct: number | null;
+    /** False when the observer's last fetch failed; `tier` is then the last good value. */
+    ok: boolean;
+    errorMessage: string | null;
+    /** Unix ms of the last fetch attempt. */
+    updatedAt: number;
+}
+
+/** Latest Webacy structural-health grade for a stablecoin mint (webacy_structural_health_latest). */
+export interface VariantStructuralHealthRow {
+    grade: StructuralGrade;
+    /** Unix ms of the last fetch attempt. */
+    updatedAt: number;
+}
+
+/**
+ * Who wrote a variant row. `v1` = Solana `asset_variants` (the v1 tables,
+ * mirrored into v2); the rest are `v2_asset_variants.origin` values for
+ * non-Solana rows: derived from CoinGecko platforms, the registry's native
+ * coin config, or written/adopted by the admin app.
+ */
+export type VariantOrigin = 'v1' | 'coingecko' | 'config' | 'admin';
+export const VARIANT_ORIGINS: readonly VariantOrigin[] = ['v1', 'coingecko', 'config', 'admin'];
+
 export interface VariantWithMarketRow {
     assetId: string;
+    chain: ChainKind;
+    /** Normalized address (base58 mint on Solana, lowercase 0x on EVM); same as `mint`. */
+    address: string;
+    /** = `address`; kept for every caller that still keys variants by mint. */
     mint: string;
+    origin: VariantOrigin;
+    decimals: number | null;
     variantId: string;
     kind: VariantKind;
     trustTier: StoredTrustTier;
@@ -71,6 +149,12 @@ export interface VariantWithMarketRow {
     stockVariantTier: StockVariantTier | null;
     isActive: boolean;
     market: VariantMarketRow | null;
+    /** Active admin advisory on this mint (asset_variant_advisories), or null. */
+    advisory: VariantAdvisory | null;
+    /** Live depeg tier for stablecoin mints, or null when unmonitored. */
+    pegHealth: VariantPegHealthRow | null;
+    /** Webacy structural grade for stablecoin mints, or null when unmonitored. */
+    structuralHealth: VariantStructuralHealthRow | null;
 }
 
 export interface SearchAssetRow {
@@ -91,13 +175,24 @@ export interface AdminReadsRepo {
     listCustomAliases(): Promise<Array<{ assetId: string; alias: string }>>;
     /** Custom-kind aliases for one asset (creation order). */
     listCustomAliasesByAssetId(assetId: string): Promise<string[]>;
+    /**
+     * Normalized `assetId`-kind aliases for one asset: its own id plus any
+     * former ids left behind by a rename.
+     */
+    listAssetIdAliasesByAssetId(assetId: string): Promise<string[]>;
     /** Collection memberships for the given slugs as {slug, assetId}. */
     listCollectionMembers(
         slugs: readonly CuratedCategorySlug[],
     ): Promise<Array<{ slug: CuratedCategorySlug; assetId: string }>>;
     getAssetByAssetId(assetId: string): Promise<AssetRow | null>;
-    /** Variant looked up by mint, with its market join. */
+    /** Solana variant looked up by mint, with its market join. */
     getVariantByMint(mint: string): Promise<VariantWithMarketRow | null>;
+    /**
+     * Variant on any chain. Solana → `getVariantByMint`; other chains read
+     * v2 by (chain, address) and, when given, the owning asset (one address
+     * may back several assets there).
+     */
+    getVariantByRef(ref: { chain: ChainKind; address: string; assetId?: string }): Promise<VariantWithMarketRow | null>;
     getMarketByMint(mint: string): Promise<VariantMarketRow | null>;
     /**
      * ILIKE search over (asset_id || name || symbol || coingecko_id) within the
@@ -117,7 +212,13 @@ export interface AdminReadsDeps {
 
 export interface AdminVariantRow {
     assetId: string;
+    chain: ChainKind;
+    address: string;
+    /** = `address`; legacy key. */
     mint: string;
+    origin: VariantOrigin;
+    explorerUrl: string;
+    decimals?: number;
     variantId: string;
     kind: VariantKind;
     liquidityTier: LiquidityTier;
@@ -133,11 +234,22 @@ export interface AdminVariantRow {
     logoURI?: string;
     isActive: boolean;
     lastFetchedAt?: number;
+    /** Active admin advisory on this mint, or null. Always present (not omitted). */
+    advisory: VariantAdvisory | null;
+    /** Webacy depeg status, or null. Always present, like `advisory`. */
+    pegHealth: VariantPegHealthRow | null;
+    /** Webacy structural grade, or null. Always present, like `advisory`. */
+    structuralHealth: VariantStructuralHealthRow | null;
 }
 
 interface RankedVariantRow {
     row: AdminVariantRow;
     liquidity: number;
+}
+
+function chainRank(chain: ChainKind): number {
+    const index = CHAIN_KINDS.indexOf(chain);
+    return index === -1 ? CHAIN_KINDS.length : index;
 }
 
 /** Port of Convex `listVariantRowsForAssetId` row-building + sort. */
@@ -149,7 +261,12 @@ export function buildVariantEditorRows(variants: readonly VariantWithMarketRow[]
         const liquidityTier = classifyLiquidityTier(liquidity);
         const row: AdminVariantRow = {
             assetId: variant.assetId,
+            chain: variant.chain,
+            address: variant.address,
             mint: variant.mint,
+            origin: variant.origin,
+            explorerUrl: explorerTokenUrl(variant.chain, variant.address),
+            ...(isFiniteNumber(variant.decimals) ? { decimals: variant.decimals } : {}),
             variantId: variant.variantId,
             kind: variant.kind,
             liquidityTier,
@@ -165,12 +282,18 @@ export function buildVariantEditorRows(variants: readonly VariantWithMarketRow[]
             ...(market?.logoURI ? { logoURI: market.logoURI } : {}),
             isActive: variant.isActive,
             ...(lastFetchedAt ? { lastFetchedAt } : {}),
+            advisory: variant.advisory ?? null,
+            pegHealth: variant.pegHealth ?? null,
+            structuralHealth: variant.structuralHealth ?? null,
         };
         return { row, liquidity };
     });
 
     ranked.sort((a, b) => {
         if (a.row.isActive !== b.row.isActive) return a.row.isActive ? -1 : 1;
+        // Solana (v1) rows first, then the other chains in canonical order.
+        const chainDelta = chainRank(a.row.chain) - chainRank(b.row.chain);
+        if (chainDelta !== 0) return chainDelta;
         if (a.liquidity !== b.liquidity) return b.liquidity - a.liquidity;
         const symbolA = (a.row.symbol ?? a.row.label ?? a.row.variantId).toLowerCase();
         const symbolB = (b.row.symbol ?? b.row.label ?? b.row.variantId).toLowerCase();
@@ -209,6 +332,10 @@ function sortVariantsForAsset(variants: VariantWithMarketRow[]): VariantWithMark
         }))
         .sort((a, b) => {
             if (a.variant.isActive !== b.variant.isActive) return a.variant.isActive ? -1 : 1;
+            // Keep `representativeMint` (and the logo it drives) a Solana mint
+            // whenever the asset has one; EVM rows only lead for EVM-only assets.
+            const chainDelta = chainRank(a.variant.chain) - chainRank(b.variant.chain);
+            if (chainDelta !== 0) return chainDelta;
             if (a.liquidity !== b.liquidity) return b.liquidity - a.liquidity;
             return a.variant.mint.localeCompare(b.variant.mint);
         })
@@ -345,6 +472,15 @@ export interface CanonicalEditorResult {
         fallbackImageUrl?: string;
         fallbackLogoSource: LogoSource;
         isActive: boolean;
+        /** Admin-curated segmentation tags; unknown stored values read as null. */
+        region: AssetRegion | null;
+        industry: AssetIndustry | null;
+        /**
+         * Set when the asset is defined in the static registry, under this id
+         * (its current id, or a former one if it was renamed). Renaming such
+         * an asset needs a follow-up registry data change.
+         */
+        registryAssetId?: string;
     };
     aliases: string[];
     collections: CuratedCategorySlug[];
@@ -363,11 +499,13 @@ export async function getCanonicalEditor(
     const asset = await deps.repo.getAssetByAssetId(assetId);
     if (!asset) return null;
 
-    const [aliases, members, variantRows] = await Promise.all([
+    const [aliases, members, variantRows, assetIdAliases] = await Promise.all([
         deps.repo.listCustomAliasesByAssetId(assetId),
         deps.repo.listCollectionMembers(CURATED_CATEGORY_SLUGS),
         deps.repo.listVariantsWithMarketsByAssetIds([assetId]),
+        deps.repo.listAssetIdAliasesByAssetId(assetId),
     ]);
+    const registryAssetId = [asset.assetId, ...assetIdAliases].find(id => getRegistryAsset(id) !== null);
     const collections = CURATED_CATEGORY_SLUGS.filter(slug =>
         members.some(member => member.slug === slug && member.assetId === assetId),
     );
@@ -397,6 +535,9 @@ export async function getCanonicalEditor(
             ...(fallbackImageUrl ? { fallbackImageUrl } : {}),
             fallbackLogoSource,
             isActive: asset.isActive,
+            region: toAssetRegionOrNull(asset.region),
+            industry: toAssetIndustryOrNull(asset.industry),
+            ...(registryAssetId ? { registryAssetId } : {}),
         },
         aliases,
         collections,
@@ -410,7 +551,11 @@ export async function getCanonicalEditor(
 export interface VariantEditorResult {
     variant: {
         assetId: string;
+        chain: ChainKind;
+        address: string;
         mint: string;
+        origin: VariantOrigin;
+        decimals: number | null;
         variantId: string;
         kind: VariantKind;
         trustTier: StoredTrustTier;
@@ -420,6 +565,9 @@ export interface VariantEditorResult {
         issuerUrl?: string;
         stockVariantTier?: StockVariantTier;
         isActive: boolean;
+        advisory: VariantAdvisory | null;
+        pegHealth: VariantPegHealthRow | null;
+        structuralHealth: VariantStructuralHealthRow | null;
     };
     canonical: {
         assetId: string;
@@ -440,10 +588,20 @@ export async function getVariantEditor(
 ): Promise<VariantEditorResult | null> {
     requireAdmin(deps.adminAllowlist, identity);
     const obj = asArgsObject(args);
-    const mint = requireString(obj, 'mint').trim();
-    if (!mint) return null;
+    // Legacy `{ mint }` or `{ chain, address, assetId }`. Lenient like the
+    // Convex query: a blank or malformed ref reads as "no such variant".
+    const rawChain = optionalString(obj, 'chain');
+    if (rawChain !== undefined && !isChainKind(rawChain)) {
+        throw new InvalidArgsError(`chain must be one of: ${CHAIN_KINDS.join(', ')}`);
+    }
+    const chain: ChainKind = rawChain ?? 'solana';
+    const rawAddress = (optionalString(obj, 'address') ?? optionalString(obj, 'mint') ?? '').trim();
+    if (!rawAddress) return null;
+    const address = chain === 'solana' ? rawAddress : normalizeAddressForChain(chain, rawAddress);
+    if (!address) return null;
+    const assetId = optionalString(obj, 'assetId')?.trim() || undefined;
 
-    const variant = await deps.repo.getVariantByMint(mint);
+    const variant = await deps.repo.getVariantByRef({ chain, address, ...(assetId ? { assetId } : {}) });
     if (!variant) return null;
     const asset = await deps.repo.getAssetByAssetId(variant.assetId);
     if (!asset) return null;
@@ -452,7 +610,11 @@ export async function getVariantEditor(
     return {
         variant: {
             assetId: variant.assetId,
+            chain: variant.chain,
+            address: variant.address,
             mint: variant.mint,
+            origin: variant.origin,
+            decimals: variant.decimals,
             variantId: variant.variantId,
             kind: variant.kind,
             trustTier: variant.trustTier,
@@ -462,6 +624,9 @@ export async function getVariantEditor(
             ...(variant.issuerUrl ? { issuerUrl: variant.issuerUrl } : {}),
             ...(variant.stockVariantTier ? { stockVariantTier: variant.stockVariantTier } : {}),
             isActive: variant.isActive,
+            advisory: variant.advisory ?? null,
+            pegHealth: variant.pegHealth ?? null,
+            structuralHealth: variant.structuralHealth ?? null,
         },
         canonical: {
             assetId: asset.assetId,

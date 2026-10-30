@@ -4,6 +4,9 @@ import { route, type PlatformAuthContext } from '@/effect/next-route';
 import { BadRequestError, ForbiddenError, NotFoundError } from '@tokens/effect';
 import { decodeLimit, decodeOffset } from '@tokens/effect';
 import { tapErrorAndDefault } from '@tokens/effect';
+import { annotateAssetAdvisories, loadAdvisoriesOrEmpty, summarizeAssetAdvisories } from '@/lib/advisories';
+import { seedSpeculativeMemo } from '@/lib/cloudrun/speculative-batch';
+import { loadStablecoinHealthOrEmpty } from '@/lib/stablecoin-health';
 import { getByAssetId as cloudRunGetByAssetId } from '@/lib/cloudrun/assets';
 import {
     assetMarketsGetLatestByAssetId,
@@ -11,7 +14,6 @@ import {
     coingeckoGetCoinById,
     coingeckoGetPriceLatestByCoinId,
     sanctumListActive,
-    tokensGetByAddress,
     variantFillQualityGetLatestByMints,
     stockInstrumentsGetByAssetId,
     stockPricesGetLatestByAssetId,
@@ -26,22 +28,23 @@ import { type TimeInterval } from '@/lib/birdeye';
 import { validateOhlcvRange } from '@/lib/ohlcv-bounds';
 
 import type { CanonicalAsset } from '@tokens/asset-registry';
-import { PRE_STOCKS, resolveAlias as resolveRegistryAlias } from '@tokens/asset-registry';
+import { resolveAlias as resolveRegistryAlias } from '@tokens/asset-registry';
 import { prestocksGetLatestByMints } from '@/lib/cloudrun/prestocksReads';
 import {
     resolveAssetImageUrl,
     aggregateTokenStats,
+    assessTokenMarkets,
+    hasExcludedMarkets,
     buildCuratedMintRank,
     listSymbols,
+    matchRegistryAssetForDbAsset,
     mergeAssetStatsWithAggregates,
-    optionalSymbol,
     optionalText,
     parsePrimaryVariantStrategy,
     pickPrimaryVariant,
     selectCanonicalAssetStats,
     executionQualitySnapshotFromConvexFillQuality,
     computeCompanyMarketCapUsd,
-    computePreStocksDerived,
     isCanonicalPublicEquityAsset,
     isStockPricedCategory,
     type TokenMarketSnapshot,
@@ -49,6 +52,7 @@ import {
 } from '../_asset-helpers';
 import { resolveAssetRefContext } from '../_resolve-asset-ref';
 import { singletonAssetIdToMint } from '../_singleton-asset-id';
+import { loadSingletonIdentity } from '../_singleton-identity';
 import { canonicalizeAsset, canonicalizeAssetVariants } from '../_canonical-overrides';
 import { normalizeCoinGeckoCoinIdForAsset } from '../_coingecko-id';
 import { resolveCoinGeckoCoinIdForAsset } from '../_resolve-coingecko-coin-id';
@@ -63,7 +67,12 @@ import {
 } from '../_asset-detail-includes';
 import { scheduleCacheWarm, scheduleCoinPriceWarm, scheduleStockPriceWarm } from '../_asset-detail-warm';
 import { loadVariantMarkets } from '../_load-variant-markets';
-import { buildAssetDetailResponse, type PreStocksMintSnapshot } from '../_asset-detail-response';
+import { buildAssetDetailResponse } from '../_asset-detail-response';
+import {
+    buildPreStocksCanonicalMarket,
+    freshPreStocksByMint,
+    selectPreStocksMints,
+} from '../_prestocks-canonical';
 import { DEFAULT_MARKETS_STALE_MS, EQUITY_MARKETS_STALE_MS } from '../_market-cache';
 
 function parseIncludes(raw: string | null): { includes: Set<AssetInclude>; invalid: string[] } {
@@ -121,6 +130,9 @@ export const GET = route(
             const mintRank = buildCuratedMintRank();
 
             const { assetId: assetRef } = yield* Effect.tryPromise(() => ctx.params);
+            // One round-trip pre-answers the chain of lookups below (see
+            // `speculative-batch.ts`); every call still runs exactly as written.
+            yield* seedSpeculativeMemo({ profile: 'detail', ref: assetRef });
             const resolutionContext = yield* resolveAssetRefContext(assetRef);
             const assetId = resolutionContext.assetId;
             const tokenByMint = new Map<string, TokenMarketSnapshot>();
@@ -130,20 +142,16 @@ export const GET = route(
 
             const assetDoc = yield* cloudRunGetByAssetId({ assetId });
             if (!assetDoc) {
+                // Reached only for registered per-mint assets (approved launch coins, admin `solana-<mint>` ids);
+                // unregistered mints are rejected upstream in _resolve-asset-ref.ts.
                 const singletonMint = singletonAssetIdToMint(assetId);
                 const registryAsset = singletonMint ? null : resolveRegistryAlias(assetId);
                 const resolvedAsset: CanonicalAsset | null = singletonMint
-                    ? yield* tokensGetByAddress({ address: singletonMint })
+                    ? yield* loadSingletonIdentity(singletonMint)
                           .pipe(
-                              tapErrorAndDefault('assets.detail.singletonToken', null, {
-                                  assetId,
-                                  mint: singletonMint,
-                              }),
-                          )
-                          .pipe(
-                              Effect.map(token => {
-                                  const symbol = optionalSymbol(token?.symbol);
-                                  const name = optionalText(token?.name);
+                              Effect.map(identity => {
+                                  const symbol = identity?.symbol ?? null;
+                                  const name = identity?.name ?? null;
                                   return {
                                       assetId,
                                       ...(name ? { name } : {}),
@@ -182,33 +190,32 @@ export const GET = route(
             } else {
                 const coingeckoId = (assetDoc.coingeckoId ?? '').trim() || null;
 
-                const registryAsset =
-                    resolveRegistryAlias(assetDoc.assetId) ?? (coingeckoId ? resolveRegistryAlias(coingeckoId) : null);
+                const variantsRows = yield* assetVariantsListByAssetIds({ assetIds: [assetDoc.assetId] });
+                const variants = variantsRows[0]?.variants ?? [];
+
+                // Only let the registry speak for this asset when it is demonstrably the same asset; an
+                // alias collision must not rename a DB-authored asset (e.g. `ondo` -> a WisdomTree fund).
+                const registryAsset = matchRegistryAssetForDbAsset({
+                    registryAsset:
+                        resolveRegistryAlias(assetDoc.assetId) ??
+                        (coingeckoId ? resolveRegistryAlias(coingeckoId) : null),
+                    assetId: assetDoc.assetId,
+                    coingeckoId,
+                    mints: variants.map(variant => variant.mint),
+                });
                 const registryName = (registryAsset?.name ?? '').trim() || null;
                 const registrySymbol = (registryAsset?.symbol ?? '').trim() || null;
-                const registryVariants =
-                    registryAsset &&
-                    (registryAsset.assetId === assetDoc.assetId ||
-                        (coingeckoId && registryAsset.coingeckoId === coingeckoId))
-                        ? registryAsset.variants
-                        : null;
+                const registryVariants = registryAsset?.variants ?? null;
 
-                // Variants and the CoinGecko coin doc are independent — fetch concurrently.
-                const [variantsRows, coinDoc] = yield* Effect.all(
-                    [
-                        assetVariantsListByAssetIds({ assetIds: [assetDoc.assetId] }),
-                        coingeckoId && (!registryName || !registrySymbol)
-                            ? coingeckoGetCoinById({ id: coingeckoId }).pipe(
-                                  tapErrorAndDefault('assets.detail.coingeckoCoin', null, {
-                                      assetId,
-                                      coinId: coingeckoId,
-                                  }),
-                              )
-                            : Effect.succeed(null),
-                    ],
-                    { concurrency: 'unbounded' },
-                );
-                const variants = variantsRows[0]?.variants ?? [];
+                const coinDoc =
+                    coingeckoId && (!registryName || !registrySymbol)
+                        ? yield* coingeckoGetCoinById({ id: coingeckoId }).pipe(
+                              tapErrorAndDefault('assets.detail.coingeckoCoin', null, {
+                                  assetId,
+                                  coinId: coingeckoId,
+                              }),
+                          )
+                        : null;
 
                 const coinName = (coinDoc?.name ?? '').trim() || null;
                 const coinSymbol = (coinDoc?.symbol ?? '').trim() ? coinDoc!.symbol.trim().toUpperCase() : null;
@@ -291,6 +298,8 @@ export const GET = route(
                     aliases: assetDoc.aliases,
                     ...(coingeckoId ? { coingeckoId } : {}),
                     variants: assetVariants,
+                    region: assetDoc.region ?? null,
+                    industry: assetDoc.industry ?? null,
                 };
                 asset = loadedAsset;
 
@@ -322,10 +331,7 @@ export const GET = route(
                     ? 'stock_redeemability'
                     : parsePrimaryVariantStrategy(requestedPrimaryVariantStrategy);
 
-            const preStocksMintSet = new Set(PRE_STOCKS.map(listing => listing.mint));
-            const assetPreStocksMints = canonicalAsset.variants
-                .map(variant => variant.mint)
-                .filter(mint => preStocksMintSet.has(mint));
+            const assetPreStocksMints = selectPreStocksMints(canonicalAsset.variants.map(variant => variant.mint));
 
             // These lookups only depend on the canonical asset — run them concurrently
             // instead of as sequential Convex round-trips.
@@ -380,22 +386,7 @@ export const GET = route(
                     { concurrency: 'unbounded' },
                 );
 
-            // PreStocks reference marks have no provider timestamp — treat a feed
-            // that hasn't refreshed in 24h as dead rather than displaying it forever.
-            const PRESTOCKS_MAX_AGE_MS = 24 * 60 * 60_000;
-            const preStocksByMint = new Map<string, PreStocksMintSnapshot>();
-            for (const entry of preStocksEntries) {
-                const snapshot = entry.snapshot;
-                if (!snapshot) continue;
-                if (Date.now() - snapshot.lastFetchedAt > PRESTOCKS_MAX_AGE_MS) continue;
-                preStocksByMint.set(entry.mint, {
-                    symbol: snapshot.symbol,
-                    markPriceUsd: snapshot.markPriceUsd,
-                    markValuationUsd: snapshot.markValuationUsd,
-                    tokenPriceUsd: snapshot.tokenPriceUsd,
-                    lastFetchedAt: snapshot.lastFetchedAt,
-                });
-            }
+            const preStocksByMint = freshPreStocksByMint(preStocksEntries);
 
             if (resolvedCoinId && asset.coingeckoId !== resolvedCoinId) {
                 asset = { ...asset, coingeckoId: resolvedCoinId };
@@ -407,13 +398,27 @@ export const GET = route(
                 if (snapshot) fillQualityByMint.set(row.mint, snapshot);
             }
 
+            // Annotate here so the DB, singleton, and registry-fallback branches
+            // above are all covered before primary selection. Flagged variants
+            // stay in the payload (never a 404) — they just carry `advisory` and
+            // lose primary to an unflagged sibling.
+            asset = annotateAssetAdvisories(asset, yield* loadAdvisoriesOrEmpty());
+            const advisories = summarizeAssetAdvisories(asset);
+
+            // Webacy depeg / structural health is a stablecoin-only surface this
+            // round (category, never `variant.kind`). Fail-open: an outage yields
+            // an empty map and `pegHealth: null` on every variant.
+            const stablecoinHealthByMint =
+                asset.category === 'stablecoin'
+                    ? yield* loadStablecoinHealthOrEmpty(asset.variants.map(v => v.mint))
+                    : undefined;
+
             const primaryVariant = pickPrimaryVariant(asset, mintRank, tokenByMint, fillQualityByMint, {
                 strategy: primaryVariantStrategy,
             });
             const token = primaryVariant ? tokenByMint.get(primaryVariant.mint) : undefined;
             const marketMeta = primaryVariant ? marketMetaByMint.get(primaryVariant.mint) : undefined;
             const symbols = listSymbols(asset, tokenByMint);
-            const stats = mergeAssetStatsWithAggregates(aggregateTokenStats(asset, tokenByMint, token), aggregates);
             const imageUrl = resolveAssetImageUrl(request, {
                 assetId: asset.assetId,
                 symbol: asset.symbol ?? assetDoc?.symbol ?? null,
@@ -424,12 +429,58 @@ export const GET = route(
             const stockSnapshot = stockInstrument
                 ? yield* stockPricesGetLatestByAssetId({ assetId: asset.assetId }).pipe(tapErrorAndDefault('assets.detail.stockPrice', null, { assetId: asset.assetId }))
                 : null;
-            const shouldUseStockCanonicalMarket = Boolean(stockInstrument) || isCanonicalPublicEquityAsset(asset);
+            const preStocksCanonicalMarket = buildPreStocksCanonicalMarket({
+                variantMints: asset.variants.map(variant => variant.mint),
+                preStocksByMint,
+                onChainPriceUsd: mint => tokenByMint.get(mint)?.price,
+            });
+            // Admin-created PreStocks assets (e.g. `figure-ai`) carry no pre-IPO
+            // marker in their id or aliases, so a fresh PreStocks reference is
+            // what keeps them off the public-equity stock benchmark.
+            const shouldUseStockCanonicalMarket =
+                Boolean(stockInstrument) || (isCanonicalPublicEquityAsset(asset) && !preStocksCanonicalMarket);
             if (stockInstrument) {
                 const lastFetchedAt = stockSnapshot?.lastFetchedAt ?? null;
                 const isStale = lastFetchedAt === null || Date.now() - lastFetchedAt > 10 * 60_000;
                 if (isStale) yield* scheduleStockPriceWarm({ assetId: asset.assetId });
             }
+
+            let coinSnapshot: {
+                priceUsd?: number | null;
+                marketCapUsd?: number | null;
+                volume24hUsd?: number | null;
+                priceChange24hPercent?: number | null;
+                lastFetchedAt?: number | null;
+                providerLastUpdatedAt?: number | null;
+                circulatingSupply?: number | null;
+                totalSupply?: number | null;
+                maxSupply?: number | null;
+            } | null = null;
+            if (!shouldUseStockCanonicalMarket && !preStocksCanonicalMarket && coinId) {
+                coinSnapshot = yield* coingeckoGetPriceLatestByCoinId({ coinId }).pipe(tapErrorAndDefault('assets.detail.coinPrice', null, { assetId: asset.assetId, coinId }));
+                const lastFetchedAt = coinSnapshot?.lastFetchedAt ?? null;
+                const isStale = lastFetchedAt === null || Date.now() - lastFetchedAt > 10 * 60_000;
+                if (isStale) yield* scheduleCoinPriceWarm({ coinId });
+            }
+
+            // The quality guard anchors on the same reference curated / search
+            // use: the CoinGecko price, or the stock price when one token is one
+            // share. Loaded above so a lone liquid pool priced far off the
+            // reference cannot pass as the only row.
+            const qualityReference =
+                shouldUseStockCanonicalMarket
+                    ? isCanonicalPublicEquityAsset(asset)
+                        ? { priceUsd: stockSnapshot?.priceUsd ?? null }
+                        : null
+                    : preStocksCanonicalMarket
+                      ? null
+                      : coinSnapshot
+                        ? { priceUsd: coinSnapshot.priceUsd ?? null }
+                        : null;
+            const quality = assessTokenMarkets(asset, tokenByMint, qualityReference, Date.now());
+            const stats = mergeAssetStatsWithAggregates(aggregateTokenStats(asset, tokenByMint, token, quality), aggregates, {
+                keepGuardedTotals: hasExcludedMarkets(quality),
+            });
 
             let canonicalMarket:
                 | {
@@ -441,6 +492,9 @@ export const GET = route(
                       priceChange24hPercent: number | null;
                       lastFetchedAt: number | null;
                       providerLastUpdatedAt: number | null;
+                      circulatingSupply: number | null;
+                      totalSupply: number | null;
+                      maxSupply: number | null;
                   }
                 | {
                       source: 'clickhouse_stock';
@@ -470,24 +524,8 @@ export const GET = route(
                       asOf: number | null;
                   }
                 | undefined = undefined;
-            let coinSnapshot: {
-                priceUsd?: number | null;
-                marketCapUsd?: number | null;
-                volume24hUsd?: number | null;
-                priceChange24hPercent?: number | null;
-                lastFetchedAt?: number | null;
-                providerLastUpdatedAt?: number | null;
-            } | null = null;
 
             const companyMarketCap = computeCompanyMarketCapUsd(asset, stockSnapshot);
-
-            // At most one PreStocks mint exists per asset today; prefer the first
-            // variant with a fresh snapshot if that ever changes.
-            const preStocksCanonicalMint =
-                asset.variants.map(v => v.mint).find(mint => preStocksByMint.has(mint)) ?? null;
-            const preStocksCanonicalSnapshot = preStocksCanonicalMint
-                ? (preStocksByMint.get(preStocksCanonicalMint) ?? null)
-                : null;
 
             if (shouldUseStockCanonicalMarket) {
                 canonicalMarket = {
@@ -501,38 +539,9 @@ export const GET = route(
                     providerLastUpdatedAt: stockSnapshot?.asOf ?? null,
                     asOf: stockSnapshot?.asOf ?? null,
                 };
-            } else if (preStocksCanonicalMint && preStocksCanonicalSnapshot) {
-                // Tokenized pre-IPO exposure: the company-level benchmark is the
-                // valuation implied by the token price against the PreStocks
-                // reference mark, derived from OUR on-chain price so it never
-                // disagrees with the displayed price.
-                const derived = computePreStocksDerived(
-                    preStocksCanonicalSnapshot,
-                    tokenByMint.get(preStocksCanonicalMint)?.price,
-                );
-                canonicalMarket = {
-                    source: 'prestocks',
-                    symbol: preStocksCanonicalSnapshot.symbol,
-                    mint: preStocksCanonicalMint,
-                    price: derived.basisPriceUsd,
-                    marketCap: derived.impliedValuationUsd,
-                    markPriceUsd: preStocksCanonicalSnapshot.markPriceUsd,
-                    markValuationUsd: preStocksCanonicalSnapshot.markValuationUsd,
-                    impliedValuationUsd: derived.impliedValuationUsd,
-                    premiumToMarkPercent: derived.premiumToMarkPercent,
-                    volume24hUSD: null,
-                    priceChange24hPercent: null,
-                    lastFetchedAt: preStocksCanonicalSnapshot.lastFetchedAt,
-                    providerLastUpdatedAt: preStocksCanonicalSnapshot.lastFetchedAt,
-                    asOf: preStocksCanonicalSnapshot.lastFetchedAt,
-                };
+            } else if (preStocksCanonicalMarket) {
+                canonicalMarket = preStocksCanonicalMarket;
             } else if (coinId) {
-                coinSnapshot = yield* coingeckoGetPriceLatestByCoinId({ coinId }).pipe(tapErrorAndDefault('assets.detail.coinPrice', null, { assetId: asset.assetId, coinId }));
-
-                const lastFetchedAt = coinSnapshot?.lastFetchedAt ?? null;
-                const isStale = lastFetchedAt === null || Date.now() - lastFetchedAt > 10 * 60_000;
-                if (isStale) yield* scheduleCoinPriceWarm({ coinId });
-
                 canonicalMarket = {
                     source: 'coingecko',
                     coinId,
@@ -540,8 +549,11 @@ export const GET = route(
                     marketCap: coinSnapshot?.marketCapUsd ?? null,
                     volume24hUSD: coinSnapshot?.volume24hUsd ?? null,
                     priceChange24hPercent: coinSnapshot?.priceChange24hPercent ?? null,
-                    lastFetchedAt,
+                    lastFetchedAt: coinSnapshot?.lastFetchedAt ?? null,
                     providerLastUpdatedAt: coinSnapshot?.providerLastUpdatedAt ?? null,
+                    circulatingSupply: coinSnapshot?.circulatingSupply ?? null,
+                    totalSupply: coinSnapshot?.totalSupply ?? null,
+                    maxSupply: coinSnapshot?.maxSupply ?? null,
                 };
             }
 
@@ -630,7 +642,11 @@ export const GET = route(
                     Effect.succeed(includeMint).pipe(
                         Effect.flatMap(mint =>
                             mint
-                                ? loadRiskInclude({ primaryMint: mint, market: tokenByMint.get(mint) })
+                                ? loadRiskInclude({
+                                      primaryMint: mint,
+                                      market: tokenByMint.get(mint),
+                                      stablecoinHealth: stablecoinHealthByMint?.get(mint) ?? null,
+                                  })
                                 : Effect.succeed(includeError('not_available', 'No primary variant available')),
                         ),
                         Effect.map(value => ({ key: 'risk' as const, value })),
@@ -736,6 +752,8 @@ export const GET = route(
 
             return buildAssetDetailResponse({
                 asset,
+                advisories,
+                stablecoinHealthByMint,
                 assetDescription: optionalText(assetDoc?.description) ?? null,
                 primaryVariant,
                 token,

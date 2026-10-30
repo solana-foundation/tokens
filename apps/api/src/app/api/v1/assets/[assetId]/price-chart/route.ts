@@ -10,6 +10,8 @@ import {
     TimeInterval as TimeIntervalSchema,
 } from '@tokens/effect';
 import { getByAssetId as cloudRunGetByAssetId } from '@/lib/cloudrun/assets';
+import { CloudRunQueryMemo } from '@/lib/cloudrun/client';
+import { seedSpeculativeMemo } from '@/lib/cloudrun/speculative-batch';
 import {
     assetVariantsListByAssetIds,
     coingeckoListOhlcv,
@@ -171,6 +173,11 @@ export const GET = route(
 
             const { from, to } = yield* validateOhlcvRange({ from: parsedFrom, to: parsedTo, interval });
 
+            // One round-trip pre-answers the chain of lookups below (see
+            // `speculative-batch.ts`); every call still runs exactly as written.
+            yield* seedSpeculativeMemo({ profile: 'price-chart', ref: assetRef });
+            const memo = yield* Effect.service(CloudRunQueryMemo);
+
             const assetId = yield* resolveAssetIdFromRef(assetRef);
 
             const requestedDays = Math.max(1, Math.ceil((to - from) / (24 * 60 * 60)));
@@ -194,6 +201,8 @@ export const GET = route(
                     variants: mergeRegistryVariants(variants, registryAsset),
                 };
             } else {
+                // Reached only for registered per-mint assets (approved launch coins, admin `solana-<mint>` ids);
+                // unregistered mints are rejected upstream in _resolve-asset-ref.ts.
                 const singletonMint = singletonAssetIdToMint(assetId);
                 if (singletonMint) {
                     const token = yield* tokensGetByAddress({ address: singletonMint }).pipe(
@@ -300,7 +309,10 @@ export const GET = route(
             const mintRank = buildCuratedMintRank();
             const fallbackAsset = assetForOnchainChartFallback(canonical);
             const tokenByMint = yield* Effect.tryPromise(() =>
-                loadTokensByMints(fallbackAsset.variants.map(v => v.mint)),
+                loadTokensByMints(
+                    fallbackAsset.variants.map(v => v.mint),
+                    memo,
+                ),
             );
             const primary = pickPrimaryVariant(fallbackAsset, mintRank, tokenByMint, undefined, {
                 strategy: fallbackAsset.category === 'equity' ? 'stock_redeemability' : 'liquidity',

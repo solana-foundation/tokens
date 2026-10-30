@@ -1,4 +1,5 @@
 import { Effect } from 'effect';
+import type { StablecoinHealth } from '@tokens/asset-registry';
 
 import { tokenMarketsGetLatestByMint } from '@/lib/cloudrun';
 import { coingeckoGetCoinById, coingeckoListOhlcv } from '@/lib/cloudrun';
@@ -7,7 +8,7 @@ import type { OHLCVData, TimeInterval } from '@/lib/birdeye';
 import type { GlobalTokenStats, TokenLinks } from '@/lib/coingecko';
 import { buildXProfileUrl } from '@/lib/social-links';
 import { getCuratedListSlugsForMint } from '@/lib/curated-membership';
-import { computeMarketScore, type MarketScoreInput } from '@/lib/token-risk-helpers';
+import { computeMarketScore, estimate7dVolume, type MarketScoreInput } from '@/lib/token-risk-helpers';
 
 import type { TokenMarketSnapshot } from './_asset-helpers';
 import {
@@ -31,11 +32,6 @@ export function includeOk<T>(data: T): AssetIncludeOk<T> {
 
 export function includeError(reason: AssetIncludeError['reason'], message: string): AssetIncludeError {
     return { ok: false, reason, message };
-}
-
-function estimate7dVolume(volume24h: number | null): number | null {
-    if (volume24h == null || volume24h <= 0) return null;
-    return volume24h * 7;
 }
 
 function intervalToSeconds(interval: TimeInterval): number {
@@ -179,8 +175,9 @@ export function loadProfileInclude(params: {
         return includeOk({
             marketCap: md?.market_cap?.usd ?? 0,
             fdv: md?.fully_diluted_valuation?.usd ?? 0,
-            circulatingSupply: md?.circulating_supply ?? 0,
-            totalSupply: md?.total_supply ?? 0,
+            circulatingSupply: md?.circulating_supply ?? null,
+            totalSupply: md?.total_supply ?? null,
+            maxSupply: md?.max_supply ?? null,
             price,
             priceChange24h: md?.price_change_percentage_24h ?? 0,
             volume24h: md?.total_volume?.usd ?? 0,
@@ -195,6 +192,8 @@ export function loadProfileInclude(params: {
 export function loadRiskInclude(params: {
     primaryMint: string;
     market: TokenMarketSnapshot | undefined;
+    /** Pre-loaded Webacy health for `primaryMint` (stablecoin assets); omitted or `null` yields null blocks. */
+    stablecoinHealth?: StablecoinHealth | null;
 }): Effect.Effect<AssetIncludeResult<AssetRiskInclude>, never> {
     const volume24hUsd = params.market?.volume24hUSD ?? null;
     const volume7dUsd = estimate7dVolume(volume24hUsd);
@@ -220,6 +219,8 @@ export function loadRiskInclude(params: {
             tradingData: null,
             marketScoreInput,
             marketScore,
+            pegHealth: params.stablecoinHealth?.pegHealth ?? null,
+            structuralHealth: params.stablecoinHealth?.structuralHealth ?? null,
         } satisfies AssetRiskInclude);
     });
 }
@@ -276,11 +277,11 @@ export function loadOhlcvInclude(
 ): Effect.Effect<AssetIncludeResult<OHLCVData[]>, never> {
     return Effect.gen(function* () {
         const candles = yield* ohlcvList({
-                address: params.primaryMint,
-                interval: params.interval,
-                from: params.from,
-                to: params.to,
-            });
+            address: params.primaryMint,
+            interval: params.interval,
+            from: params.from,
+            to: params.to,
+        });
 
         const intervalSeconds = intervalToSeconds(params.interval);
         const expectedCount = Math.max(1, Math.floor((params.to - params.from) / Math.max(intervalSeconds, 1)) + 1);
@@ -304,11 +305,11 @@ export function loadOhlcvInclude(
                 yield* scheduleCoingeckoOhlcvWarm({ coinId, interval: params.interval, days: requestedDays });
 
                 const cgCandles = yield* coingeckoListOhlcv({
-                        coinId,
-                        interval: params.interval,
-                        from: params.from,
-                        to: params.to,
-                    });
+                    coinId,
+                    interval: params.interval,
+                    from: params.from,
+                    to: params.to,
+                });
 
                 if (params.allowUnhealthyCoingeckoFallback === true) {
                     const shouldUseFallback = shouldUseCanonicalFallbackForUnhealthyVariant({
@@ -348,11 +349,11 @@ export function loadStockOhlcvInclude(params: {
 }): Effect.Effect<AssetIncludeResult<OHLCVData[]>, never> {
     return Effect.gen(function* () {
         const candles = yield* stockOhlcvList({
-                assetId: params.assetId,
-                interval: params.interval,
-                from: params.from,
-                to: params.to,
-            });
+            assetId: params.assetId,
+            interval: params.interval,
+            from: params.from,
+            to: params.to,
+        });
 
         const intervalSeconds = intervalToSeconds(params.interval);
         const latestTime = candles.length > 0 ? (candles[candles.length - 1]?.time ?? null) : null;
@@ -370,11 +371,11 @@ export function loadStockOhlcvInclude(params: {
             const coinId = (params.coingeckoId ?? '').trim();
             if (coinId) {
                 const cgCandles = yield* coingeckoListOhlcv({
-                        coinId,
-                        interval: params.interval,
-                        from: params.from,
-                        to: params.to,
-                    });
+                    coinId,
+                    interval: params.interval,
+                    from: params.from,
+                    to: params.to,
+                });
                 if (cgCandles.length > 0) {
                     const requestedDays = Math.max(1, Math.ceil((params.to - params.from) / (24 * 60 * 60)));
                     yield* scheduleCoingeckoOhlcvWarm({ coinId, interval: params.interval, days: requestedDays });

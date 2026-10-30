@@ -1,9 +1,17 @@
 import { Effect } from 'effect';
 
-import { fetchJsonWithRetry, tapErrorAndDefault } from '@tokens/effect';
+import { looksLikeSolanaAddress } from '@tokens/asset-registry';
+import { BadRequestError, fetchJsonWithRetry, tapErrorAndDefault } from '@tokens/effect';
 import { route } from '@/effect/next-route';
-import { createCoinGeckoNewsNotFoundRecovery, validateCoinGeckoNewsCoinId } from '@/lib/coingecko-news';
+import {
+    createCoinGeckoNewsNotFoundRecovery,
+    resolveCoinGeckoNewsCoinByMint,
+    validateCoinGeckoNewsCoinId,
+    type CoinGeckoNewsValidation,
+} from '@/lib/coingecko-news';
+import { decodeHtmlEntities } from '@/lib/html-entities';
 import { resolveXBearerToken, runXRequest } from '@/lib/x-auth';
+import { findXTokenTags, restoreXCashtagsInTexts } from '@/lib/x-cashtags';
 import { buildMediaByKey, getPostImage, type XMedia, type XPostMediaAttachment } from '@/lib/x-media';
 import {
     articleMatchesTerms,
@@ -71,7 +79,7 @@ const MAX_X_RESULTS = 100;
 const MAX_COINGECKO_NEWS_PER_PAGE = 20;
 const MAX_COINGECKO_NEWS_PAGES = 20;
 
-function parseTerms(url: URL): string[] {
+function parseTerms(url: URL, extraTerms: readonly string[] = []): string[] {
     const values = [
         ...url.searchParams.getAll('term'),
         ...(url.searchParams.get('terms') ?? '').split(','),
@@ -79,6 +87,7 @@ function parseTerms(url: URL): string[] {
         url.searchParams.get('symbol') ?? '',
         url.searchParams.get('asset_id') ?? '',
         url.searchParams.get('coin_id') ?? '',
+        ...extraTerms,
     ];
 
     const seen = new Set<string>();
@@ -100,14 +109,7 @@ function parsePostedAtMs(value: string): number {
 }
 
 function cleanPostText(value: string): string {
-    return value
-        .replace(/&amp;/g, '&')
-        .replace(/&lt;/g, '<')
-        .replace(/&gt;/g, '>')
-        .replace(/&quot;/g, '"')
-        .replace(/&#39;/g, "'")
-        .replace(/\s+/g, ' ')
-        .trim();
+    return decodeHtmlEntities(value).replace(/\s+/g, ' ').trim();
 }
 
 function buildXPostUrl(username: string, postId: string): string {
@@ -128,10 +130,16 @@ function mapCoinGeckoNewsArticle(article: CoinGeckoNewsArticle): FeedArticle {
     };
 }
 
-async function fetchCoinGeckoNews(coinId: string, requestedCount: number): Promise<FeedArticle[]> {
+async function fetchCoinGeckoNews(
+    coinId: string,
+    requestedCount: number,
+    options: { validation?: CoinGeckoNewsValidation } = {},
+): Promise<FeedArticle[]> {
     if (requestedCount <= 0) return [];
 
-    const validation = await Effect.runPromise(validateCoinGeckoNewsCoinId(coinId));
+    // A coin resolved from `mint` was already classified against the catalog
+    // row we read; re-validating would only repeat the same RPC by coin id.
+    const validation = options.validation ?? (await Effect.runPromise(validateCoinGeckoNewsCoinId(coinId)));
     if (!validation.shouldFetch) return [];
 
     const apiKey = process.env.COINGECKO_API_KEY?.trim();
@@ -192,15 +200,36 @@ function emptyFeedArticlesEffect() {
     return Effect.succeed([] as FeedArticle[]);
 }
 
-function fetchCoinGeckoNewsEffect(coinId: string, requestedCount: number) {
-    return Effect.tryPromise(() => fetchCoinGeckoNews(coinId, requestedCount)).pipe(
+function emptyXCandidatesEffect() {
+    return Effect.succeed([] as XFeedCandidate[]);
+}
+
+function fetchCoinGeckoNewsEffect(
+    coinId: string,
+    requestedCount: number,
+    options: { validation?: CoinGeckoNewsValidation } = {},
+) {
+    return Effect.tryPromise(() => fetchCoinGeckoNews(coinId, requestedCount, options)).pipe(
         tapErrorAndDefault('v1.newsFeed.coingecko', [] as FeedArticle[], { coinId }),
     );
 }
 
+/**
+ * `mint` is validated by shape only; whether the mint is a CoinGecko-listed
+ * coin is a catalog question answered by `resolveCoinGeckoNewsCoinByMint`.
+ */
+function parseMint(url: URL): Effect.Effect<string, BadRequestError> {
+    const raw = (url.searchParams.get('mint') ?? '').trim();
+    if (!raw) return Effect.succeed('');
+    if (!looksLikeSolanaAddress(raw)) {
+        return Effect.fail(new BadRequestError({ message: 'mint must be a base58 Solana mint address' }));
+    }
+    return Effect.succeed(raw);
+}
+
 function fetchTokensFeedEffect(limit: number) {
     return Effect.tryPromise(() => fetchTokensFeed(limit)).pipe(
-        tapErrorAndDefault('v1.newsFeed.x', [] as FeedArticle[]),
+        tapErrorAndDefault('v1.newsFeed.x', [] as XFeedCandidate[]),
     );
 }
 
@@ -211,7 +240,13 @@ function getCandidateFetchCounts(params: { limit: number; tweetReserve: number; 
     };
 }
 
-async function fetchTokensFeed(limit: number): Promise<FeedArticle[]> {
+/** An `@tokens` post plus the addresses it tagged, kept only for term matching. */
+interface XFeedCandidate {
+    article: FeedArticle;
+    matchText: string;
+}
+
+async function fetchTokensFeed(limit: number): Promise<XFeedCandidate[]> {
     const bearerToken = await Effect.runPromise(resolveXBearerToken());
     if (!bearerToken) return [];
 
@@ -254,20 +289,36 @@ async function fetchTokensFeed(limit: number): Promise<FeedArticle[]> {
     })));
     const mediaByKey = buildMediaByKey(postsResponse.includes?.media);
 
-    return (postsResponse.data ?? [])
-        .filter(post => post.id && post.text && post.created_at && !isReplyPost(post))
-        .map(post => ({
-            title: cleanPostText(post.text),
-            url: buildXPostUrl(user.username, post.id),
-            image: getPostImage(post, mediaByKey, user.profile_image_url),
-            author: user.username,
-            posted_at: post.created_at ?? '',
-            type: 'news' as const,
-            source_name: `@${user.username}`,
-            related_coin_ids: [],
-            feed_source: 'x' as const,
+    const posts = (postsResponse.data ?? []).filter(
+        post => post.id && post.text && post.created_at && !isReplyPost(post),
+    );
+    // X's token tags arrive as `solana:<mint>` in the API text; restore them to `$SYMBOL` so
+    // posts read like they do on x.com (and so `$SYMBOL` term matching sees them).
+    // Tagged addresses are kept for matching: a mint term must still find a
+    // `solana:<mint>` tag after the title shows `$SYMBOL` (or a shortened
+    // address when no symbol could be resolved). Only the addresses, not the
+    // raw text: the `solana:` chain prefix would otherwise match `coin_id=solana`.
+    const rawTexts = posts.map(post => cleanPostText(post.text));
+    const titles = await Effect.runPromise(restoreXCashtagsInTexts(rawTexts));
+
+    return posts
+        .map((post, index) => ({
+            article: {
+                title: titles[index] ?? rawTexts[index] ?? '',
+                url: buildXPostUrl(user.username, post.id),
+                image: getPostImage(post, mediaByKey, user.profile_image_url),
+                author: user.username,
+                posted_at: post.created_at ?? '',
+                type: 'news' as const,
+                source_name: `@${user.username}`,
+                related_coin_ids: [],
+                feed_source: 'x' as const,
+            },
+            matchText: findXTokenTags(rawTexts[index] ?? '')
+                .map(tag => tag.address)
+                .join(' '),
         }))
-        .sort((a, b) => parsePostedAtMs(b.posted_at) - parsePostedAtMs(a.posted_at));
+        .sort((a, b) => parsePostedAtMs(b.article.posted_at) - parsePostedAtMs(a.article.posted_at));
 }
 
 export const GET = route(
@@ -286,22 +337,39 @@ export const GET = route(
             });
             const source = parseFeedSource(url.searchParams.get('source'));
             const tweetReserve = getEffectiveTweetReserve({ source, limit, requestedTweetReserve });
-            const coinId = (url.searchParams.get('coin_id') ?? '').trim();
-            const terms = parseTerms(url);
+            const explicitCoinId = (url.searchParams.get('coin_id') ?? '').trim();
+            const mint = yield* parseMint(url);
+            // An explicit `coin_id` wins; `mint` only resolves one when the caller
+            // has no coin id (the unregistered-token case this param exists for).
+            const resolvedCoin = mint && !explicitCoinId ? yield* resolveCoinGeckoNewsCoinByMint(mint) : null;
+            const coinId = explicitCoinId || resolvedCoin?.coinId || '';
+            const coinIdSource = explicitCoinId ? 'param' : resolvedCoin ? 'mint' : null;
+            // Resolved symbol/name make `@tokens` posts match without the caller
+            // repeating them; the mint itself matches `solana:<mint>` token tags.
+            const terms = parseTerms(
+                url,
+                resolvedCoin ? [resolvedCoin.coinId, resolvedCoin.symbol, resolvedCoin.name, mint] : mint ? [mint] : [],
+            );
             const mode = coinId || terms.length > 0 ? 'token' : 'global';
             const candidateFetchCounts = getCandidateFetchCounts({ limit, tweetReserve, source });
 
-            const [newsArticles, rawXArticles] = yield* Effect.all(
+            const [newsArticles, xCandidates] = yield* Effect.all(
                 [
                     candidateFetchCounts.coingecko > 0
-                        ? fetchCoinGeckoNewsEffect(coinId, candidateFetchCounts.coingecko)
+                        ? fetchCoinGeckoNewsEffect(coinId, candidateFetchCounts.coingecko, {
+                              ...(resolvedCoin ? { validation: resolvedCoin.validation } : {}),
+                          })
                         : emptyFeedArticlesEffect(),
-                    candidateFetchCounts.x > 0 ? fetchTokensFeedEffect(candidateFetchCounts.x) : emptyFeedArticlesEffect(),
+                    candidateFetchCounts.x > 0 ? fetchTokensFeedEffect(candidateFetchCounts.x) : emptyXCandidatesEffect(),
                 ],
                 { concurrency: 'unbounded' },
             );
 
-            const xArticles = mode === 'token' ? rawXArticles.filter(article => articleMatchesTerms(article, terms)) : rawXArticles;
+            const xArticles = (
+                mode === 'token'
+                    ? xCandidates.filter(candidate => articleMatchesTerms(candidate.article, terms, candidate.matchText))
+                    : xCandidates
+            ).map(candidate => candidate.article);
             const items = selectFeedArticles({ newsArticles, xArticles, limit, source, tweetReserve });
 
             return {
@@ -310,6 +378,8 @@ export const GET = route(
                     mode,
                     source,
                     coin_id: coinId || null,
+                    coin_id_source: coinIdSource,
+                    mint: mint || null,
                     terms,
                     limit,
                     tweet_reserve: tweetReserve,

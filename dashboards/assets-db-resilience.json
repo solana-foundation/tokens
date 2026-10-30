@@ -14,7 +14,7 @@
             "type": "timeseries",
             "title": "Final DB operation failures by revision and code",
             "gridPos": { "h": 9, "w": 12, "x": 0, "y": 0 },
-            "datasource": { "type": "loki", "uid": "grafanacloud-logs" },
+            "datasource": { "type": "loki", "uid": "tokens-logs" },
             "targets": [
                 {
                     "refId": "A",
@@ -29,7 +29,7 @@
             "type": "timeseries",
             "title": "CONNECT_TIMEOUT by revision and operation",
             "gridPos": { "h": 9, "w": 12, "x": 12, "y": 0 },
-            "datasource": { "type": "loki", "uid": "grafanacloud-logs" },
+            "datasource": { "type": "loki", "uid": "tokens-logs" },
             "targets": [
                 {
                     "refId": "A",
@@ -44,7 +44,7 @@
             "type": "timeseries",
             "title": "Atomic read retries and startup failures",
             "gridPos": { "h": 8, "w": 12, "x": 0, "y": 9 },
-            "datasource": { "type": "loki", "uid": "grafanacloud-logs" },
+            "datasource": { "type": "loki", "uid": "tokens-logs" },
             "targets": [
                 {
                     "refId": "A",
@@ -64,7 +64,7 @@
             "type": "timeseries",
             "title": "tokens-api degradation amplification",
             "gridPos": { "h": 8, "w": 12, "x": 12, "y": 9 },
-            "datasource": { "type": "loki", "uid": "grafanacloud-logs" },
+            "datasource": { "type": "loki", "uid": "tokens-logs" },
             "targets": [
                 {
                     "refId": "A",
@@ -84,7 +84,7 @@
             "type": "logs",
             "title": "Connection failure detail",
             "gridPos": { "h": 8, "w": 24, "x": 0, "y": 17 },
-            "datasource": { "type": "loki", "uid": "grafanacloud-logs" },
+            "datasource": { "type": "loki", "uid": "tokens-logs" },
             "targets": [
                 {
                     "refId": "A",
@@ -98,7 +98,7 @@
             "type": "timeseries",
             "title": "Transport canary failures by runtime/path",
             "gridPos": { "h": 8, "w": 24, "x": 0, "y": 25 },
-            "datasource": { "type": "loki", "uid": "grafanacloud-logs" },
+            "datasource": { "type": "loki", "uid": "tokens-logs" },
             "targets": [
                 {
                     "refId": "A",
@@ -113,7 +113,7 @@
             "type": "timeseries",
             "title": "Assets request volume and 5xx ratio",
             "gridPos": { "h": 8, "w": 12, "x": 0, "y": 33 },
-            "datasource": { "type": "loki", "uid": "grafanacloud-logs" },
+            "datasource": { "type": "loki", "uid": "tokens-logs" },
             "targets": [
                 {
                     "refId": "A",
@@ -133,7 +133,7 @@
             "type": "timeseries",
             "title": "Assets request p95 latency",
             "gridPos": { "h": 8, "w": 12, "x": 12, "y": 33 },
-            "datasource": { "type": "loki", "uid": "grafanacloud-logs" },
+            "datasource": { "type": "loki", "uid": "tokens-logs" },
             "targets": [
                 {
                     "refId": "A",

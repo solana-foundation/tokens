@@ -2,14 +2,14 @@
     "uid": "tokens-assets-5xx-ratio-high",
     "title": "tokens-assets: 5xx ratio > 1% for 5m",
     "ruleGroup": "tokens-assets-availability",
-    "folderUID": "tokens-xyz",
+    "folderUID": "tokens",
     "noDataState": "OK",
     "execErrState": "OK",
     "for": "2m",
     "data": [
         {
             "refId": "A",
-            "datasourceUid": "grafanacloud-logs",
+            "datasourceUid": "tokens-logs",
             "queryType": "range",
             "relativeTimeRange": { "from": 300, "to": 0 },
             "model": {
@@ -63,5 +63,15 @@
         "summary": "tokens-assets is returning more than 1% 5xx responses",
         "description": "The user-facing assets Cloud Run service exceeded a 1% 5xx ratio over five minutes. Correlate with normalized DB connection failures and transport canaries.",
         "runbook_url": "https://github.com/solana-foundation/tokens/blob/main/docs/operations/assets-db-resilience.md"
+    },
+    "notification_settings": {
+        "receiver": "tokens-critical",
+        "group_by": [
+            "grafana_folder",
+            "alertname"
+        ],
+        "group_wait": "30s",
+        "group_interval": "5m",
+        "repeat_interval": "4h"
     }
 }

@@ -4,6 +4,9 @@ import { route } from '@/effect/next-route';
 import { BadRequestError, NotFoundError } from '@tokens/effect';
 import { decodeUnknownOrBadRequest, SolanaAddress } from '@tokens/effect';
 import { tapErrorAndDefault } from '@tokens/effect';
+import { loadAdvisoriesOrEmpty } from '@/lib/advisories';
+import { CloudRunQueryMemo, type CloudRunMemoStore } from '@/lib/cloudrun/client';
+import { seedSpeculativeMemo } from '@/lib/cloudrun/speculative-batch';
 import { getByAssetId as cloudRunGetByAssetId } from '@/lib/cloudrun/assets';
 import {
     assetVariantsListByAssetIds,
@@ -17,7 +20,7 @@ import {
     type ListSolanaVariantsForApiResult,
 } from '@/lib/cloudrun';
 
-import type { AssetVariant, LiquidityTier, StockVariantTier, VariantKind } from '@tokens/asset-registry';
+import type { AssetVariant, LiquidityTier, StockVariantTier, VariantAdvisory, VariantKind } from '@tokens/asset-registry';
 import {
     STOCK_VARIANT_TIERS,
     liquidityTierPriority,
@@ -104,13 +107,19 @@ function uniqueNonEmptyStrings(items: string[]): string[] {
     return Array.from(seen);
 }
 
-async function loadExecutionQualityByMints(mints: string[]): Promise<Map<string, VariantExecutionQualitySnapshot>> {
+/** Nested runtime: the request memo is passed in explicitly (see `_load-variant-markets.ts`). */
+async function loadExecutionQualityByMints(
+    mints: string[],
+    memo: CloudRunMemoStore | null = null,
+): Promise<Map<string, VariantExecutionQualitySnapshot>> {
     const uniqueMints = uniqueNonEmptyStrings(mints);
     if (uniqueMints.length === 0) return new Map();
 
     const out = new Map<string, VariantExecutionQualitySnapshot>();
     for (const chunk of Arr.chunksOf(uniqueMints, 250)) {
-        const rows = await Effect.runPromise(variantFillQualityGetLatestByMints({ mints: chunk }));
+        const rows = await Effect.runPromise(
+            variantFillQualityGetLatestByMints({ mints: chunk }).pipe(Effect.provideService(CloudRunQueryMemo, memo)),
+        );
         for (const row of rows) {
             const snapshot = executionQualitySnapshotFromConvexFillQuality(row.fillQuality);
             if (snapshot) out.set(row.mint, snapshot);
@@ -119,13 +128,20 @@ async function loadExecutionQualityByMints(mints: string[]): Promise<Map<string,
     return out;
 }
 
+/**
+ * Cloud Run pre-shaped variant rows (Solana views) skip `withDerivedVariantTier`,
+ * so attach the execution-quality snapshot and the `advisory` key here. Flagged
+ * variants stay visible on this direct-URL surface (`blocked` included).
+ */
 function attachExecutionQuality<T extends { mint: string }>(
     variants: T[],
     fillQualityByMint: ReadonlyMap<string, VariantExecutionQualitySnapshot>,
-): Array<T & { executionQuality: VariantExecutionQualitySnapshot | null }> {
+    advisoriesByMint: ReadonlyMap<string, VariantAdvisory>,
+): Array<T & { executionQuality: VariantExecutionQualitySnapshot | null; advisory: VariantAdvisory | null }> {
     return variants.map(variant => ({
         ...variant,
         executionQuality: fillQualityByMint.get(variant.mint) ?? null,
+        advisory: advisoriesByMint.get(variant.mint) ?? null,
     }));
 }
 
@@ -360,6 +376,15 @@ export const GET = route(
                 );
             }
 
+            // One round-trip pre-answers the lookups below (see
+            // `speculative-batch.ts`); any filter changes the mint list, so the
+            // server only walks past the variant rows for an unfiltered request.
+            const hasFilters = Boolean(
+                rawKind || rawLiquidityTier || rawTrustTier || rawStockVariantTier || variantsMode || url.searchParams.get('mint'),
+            );
+            yield* seedSpeculativeMemo({ profile: 'variants', ref: assetRef, hasFilters });
+            const memo = yield* Effect.service(CloudRunQueryMemo);
+
             const assetId = yield* resolveAssetIdFromRef(assetRef);
 
             const requestedMintRaw = url.searchParams.get('mint');
@@ -369,6 +394,13 @@ export const GET = route(
                     ? yield* decodeUnknownOrBadRequest(SolanaAddress, requestedMintText, 'Invalid mint')
                     : null;
 
+            // Advisory set for this request (fail-open: empty on outage). This
+            // surface backs direct asset URLs, so `blocked` variants are kept —
+            // they carry their advisory instead of disappearing.
+            const advisoriesByMint = yield* loadAdvisoriesOrEmpty();
+
+            // Reached only for registered per-mint assets (approved launch coins, admin `solana-<mint>` ids);
+            // unregistered mints are rejected upstream in _resolve-asset-ref.ts.
             const singletonMint = singletonAssetIdToMint(assetId);
             if (singletonMint) {
                 if (kind && kind !== 'native') return { assetId, sortBy, variants: [] };
@@ -385,7 +417,7 @@ export const GET = route(
                     typeof token?.symbol === 'string' && token.symbol.trim() ? token.symbol.trim() : undefined;
                 const name = typeof token?.name === 'string' && token.name.trim() ? token.name.trim() : undefined;
                 const fillQualityByMint = yield* Effect.tryPromise(() =>
-                    loadExecutionQualityByMints([singletonMint]),
+                    loadExecutionQualityByMints([singletonMint], memo),
                 ).pipe(tapErrorAndDefault('assets.variants.singletonFillQuality', new Map(), { mint: singletonMint }));
 
                 const variant: AssetVariant & {
@@ -403,6 +435,7 @@ export const GET = route(
                         ...(symbol ? { label: symbol } : {}),
                         ...(derived?.symbol ? { symbol: derived.symbol } : {}),
                         ...(derived?.name ? { name: derived.name } : {}),
+                        advisory: advisoriesByMint.get(singletonMint) ?? null,
                         market: marketSnapshot ?? derived?.snapshot ?? null,
                         executionQuality: fillQualityByMint.get(singletonMint) ?? null,
                     } satisfies Omit<AssetVariant, 'trustTier'> & {
@@ -430,10 +463,11 @@ export const GET = route(
                         const fillQualityByMint = yield* Effect.tryPromise(() =>
                             loadExecutionQualityByMints(
                                 (view.variants as Array<{ mint: string }>).map(variant => variant.mint),
+                                memo,
                             ),
                         ).pipe(tapErrorAndDefault('assets.variants.solanaDefaultFillQuality', new Map(), { assetId }));
                         const variants = sortVariantRows(
-                            attachExecutionQuality(view.variants, fillQualityByMint),
+                            attachExecutionQuality(view.variants, fillQualityByMint, advisoriesByMint),
                             sortBy,
                         );
                         return {
@@ -462,10 +496,10 @@ export const GET = route(
                     }
 
                     const fillQualityByMint = yield* Effect.tryPromise(() =>
-                        loadExecutionQualityByMints(result.variants.map(variant => variant.mint)),
+                        loadExecutionQualityByMints(result.variants.map(variant => variant.mint), memo),
                     ).pipe(tapErrorAndDefault('assets.variants.solanaListFillQuality', new Map(), { assetId }));
                     const variants = sortVariantRows(
-                        attachExecutionQuality(result.variants, fillQualityByMint),
+                        attachExecutionQuality(result.variants, fillQualityByMint, advisoriesByMint),
                         sortBy,
                     );
                     return {
@@ -532,7 +566,10 @@ export const GET = route(
             const outAssetId = assetDoc?.assetId ?? registryAsset?.assetId ?? assetId;
             const canonicalSymbol = optionalText(assetDoc?.symbol) ?? optionalText(registryAsset?.symbol);
             const allVariants: AssetVariant[] = Array.from(variantsByMint.values());
-            const canonicalVariants = canonicalizeAssetVariants(outAssetId, allVariants);
+            const canonicalVariants = canonicalizeAssetVariants(outAssetId, allVariants).map(variant => ({
+                ...variant,
+                advisory: advisoriesByMint.get(variant.mint) ?? null,
+            }));
 
             if (requestedMint) {
                 const isVariant = canonicalVariants.some(v => v.mint === requestedMint);
@@ -571,7 +608,7 @@ export const GET = route(
                 if (row.market) marketByMint.set(row.mint, row.market);
             }
             const fillQualityByMint = yield* Effect.tryPromise(() =>
-                loadExecutionQualityByMints(filteredVariants.map(v => v.mint)),
+                loadExecutionQualityByMints(filteredVariants.map(v => v.mint), memo),
             ).pipe(tapErrorAndDefault('assets.variants.fillQuality', new Map(), { assetId: outAssetId }));
 
             function toMarketSnapshot(
@@ -635,6 +672,7 @@ export const GET = route(
                         ...(v.stockVariantTier ? { stockVariantTier: v.stockVariantTier } : {}),
                         ...(symbol ? { symbol } : {}),
                         ...(name ? { name } : {}),
+                        advisory: v.advisory ?? advisoriesByMint.get(v.mint) ?? null,
                         market: marketWithLogo,
                         executionQuality: fillQualityByMint.get(v.mint) ?? null,
                     },

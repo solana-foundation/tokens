@@ -22,6 +22,11 @@ interface InlinePriceChartProps {
      * Useful for assets that don't trade continuously (e.g. tokenized equities on weekends).
      */
     fallbackDays?: number;
+    /** Soft area under the line (off for the table's inline sparkline). */
+    fill?: boolean;
+    /** Stretch the y-range to the data (on for the inline sparkline; off reads calmer as a backdrop). */
+    exaggerate?: boolean;
+    lineWidth?: number;
 }
 
 interface ScrubIndicator {
@@ -346,8 +351,7 @@ function useChartScrub({
 
             const rightEdge = lastTime + windowSecs * LIVELINE_NO_BADGE_WINDOW_BUFFER;
             const leftEdge = rightEdge - windowSecs;
-            const maxScrubX =
-                CHART_PADDING.left + ((lastTime - leftEdge) / (rightEdge - leftEdge)) * chartW;
+            const maxScrubX = CHART_PADDING.left + ((lastTime - leftEdge) / (rightEdge - leftEdge)) * chartW;
             const x = clampNumber(clientX - rect.left, CHART_PADDING.left, maxScrubX);
             const t = leftEdge + ((x - CHART_PADDING.left) / chartW) * (rightEdge - leftEdge);
             const visiblePoints = points.filter(point => point.time >= leftEdge - 2 && point.time <= lastTime);
@@ -357,7 +361,8 @@ function useChartScrub({
 
             if (next !== null && valueSpan > 0) {
                 const rawY = CHART_PADDING.top + (1 - (next - valueRange.min) / valueSpan) * chartH;
-                const pointYPct = clampNumber(rawY, CHART_PADDING.top, chartHeight - CHART_PADDING.bottom) / chartHeight * 100;
+                const pointYPct =
+                    (clampNumber(rawY, CHART_PADDING.top, chartHeight - CHART_PADDING.bottom) / chartHeight) * 100;
                 const xPct = (x / rect.width) * 100;
 
                 setScrubIndicator({
@@ -407,6 +412,9 @@ export function InlinePriceChart({
     onScrub,
     emptyText = '—',
     fallbackDays,
+    fill = false,
+    exaggerate = true,
+    lineWidth,
 }: InlinePriceChartProps) {
     const isPositive = percentChange24h >= 0;
     const rootRef = useRef<HTMLDivElement>(null);
@@ -518,13 +526,14 @@ export function InlinePriceChart({
                         color={lineColor}
                         grid={false}
                         badge={false}
-                        fill={false}
+                        fill={fill}
                         loading={shouldShowLoading}
                         pulse={false}
                         momentum={false}
                         scrub={false}
                         paused
-                        exaggerate
+                        exaggerate={exaggerate}
+                        lineWidth={lineWidth}
                         padding={CHART_PADDING}
                         formatTime={() => ''}
                         tooltipY={-1000}

@@ -127,7 +127,7 @@ function mergeBitcoinVariantsFromGroup(bitcoin: CanonicalAsset): CanonicalAsset 
     return {
         ...bitcoin,
         variants,
-        aliases: uniqueStrings([...bitcoin.aliases, ...variants.flatMap(v => [v.mint, v.symbol ?? '', v.label ?? ''])]),
+        aliases: uniqueStrings([...bitcoin.aliases, ...variants.flatMap(v => [v.mint, v.symbol ?? ''])]),
     };
 }
 

@@ -49,6 +49,24 @@ export class ForbiddenError extends Data.TaggedError('ForbiddenError')<{
     details?: unknown;
 }> {}
 
+/**
+ * The requested mint carries a trade-restricting admin advisory
+ * (`compromised` / `blocked`) and execution endpoints refuse to act on it.
+ *
+ * Mapped to 403: this is a deliberate refusal independent of credentials
+ * (not 451 — no legal basis; not 409 — nothing the caller can resolve). Being
+ * <500 also keeps stale-response fallbacks from masking it. Clients should
+ * branch on `_tag` / `details.code`, not the bare status.
+ */
+export class AssetAdvisoryError extends Data.TaggedError('AssetAdvisoryError')<{
+    message: string;
+    mint: string;
+    status: string;
+    reason: string;
+    url?: string | null;
+    details?: unknown;
+}> {}
+
 export class MissingEnvError extends Data.TaggedError('MissingEnvError')<{
     message: string;
     name: string;
@@ -179,6 +197,7 @@ export function httpStatusForError(error: unknown): number {
         case 'UnauthorizedError':
             return 401;
         case 'ForbiddenError':
+        case 'AssetAdvisoryError':
             return 403;
         case 'NotFoundError':
             return 404;

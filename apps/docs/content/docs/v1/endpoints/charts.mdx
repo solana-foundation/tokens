@@ -1,0 +1,118 @@
+---
+title: Charts
+description: OHLCV candles for one mint, and the canonical price chart for an asset.
+---
+
+Both endpoints use `https://api.tokens.xyz/v1` with an `x-api-key` header and the `assets:read` scope; see [Authentication](/v1/authentication). `{assetId}` accepts an id, alias, mint or `solana-<mint>` and must resolve to a registered asset.
+
+## Candles and ranges
+
+Both endpoints share the candle shape and the range rules.
+
+```ts
+type Interval = '1m' | '5m' | '15m' | '1H' | '4H' | '1D' | '1W';
+
+interface Candle {
+  time: number;    // unix seconds, bucket start; ascending
+  open: number;    // USD
+  high: number;
+  low: number;
+  close: number;
+  volume: number;  // USD
+}
+```
+
+- `from` and `to` are unix **seconds**. The default window is the last 7 days; there are no named ranges, so always pass `from` for anything else.
+- `from` must not be after `to`, and not before 2010-01-01 (`400` with `details.minFrom`). `to` is clamped to five minutes in the future.
+- At most **10,000 candles** per request, counted as `(to - from) / interval + 1`. Exceeding it returns `400` with `details.intervalSeconds`, `details.maxCandles` and `details.requestedCandles`. A year fits at `1H` and above; page by `from`/`to` for finer intervals.
+- Buckets with no trades have no candle, so gaps are normal for illiquid mints. Do not treat a missing bucket as a zero.
+- The response echoes `from` and `to` after clamping.
+
+Stored on-chain history per interval, for mints that have traded that long:
+
+| Interval | History kept | Refresh cadence                            |
+| -------- | ------------ | ------------------------------------------ |
+| `15m`    | 1 day        | every 15 minutes, stalest curated mints first |
+| `1H`     | 90 days      | every 30 minutes                           |
+| `4H`     | 365 days     | every 6 hours                              |
+| `1D`     | 365 days     | every 6 hours                              |
+| `1W`     | 365 days     | daily                                      |
+
+## `GET /v1/assets/{assetId}/ohlcv`
+
+On-chain candles for one Solana mint.
+
+### Query params
+
+| Param      | Type         | Default              | Notes                                                                                                                                                     |
+| ---------- | ------------ | -------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `mint`     | Solana mint  | the primary variant  | Pass it when the asset groups several tokens and you want a particular one: `paxg` resolves to `gold`, whose primary variant is Tether Gold, so PAXG itself is `/v1/assets/gold/ohlcv?mint=5GgRAEmv8ZxF2PR5hY72Qs5x1bnQ6UK2RbTPoqJ3wSwW`. |
+| `interval` | `Interval`   | `1H`                 |                                                                                                                                                           |
+| `from`, `to` | unix seconds | last 7 days        | See the range rules above.                                                                                                                                |
+
+### Response
+
+```ts
+interface AssetOhlcvResponse {
+  assetId: string;
+  mint: string;
+  interval: Interval;
+  from: number;      // unix seconds
+  to: number;        // unix seconds
+  candles: Candle[];
+}
+```
+
+### Notes
+
+- Cached for one minute. A mint you have never requested may return few or no candles while the cache warms; retry in a few minutes.
+
+### Example
+
+```bash
+NOW=$(date +%s)
+curl -sS "$API_BASE_URL/v1/assets/solana/ohlcv?interval=1D&from=$((NOW - 90*86400))&to=$NOW" \
+  -H "x-api-key: $API_KEY"
+```
+
+## `GET /v1/assets/{assetId}/price-chart`
+
+The canonical price series for the asset as a whole, rather than one mint.
+
+### Query params
+
+| Param        | Type         | Default     | Notes                                                                 |
+| ------------ | ------------ | ----------- | --------------------------------------------------------------------- |
+| `interval`   | `Interval`   | `1H`        |                                                                       |
+| `from`, `to` | unix seconds | last 7 days | See the range rules above.                                            |
+| `mint`       | Solana mint  |             | Used only when the endpoint falls back to on-chain candles.           |
+
+### Response
+
+```ts
+interface AssetPriceChartResponse {
+  assetId: string;
+  interval: Interval;
+  from: number;      // unix seconds
+  to: number;        // unix seconds
+  candles: Candle[];
+}
+```
+
+### Notes
+
+The series comes from the first source that has data:
+
+1. **Stock-market candles** for mapped public equities, ETFs and commodities. `gold` is the GLD benchmark, so it is a share price, not a per-ounce token price; use `/ohlcv?mint=` for a specific gold token.
+2. **Provider candles** for crypto assets with an external listing. Daily history goes back a year for established assets.
+3. **On-chain candles** for the primary variant, or for `mint` when passed. Equities pick the primary with the `stock_redeemability` strategy here.
+
+The response does not say which source won. Cached for one minute.
+
+### Example
+
+```bash
+NOW=$(date +%s)
+curl -sS "$API_BASE_URL/v1/assets/tesla/price-chart?interval=1D&from=$((NOW - 365*86400))&to=$NOW" \
+  -H "x-api-key: $API_KEY"
+```

@@ -26,12 +26,16 @@ export const ADMIN_FNS: Record<string, AdminFnSpec> = {
     searchCanonicalAssets: { service: 'admin', kind: 'query' },
     previewMint: { service: 'admin', kind: 'query' },
     adminListTokenLists: { service: 'admin', kind: 'query' },
+    listVariantAdvisories: { service: 'admin', kind: 'query' },
+    listLaunchpadCandidates: { service: 'admin', kind: 'query' },
+    previewAssetTagsImport: { service: 'admin', kind: 'query' },
 
     // cloudrun-admin mutations
     createCanonicalAsset: { service: 'admin', kind: 'mutation' },
     updateCanonicalAsset: { service: 'admin', kind: 'mutation' },
     deleteCanonicalAsset: { service: 'admin', kind: 'mutation' },
     hardDeleteAsset: { service: 'admin', kind: 'mutation', timeoutMs: 60_000 },
+    applyAssetTagsImport: { service: 'admin', kind: 'mutation', timeoutMs: 60_000 },
     createVariant: { service: 'admin', kind: 'mutation' },
     updateVariant: { service: 'admin', kind: 'mutation' },
     deleteVariant: { service: 'admin', kind: 'mutation' },
@@ -42,12 +46,25 @@ export const ADMIN_FNS: Record<string, AdminFnSpec> = {
     generateCanonicalLogoUploadUrl: { service: 'admin', kind: 'mutation' },
     adminArchiveTokenList: { service: 'admin', kind: 'mutation' },
     adminUnlockTokenList: { service: 'admin', kind: 'mutation' },
+    setVariantAdvisory: { service: 'admin', kind: 'mutation' },
+    clearVariantAdvisory: { service: 'admin', kind: 'mutation' },
+    approveLaunchpadMint: { service: 'admin', kind: 'mutation' },
+    revokeLaunchpadMint: { service: 'admin', kind: 'mutation' },
 
     // cloudrun-assets admin actions (awaited warms → long timeouts)
     adminCheckVariantMintForCanonical: { service: 'assets', kind: 'mutation', timeoutMs: 30_000 },
     adminAddCheckedVariant: { service: 'assets', kind: 'mutation', timeoutMs: 60_000 },
     adminSeedAsset: { service: 'assets', kind: 'mutation', timeoutMs: 60_000 },
     adminRefreshChartData: { service: 'assets', kind: 'mutation', timeoutMs: 60_000 },
+    // v2 multichain: re-run the Solana → v2 mirror on demand, and take one
+    // Birdeye snapshot for an EVM variant (the cron refreshes them hourly).
+    adminSyncV2SolanaVariants: { service: 'assets', kind: 'mutation', timeoutMs: 30_000 },
+    adminRefreshV2VariantMarket: { service: 'assets', kind: 'mutation', timeoutMs: 30_000 },
+    // stonk.fun lookups for the Launches page (read-only, but the client lives on assets).
+    adminPreviewLaunchpadMint: { service: 'assets', kind: 'mutation', timeoutMs: 30_000 },
+    adminListLaunchpadTokensForQuote: { service: 'assets', kind: 'mutation', timeoutMs: 60_000 },
+    adminListLaunchpadPairs: { service: 'assets', kind: 'mutation', timeoutMs: 30_000 },
+    adminSyncLaunchpadMint: { service: 'assets', kind: 'mutation', timeoutMs: 60_000 },
 
     // cloudrun-assets token-list build tools (CSV import resolves unknown
     // mints through Birdeye, so allow a long tail per chunk).

@@ -302,18 +302,6 @@ function deriveFillQualityRatios(input: {
     };
 }
 
-function assertSqlIdent(value: string, label: string): string {
-    const trimmed = value.trim();
-    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(trimmed)) {
-        throw new Error(`Invalid ClickHouse ${label}: ${value}`);
-    }
-    return trimmed;
-}
-
-function quoteSqlIdent(value: string): string {
-    return `\`${assertSqlIdent(value, 'identifier')}\``;
-}
-
 interface FillQualityAsOfRow {
     asOfMs?: number | string | null;
 }
@@ -512,24 +500,6 @@ export async function refreshSolanaClickhouseTrendingMarkets(
             asOf: null,
         };
     }
-    const tables = deps.clickhouse.tables();
-    if (!tables.solanaTradesTable) {
-        return {
-            ok: true,
-            processed: 0,
-            durationMs: deps.now() - start,
-            requested: 0,
-            scored: 0,
-            skippedNoTrades: 0,
-            skippedIneligible: 0,
-            failed: 0,
-            disabled: false,
-            skipped: true,
-            reason: 'clickhouse_solana_trades_table_not_configured',
-            asOf: null,
-        };
-    }
-
     const maxMints = clampNumber(args.maxMints, 1000, 1, 1000);
     const concurrency = clampNumber(args.concurrency, 3, 1, 8);
     const delayMs = clampNumber(args.delayMs, 25, 0, 5_000);
@@ -1233,25 +1203,6 @@ export async function refreshSolanaClickhouseOhlcv(
             disabled: true,
         };
     }
-    const tables = deps.clickhouse.tables();
-    if (!tables.solanaTradesTable) {
-        return {
-            ok: true,
-            processed: 0,
-            durationMs: deps.now() - start,
-            interval,
-            requested: 0,
-            refreshed: 0,
-            failed: 0,
-            inserted: 0,
-            updated: 0,
-            skipped: 0,
-            disabled: false,
-            skippedRun: true,
-            reason: 'clickhouse_solana_trades_table_not_configured',
-        };
-    }
-
     const days = clampNumber(args.days, interval === '1D' ? 365 : 7, 1, 3650);
     const maxMints = clampNumber(args.maxMints, 100, 1, 250);
     const priorityCount = clampNumber(args.priorityCount, 25, 0, 100);
@@ -1388,48 +1339,6 @@ interface StockCandleRow {
     volume?: number | string;
 }
 
-function getStockTsEventExpression(env: NodeJS.ProcessEnv): string {
-    const type = (env.CLICKHOUSE_STOCK_TS_EVENT_TYPE ?? 'unix_nanos').toLowerCase();
-    if (type === 'datetime64') return 'ts_event';
-    if (type === 'unix_nanos') return 'fromUnixTimestamp64Nano(ts_event)';
-    throw new Error(`Invalid CLICKHOUSE_STOCK_TS_EVENT_TYPE: ${type} (expected "unix_nanos" or "datetime64")`);
-}
-
-function getStockPriceScale(env: NodeJS.ProcessEnv): number {
-    const raw = env.CLICKHOUSE_STOCK_PRICE_SCALE;
-    if (!raw) return 1;
-    const scale = Number(raw);
-    if (!Number.isFinite(scale) || scale <= 0) {
-        throw new Error(`Invalid CLICKHOUSE_STOCK_PRICE_SCALE: ${raw} (expected a positive number)`);
-    }
-    return scale;
-}
-
-function getBboPriceExpressions(env: NodeJS.ProcessEnv): string[] {
-    const scaleParam = '{priceScale:Float64}';
-    const custom = (env.CLICKHOUSE_STOCK_BBO_PRICE_EXPR ?? '').trim();
-    const expressions = [
-        custom ? `(${custom}) / ${scaleParam}` : null,
-        `if(
-            toFloat64(bid_px) > 0 AND toFloat64(ask_px) > 0,
-            ((toFloat64(bid_px) + toFloat64(ask_px)) / 2) / ${scaleParam},
-            if(toFloat64(bid_px) > 0, toFloat64(bid_px) / ${scaleParam}, toFloat64(ask_px) / ${scaleParam})
-        )`,
-        `if(
-            toFloat64(bid_px_00) > 0 AND toFloat64(ask_px_00) > 0,
-            ((toFloat64(bid_px_00) + toFloat64(ask_px_00)) / 2) / ${scaleParam},
-            if(toFloat64(bid_px_00) > 0, toFloat64(bid_px_00) / ${scaleParam}, toFloat64(ask_px_00) / ${scaleParam})
-        )`,
-        `if(
-            toFloat64(bid_price) > 0 AND toFloat64(ask_price) > 0,
-            ((toFloat64(bid_price) + toFloat64(ask_price)) / 2) / ${scaleParam},
-            if(toFloat64(bid_price) > 0, toFloat64(bid_price) / ${scaleParam}, toFloat64(ask_price) / ${scaleParam})
-        )`,
-        `toFloat64(price) / ${scaleParam}`,
-    ].filter((expression): expression is string => expression !== null);
-    return expressions;
-}
-
 function normalizeStockCandles(rows: StockCandleRow[]): Array<{
     time: number;
     open: number;
@@ -1450,129 +1359,48 @@ function normalizeStockCandles(rows: StockCandleRow[]): Array<{
         .filter(c => c.time > 0 && c.open > 0 && c.high > 0 && c.low > 0 && c.close > 0);
 }
 
-interface ResolvedStockTables {
-    database: string;
-    stockTradesTable: string;
-    stockBboTable: string | null;
-}
-
-function resolveStockTables(
-    env: NodeJS.ProcessEnv,
-    fallbackDatabase: string,
-    stockTradesTable: string,
-): ResolvedStockTables {
-    return {
-        database: assertSqlIdent((env.CLICKHOUSE_DATABASE ?? fallbackDatabase).trim() || fallbackDatabase, 'database'),
-        stockTradesTable: assertSqlIdent(stockTradesTable, 'table'),
-        stockBboTable: (env.CLICKHOUSE_STOCK_BBO_TABLE ?? '').trim() || null,
-    };
-}
-
-function qualify(database: string, table: string): string {
-    return `${quoteSqlIdent(database)}.${quoteSqlIdent(table)}`;
-}
-
 async function fetchStockCandlesFromTrades(params: {
     clickhouse: ClickhouseClient;
-    env: NodeJS.ProcessEnv;
-    tables: ResolvedStockTables;
     symbol: string;
     interval: string;
     fromSec: number;
     toSec: number;
 }): Promise<Array<{ time: number; open: number; high: number; low: number; close: number; volume: number }>> {
-    const eventExpr = getStockTsEventExpression(params.env);
-    const intervalSeconds = intervalToSeconds(params.interval);
-    const priceScale = getStockPriceScale(params.env);
-    const tableRef = qualify(params.tables.database, params.tables.stockTradesTable);
-    const rows = await params.clickhouse.query<StockCandleRow>({
-        sql: `
-            SELECT
-                toUnixTimestamp(toStartOfInterval(${eventExpr}, toIntervalSecond({intervalSeconds:UInt32}))) AS time,
-                argMin(toFloat64(price) / {priceScale:Float64}, ${eventExpr}) AS open,
-                max(toFloat64(price) / {priceScale:Float64}) AS high,
-                min(toFloat64(price) / {priceScale:Float64}) AS low,
-                argMax(toFloat64(price) / {priceScale:Float64}, ${eventExpr}) AS close,
-                sum((toFloat64(price) / {priceScale:Float64}) * toFloat64(size)) AS volume
-            FROM ${tableRef}
-            WHERE symbol = {symbol:String}
-              AND ${eventExpr} >= toDateTime({from:UInt32})
-              AND ${eventExpr} <= toDateTime({to:UInt32})
-            GROUP BY time
-            ORDER BY time ASC
-        `,
-        params: {
-            symbol: params.symbol.toUpperCase(),
-            intervalSeconds,
-            priceScale,
-            from: Math.max(0, Math.floor(params.fromSec)),
-            to: Math.max(0, Math.floor(params.toSec)),
-        },
+    const rows = await params.clickhouse.queryPreset<StockCandleRow>('stock_candles_trades', {
+        symbol: params.symbol.toUpperCase(),
+        interval: params.interval,
+        fromSec: Math.max(0, Math.floor(params.fromSec)),
+        toSec: Math.max(0, Math.floor(params.toSec)),
     });
     return normalizeStockCandles(rows);
 }
 
 async function fetchStockCandlesFromBbo(params: {
     clickhouse: ClickhouseClient;
-    env: NodeJS.ProcessEnv;
-    tables: ResolvedStockTables;
     symbol: string;
     interval: string;
     fromSec: number;
     toSec: number;
 }): Promise<Array<{ time: number; open: number; high: number; low: number; close: number; volume: number }> | null> {
-    if (!params.tables.stockBboTable) return null;
-    const eventExpr = getStockTsEventExpression(params.env);
-    const intervalSeconds = intervalToSeconds(params.interval);
-    const priceScale = getStockPriceScale(params.env);
-    const tableRef = qualify(params.tables.database, params.tables.stockBboTable);
-    for (const priceExpr of getBboPriceExpressions(params.env)) {
-        try {
-            const rows = await params.clickhouse.query<StockCandleRow>({
-                sql: `
-                    SELECT
-                        toUnixTimestamp(toStartOfInterval(eventTime, toIntervalSecond({intervalSeconds:UInt32}))) AS time,
-                        argMin(px, eventTime) AS open,
-                        max(px) AS high,
-                        min(px) AS low,
-                        argMax(px, eventTime) AS close,
-                        0 AS volume
-                    FROM (
-                        SELECT
-                            ${eventExpr} AS eventTime,
-                            ${priceExpr} AS px
-                        FROM ${tableRef}
-                        WHERE symbol = {symbol:String}
-                          AND ${eventExpr} >= toDateTime({from:UInt32})
-                          AND ${eventExpr} <= toDateTime({to:UInt32})
-                    )
-                    WHERE px > 0
-                    GROUP BY time
-                    ORDER BY time ASC
-                `,
-                params: {
-                    symbol: params.symbol.toUpperCase(),
-                    intervalSeconds,
-                    priceScale,
-                    from: Math.max(0, Math.floor(params.fromSec)),
-                    to: Math.max(0, Math.floor(params.toSec)),
-                },
-            });
-            return normalizeStockCandles(rows);
-        } catch (err) {
-            console.warn(
-                '[refreshPublicEquityStockOhlcv] BBO candle query failed, trying next expression',
-                err instanceof Error ? err.message : String(err),
-            );
-        }
+    try {
+        const rows = await params.clickhouse.queryPreset<StockCandleRow>('stock_candles_bbo', {
+            symbol: params.symbol.toUpperCase(),
+            interval: params.interval,
+            fromSec: Math.max(0, Math.floor(params.fromSec)),
+            toSec: Math.max(0, Math.floor(params.toSec)),
+        });
+        return normalizeStockCandles(rows);
+    } catch (err) {
+        console.warn(
+            '[refreshPublicEquityStockOhlcv] BBO candle query failed',
+            err instanceof Error ? err.message : String(err),
+        );
+        return null;
     }
-    return null;
 }
 
 async function fetchStockCandles(params: {
     clickhouse: ClickhouseClient;
-    env: NodeJS.ProcessEnv;
-    tables: ResolvedStockTables;
     symbol: string;
     interval: string;
     fromSec: number;
@@ -1610,25 +1438,6 @@ export async function refreshPublicEquityStockOhlcv(
             disabled: true,
         };
     }
-    const tables = deps.clickhouse.tables();
-    if (!tables.stockTradesTable) {
-        return {
-            ok: true,
-            processed: 0,
-            durationMs: deps.now() - start,
-            interval,
-            requested: 0,
-            refreshed: 0,
-            failed: 0,
-            inserted: 0,
-            updated: 0,
-            skipped: 0,
-            disabled: false,
-            skippedRun: true,
-            reason: 'clickhouse_stock_trades_table_not_configured',
-        };
-    }
-
     const days = clampNumber(args.days, interval === '1D' ? 365 : 7, 1, 3650);
     const maxAssets = clampNumber(args.maxAssets, 250, 1, 1000);
     const concurrency = clampNumber(args.concurrency, 2, 1, 5);
@@ -1662,8 +1471,6 @@ export async function refreshPublicEquityStockOhlcv(
         selected = pickDeterministicBatch(mappings, maxAssets, selectionWindowMs, deps.now());
     }
 
-    const env = deps.env();
-    const stockTables = resolveStockTables(env, tables.database, tables.stockTradesTable);
     const nowSec = Math.floor(deps.now() / 1000);
     const requestedFrom = nowSec - days * 24 * 60 * 60;
     const requestedTo = nowSec;
@@ -1703,8 +1510,6 @@ export async function refreshPublicEquityStockOhlcv(
                 for (const segment of segments) {
                     const candles = await fetchStockCandles({
                         clickhouse: deps.clickhouse,
-                        env,
-                        tables: stockTables,
                         symbol: mapping.symbol,
                         interval,
                         fromSec: segment.from,

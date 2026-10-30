@@ -18,6 +18,12 @@ import {
     type CoingeckoPriceUpsert,
     type CoingeckoRepo,
     type CoingeckoTickersUpsert,
+    type CoingeckoCoinsMarketsRow,
+    type AssetCoinIdValidationRow,
+    type CoinIdAuditRow,
+    pickCoinIdCandidate,
+    rankCoinIdCandidate,
+    validateCoingeckoIds,
 } from './crons.coingecko';
 
 const FIXED_NOW = 1_780_000_000_000;
@@ -41,6 +47,10 @@ interface CGState {
     tickerPagesThrows?: Record<string, boolean>;
     upsertedTickers?: CoingeckoTickersUpsert[];
     touchedTickers?: { coinId: string; lastFetchedAt: number }[];
+    simplePriceCalls?: string[][];
+    coinsMarketsCalls?: string[][];
+    coinsMarketsThrows?: boolean;
+    coinsMarketsResult?: CoingeckoCoinsMarketsRow[];
     simplePriceResult?: Record<string, {
         usd?: unknown;
         usd_market_cap?: unknown;
@@ -62,6 +72,13 @@ interface CGState {
     coinLastSyncedAtByCoinId?: Record<string, number>;
     marketChartCalls?: string[];
     upsertedOhlcv?: Array<{ coinId: string; interval: CoingeckoOhlcvInterval; candles: CoingeckoOhlcvCandle[] }>;
+    /** validate-coingecko-ids inputs / captures. */
+    validationAssets?: AssetCoinIdValidationRow[];
+    knownCoins?: Record<string, { solanaMint: string | null }>;
+    coinsByMint?: Record<string, string[]>;
+    repairs?: Array<{ assetId: string; coinId: string }>;
+    repairThrows?: boolean;
+    audit?: CoinIdAuditRow[];
 }
 
 function makeRepo(state: CGState = {}): CoingeckoRepo {
@@ -121,6 +138,28 @@ function makeRepo(state: CGState = {}): CoingeckoRepo {
                 return syncedAt === undefined || syncedAt >= syncedSinceMs;
             });
         },
+        async listAssetsForCoinIdValidation() {
+            return state.validationAssets ?? [];
+        },
+        async findKnownCoins(coinIds) {
+            const out = new Map<string, { solanaMint: string | null }>();
+            for (const id of coinIds) {
+                const known = state.knownCoins?.[id];
+                if (known) out.set(id, known);
+            }
+            return out;
+        },
+        async findCoinsBySolanaMints(mints) {
+            return mints.flatMap(mint => (state.coinsByMint?.[mint] ?? []).map(coinId => ({ mint, coinId, lastSyncedAt: FIXED_NOW })));
+        },
+        async repairAssetCoinId(args) {
+            if (state.repairThrows) throw new Error('write failed');
+            (state.repairs ??= []).push({ assetId: args.assetId, coinId: args.coinId });
+            return true;
+        },
+        async upsertCoinIdAudit(rows) {
+            (state.audit ??= []).push(...rows);
+        },
         async getOhlcvBounds(coinId, interval) {
             return state.ohlcvBoundsByKey?.[`${coinId}\n${interval}`] ?? { minTime: null, maxTime: null };
         },
@@ -131,8 +170,11 @@ function makeRepo(state: CGState = {}): CoingeckoRepo {
     };
 }
 
-function makeCurated(coinIds: readonly string[]): CoingeckoCuratedSource {
-    return { getCuratedCoinIdsInOrder: () => Array.from(coinIds) };
+function makeCurated(coinIds: readonly string[], priceIds?: readonly string[]): CoingeckoCuratedSource {
+    return {
+        getCuratedCoinIdsInOrder: () => Array.from(coinIds),
+        getPriceCoinIdsInOrder: () => Array.from(priceIds ?? coinIds),
+    };
 }
 
 function makeClient(state: CGState = {}): CoingeckoClient {
@@ -150,9 +192,15 @@ function makeClient(state: CGState = {}): CoingeckoClient {
             const pages = state.tickerPagesByCoinId?.[coinId] ?? [];
             return pages[page - 1] ?? { tickers: [] };
         },
-        async fetchSimplePrice() {
+        async fetchSimplePrice(coinIds) {
+            (state.simplePriceCalls ??= []).push([...coinIds]);
             if (state.simplePriceThrows) throw new Error('simple/price http failed');
             return state.simplePriceResult ?? {};
+        },
+        async fetchCoinsMarkets(coinIds) {
+            (state.coinsMarketsCalls ??= []).push([...coinIds]);
+            if (state.coinsMarketsThrows) throw new Error('coins/markets http failed');
+            return (state.coinsMarketsResult ?? []).filter(row => coinIds.includes(row.id));
         },
         async fetchMarketChartRange({ coinId }) {
             (state.marketChartCalls ??= []).push(coinId);
@@ -483,6 +531,106 @@ describe('refreshCuratedCoingeckoPrices', () => {
         expect(res.failed).toBe(1);
         expect(res.refreshed).toBe(1);
     });
+
+    it('takes price, supply and FDV from coins/markets and only asks simple/price for ids it omitted', async () => {
+        const { deps, state } = makeDeps({
+            curated: ['bitcoin', 'ethereum'],
+            state: {
+                coinsMarketsResult: [
+                    {
+                        id: 'bitcoin',
+                        current_price: 81_307,
+                        market_cap: 1.63e12,
+                        fully_diluted_valuation: 1.71e12,
+                        total_volume: 3.8e10,
+                        price_change_percentage_24h: -2.65,
+                        circulating_supply: 20_049_703,
+                        total_supply: 20_049_721,
+                        max_supply: 21_000_000,
+                        last_updated: '2026-10-08T16:30:21.000Z',
+                    },
+                ],
+                simplePriceResult: {
+                    ethereum: { usd: 3000, usd_market_cap: 4e11, usd_24h_vol: 5e8, usd_24h_change: -0.5, last_updated_at: 1_791_477_000 },
+                },
+            },
+        });
+        const res = await refreshCuratedCoingeckoPrices(deps, { maxCoins: 2, chunkSize: 200, delayMs: 0 });
+        expect(res.ok).toBe(true);
+        expect(res.refreshed).toBe(2);
+        expect(res.failed).toBe(0);
+        expect(state.coinsMarketsCalls).toEqual([['bitcoin', 'ethereum']]);
+        expect(state.simplePriceCalls).toEqual([['ethereum']]);
+
+        const byId = new Map(state.upsertedPrices!.map(p => [p.coinId, p] as const));
+        expect(byId.get('bitcoin')).toMatchObject({
+            priceUsd: 81_307,
+            marketCapUsd: 1.63e12,
+            volume24hUsd: 3.8e10,
+            priceChange24hPercent: -2.65,
+            providerLastUpdatedAt: 1_791_477_021,
+            circulatingSupply: 20_049_703,
+            totalSupply: 20_049_721,
+            maxSupply: 21_000_000,
+            fdvUsd: 1.71e12,
+        });
+        // Fallback rows carry no supply (COALESCE in SQL keeps the stored value).
+        expect(byId.get('ethereum')).toMatchObject({ priceUsd: 3000, providerLastUpdatedAt: 1_791_477_000 });
+        expect(byId.get('ethereum')!.circulatingSupply ?? null).toBeNull();
+    });
+
+    it('uncapped assets store maxSupply null', async () => {
+        const { deps, state } = makeDeps({
+            curated: ['solana'],
+            state: {
+                coinsMarketsResult: [
+                    { id: 'solana', current_price: 108.7, circulating_supply: 580_767_381, total_supply: 629_334_221, max_supply: null },
+                ],
+            },
+        });
+        await refreshCuratedCoingeckoPrices(deps, { maxCoins: 1, delayMs: 0 });
+        expect(state.upsertedPrices![0]).toMatchObject({ coinId: 'solana', circulatingSupply: 580_767_381, maxSupply: null });
+        expect(state.simplePriceCalls ?? []).toEqual([]);
+    });
+
+    it('falls back to simple/price for the whole chunk when coins/markets fails', async () => {
+        const { deps, state } = makeDeps({
+            curated: ['bitcoin', 'ethereum'],
+            state: {
+                coinsMarketsThrows: true,
+                simplePriceResult: { bitcoin: { usd: 1 }, ethereum: { usd: 2 } },
+            },
+        });
+        const res = await refreshCuratedCoingeckoPrices(deps, { maxCoins: 2, delayMs: 0 });
+        expect(res.ok).toBe(true);
+        expect(res.refreshed).toBe(2);
+        expect(state.simplePriceCalls).toEqual([['bitcoin', 'ethereum']]);
+    });
+
+    it('counts the chunk as failed when both provider calls fail, without touching stored rows', async () => {
+        const { deps, state } = makeDeps({
+            curated: ['bitcoin', 'ethereum'],
+            state: { coinsMarketsThrows: true, simplePriceThrows: true },
+        });
+        const res = await refreshCuratedCoingeckoPrices(deps, { maxCoins: 2, delayMs: 0 });
+        expect(res.ok).toBe(false);
+        expect(res.failed).toBe(2);
+        expect(state.upsertedPrices ?? []).toEqual([]);
+    });
+
+    it('does not blank out ids missing from coins/markets when the simple/price fallback fails', async () => {
+        const { deps, state } = makeDeps({
+            curated: ['bitcoin', 'ethereum'],
+            state: {
+                coinsMarketsResult: [{ id: 'bitcoin', current_price: 1 }],
+                simplePriceThrows: true,
+            },
+        });
+        const res = await refreshCuratedCoingeckoPrices(deps, { maxCoins: 2, delayMs: 0 });
+        expect(res.refreshed).toBe(1);
+        expect(res.failed).toBe(1);
+        expect(state.upsertedPrices!.map(p => p.coinId)).toEqual(['bitcoin']);
+    });
 });
 
 describe('refreshCuratedCoingeckoPrices explicit coinIds', () => {
@@ -645,5 +793,174 @@ describe('__testing helpers', () => {
     it('parses interval strings strictly', () => {
         expect(__testing.parseCoingeckoInterval('1H')).toBe('1H');
         expect(() => __testing.parseCoingeckoInterval('bogus')).toThrow(InvalidArgsError);
+    });
+});
+
+describe('validate-coingecko-ids', () => {
+    const asset = (overrides: Partial<AssetCoinIdValidationRow> = {}): AssetCoinIdValidationRow => ({
+        assetId: 'tesla',
+        category: 'equity',
+        coingeckoId: 'tesla-xstock',
+        adminEditedAt: null,
+        solanaMints: [{ mint: 'TSLAxMint', liquidity: 1_000_000 }],
+        ...overrides,
+    });
+    const statusOf = (state: CGState, assetId: string) => state.audit!.find(row => row.assetId === assetId);
+
+    it('ranks issuers xStock > Ondo > Backpack > bStocks, then liquidity', () => {
+        expect(rankCoinIdCandidate('tesla-xstock')).toBe(0);
+        expect(rankCoinIdCandidate('tesla-ondo-tokenized-stock')).toBe(1);
+        expect(rankCoinIdCandidate('tesla-backpack-securities')).toBe(2);
+        expect(rankCoinIdCandidate('micron-technology-bstock')).toBe(3);
+        expect(rankCoinIdCandidate('chewy')).toBe(4);
+        expect(
+            pickCoinIdCandidate([
+                { coinId: 'tesla-ondo-tokenized-stock', mint: 'a', liquidity: 9 },
+                { coinId: 'tesla-xstock', mint: 'b', liquidity: 1 },
+            ])?.coinId,
+        ).toBe('tesla-xstock');
+        expect(
+            pickCoinIdCandidate([
+                { coinId: 'x-backpack-securities', mint: 'a', liquidity: 1 },
+                { coinId: 'y-backpack-securities', mint: 'b', liquidity: 5 },
+            ])?.coinId,
+        ).toBe('y-backpack-securities');
+        expect(pickCoinIdCandidate([])).toBeNull();
+    });
+
+    it('a valid id whose coin lists one of the asset mints is ok', async () => {
+        const { deps, state } = makeDeps({
+            state: { validationAssets: [asset()], knownCoins: { 'tesla-xstock': { solanaMint: 'TSLAxMint' } } },
+        });
+        const res = await validateCoingeckoIds(deps, {});
+        expect(res.ok).toBe(true);
+        expect(res.statuses).toMatchObject({ ok: 1, repaired: 0, assigned: 0, unresolved: 0 });
+        expect(state.repairs ?? []).toHaveLength(0);
+        expect(statusOf(state, 'tesla')?.status).toBe('ok');
+    });
+
+    it('a failed audit write fails the run, since the audit table is the report', async () => {
+        const { deps } = makeDeps({
+            state: { validationAssets: [asset()], knownCoins: { 'tesla-xstock': { solanaMint: 'TSLAxMint' } } },
+        });
+        deps.coingeckoRepo!.upsertCoinIdAudit = async () => {
+            throw new Error('relation does not exist');
+        };
+        const res = await validateCoingeckoIds(deps, { write: false });
+        expect(res.ok).toBe(false);
+        expect(res.partial).toBe(true);
+        expect(res.reason).toBe('audit_write_failed');
+        expect(res.auditFailed).toBe(1);
+        expect(res.auditWritten).toBe(0);
+    });
+
+    it('a generated id CoinGecko does not know is repaired from the Solana mint, xStock preferred', async () => {
+        const { deps, state } = makeDeps({
+            state: {
+                validationAssets: [asset({ assetId: 'nvidia', coingeckoId: 'nvidia-xstock', solanaMints: [{ mint: 'NvdaMint', liquidity: 1 }] })],
+                knownCoins: {},
+                coinsByMint: { NvdaMint: ['nvidia-ondo-tokenized-stock', 'nvidia-corporation-xstock'] },
+            },
+        });
+        const res = await validateCoingeckoIds(deps, {});
+        expect(res.statuses).toMatchObject({ repaired: 1 });
+        expect(state.repairs).toEqual([{ assetId: 'nvidia', coinId: 'nvidia-corporation-xstock' }]);
+        const row = statusOf(state, 'nvidia')!;
+        expect(row.status).toBe('repaired');
+        expect(row.currentId).toBe('nvidia-xstock');
+        expect(row.suggestedId).toBe('nvidia-corporation-xstock');
+        expect(row.candidates.map(c => c.coinId).sort()).toEqual(['nvidia-corporation-xstock', 'nvidia-ondo-tokenized-stock']);
+    });
+
+    it('an asset without an id is assigned one; an admin-edited asset is reported, not written', async () => {
+        const { deps, state } = makeDeps({
+            state: {
+                validationAssets: [
+                    asset({ assetId: 'micron', coingeckoId: null, solanaMints: [{ mint: 'MuMint', liquidity: 2 }] }),
+                    asset({ assetId: 'lockheed', coingeckoId: 'lockheed-xstock', adminEditedAt: 1, solanaMints: [{ mint: 'LmtMint', liquidity: 2 }] }),
+                ],
+                knownCoins: {},
+                coinsByMint: { MuMint: ['micron-technology-bstock'], LmtMint: ['lockheed-ondo-tokenized-stock'] },
+            },
+        });
+        const res = await validateCoingeckoIds(deps, {});
+        expect(res.statuses).toMatchObject({ assigned: 1, needsAdmin: 1 });
+        expect(state.repairs).toEqual([{ assetId: 'micron', coinId: 'micron-technology-bstock' }]);
+        expect(statusOf(state, 'lockheed')?.suggestedId).toBe('lockheed-ondo-tokenized-stock');
+    });
+
+    it('write:false reports every candidate as needsAdmin and writes nothing', async () => {
+        const { deps, state } = makeDeps({
+            state: { validationAssets: [asset({ coingeckoId: 'tesla-xstock-typo' })], knownCoins: {}, coinsByMint: { TSLAxMint: ['tesla-xstock'] } },
+        });
+        const res = await validateCoingeckoIds(deps, { write: false });
+        expect(res.statuses).toMatchObject({ needsAdmin: 1, repaired: 0 });
+        expect(state.repairs ?? []).toHaveLength(0);
+        expect(statusOf(state, 'tesla')?.suggestedId).toBe('tesla-xstock');
+    });
+
+    it('an equity whose coin lists a Solana contract that is not one of its mints is suspect (chewy)', async () => {
+        const { deps, state } = makeDeps({
+            state: {
+                validationAssets: [asset({ assetId: 'chewy', coingeckoId: 'chewy', solanaMints: [{ mint: 'ChewyBackpackMint', liquidity: 1 }] })],
+                knownCoins: { chewy: { solanaMint: 'y7wrhyMemeMint' } },
+                coinsByMint: { ChewyBackpackMint: ['chewy-backpack-securities'] },
+            },
+        });
+        const res = await validateCoingeckoIds(deps, {});
+        expect(res.statuses).toMatchObject({ suspect: 1 });
+        expect(state.repairs ?? []).toHaveLength(0);
+        expect(statusOf(state, 'chewy')?.suggestedId).toBe('chewy-backpack-securities');
+    });
+
+    it('a crypto asset whose coin lists a different Solana wrapper is still ok, and no candidate means unresolved', async () => {
+        const { deps, state } = makeDeps({
+            state: {
+                validationAssets: [
+                    asset({ assetId: 'link', category: 'crypto', coingeckoId: 'chainlink', solanaMints: [{ mint: 'WormholeLink', liquidity: 1 }] }),
+                    asset({ assetId: 'ghost', coingeckoId: 'ghost-xstock', solanaMints: [] }),
+                ],
+                knownCoins: { chainlink: { solanaMint: 'OtherLinkMint' } },
+            },
+        });
+        const res = await validateCoingeckoIds(deps, {});
+        expect(res.statuses).toMatchObject({ ok: 1, unresolved: 1 });
+        expect(statusOf(state, 'ghost')?.status).toBe('unresolved');
+    });
+
+    it('a stored id that only the remap fixes (bnb → binancecoin) is persisted; a suppressed one is left alone', async () => {
+        const { deps, state } = makeDeps({
+            state: {
+                validationAssets: [
+                    asset({ assetId: 'bnb', category: 'crypto', coingeckoId: 'bnb', solanaMints: [] }),
+                    asset({ assetId: 'spacex', coingeckoId: 'spacex-prestocks-2', solanaMints: [{ mint: 'PreMint', liquidity: 1 }] }),
+                ],
+                knownCoins: { binancecoin: { solanaMint: null } },
+                coinsByMint: { PreMint: ['spacex-prestocks-2'] },
+            },
+        });
+        const res = await validateCoingeckoIds(deps, {});
+        expect(res.statuses).toMatchObject({ repaired: 1, ok: 1 });
+        expect(state.repairs).toEqual([{ assetId: 'bnb', coinId: 'binancecoin' }]);
+    });
+
+    it('a failed write is partial and reported as needsAdmin', async () => {
+        const { deps, state } = makeDeps({
+            state: { validationAssets: [asset({ coingeckoId: null })], knownCoins: {}, coinsByMint: { TSLAxMint: ['tesla-xstock'] }, repairThrows: true },
+        });
+        const res = await validateCoingeckoIds(deps, {});
+        expect(res.ok).toBe(false);
+        expect(res.partial).toBe(true);
+        expect(statusOf(state, 'tesla')?.status).toBe('needsAdmin');
+    });
+
+    it('the price refresh reads the widened price id list, not the curated one', async () => {
+        const { deps, state } = makeDeps({
+            curated: ['bitcoin'],
+            state: { knownCoinIds: ['bitcoin', 'jito-staked-sol'], coinsMarketsResult: [] },
+        });
+        deps.coingeckoCurated = makeCurated(['bitcoin'], ['bitcoin', 'jito-staked-sol']);
+        await refreshCuratedCoingeckoPrices(deps, { maxCoins: 10 });
+        expect(state.coinsMarketsCalls?.[0]).toEqual(['bitcoin', 'jito-staked-sol']);
     });
 });

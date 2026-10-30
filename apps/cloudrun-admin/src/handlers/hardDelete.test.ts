@@ -14,6 +14,7 @@ const ADMIN_IDS: ReadonlySet<string> = new Set(['admin_1']);
 const COUNTERS: HardDeleteCounters = {
     membershipsDeleted: 1,
     aliasesDeleted: 2,
+    v2VariantsDeleted: 2,
     variantsDeleted: 3,
     variantMarketsDeleted: 4,
     tokenMarketsDeleted: 5,
@@ -85,6 +86,7 @@ describe('hardDeleteAsset handler', () => {
                 'membershipsDeleted',
                 'aliasesDeleted',
                 'variantsDeleted',
+                'v2VariantsDeleted',
                 'variantMarketsDeleted',
                 'tokenMarketsDeleted',
                 'tokenDocsDeleted',

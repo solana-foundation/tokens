@@ -33,7 +33,7 @@ function makeDeps(overrides: Partial<PrestocksCronDeps> = {}): {
 } {
     const upserts: PrestocksPriceUpsert[] = [];
     const deps: PrestocksCronDeps = {
-        prestocks: { async fetchBySymbol() { return snapshot(); } },
+        prestocks: { async fetchAll() { return [snapshot()]; } },
         repo: {
             async upsertLatest(row) {
                 upserts.push(row);
@@ -42,56 +42,66 @@ function makeDeps(overrides: Partial<PrestocksCronDeps> = {}): {
         now: () => 1_786_406_400_000,
         listings: [{ mint: ANDURIL_MINT, symbol: 'ANDURIL', name: 'Anduril', assetId: 'pre-prestj4y' }],
         isRefreshEnabled: () => true,
-        delayMs: 0,
         ...overrides,
     };
     return { deps, upserts };
 }
 
 describe('makePreStocksClient', () => {
-    test('parses payloads with raw control characters in description', async () => {
-        // prestocks.com returns literal newlines inside the description string,
-        // which strict JSON.parse rejects.
+    const andurilEntry =
+        '{"name":"Anduril PreStocks","symbol":"ANDURIL","description":"Line one.\n\nLine two.",' +
+        `"image":"https://www.prestocks.com/logos/anduril.png","external_url":"https://www.prestocks.com/anduril",` +
+        `"contract_address":"${ANDURIL_MINT}","markPrice":132.81263967,"markValuation":107948980944,` +
+        '"tokenPrice":174.00957611,"impliedValuation":141433261696,"supply":10227.733508798}';
+
+    test('parses the listing array, tolerating raw control characters in descriptions', async () => {
+        // prestocks.com has returned literal newlines inside the description
+        // string, which strict JSON.parse rejects.
         const body =
-            '{"name":"Anduril PreStocks","symbol":"ANDURIL","description":"Line one.\n\nLine two.",' +
-            `"image":"https://www.prestocks.com/logos/anduril.png","external_url":"https://www.prestocks.com/anduril",` +
-            `"contract_address":"${ANDURIL_MINT}","markPrice":132.81263967,"markValuation":107948980944,` +
-            '"tokenPrice":174.00928344776113,"impliedValuation":141433261696,"supply":10227.733822361}';
-        const fetchImpl = (async () =>
-            new Response(body, { status: 200, headers: { 'content-type': 'application/json' } })) as unknown as typeof fetch;
-
-        const client = makePreStocksClient({ fetchImpl });
-        const out = await client.fetchBySymbol('ANDURIL');
-
-        expect(out).not.toBeNull();
-        expect(out?.symbol).toBe('ANDURIL');
-        expect(out?.mint).toBe(ANDURIL_MINT);
-        expect(out?.markPriceUsd).toBeCloseTo(132.81263967);
-        expect(out?.markValuationUsd).toBe(107948980944);
-        expect(out?.tokenPriceUsd).toBeCloseTo(174.00928344776113);
-        expect(out?.impliedValuationUsd).toBe(141433261696);
-        expect(out?.supply).toBeCloseTo(10227.733822361);
-    });
-
-    test('returns null on 404 (unknown symbol)', async () => {
-        const fetchImpl = (async () =>
-            new Response('{"error":"Token not found"}', { status: 404 })) as unknown as typeof fetch;
-        const client = makePreStocksClient({ fetchImpl });
-        expect(await client.fetchBySymbol('NOPE')).toBeNull();
-    });
-
-    test('rejects symbols that are not plain alphanumerics', async () => {
-        const fetchImpl = (async () => {
-            throw new Error('should not fetch');
+            `[${andurilEntry},` +
+            `{"name":"Kalshi PreStocks","symbol":"KALSHI","contract_address":"${KALSHI_MINT}",` +
+            '"markPrice":939.7,"markValuation":34179254738,"tokenPrice":null,"impliedValuation":null,"supply":null}]';
+        const requested: string[] = [];
+        const fetchImpl = (async (input: string | URL | Request) => {
+            requested.push(String(input));
+            return new Response(body, { status: 200 });
         }) as unknown as typeof fetch;
+
         const client = makePreStocksClient({ fetchImpl });
-        expect(await client.fetchBySymbol('../etc')).toBeNull();
+        const out = await client.fetchAll();
+
+        expect(requested).toEqual(['https://prestocks.com/api/prestocks']);
+        expect(out).toHaveLength(2);
+        expect(out[0]?.symbol).toBe('ANDURIL');
+        expect(out[0]?.mint).toBe(ANDURIL_MINT);
+        expect(out[0]?.markPriceUsd).toBe(132.81263967);
+        expect(out[0]?.markValuationUsd).toBe(107948980944);
+        expect(out[0]?.tokenPriceUsd).toBe(174.00957611);
+        expect(out[0]?.impliedValuationUsd).toBe(141433261696);
+        expect(out[0]?.supply).toBe(10227.733508798);
+        expect(out[1]?.mint).toBe(KALSHI_MINT);
+        expect(out[1]?.tokenPriceUsd).toBeNull();
+        expect(out[1]?.imageUrl).toBeNull();
     });
 
-    test('throws on server errors', async () => {
-        const fetchImpl = (async () => new Response('oops', { status: 500 })) as unknown as typeof fetch;
+    test('skips entries without a mint or symbol', async () => {
+        const body = `[${andurilEntry},{"symbol":"NOMINT","markPrice":1},{"contract_address":"${KALSHI_MINT}"},null]`;
+        const fetchImpl = (async () => new Response(body, { status: 200 })) as unknown as typeof fetch;
         const client = makePreStocksClient({ fetchImpl });
-        await expect(client.fetchBySymbol('ANDURIL')).rejects.toThrow('PreStocks request failed');
+        const out = await client.fetchAll();
+        expect(out.map(entry => entry.symbol)).toEqual(['ANDURIL']);
+    });
+
+    test('throws when the response is not an array', async () => {
+        const fetchImpl = (async () => new Response(andurilEntry, { status: 200 })) as unknown as typeof fetch;
+        const client = makePreStocksClient({ fetchImpl });
+        await expect(client.fetchAll()).rejects.toThrow('PreStocks response is not an array');
+    });
+
+    test('throws on non-OK responses', async () => {
+        const fetchImpl = (async () => new Response('upstream error', { status: 502 })) as unknown as typeof fetch;
+        const client = makePreStocksClient({ fetchImpl });
+        await expect(client.fetchAll()).rejects.toThrow('PreStocks request failed');
     });
 });
 
@@ -122,40 +132,85 @@ describe('refreshPrestocksPrices', () => {
         expect(upserts[0]?.lastFetchedAt).toBe(1_786_406_400_000);
     });
 
-    test('does not upsert on fetch failure (keeps last snapshot)', async () => {
-        const { deps, upserts } = makeDeps({
-            prestocks: {
-                async fetchBySymbol() {
-                    throw new Error('provider down');
-                },
-            },
-        });
-        const out = await refreshPrestocksPrices(deps, {});
-        expect(out.succeeded).toBe(0);
-        expect(out.failed).toBe(1);
-        expect(upserts).toHaveLength(0);
-    });
-
-    test('does not upsert when the returned mint mismatches the registry mint', async () => {
-        const { deps, upserts } = makeDeps({
-            prestocks: { async fetchBySymbol() { return snapshot({ mint: KALSHI_MINT }); } },
-        });
-        const out = await refreshPrestocksPrices(deps, {});
-        expect(out.succeeded).toBe(0);
-        expect(out.failed).toBe(1);
-        expect(upserts).toHaveLength(0);
-    });
-
-    test('continues past per-symbol failures', async () => {
+    test('fetches the provider list once for all listings', async () => {
+        let calls = 0;
         const { deps, upserts } = makeDeps({
             listings: [
                 { mint: KALSHI_MINT, symbol: 'KALSHI', name: 'Kalshi', assetId: 'pre-prelwgkk' },
                 { mint: ANDURIL_MINT, symbol: 'ANDURIL', name: 'Anduril', assetId: 'pre-prestj4y' },
             ],
             prestocks: {
-                async fetchBySymbol(symbol) {
-                    if (symbol === 'KALSHI') throw new Error('boom');
-                    return snapshot();
+                async fetchAll() {
+                    calls += 1;
+                    return [snapshot(), snapshot({ symbol: 'KALSHI', mint: KALSHI_MINT })];
+                },
+            },
+        });
+        const out = await refreshPrestocksPrices(deps, {});
+        expect(calls).toBe(1);
+        expect(out.succeeded).toBe(2);
+        expect(upserts.map(row => row.mint)).toEqual([KALSHI_MINT, ANDURIL_MINT]);
+    });
+
+    test('does not upsert on fetch failure (keeps last snapshot)', async () => {
+        const { deps, upserts } = makeDeps({
+            prestocks: {
+                async fetchAll() {
+                    throw new Error('provider down');
+                },
+            },
+        });
+        const out = await refreshPrestocksPrices(deps, {});
+        expect(out.ok).toBe(false);
+        expect(out.succeeded).toBe(0);
+        expect(out.failed).toBe(1);
+        expect(upserts).toHaveLength(0);
+    });
+
+    test('counts a listing missing from the provider response as failed', async () => {
+        const { deps, upserts } = makeDeps({
+            listings: [
+                { mint: KALSHI_MINT, symbol: 'KALSHI', name: 'Kalshi', assetId: 'pre-prelwgkk' },
+                { mint: ANDURIL_MINT, symbol: 'ANDURIL', name: 'Anduril', assetId: 'pre-prestj4y' },
+            ],
+        });
+        const out = await refreshPrestocksPrices(deps, {});
+        expect(out.ok).toBe(true);
+        expect(out.succeeded).toBe(1);
+        expect(out.failed).toBe(1);
+        expect(upserts.map(row => row.mint)).toEqual([ANDURIL_MINT]);
+    });
+
+    test('never writes provider entries for mints outside our listings', async () => {
+        const { deps, upserts } = makeDeps({
+            prestocks: {
+                async fetchAll() {
+                    return [snapshot(), snapshot({ symbol: 'KALSHI', mint: KALSHI_MINT })];
+                },
+            },
+        });
+        const out = await refreshPrestocksPrices(deps, {});
+        expect(out.succeeded).toBe(1);
+        expect(out.failed).toBe(0);
+        expect(upserts.map(row => row.mint)).toEqual([ANDURIL_MINT]);
+    });
+
+    test('continues past per-listing upsert failures', async () => {
+        const upserts: PrestocksPriceUpsert[] = [];
+        const { deps } = makeDeps({
+            listings: [
+                { mint: KALSHI_MINT, symbol: 'KALSHI', name: 'Kalshi', assetId: 'pre-prelwgkk' },
+                { mint: ANDURIL_MINT, symbol: 'ANDURIL', name: 'Anduril', assetId: 'pre-prestj4y' },
+            ],
+            prestocks: {
+                async fetchAll() {
+                    return [snapshot(), snapshot({ symbol: 'KALSHI', mint: KALSHI_MINT })];
+                },
+            },
+            repo: {
+                async upsertLatest(row) {
+                    if (row.mint === KALSHI_MINT) throw new Error('boom');
+                    upserts.push(row);
                 },
             },
         });

@@ -30,6 +30,29 @@ export function normalizeEndpointPath(pathname: string): string {
         return '/api/v1/assets/:assetId';
     }
 
+    if (parts[0] === 'api' && parts[1] === 'v2') {
+        const family = parts[2];
+        if (family === 'assets') {
+            if (!parts[3]) return '/api/v2/assets';
+            const sub = parts[4];
+            if (!sub) return '/api/v2/assets/:assetId';
+            return sub === 'variants' ? '/api/v2/assets/:assetId/variants' : '/api/v2/assets/:assetId/:sub';
+        }
+        if (family === 'variants') {
+            if (!parts[3]) return '/api/v2/variants';
+            const sub = parts.slice(5).join('/');
+            return sub ? `/api/v2/variants/:chain/:address/${sub}` : '/api/v2/variants/:chain/:address';
+        }
+        if (family === 'lists') {
+            if (!parts[3]) return '/api/v2/lists';
+            if (parts[3] === 'check-slug' || parts[3] === 'search-tokens' || parts[3] === 'tokens')
+                return `/api/v2/lists/${parts[3]}`;
+            if (parts[4] === 'members')
+                return parts[5] ? '/api/v2/lists/:slug/members/:mint' : '/api/v2/lists/:slug/members';
+            return '/api/v2/lists/:slug';
+        }
+    }
+
     if (parts[0] === 'api' && parts[1] === 'token') {
         if (!parts[2]) return '/api/token';
         const suffix = parts.slice(3).join('/');
@@ -153,6 +176,41 @@ export function logUsageAggregationDegraded(params: {
     });
 }
 
+/**
+ * Emitted per usage drain (Redis aggregates → rollup tables). `failed` means
+ * dashboard usage is going stale; alert on sustained occurrences.
+ */
+export function logUsageDrain(params: {
+    requestId: string;
+    /** `request`: after an API response; `schedule`: the cron-driven drain route. */
+    trigger: 'request' | 'schedule';
+    status: 'ok' | 'failed';
+    synced?: number;
+    pending?: number;
+    reason?: string;
+}): void {
+    log({
+        event: 'usage_drain',
+        timestamp: new Date().toISOString(),
+        request_id: params.requestId,
+        trigger: params.trigger,
+        status: params.status,
+        ...(params.synced !== undefined ? { synced: params.synced } : {}),
+        ...(params.pending !== undefined ? { pending: params.pending } : {}),
+        ...(params.reason ? { reason: params.reason.slice(0, 500) } : {}),
+    });
+}
+
+/** Validation details are schema paths and messages; bound them so one bad request cannot bloat a log line. */
+function stringifyDetails(details: unknown): string {
+    if (typeof details === 'string') return details.slice(0, 500);
+    try {
+        return JSON.stringify(details).slice(0, 500);
+    } catch {
+        return String(details).slice(0, 500);
+    }
+}
+
 export function logApiError(params: {
     requestId: string;
     method: string;
@@ -161,6 +219,7 @@ export function logApiError(params: {
     durationMs: number;
     errorType: string;
     errorMessage?: string;
+    errorDetails?: unknown;
     errorStack?: string;
     timestamp?: string;
     source?: string;
@@ -187,6 +246,7 @@ export function logApiError(params: {
         duration_ms: params.durationMs,
         error_type: params.errorType,
         ...(params.errorMessage ? { error_message: params.errorMessage.slice(0, 500) } : {}),
+        ...(params.errorDetails !== undefined ? { error_details: stringifyDetails(params.errorDetails) } : {}),
         ...(params.errorStack ? { error_stack: params.errorStack.slice(0, 2000) } : {}),
         slow_request: params.durationMs >= SLOW_REQUEST_THRESHOLD_MS,
         source: params.source ?? 'api',

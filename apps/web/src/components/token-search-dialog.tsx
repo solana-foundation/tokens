@@ -10,6 +10,7 @@ import { trackEvent } from '@/lib/posthog-client';
 import { CommandDialog, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from '@tokens/ui/command';
 import { Skeleton } from '@tokens/ui/skeleton';
 import { useLocalStorage, useMediaQuery } from '@tokens/ui/hooks';
+import { AssetAdvisoryBadge } from '@/components/asset-advisory-badge';
 import { fetchCuratedTokens, useCuratedTokens, useSearchTokens } from '@/hooks/queries/use-token-search';
 import { cleanTokenName } from '@/lib/logo-overrides';
 import { formatLargeNumber, formatPrice } from '@/lib/format';
@@ -295,6 +296,7 @@ function TokenCommandRow({ token, onSelect }: { token: Token; onSelect: (token: 
                 <div className="flex items-center gap-2">
                     <span className="font-medium text-text-extra-high">{tokenDisplayName}</span>
                     <span className="text-sm text-text-low truncate max-w-[180px]">{token.symbol}</span>
+                    <AssetAdvisoryBadge advisory={token.advisory} size="sm" />
                 </div>
                 <div className="flex items-center gap-3 text-xs text-text-extra-low">
                     <span>{formatPrice(token.price)}</span>

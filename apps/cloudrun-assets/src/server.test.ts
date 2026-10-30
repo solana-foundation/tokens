@@ -2,6 +2,7 @@ import { describe, expect, it } from 'bun:test';
 
 import type { AssetAliasRow, AssetRow, AssetVariantRow, AssetsRepo, CallerIdentity } from './handlers/assets';
 import type { AssetDeletionTombstonesRepo } from './handlers/assetDeletionTombstones';
+import type { AssetAdvisoriesRepo } from './handlers/assetAdvisoriesReads';
 import type { SanctumLstRow, SanctumLstsRepo } from './handlers/sanctumLsts';
 import type { AssetMarketRow, AssetMarketsRepo } from './handlers/assetMarkets';
 import type { VariantMarketRow, VariantMarketsRepo } from './handlers/variantMarkets';
@@ -17,6 +18,9 @@ import type {
 import type { StockInstrumentRow, StockPriceRow, StockReadsRepo } from './handlers/stockReads';
 import type { OhlcvCandleRow, OhlcvReadsRepo } from './handlers/ohlcvReads';
 import type { PrestocksReadsRepo } from './handlers/prestocksReads';
+import type { LaunchpadReadsRepo } from './handlers/launchpadReads';
+import type { V2AssetsReadsRepo } from './handlers/v2AssetsReads';
+import type { SolanaDataReadsRepo } from './handlers/solanaDataReads';
 import type {
     AssetsApiAssetMarketRow,
     AssetsApiAssetRow,
@@ -60,6 +64,8 @@ const sampleRow = (overrides: Partial<AssetRow> = {}): AssetRow => ({
     is_active: true,
     created_at: NOW,
     updated_at: NOW,
+    region: null,
+    industry: null,
     ...overrides,
 });
 
@@ -71,6 +77,8 @@ interface MockRepoData {
     assetsSymbolFuzzy?: Record<string, AssetRow[]>;
     variantsByMint?: Record<string, AssetVariantRow>;
     deletedRefs?: ReadonlySet<string>;
+    /** Admin renames: former id (lowercased) -> current id. */
+    renames?: Record<string, string>;
     byCategory?: {
         category: string;
         includeInactive: boolean;
@@ -119,6 +127,11 @@ function makeRepo(data: MockRepoData = {}): AssetsRepo {
         async isDeletedRef(normalizedRef) {
             return data.deletedRefs?.has(normalizedRef) ?? false;
         },
+        async listAssetIdRenames(normalizedAssetIds) {
+            return Object.entries(data.renames ?? {})
+                .filter(([from]) => normalizedAssetIds === undefined || normalizedAssetIds.includes(from))
+                .map(([from, to]) => ({ from, to }));
+        },
         async listByCategory(category, includeInactive, limit) {
             const match = data.byCategory?.find(e => e.category === category && e.includeInactive === includeInactive);
             if (!match) return [];
@@ -137,6 +150,14 @@ function makeRepo(data: MockRepoData = {}): AssetsRepo {
 function emptyDeletionTombstonesRepo(): AssetDeletionTombstonesRepo {
     return {
         async findDeletedNormalizedRefs() {
+            return [];
+        },
+    };
+}
+
+function emptyAssetAdvisoriesRepo(): AssetAdvisoriesRepo {
+    return {
+        async listAll() {
             return [];
         },
     };
@@ -219,6 +240,40 @@ function emptyStockReadsRepo(): StockReadsRepo {
         async findPricesByAssetIds() {
             return [];
         },
+    };
+}
+
+function emptyV2AssetsReadsRepo(): V2AssetsReadsRepo {
+    return {
+        async chainSummary() {
+            return [];
+        },
+        async findVariantsByAssetIds() {
+            return [];
+        },
+        async findVariantsByKey() {
+            return [];
+        },
+        async findVariantsByKeys() {
+            return [];
+        },
+        async findMarketsByKeys() {
+            return [];
+        },
+        async findRollupsByAssetIds() {
+            return [];
+        },
+    };
+}
+
+function emptyLaunchpadReadsRepo(): LaunchpadReadsRepo {
+    return { async listActiveByQuoteMints() { return []; }, async listApprovedActiveMints() { return []; } };
+}
+
+function emptySolanaDataReadsRepo(): SolanaDataReadsRepo {
+    return {
+        async listActive() { return []; },
+        async findActiveByMint() { return null; },
     };
 }
 
@@ -324,6 +379,8 @@ function deps(overrides: Partial<ServerDeps> = {}): ServerDeps {
         repo: overrides.repo ?? makeRepo(),
         assetsApiRepo: overrides.assetsApiRepo ?? noopAssetsApiRepo,
         deletionTombstonesRepo: overrides.deletionTombstonesRepo ?? emptyDeletionTombstonesRepo(),
+        assetAdvisoriesRepo: overrides.assetAdvisoriesRepo ?? emptyAssetAdvisoriesRepo(),
+        stablecoinHealthReadsRepo: overrides.stablecoinHealthReadsRepo ?? { findLatestByMints: async () => [] },
         sanctumLstsRepo: overrides.sanctumLstsRepo ?? emptySanctumLstsRepo(),
         assetMarketsRepo: overrides.assetMarketsRepo ?? emptyAssetMarketsRepo(),
         variantMarketsRepo: overrides.variantMarketsRepo ?? emptyVariantMarketsRepo(),
@@ -332,10 +389,14 @@ function deps(overrides: Partial<ServerDeps> = {}): ServerDeps {
         stockReadsRepo: overrides.stockReadsRepo ?? emptyStockReadsRepo(),
         ohlcvReadsRepo: overrides.ohlcvReadsRepo ?? emptyOhlcvReadsRepo(),
         prestocksReadsRepo: overrides.prestocksReadsRepo ?? emptyPrestocksReadsRepo(),
+        launchpadReadsRepo: overrides.launchpadReadsRepo ?? emptyLaunchpadReadsRepo(),
+        v2AssetsReadsRepo: overrides.v2AssetsReadsRepo ?? emptyV2AssetsReadsRepo(),
+        solanaDataReadsRepo: overrides.solanaDataReadsRepo ?? emptySolanaDataReadsRepo(),
         tokensReadsRepo: overrides.tokensReadsRepo ?? emptyTokensReadsRepo(),
         trendingReadsRepo: overrides.trendingReadsRepo ?? emptyTrendingReadsRepo(),
         fillQualityReadsRepo: overrides.fillQualityReadsRepo ?? emptyFillQualityReadsRepo(),
         depthCurveReadsRepo: overrides.depthCurveReadsRepo ?? emptyDepthCurveReadsRepo(),
+        assetRiskReadsRepo: { findLatestByMints: async () => [] },
         assetCollectionsReadsRepo: overrides.assetCollectionsReadsRepo ?? emptyAssetCollectionsReadsRepo(),
         tokenListsReadsRepo: overrides.tokenListsReadsRepo ?? emptyTokenListsReadsRepo(),
         tokenListsMutationsDeps: overrides.tokenListsMutationsDeps ?? emptyTokenListsMutationsDeps(),
@@ -579,6 +640,8 @@ describe('getByAssetId', () => {
             symbol: 'JUP',
             coingeckoId: 'jupiter-exchange-solana',
             imageUrl: 'https://example.test/jup.png',
+            region: null,
+            industry: null,
         });
     });
 
@@ -607,6 +670,49 @@ describe('getByAssetId', () => {
         };
         expect(body.assetId).toBe('jup');
         expect(body.isActive).toBe(false);
+    });
+
+    it('serves the renamed asset when asked for its former id', async () => {
+        const app = createApp(
+            deps({
+                repo: makeRepo({
+                    byAssetId: { 'jupiter-dao': sampleRow({ asset_id: 'jupiter-dao' }) },
+                    renames: { jup: 'jupiter-dao' },
+                }),
+            }),
+        );
+        for (const assetId of ['jup', 'JUP', 'jupiter-dao']) {
+            const res = await call(app, '/query/getByAssetId', authed({ assetId }));
+            expect(res.status).toBe(200);
+            expect(((await res.json()) as { assetId: string }).assetId).toBe('jupiter-dao');
+        }
+    });
+
+    it('does not treat ordinary aliases as a former id', async () => {
+        const app = createApp(
+            deps({
+                repo: makeRepo({
+                    byAssetId: { jup: sampleRow() },
+                    aliasesByNormalized: {
+                        jupiter: [{ alias: 'Jupiter', normalized: 'jupiter', asset_id: 'jup', priority: 900 }],
+                    },
+                }),
+            }),
+        );
+        const res = await call(app, '/query/getByAssetId', authed({ assetId: 'jupiter' }));
+        expect(await res.json()).toBeNull();
+    });
+
+    it('keeps a renamed asset hidden while inactive, under either id', async () => {
+        const app = createApp(
+            deps({
+                repo: makeRepo({
+                    byAssetId: { 'jupiter-dao': sampleRow({ asset_id: 'jupiter-dao', is_active: false }) },
+                    renames: { jup: 'jupiter-dao' },
+                }),
+            }),
+        );
+        expect(await (await call(app, '/query/getByAssetId', authed({ assetId: 'jup' }))).json()).toBeNull();
     });
 
     it('returns null for whitespace-trimmed-to-empty input', async () => {
@@ -641,6 +747,24 @@ describe('getByAssetId', () => {
             const payload = (await res.json()) as { error: string };
             expect(payload.error).toBe('invalid_args');
         }
+    });
+});
+
+describe('listAssetIdRenames', () => {
+    it('lists every rename as former id -> current id', async () => {
+        const app = createApp(deps({ repo: makeRepo({ renames: { jup: 'jupiter-dao', bitcoin: 'btc' } }) }));
+        const res = await call(app, '/query/listAssetIdRenames', authed({}));
+        expect(res.status).toBe(200);
+        expect(await res.json()).toEqual([
+            { from: 'jup', to: 'jupiter-dao' },
+            { from: 'bitcoin', to: 'btc' },
+        ]);
+    });
+
+    it('returns an empty list when nothing was renamed', async () => {
+        const app = createApp(deps());
+        const res = await call(app, '/query/listAssetIdRenames', authed({}));
+        expect(await res.json()).toEqual([]);
     });
 });
 
@@ -1512,6 +1636,34 @@ describe('POST /mutation/cacheWarm*', () => {
     });
 });
 
+describe('assetAdvisoriesList', () => {
+    it('returns the advisory snapshot with revision', async () => {
+        const repo: AssetAdvisoriesRepo = {
+            async listAll() {
+                return [
+                    { mint: 'MintA', status: 'compromised', reason: 'exploit', url: 'https://x.test/p', set_at: 10, updated_at: 20 },
+                ];
+            },
+        };
+        const app = createApp(deps({ assetAdvisoriesRepo: repo }));
+        const res = await call(app, '/query/assetAdvisoriesList', authed({}));
+        expect(res.status).toBe(200);
+        expect(await res.json()).toEqual({
+            revision: 20,
+            advisories: [
+                { mint: 'MintA', status: 'compromised', reason: 'exploit', url: 'https://x.test/p', since: 10, source: 'admin' },
+            ],
+        });
+    });
+
+    it('returns an empty snapshot when no advisories exist', async () => {
+        const app = createApp(deps());
+        const res = await call(app, '/query/assetAdvisoriesList', authed({}));
+        expect(res.status).toBe(200);
+        expect(await res.json()).toEqual({ revision: 0, advisories: [] });
+    });
+});
+
 describe('listDeletedRefs', () => {
     it('returns matched normalized refs, dedupes, trims', async () => {
         const tombs: AssetDeletionTombstonesRepo = {
@@ -1857,6 +2009,45 @@ describe('variantMarketsGetLatestByMints', () => {
         expect(body[0]!.market?.symbol).toBe('BONK');
         expect(body[0]!.market?.liquidity).toBe(1000);
         expect(body[1]!.market).toBeNull();
+    });
+
+    it('prefers the first-party logo copy over the logo carried by the winning provider metrics blob', async () => {
+        const cdn = 'https://storage.googleapis.com/tokens-asset-logos-test/solana/m1.webp';
+        const raw = 'https://ipfs.io/ipfs/QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG';
+        const row = sampleVariantMarketRow({
+            logo_uri: raw,
+            logo_cdn_url: cdn,
+            birdeye_metrics: {
+                source: 'birdeye',
+                symbol: 'BONK',
+                logoURI: raw,
+                price: 1.11,
+                liquidity: 9_999,
+                volume24hUSD: 1_000,
+                lastFetchedAt: 1_000_000,
+            },
+        });
+        const repo: VariantMarketsRepo = {
+            async findLatestByMints() {
+                return [row];
+            },
+        };
+        const app = createApp(deps({ variantMarketsRepo: repo }));
+        const res = await call(app, '/query/variantMarketsGetLatestByMints', authed({ mints: ['m1'] }));
+        const body = (await res.json()) as Array<{ market: { logoURI?: string } | null }>;
+        expect(body[0]!.market?.logoURI).toBe(cdn);
+
+        // Without a copy, the provider's logo still flows through unchanged.
+        const rawOnly = sampleVariantMarketRow({ logo_uri: raw, birdeye_metrics: { ...row.birdeye_metrics as object } });
+        const repoRaw: VariantMarketsRepo = {
+            async findLatestByMints() {
+                return [rawOnly];
+            },
+        };
+        const appRaw = createApp(deps({ variantMarketsRepo: repoRaw }));
+        const resRaw = await call(appRaw, '/query/variantMarketsGetLatestByMints', authed({ mints: ['m1'] }));
+        const bodyRaw = (await resRaw.json()) as Array<{ market: { logoURI?: string } | null }>;
+        expect(bodyRaw[0]!.market?.logoURI).toBe(raw);
     });
 
     it('serves fresh clickhouse metrics over a stale birdeye snapshot', async () => {
@@ -2347,6 +2538,8 @@ describe('assetsApiLoadAssetBaseForApi', () => {
         is_active: true,
         created_at: NOW,
         updated_at: NOW,
+        region: null,
+        industry: null,
     };
     const jupMint = 'JUPyiwrYJFskUPiHa7hkeR8VUtAeFoSYbKedZNsDvCN';
     const jupVariantRow: AssetsApiVariantRow = {
@@ -2573,6 +2766,30 @@ describe('assetsApiLoadAssetBaseForApi', () => {
         };
         expect(body.variantMarkets).toEqual([{ mint: jupMint, market: null }]);
         expect(body.fillQuality).toEqual([{ mint: jupMint, fillQuality: null }]);
+    });
+
+    it('prefers the first-party logo copy (logo_cdn_url) over the raw logo_uri', async () => {
+        const cdn = 'https://storage.googleapis.com/tokens-asset-logos-test/solana/' + jupMint + '.webp';
+        const market: AssetsApiVariantMarketRow = {
+            ...jupVariantMarketRow,
+            logo_uri: 'https://ipfs.io/ipfs/QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG',
+            logo_cdn_url: cdn,
+        };
+        const repo = makeAssetsApiRepo({
+            assetsByAssetId: { jup: jupAssetRow },
+            activeVariantsByAssetId: { jup: [jupVariantRow] },
+            variantMarketsByMint: { [jupMint]: market },
+        });
+        const app = createApp(deps({ repo: makeRepo(), assetsApiRepo: repo }));
+        const res = await call(
+            app,
+            '/query/assetsApiLoadAssetBaseForApi',
+            authed({ assetId: 'jup', includeVariants: true, includeVariantMarkets: true }),
+        );
+        const body = (await res.json()) as {
+            variantMarkets: Array<{ market: { logoURI?: string } | null }>;
+        };
+        expect(body.variantMarkets[0]!.market?.logoURI).toBe(cdn);
     });
 
     it('applies the logoURI fallback when variant market has no logo_uri', async () => {
@@ -3082,6 +3299,7 @@ describe('stockOhlcvList', () => {
 
 interface CoingeckoReadsMockData {
     coinsByCoinId?: Record<string, CoingeckoCoinRow>;
+    coinsBySolanaMint?: Record<string, CoingeckoCoinRow>;
     searchById?: Record<string, CoingeckoCoinSearchRow[]>;
     searchBySymbol?: Record<string, CoingeckoCoinSearchRow[]>;
     searchByName?: Record<string, CoingeckoCoinSearchRow[]>;
@@ -3098,6 +3316,9 @@ function makeCoingeckoReadsRepo(data: CoingeckoReadsMockData = {}): CoingeckoRea
     return {
         async findCoinByCoinId(coinId) {
             return data.coinsByCoinId?.[coinId] ?? null;
+        },
+        async findCoinBySolanaMint(mint) {
+            return data.coinsBySolanaMint?.[mint] ?? null;
         },
         async searchCoinsById(query, limit) {
             return (data.searchById?.[query] ?? []).slice(0, limit);
@@ -3197,6 +3418,42 @@ describe('coingeckoReadsGetCoinById', () => {
     });
 });
 
+describe('coingeckoReadsGetCoinBySolanaMint', () => {
+    const BONK_MINT = 'DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263';
+
+    it('returns the mapped coin row for a known mint', async () => {
+        const repo = makeCoingeckoReadsRepo({
+            coinsBySolanaMint: { [BONK_MINT]: sampleCoinRow() },
+        });
+        const app = createApp(deps({ coingeckoReadsRepo: repo }));
+        const res = await call(app, '/query/coingeckoReadsGetCoinBySolanaMint', authed({ mint: BONK_MINT }));
+        expect(res.status).toBe(200);
+        const body = (await res.json()) as { id: string; symbol: string; lastSyncedAt: number };
+        expect(body.id).toBe('solana');
+        expect(body.symbol).toBe('sol');
+        expect(body.lastSyncedAt).toBe(1_700_000_000_000);
+    });
+
+    it('returns null for an unknown mint and a whitespace-only mint', async () => {
+        const repo = makeCoingeckoReadsRepo({
+            coinsBySolanaMint: { [BONK_MINT]: sampleCoinRow() },
+        });
+        const app = createApp(deps({ coingeckoReadsRepo: repo }));
+        const missing = await call(app, '/query/coingeckoReadsGetCoinBySolanaMint', authed({ mint: 'nope' }));
+        expect(missing.status).toBe(200);
+        expect(await missing.json()).toBeNull();
+        const blank = await call(app, '/query/coingeckoReadsGetCoinBySolanaMint', authed({ mint: '   ' }));
+        expect(blank.status).toBe(200);
+        expect(await blank.json()).toBeNull();
+    });
+
+    it('rejects a non-string mint with 400', async () => {
+        const app = createApp(deps());
+        const res = await call(app, '/query/coingeckoReadsGetCoinBySolanaMint', authed({ mint: 123 }));
+        expect(res.status).toBe(400);
+    });
+});
+
 describe('coingeckoReadsSearchCoins', () => {
     const solanaSearch: CoingeckoCoinSearchRow = {
         coin_id: 'solana',
@@ -3286,6 +3543,10 @@ describe('coingeckoReadsGetPriceLatestByCoinId', () => {
         price_change_24h_percent: 1.5,
         provider_last_updated_at: 1_700_000_000,
         last_fetched_at: 1_700_000_000_000,
+        circulating_supply: 580_767_381,
+        total_supply: 629_334_221,
+        max_supply: null,
+        fdv_usd: 54_000_000_000,
     };
 
     it('returns the mapped snapshot', async () => {
@@ -3303,6 +3564,10 @@ describe('coingeckoReadsGetPriceLatestByCoinId', () => {
             priceChange24hPercent: 1.5,
             providerLastUpdatedAt: 1_700_000_000,
             lastFetchedAt: 1_700_000_000_000,
+            circulatingSupply: 580_767_381,
+            totalSupply: 629_334_221,
+            maxSupply: null,
+            fdvUsd: 54_000_000_000,
         });
     });
 
@@ -3351,6 +3616,10 @@ describe('coingeckoReadsGetPriceLatestByCoinIds', () => {
                     priceChange24hPercent: null,
                     providerLastUpdatedAt: null,
                     lastFetchedAt: 1_700_000_000_000,
+                    circulatingSupply: null,
+                    totalSupply: null,
+                    maxSupply: null,
+                    fdvUsd: null,
                 },
             },
             { coinId: 'jupiter-exchange-solana', snapshot: null },
@@ -3596,6 +3865,21 @@ describe('tokensGetByAddress', () => {
         expect(body.lastFetchedAt).toBe(1_700_000_000_000);
     });
 
+    it('serves the first-party logo copy as logoUri when the row carries logo_cdn_url', async () => {
+        const cdn = 'https://storage.googleapis.com/tokens-asset-logos-test/solana/EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v.webp';
+        const row = sampleTokenRow({ logo_cdn_url: cdn });
+        const repo: TokensReadsRepo = {
+            ...emptyTokensReadsRepo(),
+            async findTokenByAddress(addr) {
+                return addr === row.address ? row : null;
+            },
+        };
+        const app = createApp(deps({ tokensReadsRepo: repo }));
+        const res = await call(app, '/query/tokensGetByAddress', authed({ address: row.address }));
+        const body = (await res.json()) as Record<string, unknown>;
+        expect(body.logoUri).toBe(cdn);
+    });
+
     it('returns null when missing', async () => {
         const app = createApp(deps());
         const res = await call(app, '/query/tokensGetByAddress', authed({ address: 'absent' }));
@@ -3703,6 +3987,159 @@ describe('tokensGetSearchTokensByAddresses', () => {
         expect(body[0]!.hasMarket).toBe(true);
         expect(body[1]!.token).toBeNull();
         expect(body[1]!.hasMarket).toBe(false);
+    });
+
+    it('builds the row from the variant-market snapshot when the legacy tokens table has no row', async () => {
+        const mint = 'taoC6xjhzJq3pbCjs2bVFYgRi8Z2cFjgnFZBbKjWSTHp';
+        const vmRepo: VariantMarketsRepo = {
+            async findLatestByMints(mints) {
+                return mints.includes(mint)
+                    ? [
+                          sampleVariantMarketRow({
+                              mint,
+                              symbol: 'TAO',
+                              name: 'Bittensor',
+                              decimals: 9,
+                              logo_uri: 'https://example.test/tao-raw.png',
+                              logo_cdn_url: 'https://cdn.test/tao.webp',
+                              price: 450.5,
+                              liquidity: 1_000_000,
+                              volume_24h_usd: 250_000,
+                              market_cap: 3_000_000,
+                              fdv: 3_100_000,
+                              holder: 1234,
+                              total_supply: 6_700,
+                              circulating_supply: 6_650,
+                              price_change_24h_percent: -1.25,
+                              price_change_1h_percent: 0.4,
+                              last_fetched_at: 1_700_000_100_000,
+                          }),
+                      ]
+                    : [];
+            },
+        };
+        const app = createApp(deps({ tokensReadsRepo: emptyTokensReadsRepo(), variantMarketsRepo: vmRepo }));
+        const res = await call(app, '/query/tokensGetSearchTokensByAddresses', authed({ addresses: [mint] }));
+        const body = (await res.json()) as Array<{
+            address: string;
+            token: Record<string, unknown> | null;
+            hasMarket: boolean;
+        }>;
+        expect(body).toHaveLength(1);
+        expect(body[0]!.hasMarket).toBe(true);
+        expect(body[0]!.token).toMatchObject({
+            address: mint,
+            symbol: 'TAO',
+            name: 'Bittensor',
+            decimals: 9,
+            logoURI: 'https://cdn.test/tao.webp',
+            price: 450.5,
+            liquidity: 1_000_000,
+            volume24hUSD: 250_000,
+            marketCap: 3_000_000,
+            priceChange24hPercent: -1.25,
+            priceChange1hPercent: 0.4,
+            source: 'birdeye',
+            fdv: 3_100_000,
+            holder: 1234,
+            totalSupply: 6_700,
+            circulatingSupply: 6_650,
+            lastFetchedAt: 1_700_000_100_000,
+        });
+    });
+
+    it('prefers the variant-market snapshot over a stale legacy row for the same mint', async () => {
+        const row = sampleTokenRow({ symbol: 'OLD', price: 0.5, volume_24h_usd: 10, market_cap: 1 });
+        const repo: TokensReadsRepo = {
+            ...emptyTokensReadsRepo(),
+            async findTokensByAddresses(addrs) {
+                return addrs.includes(row.address) ? [row] : [];
+            },
+        };
+        const vmRepo: VariantMarketsRepo = {
+            async findLatestByMints() {
+                return [
+                    sampleVariantMarketRow({
+                        mint: row.address,
+                        symbol: 'USDC',
+                        name: 'USD Coin',
+                        decimals: 6,
+                        price: 1.0,
+                        volume_24h_usd: 5_000_000,
+                        market_cap: null,
+                        price_change_24h_percent: 0.01,
+                    }),
+                ];
+            },
+        };
+        const app = createApp(deps({ tokensReadsRepo: repo, variantMarketsRepo: vmRepo }));
+        const res = await call(app, '/query/tokensGetSearchTokensByAddresses', authed({ addresses: [row.address] }));
+        const body = (await res.json()) as Array<{ token: Record<string, unknown>; hasMarket: boolean }>;
+        expect(body[0]!.hasMarket).toBe(true);
+        expect(body[0]!.token.symbol).toBe('USDC');
+        expect(body[0]!.token.price).toBe(1.0);
+        expect(body[0]!.token.volume24hUSD).toBe(5_000_000);
+        // Metric the snapshot lacks falls back to the legacy row.
+        expect(body[0]!.token.marketCap).toBe(1);
+    });
+
+    it('keeps legacy identity when the variant-market row is touch-only (no symbol/name)', async () => {
+        const row = sampleTokenRow();
+        const repo: TokensReadsRepo = {
+            ...emptyTokensReadsRepo(),
+            async findTokensByAddresses(addrs) {
+                return addrs.includes(row.address) ? [row] : [];
+            },
+        };
+        const vmRepo: VariantMarketsRepo = {
+            async findLatestByMints() {
+                return [
+                    sampleVariantMarketRow({
+                        mint: row.address,
+                        source: 'touch',
+                        symbol: null,
+                        name: null,
+                        decimals: null,
+                        price: null,
+                        liquidity: null,
+                        volume_24h_usd: null,
+                        market_cap: null,
+                        price_change_24h_percent: null,
+                    }),
+                ];
+            },
+        };
+        const app = createApp(deps({ tokensReadsRepo: repo, variantMarketsRepo: vmRepo }));
+        const res = await call(app, '/query/tokensGetSearchTokensByAddresses', authed({ addresses: [row.address] }));
+        const body = (await res.json()) as Array<{ token: Record<string, unknown>; hasMarket: boolean }>;
+        expect(body[0]!.token.symbol).toBe('USDC');
+        expect(body[0]!.token.price).toBe(1.0);
+        expect(body[0]!.hasMarket).toBe(true);
+    });
+
+    it('reports hasMarket=false for an identity-only snapshot without price or volume', async () => {
+        const mint = 'JUPyiwrYJFskUPiHa7hkeR8VUtAeFoSYbKedZNsDvCN';
+        const vmRepo: VariantMarketsRepo = {
+            async findLatestByMints() {
+                return [
+                    sampleVariantMarketRow({
+                        mint,
+                        symbol: 'JUP',
+                        name: 'Jupiter',
+                        decimals: 6,
+                        price: null,
+                        volume_24h_usd: null,
+                        price_change_24h_percent: null,
+                    }),
+                ];
+            },
+        };
+        const app = createApp(deps({ variantMarketsRepo: vmRepo }));
+        const res = await call(app, '/query/tokensGetSearchTokensByAddresses', authed({ addresses: [mint] }));
+        const body = (await res.json()) as Array<{ token: Record<string, unknown> | null; hasMarket: boolean }>;
+        expect(body[0]!.token?.symbol).toBe('JUP');
+        expect(body[0]!.token?.price).toBe(0);
+        expect(body[0]!.hasMarket).toBe(false);
     });
 
     it('returns 400 when addresses is not an array', async () => {
@@ -4267,6 +4704,8 @@ describe('admin mutations dispatch', () => {
             seedRepo: {} as AdminActionsDeps['seedRepo'],
             cron: {} as AdminActionsDeps['cron'],
             misc: {} as AdminActionsDeps['misc'],
+            v2: {} as AdminActionsDeps['v2'],
+            v2Reads: {} as AdminActionsDeps['v2Reads'],
             now: () => Date.now(),
         };
     }
@@ -4276,6 +4715,8 @@ describe('admin mutations dispatch', () => {
         'adminAddCheckedVariant',
         'adminSeedAsset',
         'adminRefreshChartData',
+        'adminSyncV2SolanaVariants',
+        'adminRefreshV2VariantMarket',
     ];
 
     it('404s the admin mutations when adminActionsDeps is not wired', async () => {

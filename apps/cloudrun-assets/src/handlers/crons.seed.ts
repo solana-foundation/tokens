@@ -4,7 +4,7 @@ import { Effect } from 'effect';
 import { isShuttingDown } from '@tokens/cloudrun-shutdown';
 import { runJobPool } from '@tokens/effect/job-runner';
 import type { CanonicalAsset, TrustTier } from '@tokens/asset-registry';
-import { listAssets } from '@tokens/asset-registry';
+import { buildRegistryTombstoneRefs, listAssets } from '@tokens/asset-registry';
 import { ALL_PSEUDO_SLUG, CURATED_LIST_SLUGS, isCuratedListSlug } from '@tokens/asset-registry/curated-lists';
 import { CURATED_TOKEN_ADDED_AT } from '@tokens/asset-registry/compat';
 
@@ -70,6 +70,11 @@ export interface CanonicalAssetCollectionMemberUpsert {
     addedAt: number;
 }
 
+export interface AssetIdRename {
+    from: string;
+    to: string;
+}
+
 export interface IdentityAssetRow {
     assetId: string;
     category: string;
@@ -117,6 +122,11 @@ export interface SeedRepo {
     deleteCollectionCascade(slug: string): Promise<number>;
     /** Which of the given lowercased refs exist in asset_deletion_tombstones. */
     listTombstonedRefs(normalizedRefs: readonly string[]): Promise<string[]>;
+    /**
+     * Admin renames among the given (lowercased) asset ids: `from` is the id
+     * the registry still uses, `to` the asset's current id in the database.
+     */
+    listAssetIdRenames(assetIds: readonly string[]): Promise<AssetIdRename[]>;
     /** Lower (never raise) added_at for every membership of the asset owning the mint. Returns rows updated. */
     lowerCollectionMemberAddedAtByMint(mint: string, addedAtMs: number): Promise<number>;
     refreshSolanaDefaultVariantsView?(): Promise<void>;
@@ -186,26 +196,22 @@ export function buildAssetAliases(asset: CanonicalAsset): CanonicalAssetAliasUps
 }
 
 /**
- * Candidate tombstone refs for a registry asset, mirroring the normalization
- * in cloudrun-admin's `buildDeletionTombstoneRows` (lowercased assetId, name,
- * symbol, coingeckoId, aliases, mints, and `solana-<mint>` singleton ids).
+ * Registry asset ids an admin renamed in the database, as `old id -> current
+ * id`. The registry keeps the old id until its data is changed in code, so
+ * seeding must follow the rename: upserting under the old id would re-create
+ * it as a second asset holding the same mints.
  */
-export function buildRegistryTombstoneRefs(asset: CanonicalAsset): string[] {
-    const refs = new Set<string>();
-    const add = (value: string | undefined | null) => {
-        const normalized = value?.trim().toLowerCase();
-        if (normalized) refs.add(normalized);
-    };
-    add(asset.assetId);
-    add(asset.name);
-    add(asset.symbol);
-    add(asset.coingeckoId);
-    for (const alias of asset.aliases) add(alias);
-    for (const variant of asset.variants) {
-        add(variant.mint);
-        add(`solana-${variant.mint}`);
+export async function loadAssetIdRenames(repo: SeedRepo, assetIds: readonly string[]): Promise<Map<string, string>> {
+    const renames = new Map<string, string>();
+    const normalized = [...new Set(assetIds.map(id => id.trim().toLowerCase()).filter(Boolean))];
+    for (const chunk of chunkArray(normalized, 500)) {
+        for (const rename of await repo.listAssetIdRenames(chunk)) renames.set(rename.from, rename.to);
     }
-    return [...refs];
+    return renames;
+}
+
+function renamedAssetId(renames: ReadonlyMap<string, string>, assetId: string): string {
+    return renames.get(assetId.trim().toLowerCase()) ?? assetId;
 }
 
 export async function seedCanonicalAssetsRegistry(
@@ -214,7 +220,20 @@ export async function seedCanonicalAssetsRegistry(
 ): Promise<CronResult> {
     void _rawArgs;
     const start = deps.now();
-    const allRegistryAssets = (deps.listCanonicalAssets ?? listAssets)();
+    const registryAssets = (deps.listCanonicalAssets ?? listAssets)();
+
+    // Follow admin renames: seed a renamed registry asset under its current id.
+    const renames = await loadAssetIdRenames(
+        deps.repo,
+        registryAssets.map(asset => asset.assetId),
+    );
+    let renamedCount = 0;
+    const allRegistryAssets = registryAssets.map(asset => {
+        const assetId = renamedAssetId(renames, asset.assetId);
+        if (assetId === asset.assetId) return asset;
+        renamedCount += 1;
+        return { ...asset, assetId };
+    });
 
     // Hard-deleted assets must stay dead: skip any registry asset whose refs
     // hit a deletion tombstone, otherwise the nightly seed resurrects it.
@@ -298,6 +317,7 @@ export async function seedCanonicalAssetsRegistry(
         aliases: aliasCount,
         ensuredMarkets,
         tombstonedSkipped: tombstonedAssetIds.size,
+        renamed: renamedCount,
     };
 }
 
@@ -630,7 +650,19 @@ export async function seedCuratedCollectionsFixture(deps: SeedCronDeps, rawArgs:
         };
     }
 
-    const fixture = loadCuratedCollectionsFixture();
+    const rawFixture = loadCuratedCollectionsFixture();
+    // Follow admin renames so membership lands on the asset's current id.
+    const renames = await loadAssetIdRenames(
+        deps.repo,
+        rawFixture.flatMap(c => c.members.map(m => m.assetId)),
+    );
+    const fixture = rawFixture.map(collection => ({
+        ...collection,
+        members: collection.members.map(member => ({
+            ...member,
+            assetId: renamedAssetId(renames, member.assetId),
+        })),
+    }));
     const fixtureAssetIds = [...new Set(fixture.flatMap(c => c.members.map(m => m.assetId)))];
     const tombstoned = new Set<string>();
     for (const chunk of chunkArray(fixtureAssetIds, 500)) {

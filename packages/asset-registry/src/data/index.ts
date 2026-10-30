@@ -1,4 +1,5 @@
 import type { AssetCategory, AssetVariant, CanonicalAsset } from '../types';
+import { CHAIN_NATIVE_ASSETS } from './chain-native-assets';
 import { COMMODITY_ASSETS } from './commodities';
 import { CRYPTO_ASSETS } from './crypto';
 import { EQUITY_ASSETS } from './equities';
@@ -92,4 +93,5 @@ export const CANONICAL_ASSETS: CanonicalAsset[] = mergeByAssetId([
     ...ETF_ASSETS,
     ...COMMODITY_ASSETS,
     ...EQUITY_ASSETS,
+    ...CHAIN_NATIVE_ASSETS,
 ]);

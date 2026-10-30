@@ -1,3 +1,14 @@
+import {
+    isAssetIndustry,
+    isAssetRegion,
+    toAssetIndustryOrNull,
+    toAssetRegionOrNull,
+    type AssetIndustry,
+    type AssetRegion,
+} from '@tokens/asset-registry';
+
+export type { AssetIndustry, AssetRegion };
+
 export type AssetCategory =
     | 'crypto'
     | 'stablecoin'
@@ -32,6 +43,9 @@ export interface AssetRow {
     is_active: boolean;
     created_at: Date;
     updated_at: Date;
+    /** Admin-curated segmentation tags (migration 0032); unknown values read as null. */
+    region: string | null;
+    industry: string | null;
 }
 
 export interface AssetAliasRow {
@@ -47,6 +61,12 @@ export interface AssetVariantRow {
     is_active: boolean;
 }
 
+/** An admin rename: `from` is the former id (lowercased), `to` the current id. */
+export interface AssetIdRenameRow {
+    from: string;
+    to: string;
+}
+
 export interface AssetResult {
     assetId: string;
     category: AssetCategory;
@@ -54,6 +74,8 @@ export interface AssetResult {
     isActive: boolean;
     createdAt: number;
     updatedAt: number;
+    region: AssetRegion | null;
+    industry: AssetIndustry | null;
     name?: string;
     symbol?: string;
     coingeckoId?: string;
@@ -81,15 +103,31 @@ export interface AssetCoinGeckoEntry {
     description?: string;
 }
 
+/**
+ * Asset-level predicates the fuzzy search queries apply *inside* SQL, before
+ * their LIMIT, so a filtered search never exhausts its candidate window on
+ * rows the handler would discard anyway.
+ */
+export interface AssetSearchFilter {
+    category?: AssetCategory;
+    region?: AssetRegion;
+    industry?: AssetIndustry;
+}
+
 export interface AssetsRepo {
     findByAssetId(assetId: string): Promise<AssetRow | null>;
     findByAssetIds(assetIds: readonly string[]): Promise<AssetRow[]>;
     findAliasesByNormalized(normalized: string, limit: number): Promise<AssetAliasRow[]>;
-    findAliasesByFuzzy(query: string, limit: number): Promise<AssetAliasRow[]>;
-    findAssetsByNameFuzzy(query: string, limit: number): Promise<AssetRow[]>;
-    findAssetsBySymbolFuzzy(query: string, limit: number): Promise<AssetRow[]>;
+    findAliasesByFuzzy(query: string, limit: number, filter?: AssetSearchFilter): Promise<AssetAliasRow[]>;
+    findAssetsByNameFuzzy(query: string, limit: number, filter?: AssetSearchFilter): Promise<AssetRow[]>;
+    findAssetsBySymbolFuzzy(query: string, limit: number, filter?: AssetSearchFilter): Promise<AssetRow[]>;
     findVariantByMint(mint: string): Promise<AssetVariantRow | null>;
     isDeletedRef(normalizedRef: string): Promise<boolean>;
+    /**
+     * Admin renames as `former id (lowercased) -> current id`. Pass ids to look
+     * up specific former ids; omit to list every rename (bounded).
+     */
+    listAssetIdRenames(normalizedAssetIds?: readonly string[]): Promise<AssetIdRenameRow[]>;
     listByCategory(category: string, includeInactive: boolean, limit: number): Promise<AssetRow[]>;
     listActiveWithCoinGecko(limit: number): Promise<AssetRow[]>;
     setDescriptionByAssetId(assetId: string, description: string | null, updatedAt: Date): Promise<boolean>;
@@ -125,6 +163,8 @@ export function rowToResult(row: AssetRow): AssetResult {
         isActive: row.is_active,
         createdAt: row.created_at.getTime(),
         updatedAt: row.updated_at.getTime(),
+        region: toAssetRegionOrNull(row.region),
+        industry: toAssetIndustryOrNull(row.industry),
     };
     if (row.name !== null) result.name = row.name;
     if (row.symbol !== null) result.symbol = row.symbol;
@@ -191,6 +231,24 @@ function readOptionalCategory(args: Record<string, unknown>, key: string): Asset
     return value;
 }
 
+function readOptionalRegion(args: Record<string, unknown>, key: string): AssetRegion | undefined {
+    const value = args[key];
+    if (value === undefined) return undefined;
+    if (!isAssetRegion(value)) {
+        throw new InvalidArgsError(`${key} must be a valid asset region`);
+    }
+    return value;
+}
+
+function readOptionalIndustry(args: Record<string, unknown>, key: string): AssetIndustry | undefined {
+    const value = args[key];
+    if (value === undefined) return undefined;
+    if (!isAssetIndustry(value)) {
+        throw new InvalidArgsError(`${key} must be a valid asset industry`);
+    }
+    return value;
+}
+
 function clampLimit(value: number | undefined, defaultValue: number, max: number): number {
     return Math.min(Math.max(value ?? defaultValue, 1), max);
 }
@@ -201,10 +259,28 @@ export async function getByAssetId(repo: AssetsRepo, args: unknown): Promise<Ass
     const includeInactive = readOptionalBoolean(a, 'includeInactive') ?? false;
     const assetId = assetIdRaw.trim();
     if (!assetId) return null;
-    const row = await repo.findByAssetId(assetId);
+    const row = (await repo.findByAssetId(assetId)) ?? (await findRenamedAsset(repo, assetId));
     if (!row) return null;
     if (!includeInactive && !row.is_active) return null;
     return rowToResult(row);
+}
+
+/**
+ * An id an admin renamed keeps working: callers that still hold the former id
+ * (the static registry, old links) get the asset under its current id.
+ */
+async function findRenamedAsset(repo: AssetsRepo, assetId: string): Promise<AssetRow | null> {
+    const normalized = assetId.toLowerCase();
+    const renames = await repo.listAssetIdRenames([normalized]);
+    const rename = renames.find(r => r.from === normalized);
+    if (!rename || rename.to === assetId) return null;
+    return repo.findByAssetId(rename.to);
+}
+
+/** Every admin rename, for callers that cache the (small) map — see apps/api. */
+export async function listAssetIdRenames(repo: AssetsRepo, _args: unknown): Promise<AssetIdRenameRow[]> {
+    void _args;
+    return repo.listAssetIdRenames();
 }
 
 async function resolveByAlias(
@@ -344,6 +420,8 @@ export async function search(repo: AssetsRepo, args: unknown): Promise<AssetResu
     const a = asObject(args);
     const queryRaw = readString(a, 'query');
     const category = readOptionalCategory(a, 'category');
+    const region = readOptionalRegion(a, 'region');
+    const industry = readOptionalIndustry(a, 'industry');
     const limitArg = readOptionalNumber(a, 'limit');
     const includeInactive = readOptionalBoolean(a, 'includeInactive') ?? false;
 
@@ -352,6 +430,22 @@ export async function search(repo: AssetsRepo, args: unknown): Promise<AssetResu
 
     const limit = clampLimit(limitArg, 20, 50);
 
+    // Category/region/industry are pushed into the fuzzy queries' WHERE so
+    // the `limit * 4` candidate windows only contain eligible assets; the
+    // in-memory checks below stay as the exact-alias path's guard and as a
+    // belt-and-braces re-check.
+    const assetFilter: AssetSearchFilter = {
+        ...(category ? { category } : {}),
+        ...(region ? { region } : {}),
+        ...(industry ? { industry } : {}),
+    };
+
+    // Region/industry are stored as free text; compare the coerced value so a
+    // legacy/unknown stored slug never matches a valid filter.
+    const matchesTags = (asset: AssetRow): boolean =>
+        (!region || toAssetRegionOrNull(asset.region) === region) &&
+        (!industry || toAssetIndustryOrNull(asset.industry) === industry);
+
     if (looksLikeSolanaMintAddress(raw)) {
         const variant = await repo.findVariantByMint(raw);
         if (variant) {
@@ -359,7 +453,8 @@ export async function search(repo: AssetsRepo, args: unknown): Promise<AssetResu
             if (
                 asset &&
                 (includeInactive || asset.is_active) &&
-                (!category || asset.category === category)
+                (!category || asset.category === category) &&
+                matchesTags(asset)
             ) {
                 return [rowToResult(asset)];
             }
@@ -376,6 +471,7 @@ export async function search(repo: AssetsRepo, args: unknown): Promise<AssetResu
         if (seen.has(asset.asset_id)) return;
         if (!includeInactive && !asset.is_active) return;
         if (category && asset.category !== category) return;
+        if (!matchesTags(asset)) return;
         seen.add(asset.asset_id);
         matched.push(asset);
     };
@@ -401,7 +497,7 @@ export async function search(repo: AssetsRepo, args: unknown): Promise<AssetResu
     }
 
     if (matched.length < limit) {
-        const fuzzyAliases = await repo.findAliasesByFuzzy(raw, limit * 4);
+        const fuzzyAliases = await repo.findAliasesByFuzzy(raw, limit * 4, assetFilter);
         fuzzyAliases.sort((x, y) => (y.priority ?? 0) - (x.priority ?? 0));
         const fuzzyIds: string[] = [];
         const fuzzySeen = new Set<string>();
@@ -422,7 +518,7 @@ export async function search(repo: AssetsRepo, args: unknown): Promise<AssetResu
     }
 
     if (matched.length < limit) {
-        const symbolMatches = await repo.findAssetsBySymbolFuzzy(raw, limit * 4);
+        const symbolMatches = await repo.findAssetsBySymbolFuzzy(raw, limit * 4, assetFilter);
         for (const asset of symbolMatches) {
             if (matched.length >= limit) break;
             appendIfEligible(asset);
@@ -430,7 +526,7 @@ export async function search(repo: AssetsRepo, args: unknown): Promise<AssetResu
     }
 
     if (matched.length < limit) {
-        const nameMatches = await repo.findAssetsByNameFuzzy(raw, limit * 4);
+        const nameMatches = await repo.findAssetsByNameFuzzy(raw, limit * 4, assetFilter);
         for (const asset of nameMatches) {
             if (matched.length >= limit) break;
             appendIfEligible(asset);

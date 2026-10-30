@@ -2,14 +2,14 @@
   "uid": "tokens-api-auth-failure-spike",
   "title": "tokens-api: auth-failure spike (401)",
   "ruleGroup": "tokens-api-availability",
-  "folderUID": "tokens-xyz",
+  "folderUID": "tokens",
   "noDataState": "OK",
   "execErrState": "OK",
   "for": "10m",
   "data": [
     {
       "refId": "A",
-      "datasourceUid": "grafanacloud-logs",
+      "datasourceUid": "tokens-logs",
       "queryType": "range",
       "relativeTimeRange": {
         "from": 600,
@@ -89,5 +89,15 @@
     "summary": "tokens-api 401 rate above 2/sec",
     "description": "tokens-api returned HTTP 401 (auth failure) at more than 2/sec sustained for 10 minutes. Could be a misconfigured client (frontend env var drift), a rotated API key, or credential-stuffing attempts. Check Recent 5xx errors panel and filter by status=401.",
     "runbook_url": "https://example.com/runbooks/api-auth-failure-spike"
+  },
+  "notification_settings": {
+    "receiver": "tokens-slack",
+    "group_by": [
+      "grafana_folder",
+      "alertname"
+    ],
+    "group_wait": "30s",
+    "group_interval": "5m",
+    "repeat_interval": "4h"
   }
 }

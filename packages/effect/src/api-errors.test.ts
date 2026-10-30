@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'bun:test';
 import { Cause, Effect } from 'effect';
 
-import { httpStatusForError, toApiErrorInfo, UpstreamHttpError } from './api-errors';
+import { AssetAdvisoryError, httpStatusForError, toApiErrorInfo, UpstreamHttpError } from './api-errors';
 
 class FakeDownstreamError extends Error {
     constructor(message: string) {
@@ -121,5 +121,23 @@ describe('httpStatusForError', () => {
 
     it('maps CloudRun timeouts to 504', () => {
         expect(httpStatusForError({ _tag: 'CloudRunTimeoutError', message: 'timed out after 15000ms' })).toBe(504);
+    });
+
+    it('maps advisory refusals to 403 and keeps the advisory details', () => {
+        const error = new AssetAdvisoryError({
+            message: 'Mint is flagged as compromised',
+            mint: 'SiLVFMgD3eD2rgK628NbTBq9MnuJF5FW2CRaVyTB35L',
+            status: 'compromised',
+            reason: 'Issuer treasury exploited',
+            url: 'https://example.com/notice',
+            details: { code: 'advisory_compromised', mint: 'SiLVFMgD3eD2rgK628NbTBq9MnuJF5FW2CRaVyTB35L' },
+        });
+        expect(httpStatusForError(error)).toBe(403);
+        const info = toApiErrorInfo(error);
+        expect(info._tag).toBe('AssetAdvisoryError');
+        expect(info.details).toEqual({
+            code: 'advisory_compromised',
+            mint: 'SiLVFMgD3eD2rgK628NbTBq9MnuJF5FW2CRaVyTB35L',
+        });
     });
 });

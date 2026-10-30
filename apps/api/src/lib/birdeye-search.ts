@@ -206,10 +206,13 @@ export function searchProviderTokens(
             },
             next: { revalidate: 30 },
         },
-        // Keep the provider on a short leash: v2 search degrades to DB-only
-        // candidates rather than blocking on a slow upstream.
-        signal: AbortSignal.timeout(4_000),
-        maxRetries: 2,
+        // Keep the provider on a short leash: the judged-search collect races
+        // this against a ~500 ms soft deadline (candidates.ts) and degrades to
+        // index/registry candidates, letting this call finish off the response
+        // path to warm the cache. One retry, 2 s per attempt, bounds that
+        // background work.
+        signal: AbortSignal.timeout(2_000),
+        maxRetries: 1,
     }).pipe(
         Effect.map(response => {
             if (!response.success) return [];

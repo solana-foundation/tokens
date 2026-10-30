@@ -2,14 +2,14 @@
   "uid": "tokens-api-smoke-canary-stale",
   "title": "tokens-api: smoke canary hasn't reported in ~5m",
   "ruleGroup": "tokens-api",
-  "folderUID": "tokens-xyz",
+  "folderUID": "tokens",
   "noDataState": "Alerting",
   "execErrState": "OK",
   "for": "3m",
   "data": [
     {
       "refId": "A",
-      "datasourceUid": "grafanacloud-logs",
+      "datasourceUid": "tokens-logs",
       "queryType": "range",
       "relativeTimeRange": {
         "from": 300,
@@ -89,5 +89,15 @@
     "summary": "tokens.xyz API smoke canary stopped reporting",
     "description": "No smoke_canary_summary events from tokens-ci-runner in the last 5 minutes. Either the runner is down, the timer unit isn't firing, or the script crashed before reaching the Loki push. The main API may still be up \u2014 but we've lost the heartbeat that would tell us if it went down. SSH the runner and check `systemctl status tokens-api-health.timer` and `journalctl -u tokens-api-health.service -n 50`.",
     "runbook_url": "https://example.com/runbooks/api-smoke-canary-stale"
+  },
+  "notification_settings": {
+    "receiver": "tokens-critical",
+    "group_by": [
+      "grafana_folder",
+      "alertname"
+    ],
+    "group_wait": "30s",
+    "group_interval": "5m",
+    "repeat_interval": "4h"
   }
 }

@@ -8,6 +8,11 @@
 
 export type AssetCategory = 'crypto' | 'stablecoin' | 'lst' | 'rwa' | 'commodity' | 'equity' | 'etf' | 'index';
 
+// Region/industry vocabularies are imported, not copied: the leaf module
+// carries no registry data, so it is safe in the client bundle.
+export type { AssetIndustry, AssetRegion } from '@tokens/asset-registry/taxonomy';
+import type { AssetIndustry, AssetRegion } from '@tokens/asset-registry/taxonomy';
+
 // Hand-copied from ADMIN_ASSIGNABLE_CURATED_SLUGS in
 // packages/asset-registry/src/curated-lists.ts (the source of truth —
 // deliberately excludes `lsts`, whose membership is Sanctum-dynamic).
@@ -45,6 +50,31 @@ export type LiquidityTier = 'tier1' | 'tier2' | 'tier3';
 export type TrustTier = 'tier1' | 'tier2' | 'tier3' | 'experimental';
 
 export type StockVariantTier = 'share_redeemable' | 'cash_redeemable' | 'not_redeemable';
+
+// Chain ids come from the registry's leaf `chains` module (no registry data,
+// safe in the client bundle). `ChainKind` is re-exported for the dialogs.
+export type { ChainKind } from '@tokens/asset-registry/chains';
+import type { ChainKind } from '@tokens/asset-registry/chains';
+
+/**
+ * Who owns a variant row. `v1` = Solana row in `asset_variants` (mirrored into
+ * v2 by cloudrun-admin/-assets on every write); the rest are `v2_asset_variants`
+ * origins: `coingecko`/`config` = derived by the daily EVM sync, `admin` =
+ * written or adopted from the admin app (the derivation job never touches it).
+ */
+export type VariantOrigin = 'v1' | 'coingecko' | 'config' | 'admin';
+
+/**
+ * Identifies one variant row for the edit/move/deactivate/delete mutations.
+ * Solana rows are addressed by mint alone (v1 keys on mint); EVM rows need the
+ * owning asset too because `v2_asset_variants` keys on (chain, address, asset_id).
+ */
+export type VariantRef = { chain: ChainKind; address: string; assetId: string };
+
+/** Wire args for a variant mutation: the ref plus legacy `mint` for older backends. */
+export function variantRefArgs(ref: VariantRef): { chain: ChainKind; address: string; assetId: string; mint: string } {
+    return { chain: ref.chain, address: ref.address, assetId: ref.assetId, mint: ref.address };
+}
 
 export type LogoSource = 'url' | 'override' | 'variant' | 'none';
 
@@ -91,11 +121,272 @@ export type CanonicalRow = {
     searchHints: string[];
 };
 
+/* ── variant advisories ─────────────────────────────────────────────────── */
+
+// Hand-copied from ADVISORY_STATUSES / ADVISORY_SOURCES / VariantAdvisory in
+// packages/asset-registry/src/types.ts (the source of truth).
+export type AdvisoryStatus = 'caution' | 'compromised' | 'blocked';
+/**
+ * `admin` = human-authored; `webacy_depeg` = set automatically from Webacy's
+ * depeg monitor; `peg_guard` = set automatically by the in-house tokens.xyz
+ * peg monitor.
+ */
+export type AdvisorySource = 'admin' | 'webacy_depeg' | 'peg_guard';
+/** `set_by` / actor id used by the Webacy depeg reconciler (mirrors WEBACY_DEPEG_ACTOR). */
+export const WEBACY_DEPEG_ACTOR = 'system:webacy_depeg';
+/** `set_by` / actor id used by the tokens.xyz peg monitor (mirrors PEG_GUARD_ACTOR). */
+export const PEG_GUARD_ACTOR = 'system:peg_guard';
+
+/** The active advisory attached to a variant mint, as serialized on admin variant rows. */
+export type VariantAdvisory = {
+    status: AdvisoryStatus;
+    reason: string;
+    url: string | null;
+    /** Unix ms; reset when the status changes, kept when only reason/url are edited. */
+    since: number;
+    /** Omitted by cloudrun-admin builds that predate 0019; treat as `'admin'`. */
+    source?: AdvisorySource;
+};
+
+/** Mirrors `VariantAdvisoryRow` in cloudrun-admin handlers/variantAdvisories.ts. */
+export type VariantAdvisoryRow = {
+    mint: string;
+    status: AdvisoryStatus;
+    reason: string;
+    url: string | null;
+    setBy: string;
+    setByEmail: string | null;
+    setAt: number;
+    updatedAt: number;
+    source?: AdvisorySource;
+    /** True only while the depeg automation owns the row. */
+    managedBySystem?: boolean;
+};
+
+// Hand-copied from packages/asset-registry/src/stablecoin-health.ts (the source of truth).
+export type PegTier = 'ok' | 'watch' | 'warning' | 'critical' | 'premium';
+/**
+ * What a peg observation was measured against: a fixed 1.00, a CoinGecko-implied
+ * fiat rate, or the token's own high-water price (yield-bearing USD variants).
+ * Hand-copied from packages/asset-registry/src/stablecoin-health.ts (the source of truth).
+ */
+export type PegReferenceKind = 'fixed' | 'fx' | 'high_water';
+export type StructuralGrade = 'A+' | 'A' | 'A-' | 'B+' | 'B' | 'B-' | 'C+' | 'C' | 'C-' | 'D+' | 'D' | 'D-' | 'E' | 'F';
+
+/** Compact depeg status for a stablecoin mint, as serialized on admin variant rows. */
+export type AdminPegHealth = {
+    /** `webacy` while Webacy covers the mint, `tokens` for the in-house peg monitor; absent on older builds. */
+    provider?: 'webacy' | 'tokens';
+    /** ISO 4217 code of the peg when the observer knows it; absent on builds that predate peg guard phase 2. */
+    pegCurrency?: string | null;
+    /** Absent on builds that predate peg guard phase 2; treat a missing value as `fixed`. */
+    referenceKind?: PegReferenceKind | null;
+    tier: PegTier;
+    /** Signed percent from peg; negative = below peg. */
+    deviationPct: number | null;
+    /** False when the observer's last fetch for this mint failed (tier is the last good value). */
+    ok: boolean;
+    errorMessage: string | null;
+    /** Unix ms of the last fetch attempt. */
+    updatedAt: number;
+};
+
+/** Compact Webacy structural health grade for a stablecoin mint. */
+export type AdminStructuralHealth = {
+    grade: StructuralGrade;
+    /** Unix ms of the last successful fetch. */
+    updatedAt: number;
+};
+
+/** Mirrors `VariantAdvisoryEventRow` in cloudrun-admin handlers/variantAdvisories.ts (append-only audit log). */
+export type VariantAdvisoryEventRow = {
+    id: string;
+    mint: string;
+    action: 'set' | 'clear';
+    status: AdvisoryStatus | null;
+    reason: string | null;
+    url: string | null;
+    reactivatedVariant: boolean;
+    actorClerkUserId: string;
+    actorEmail: string | null;
+    createdAt: number;
+    source?: AdvisorySource;
+};
+
+export type SetVariantAdvisoryArgs = {
+    mint: string;
+    status: AdvisoryStatus;
+    reason: string;
+    url?: string | null;
+    /** When the variant is inactive, flip `is_active` back on in the same transaction. */
+    activateVariant?: boolean;
+};
+
+export type SetVariantAdvisoryResult = { mint: string; status: AdvisoryStatus; updated: true; reactivated: boolean };
+
+export type ClearVariantAdvisoryResult = { mint: string; cleared: boolean };
+
+/** `events` is only populated when `mint` was passed to `listVariantAdvisories`. */
+export type ListVariantAdvisoriesResult = {
+    advisories: VariantAdvisoryRow[];
+    events: VariantAdvisoryEventRow[];
+};
+
+/* ── launchpad approvals (mirrors cloudrun-admin handlers/launchpadApprovals.ts) ── */
+
+export type LaunchpadApproval = {
+    note: string | null;
+    approvedBy: string;
+    approvedByEmail: string | null;
+    /** Unix ms of the first approval; kept across re-approves. */
+    approvedAt: number;
+    updatedAt: number;
+};
+
+/**
+ * One row of the admin Launches table. `synced: false` = approved by address
+ * but not stored by the sync yet (token fields null); `isActive: false` on a
+ * synced row = missing identity or not in the last provider response.
+ */
+export type LaunchpadCandidateRow = {
+    launchpad: string;
+    mint: string;
+    synced: boolean;
+    isActive: boolean;
+    quoteMint: string | null;
+    quoteSymbol: string | null;
+    symbol: string | null;
+    name: string | null;
+    logoURI: string | null;
+    marketCapUsd: number | null;
+    volume24hUsd: number | null;
+    launchedAt: number | null;
+    lastSyncedAt: number | null;
+    /** Canonical asset that owns the quote mint (the page the coin shows on); null when unsynced or not curated. */
+    quoteAsset: LaunchpadQuoteAsset | null;
+    approval: LaunchpadApproval | null;
+};
+
+export type LaunchpadQuoteAsset = {
+    assetId: string;
+    name: string | null;
+    symbol: string | null;
+    imageUrl: string | null;
+};
+
+/* ── stonk.fun lookups (mirror cloudrun-assets handlers/launchpadAdminActions.ts) ── */
+
+export type LaunchpadTokenMarket = {
+    priceUsd: number | null;
+    marketCapUsd: number | null;
+    fdvUsd: number | null;
+    liquidityUsd: number | null;
+    volume24hUsd: number | null;
+    priceChange24h: number | null;
+};
+
+export type LaunchpadTokenSummary = {
+    mint: string;
+    symbol: string | null;
+    name: string | null;
+    imageUrl: string | null;
+    status: string | null;
+    launchpad: string | null;
+    mode: string | null;
+    quoteMint: string;
+    quoteSymbol: string | null;
+    market: LaunchpadTokenMarket;
+    createdAt: number | null;
+    graduatedAt: number | null;
+};
+
+export type LaunchpadMintPreview = {
+    mint: string;
+    checkedAt: number;
+    found: boolean;
+    token: LaunchpadTokenSummary | null;
+    quote: {
+        mint: string;
+        symbol: string | null;
+        curated: boolean;
+        asset: { assetId: string; symbol: string | null; name: string | null; imageUrl: string | null } | null;
+    } | null;
+    synced: boolean;
+    isActive: boolean;
+    approved: { note: string | null; approvedAt: number } | null;
+    meetsThreshold: boolean;
+    warnings: string[];
+};
+
+export type LaunchpadQuoteTokenRow = LaunchpadTokenSummary & {
+    synced: boolean;
+    isActive: boolean;
+    approved: { note: string | null; approvedAt: number } | null;
+    meetsThreshold: boolean;
+};
+
+export type ListLaunchpadTokensForQuoteResult = {
+    quoteMints: string[];
+    fetchedAt: number;
+    tokens: LaunchpadQuoteTokenRow[];
+};
+
+/** A curated asset stonk.fun accepts as a quote token (a Launches row, coins or not). */
+export type LaunchpadPairAsset = {
+    assetId: string;
+    symbol: string | null;
+    name: string | null;
+    imageUrl: string | null;
+    quoteMints: Array<{ mint: string; symbol: string | null; category: string | null }>;
+};
+
+export type ListLaunchpadPairsResult = {
+    fetchedAt: number;
+    pairsTotal: number;
+    curatedPairs: number;
+    assets: LaunchpadPairAsset[];
+};
+
+export type SyncLaunchpadMintResult = {
+    mint: string;
+    synced: boolean;
+    isActive: boolean;
+    reason: 'not_found' | 'not_graduated' | 'quote_not_curated' | 'identity_pending' | null;
+};
+
+export type ListLaunchpadCandidatesArgs = { launchpad?: 'stonkfun'; approvedOnly?: boolean; limit?: number };
+export type ApproveLaunchpadMintArgs = {
+    mint: string;
+    note?: string | null;
+    launchpad?: 'stonkfun';
+    /** Snapshot from the Check preview so the row shows under its asset before the sync stores it. */
+    quoteMint?: string | null;
+    symbol?: string | null;
+    name?: string | null;
+    logoURI?: string | null;
+};
+export type ApproveLaunchpadMintResult = {
+    launchpad: string;
+    mint: string;
+    approved: true;
+    created: boolean;
+    approvedAt: number;
+};
+export type RevokeLaunchpadMintArgs = { mint: string; launchpad?: 'stonkfun' };
+export type RevokeLaunchpadMintResult = { launchpad: string; mint: string; revoked: boolean };
+
 /* ── listVariantsByAssetIds ─────────────────────────────────────────────── */
 
 export type AdminVariantRow = {
     assetId: string;
+    /** Same as `address`; kept for older callers. */
     mint: string;
+    /** Optional only for cloudrun-admin builds that predate multichain rows; treat missing as `solana`. */
+    chain?: ChainKind;
+    address?: string;
+    origin?: VariantOrigin;
+    explorerUrl?: string;
+    decimals?: number;
     variantId: string;
     kind: VariantKind;
     liquidityTier: LiquidityTier;
@@ -111,6 +402,16 @@ export type AdminVariantRow = {
     logoURI?: string;
     isActive: boolean;
     lastFetchedAt?: number;
+    /**
+     * Active advisory for this mint, or null. Optional for rollout safety: a
+     * cloudrun-admin build that predates advisories omits the key entirely, and
+     * the UI treats `undefined` the same as `null`.
+     */
+    advisory?: VariantAdvisory | null;
+    /** Webacy depeg tier for stablecoin mints, or null. Optional for rollout safety like `advisory`. */
+    pegHealth?: AdminPegHealth | null;
+    /** Webacy structural grade for stablecoin mints, or null. Optional for rollout safety like `advisory`. */
+    structuralHealth?: AdminStructuralHealth | null;
 };
 
 export type VariantsByAssetIdRow = {
@@ -134,6 +435,11 @@ export type CanonicalEditor = {
         fallbackImageUrl?: string;
         fallbackLogoSource: LogoSource;
         isActive: boolean;
+        /** Admin-curated segmentation tags (null = untagged). */
+        region: AssetRegion | null;
+        industry: AssetIndustry | null;
+        /** Static-registry id this asset is defined under (current or former id). */
+        registryAssetId?: string;
     };
     aliases: string[];
     collections: CuratedCategorySlug[];
@@ -145,6 +451,10 @@ export type VariantEditor = {
     variant: {
         assetId: string;
         mint: string;
+        chain?: ChainKind;
+        address?: string;
+        origin?: VariantOrigin;
+        decimals?: number | null;
         variantId: string;
         kind: VariantKind;
         trustTier: TrustTier;
@@ -197,18 +507,49 @@ export type UpdateCanonicalAssetResult = { assetId: string; updated: boolean };
 
 export type DeleteCanonicalAssetResult = { assetId: string; deleted: boolean };
 
-export type UpdateVariantResult = { mint: string; updated: boolean };
+export type UpdateVariantResult = { mint: string; chain?: ChainKind; address?: string; updated: boolean };
 
-export type DeleteVariantResult = { mint: string; deleted: boolean };
+export type DeleteVariantResult = { mint: string; chain?: ChainKind; address?: string; deleted: boolean };
 
-export type DeactivateVariantResult = { mint: string; isActive: boolean; updated: boolean };
+export type DeactivateVariantResult = {
+    mint: string;
+    chain?: ChainKind;
+    address?: string;
+    isActive: boolean;
+    updated: boolean;
+};
 
-export type MoveVariantToCanonicalResult = { mint: string; fromAssetId: string; toAssetId: string; moved: boolean };
+export type MoveVariantToCanonicalResult = {
+    mint: string;
+    chain?: ChainKind;
+    address?: string;
+    fromAssetId: string;
+    toAssetId: string;
+    moved: boolean;
+};
 
 export type RemoveFromCategoryResult = { removed: boolean };
 
 /** `PUT` the file bytes to `uploadUrl` (matching Content-Type), then persist `publicUrl` as `imageUrl`. */
 export type GenerateCanonicalLogoUploadUrlResult = { uploadUrl: string; publicUrl: string };
+
+/* ── previewAssetTagsImport / applyAssetTagsImport ─────────────────────── */
+
+export type AssetTagsImportMode = 'fill_empty' | 'overwrite';
+
+export type AssetTagsImportPreviewResult = {
+    mode: AssetTagsImportMode;
+    requested: number;
+    toApply: Array<{ assetId: string; region: AssetRegion; industry: AssetIndustry }>;
+    skippedAlreadyTagged: string[];
+    unchanged: string[];
+    unmatched: string[];
+    renamed: Array<{ requested: string; assetId: string }>;
+    /** Curated stocks still untagged after this plan runs. */
+    untaggedStocks: string[];
+};
+
+export type AssetTagsImportApplyResult = AssetTagsImportPreviewResult & { applied: number };
 
 export type HardDeleteAssetResult = {
     deleted: boolean;
@@ -231,6 +572,8 @@ export type HardDeleteAssetResult = {
     coingeckoOhlcvDeleted: number;
     tombstonesCreated: number;
     pendingOhlcvDelete: boolean;
+    /** v2_asset_variants rows removed (all chains); omitted by builds that predate multichain. */
+    v2VariantsDeleted?: number;
 };
 
 /* ── cloudrun-assets admin actions ──────────────────────────────────────── */
@@ -240,17 +583,51 @@ export type RefreshChartDataResult = {
     scheduled: string[];
 };
 
+export type CheckedVariantConflict =
+    | { type: 'same_canonical'; assetId: string; variantId: string; origin?: VariantOrigin }
+    | { type: 'other_canonical'; assetId: string; variantId: string }
+    /** EVM only: the address already backs other assets on this chain (legal in v2; informational). */
+    | { type: 'shared_with'; owners: Array<{ assetId: string; variantId: string; origin: VariantOrigin }> };
+
+export type CheckedMarketWrite = {
+    chain?: ChainKind;
+    address?: string;
+    mint: string;
+    source: 'birdeye';
+    symbol: string;
+    name: string;
+    decimals: number | null;
+    logoURI: string | null;
+    price: number | null;
+    priceChange24hPercent: number | null;
+    priceChange1hPercent: number | null;
+    volume24hUSD: number | null;
+    liquidity: number | null;
+    marketCap: number | null;
+    fdv: number | null;
+    holder: number | null;
+    totalSupply: number | null;
+    circulatingSupply: number | null;
+    lastTradeHumanTime: string | null;
+    extensions: Record<string, string> | null;
+    lastFetchedAt: number;
+};
+
 export type CheckedVariantPreview = {
     assetId: string;
+    /** Same as `address`; kept on the wire for older backends. */
     mint: string;
+    /** Absent on backends that predate multichain (Solana only). */
+    chain?: ChainKind;
+    address?: string;
     checkedAt: number;
-    conflict:
-        | { type: 'same_canonical'; assetId: string; variantId: string }
-        | { type: 'other_canonical'; assetId: string; variantId: string }
-        | null;
+    conflict: CheckedVariantConflict | null;
+    /** Where `variantWrite.decimals` came from; null means the operator must supply it (EVM only). */
+    decimalsSource?: 'birdeye' | 'coingecko' | null;
     variantWrite: {
         assetId: string;
-        chain: 'solana';
+        chain: ChainKind;
+        address?: string;
         mint: string;
         variantId: string;
         kind: VariantKind;
@@ -259,35 +636,23 @@ export type CheckedVariantPreview = {
         tags: string[];
         label: string | null;
         isActive: boolean;
+        decimals?: number | null;
     };
-    marketWrite: {
-        mint: string;
-        source: 'birdeye';
-        symbol: string;
-        name: string;
-        decimals: number;
-        logoURI: string | null;
-        price: number | null;
-        priceChange24hPercent: number | null;
-        priceChange1hPercent: number | null;
-        volume24hUSD: number | null;
-        liquidity: number | null;
-        marketCap: number | null;
-        fdv: number | null;
-        holder: number | null;
-        totalSupply: number | null;
-        circulatingSupply: number | null;
-        lastTradeHumanTime: string | null;
-        extensions: Record<string, string> | null;
-        lastFetchedAt: number;
-    };
+    /** Null when the chain has no Birdeye coverage or Birdeye had no overview (EVM only). */
+    marketWrite: CheckedMarketWrite | null;
 };
 
 export type AddCheckedVariantResult = {
     assetId: string;
     mint: string;
+    chain?: ChainKind;
+    address?: string;
     variantId: string;
     scheduled: string[];
+    /** False when the v1 write landed but the inline v2 mirror failed (the cron repairs it within 5 min). */
+    v2Synced?: boolean;
+    /** EVM: true when an existing derived (coingecko/config) row was taken over by admin. */
+    adopted?: boolean;
 };
 
 export type AdminSeedAssetResult = {
@@ -296,7 +661,23 @@ export type AdminSeedAssetResult = {
     slug?: CuratedCategorySlug;
     rank?: number;
     seededAt: number;
+    v2Synced?: boolean;
 };
+
+/** `adminSyncV2SolanaVariants` result (cloudrun-assets; the sync-v2-solana-variants job's summary). */
+export type AdminSyncV2SolanaVariantsResult = {
+    ok: boolean;
+    reason?: string;
+    variantsInserted?: number;
+    variantsUpdated?: number;
+    variantsReplaced?: number;
+    variantsDeactivated?: number;
+    marketsWritten?: number;
+    rollupsWritten?: number;
+};
+
+/** `adminRefreshV2VariantMarket` result (cloudrun-assets): one Birdeye snapshot for an EVM variant. */
+export type AdminRefreshV2VariantMarketResult = { chain: ChainKind; address: string; refreshed: boolean };
 
 /** Mirrors `TokenListAdminRow` in cloudrun-admin handlers/tokenListsAdmin.ts. */
 export type TokenListAdminRow = {

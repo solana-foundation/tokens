@@ -8,7 +8,6 @@ export function baseOptions(): BaseLayoutProps {
             enabled: false,
         },
         nav: {
-            enabled: false,
             title: <DocsNavTitle />,
             url: '/',
         },

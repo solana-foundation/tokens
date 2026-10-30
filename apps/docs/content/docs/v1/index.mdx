@@ -1,0 +1,63 @@
+---
+title: Overview
+description: What the Tokens API v1 covers, how it is organised, and where to start.
+---
+
+The Tokens API v1 is a JSON HTTP API for **registered Solana assets**: canonical asset groups such as `solana`, `usd` or `tesla`, the Solana mints that represent them (their **variants**), and the market, chart, risk and news data around them.
+
+- **Base URL**: `https://api.tokens.xyz/v1`
+- **Auth**: an API key in the `x-api-key` header. See [Authentication](/v1/authentication).
+- **Format**: JSON in, JSON out. `POST` bodies are `application/json`.
+
+Call Tokens servers directly. You do not deploy your own copy of the API; if you want a proxy for key management or caching, your proxy calls `https://api.tokens.xyz/v1/...` upstream.
+
+## What v1 does
+
+- **Discover assets.** Search by text, browse curated lists, or read the trending set.
+- **Resolve any reference.** Map an `assetId`, alias or Solana mint to its registered asset and variant, and use the `assetId` to group balances that represent the same thing.
+- **Read one asset in depth.** Identity, aggregate stats, the primary variant, every variant grouped by kind, and optional `include` blocks for profile, risk, OHLCV and markets in one call.
+- **Market primitives.** Per-mint market snapshots (single and batch), DEX markets, exchange tickers.
+- **Charts.** Per-mint OHLCV candles and a canonical price chart per asset.
+- **Risk.** A quick 0 to 100 market-based score per mint, detailed scoring inputs, operator advisories, and stablecoin peg and structural health.
+- **News.** A filterable feed of market news and `@tokens` posts, global or per token.
+
+v1 serves **registered assets only**. A mint that is not a variant of a registered asset returns `404` with `details.code: "asset_not_registered"` on every asset route; the batch endpoints keep a `null` row for it instead. To track other tokens, use [Token Lists](/v2/endpoints/lists) in API v2. See [Assets and variants](/v1/concepts/assets-and-variants#registered-assets-only).
+
+## Endpoints
+
+All routes require `x-api-key` and the `assets:read` scope unless noted.
+
+| Method | Path                                      | What it does                                                        | Reference                                                                                |
+| ------ | ----------------------------------------- | ------------------------------------------------------------------- | ---------------------------------------------------------------------------------------- |
+| GET    | `/v1/health`                              | Liveness check, no key needed                                       | [Health](/v1/endpoints/health)                                                           |
+| GET    | `/v1/assets/search`                       | Search registered assets                                            | [Search and resolve](/v1/endpoints/search-and-resolve#get-v1assetssearch)                |
+| GET    | `/v1/assets/resolve`                      | Mint, alias or id to registered asset                               | [Search and resolve](/v1/endpoints/search-and-resolve#get-v1assetsresolve)               |
+| GET    | `/v1/assets/curated`                      | Curated asset lists with stats                                      | [Lists and trending](/v1/endpoints/lists-and-trending#get-v1assetscurated)               |
+| GET    | `/v1/assets/curated/lists`                | Catalog of curated lists                                            | [Lists and trending](/v1/endpoints/lists-and-trending#get-v1assetscuratedlists)          |
+| GET    | `/v1/assets/trending`                     | Trending Solana mints                                               | [Lists and trending](/v1/endpoints/lists-and-trending#get-v1assetstrending)              |
+| POST   | `/v1/assets/market-snapshots`             | Batch market snapshots, up to 250 mints                             | [Batch snapshots](/v1/endpoints/batch-snapshots#post-v1assetsmarket-snapshots)           |
+| GET    | `/v1/assets/variant-markets`              | Batch variant market snapshots, up to 50 mints                      | [Batch snapshots](/v1/endpoints/batch-snapshots#get-v1assetsvariant-markets)             |
+| GET    | `/v1/assets/risk-summary`                 | Quick risk score for a mint                                         | [Risk](/v1/endpoints/risk#get-v1assetsrisk-summary)                                      |
+| GET    | `/v1/assets/{assetId}`                    | Asset detail with optional includes                                 | [Asset detail](/v1/endpoints/asset-detail)                                               |
+| GET    | `/v1/assets/{assetId}/variants`           | The asset's variants with market data                               | [Variants and markets](/v1/endpoints/variants-and-markets#get-v1assetsassetidvariants)   |
+| GET    | `/v1/assets/{assetId}/variant-market`     | Market snapshot for one variant                                     | [Variants and markets](/v1/endpoints/variants-and-markets#get-v1assetsassetidvariant-market) |
+| GET    | `/v1/assets/{assetId}/variant-top-markets`| Top DEX market per variant                                          | [Variants and markets](/v1/endpoints/variants-and-markets#get-v1assetsassetidvariant-top-markets) |
+| GET    | `/v1/assets/{assetId}/markets`            | DEX markets for a mint                                              | [Variants and markets](/v1/endpoints/variants-and-markets#get-v1assetsassetidmarkets)    |
+| GET    | `/v1/assets/{assetId}/tickers`            | Exchange tickers                                                    | [Variants and markets](/v1/endpoints/variants-and-markets#get-v1assetsassetidtickers)    |
+| GET    | `/v1/assets/{assetId}/ohlcv`              | OHLCV candles for a mint                                            | [Charts](/v1/endpoints/charts#get-v1assetsassetidohlcv)                                  |
+| GET    | `/v1/assets/{assetId}/price-chart`        | Canonical price candles                                             | [Charts](/v1/endpoints/charts#get-v1assetsassetidprice-chart)                            |
+| GET    | `/v1/assets/{assetId}/risk-summary`       | Risk score plus stablecoin health                                   | [Risk](/v1/endpoints/risk#get-v1assetsassetidrisk-summary)                               |
+| GET    | `/v1/assets/{assetId}/risk-details`       | Risk score with every scoring input                                 | [Risk](/v1/endpoints/risk#get-v1assetsassetidrisk-details)                               |
+| GET    | `/v1/assets/{assetId}/profile`            | Profile, links and global stats                                     | [Profile](/v1/endpoints/profile#get-v1assetsassetidprofile)                              |
+| GET    | `/v1/assets/{assetId}/description`        | Description text                                                    | [Profile](/v1/endpoints/profile#get-v1assetsassetiddescription)                          |
+| GET    | `/v1/assets/{assetId}/launches`           | Coins launched against the asset's mints                            | [Profile](/v1/endpoints/profile#get-v1assetsassetidlaunches)                             |
+| GET    | `/v1/news/feed`                           | Market news and `@tokens` posts                                     | [News](/v1/endpoints/news)                                                               |
+
+## Where to start
+
+1. [Quickstart](/v1/quickstart): set up a key and make your first calls.
+2. [Assets and variants](/v1/concepts/assets-and-variants): the two ids you will use everywhere.
+3. [Workflows](/v1/workflows): how the endpoints chain together for search pages, wallets and watchlists.
+4. [Errors and limits](/v1/errors-and-limits): the error envelope and how to retry.
+
+If you need tokens outside the registered set, or assets on other chains, use [API v2](/v2).

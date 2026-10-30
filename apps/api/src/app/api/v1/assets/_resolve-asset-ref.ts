@@ -1,13 +1,11 @@
 import { Effect } from 'effect';
 
 import { NotFoundError, tapErrorAndDefault } from '@tokens/effect';
-import {
-    assetVariantsGetByMint,
-    listDeletedRefs,
-    resolveAssetRefForApi as cloudRunResolveAssetRefForApi,
-    sanctumResolveRef,
-} from '@/lib/cloudrun';
-import { getVariantByMint, resolveAlias as resolveRegistryAlias } from '@tokens/asset-registry';
+import { resolveAssetRefForApi as cloudRunResolveAssetRefForApi, sanctumResolveRef } from '@/lib/cloudrun';
+import { listDeletedRefs } from '@/lib/deleted-refs';
+import { currentAssetId, loadAssetIdRenames } from '@/lib/asset-id-renames';
+import { resolveAlias as resolveRegistryAlias } from '@tokens/asset-registry';
+import { classifyMint, unregisteredMintError, v1RegisteredOnlyEnabled } from './_registered-only';
 import { looksLikeSolanaMintAddress, mintToSingletonAssetId, singletonAssetIdToMint } from './_singleton-asset-id';
 
 export type AssetRefResolvedBy = 'assetId' | 'alias' | 'mint' | 'singletonMint' | 'registry' | 'sanctum' | 'singleton';
@@ -64,35 +62,44 @@ function resolveKnownMintRef(
     isDeletedRef: ReturnType<typeof createDeletedRefChecker>,
 ) {
     return Effect.gen(function* () {
-        const variant = yield* assetVariantsGetByMint({ mint }).pipe(
-            Effect.catch(() => Effect.succeed(null)),
-        );
-        if (variant) {
-            if (looksLikeSolanaMintAddress(variant.assetId)) {
+        // One tier walk for every v1 route: DB variant → compiled registry →
+        // Sanctum LST → approved launch coin (see _registered-only.ts).
+        const classified = yield* classifyMint(mint, isDeletedRef);
+        switch (classified.kind) {
+            case 'db': {
+                const variant = classified.variant;
+                if (looksLikeSolanaMintAddress(variant.assetId)) {
+                    return resolution({
+                        assetId: mintToSingletonAssetId(variant.assetId),
+                        ref,
+                        resolvedBy: 'singleton',
+                        mint,
+                    });
+                }
+                return resolution({ assetId: variant.assetId, ref, resolvedBy, mint });
+            }
+            case 'registry': {
+                const renames = yield* loadAssetIdRenames();
                 return resolution({
-                    assetId: mintToSingletonAssetId(variant.assetId),
+                    assetId: currentAssetId(renames, classified.match.asset.assetId),
                     ref,
-                    resolvedBy: 'singleton',
+                    resolvedBy,
                     mint,
                 });
             }
-            return resolution({ assetId: variant.assetId, ref, resolvedBy, mint });
+            case 'sanctum':
+                return resolution({ assetId: 'solana', ref, resolvedBy: 'sanctum', mint });
+            case 'launch':
+                // Approved launch coins have no `assets` row; their page is the per-mint id.
+                return resolution({ assetId: mintToSingletonAssetId(mint), ref, resolvedBy: 'singleton', mint });
+            case 'unavailable':
+                // A lookup failed: fail open to the pre-rule behaviour rather than
+                // turning a registered asset into a 404 during a Cloud Run blip.
+                return resolution({ assetId: mintToSingletonAssetId(mint), ref, resolvedBy: 'singleton', mint });
+            case 'unregistered':
+                if (v1RegisteredOnlyEnabled()) return yield* Effect.fail(unregisteredMintError(mint));
+                return resolution({ assetId: mintToSingletonAssetId(mint), ref, resolvedBy: 'singleton', mint });
         }
-
-        const registryMatch = getVariantByMint(mint);
-        if (registryMatch) {
-            const registryDeleted = yield* isDeletedRef(registryMatch.asset.coingeckoId ?? registryMatch.asset.assetId);
-            if (!registryDeleted) {
-                return resolution({ assetId: registryMatch.asset.assetId, ref, resolvedBy, mint });
-            }
-        }
-
-        const sanctum = yield* sanctumResolveRef({ ref: mint }).pipe(
-            tapErrorAndDefault('assets.resolve.sanctumMintRef', null, { ref, mint }),
-        );
-        if (sanctum) return resolution({ assetId: 'solana', ref, resolvedBy: 'sanctum', mint });
-
-        return resolution({ assetId: mintToSingletonAssetId(mint), ref, resolvedBy: 'singleton', mint });
     });
 }
 
@@ -120,10 +127,14 @@ export function resolveAssetRefContext(assetRef: string, options: AssetRefResolu
             }
 
             // Fast path: registry is in-memory and resolves common asset refs synchronously.
+            // The registry keeps an asset's original id; an admin may have renamed it in
+            // the database since, so map the registry id to the asset's current id.
             const registry = resolveRegistryAlias(ref);
             if (registry) {
-                return isDeletedRef(registry.coingeckoId ?? registry.assetId).pipe(
-                    Effect.flatMap(isRegistryDeleted => {
+                return Effect.all([isDeletedRef(registry.coingeckoId ?? registry.assetId), loadAssetIdRenames()], {
+                    concurrency: 'unbounded',
+                }).pipe(
+                    Effect.flatMap(([isRegistryDeleted, renames]) => {
                         if (isRegistryDeleted) {
                             return Effect.fail(new NotFoundError({ message: 'Asset not found', resource: 'asset' }));
                         }
@@ -137,11 +148,12 @@ export function resolveAssetRefContext(assetRef: string, options: AssetRefResolu
                                 }),
                             );
                         }
+                        const assetId = currentAssetId(renames, registry.assetId);
                         return Effect.succeed(
                             resolution({
-                                assetId: registry.assetId,
+                                assetId,
                                 ref,
-                                resolvedBy: registry.assetId === ref ? 'assetId' : 'registry',
+                                resolvedBy: assetId === ref ? 'assetId' : 'registry',
                             }),
                         );
                     }),

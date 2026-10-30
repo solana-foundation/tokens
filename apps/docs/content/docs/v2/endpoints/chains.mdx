@@ -1,0 +1,75 @@
+---
+title: Chains
+description: The chains the multichain asset surface covers, with CAIP-2 ids, explorer templates and per-chain capability flags.
+---
+
+All endpoints below use `https://api.tokens.xyz/v2` with an `x-api-key` header; see
+[Authentication](/v2/authentication). The chain table, CAIP-2 ids and what each capability flag
+means are on [Multichain assets](/v2/concepts/multichain-assets#chains-and-caip-2-ids); the types
+are in [Shared shapes](/v2/concepts/shared-shapes).
+
+## `GET /v2/chains`
+
+Every supported chain, in canonical order, with its capability flags and live variant and asset
+counts.
+
+**Auth**: `x-api-key`, scope `assets:read`.
+
+### Query params
+
+None.
+
+### Response
+
+```ts
+interface ChainsResponse {
+    chains: V2Chain[]; // canonical order, always all six
+    total: number;     // 6
+}
+```
+
+`V2Chain` and `ChainCapabilities` are in [Shared shapes](/v2/concepts/shared-shapes#shared-shapes).
+
+### Example
+
+```bash
+curl -sS "$API_BASE_URL/v2/chains" -H "x-api-key: $API_KEY"
+```
+
+```json
+{
+  "chains": [
+    {
+      "id": "base",
+      "caip2": "eip155:8453",
+      "family": "evm",
+      "evmChainId": 8453,
+      "label": "Base",
+      "explorer": { "name": "Basescan", "tokenUrlTemplate": "https://basescan.org/token/{address}" },
+      "capabilities": {
+        "markets": true,
+        "dexMarkets": false,
+        "ohlcv": false,
+        "risk": false,
+        "executionQuality": false,
+        "swap": false,
+        "firstPartyLogos": false
+      },
+      "variantCount": 41,
+      "assetCount": 39
+    }
+  ],
+  "total": 6
+}
+```
+
+### Notes
+
+- The list is compiled into the API, so it is cached for an hour (`max-age` 3600 s,
+  `stale-while-revalidate` 86400 s) and safe to cache longer on your side.
+- `variantCount` and `assetCount` come from the data layer and are `null`, not `0`, when it cannot
+  be reached; the static metadata is still served with a `200`.
+- When a capability is switched on for a chain it flips here first. Gate your UI on
+  `capabilities`, not on `id === 'solana'`.
+- The `id` value is what every `chain=` param and `<chain>:<address>` key accepts. Provider slugs
+  (`polygon-pos`, `arbitrum-one`, `bsc`) are `400 invalid_chain`.

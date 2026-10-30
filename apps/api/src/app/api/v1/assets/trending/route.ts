@@ -8,8 +8,9 @@ import {
     type FreshTrendingMarketsListResult,
     type TrendingMarketsListResult,
 } from '@/lib/cloudrun';
+import { loadAdvisoriesOrEmpty } from '@/lib/advisories';
 import { getTokenLogoURLForMint } from '@/lib/logo-overrides';
-import { getVariantByMint } from '@tokens/asset-registry';
+import { getVariantByMint, type AssetIndustry, type AssetRegion, type VariantAdvisory } from '@tokens/asset-registry';
 import { resolveVariantSymbol } from '../_asset-helpers';
 
 export const dynamic = 'force-dynamic';
@@ -33,6 +34,8 @@ interface SharedTrendingRow {
     name: string;
     decimals?: number;
     category: AssetCategory;
+    region: AssetRegion | null;
+    industry: AssetIndustry | null;
     logoURI?: string;
 }
 
@@ -109,7 +112,11 @@ function getRegistryDisplayName(registryMatch: ReturnType<typeof getVariantByMin
     return baseName || variantLabel || undefined;
 }
 
-function buildBaseTrendingAsset(request: Request, row: SharedTrendingRow) {
+function buildBaseTrendingAsset(
+    request: Request,
+    row: SharedTrendingRow,
+    advisoriesByMint: ReadonlyMap<string, VariantAdvisory>,
+) {
     const registryMatch = getVariantByMint(row.mint);
     const logoSymbol = getXstockSymbolFromLogoUrl(row.logoURI);
     const canonicalSymbol = registryMatch?.asset.symbol ?? getCanonicalSymbolFromXstockSymbol(logoSymbol);
@@ -133,10 +140,15 @@ function buildBaseTrendingAsset(request: Request, row: SharedTrendingRow) {
         name,
         decimals: row.decimals ?? 9,
         category: row.category,
+        region: row.region,
+        industry: row.industry,
         imageUrl: absolutizeLogoUrl(
             request,
             row.logoURI ?? getTokenLogoURLForMint(row.mint, symbol, row.symbol) ?? null,
         ),
+        // cloudrun-assets excludes compromised/blocked mints in SQL, so only a
+        // `caution` advisory can appear here; the key is always present.
+        advisory: advisoriesByMint.get(row.mint) ?? null,
     };
 }
 
@@ -158,12 +170,14 @@ export const GET = route(
                 offset,
             };
 
+            const advisoriesByMint = yield* loadAdvisoriesOrEmpty();
+
             if (mode === 'flow') {
                 const result = (yield* trendingMarketsList(queryArgs)) as FlowTrendingListResult;
 
                 return {
                     trending: result.rows.map((row: FlowTrendingRow) => ({
-                        ...buildBaseTrendingAsset(request, row),
+                        ...buildBaseTrendingAsset(request, row, advisoriesByMint),
                         market: {
                             source: 'clickhouse_trades' as const,
                             metricsSource: 'clickhouse_trades' as const,
@@ -206,7 +220,7 @@ export const GET = route(
 
             return {
                 trending: result.rows.map((row: FreshTrendingRow) => ({
-                    ...buildBaseTrendingAsset(request, row),
+                    ...buildBaseTrendingAsset(request, row, advisoriesByMint),
                     market: {
                         source: row.source as MarketSource,
                         metricsSource: (row.metricsSource ?? row.source) as MarketSource,

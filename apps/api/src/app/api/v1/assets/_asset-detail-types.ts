@@ -1,3 +1,5 @@
+import type { PegHealth, StructuralHealth } from '@tokens/asset-registry';
+
 import type { OHLCVData, TokenMarket } from '@/lib/birdeye';
 import type { GlobalTokenStats } from '@/lib/coingecko';
 import type { computeMarketScore, MarketScoreInput } from '@/lib/token-risk-helpers';
@@ -29,11 +31,16 @@ export interface AssetIncludeError {
 
 export type AssetIncludeResult<T> = AssetIncludeOk<T> | AssetIncludeError;
 
+/** Mirrors the `ok: true` arm of `/risk-details` so `include=risk` and the dedicated route agree. */
 export interface AssetRiskInclude {
     tokenData: WebacyTokenResponse | null;
     tradingData: WebacyTradingLiteResponse | null;
     marketScoreInput: MarketScoreInput;
     marketScore: ReturnType<typeof computeMarketScore>;
+    /** Webacy depeg-monitor status for the selected mint; `null` when unmonitored. */
+    pegHealth: PegHealth | null;
+    /** Webacy structural-health grade for the selected mint; `null` when unmonitored. */
+    structuralHealth: StructuralHealth | null;
 }
 
 export interface AssetMarketsInclude {

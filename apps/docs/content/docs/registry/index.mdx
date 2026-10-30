@@ -1,0 +1,96 @@
+---
+title: Overview
+description: The Solana Foundation asset registry — every classified Solana asset with its taxonomy, Allium and RWA.xyz classifications, and values.
+---
+
+The registry is the Solana Foundation data team's **Project Canon**: one row per Solana mint they
+classify, placed in a three-tier taxonomy alongside the independent [Allium](https://www.allium.so)
+and [RWA.xyz](https://www.rwa.xyz) asset classes and on-chain values, plus the CoinGecko market cap.
+It is the dataset behind [tokens.xyz/registry](https://tokens.xyz/registry), and the Tokens API serves
+it from two endpoints under `https://api.tokens.xyz/v2`.
+
+The data team owns the classifications and values. The API adds identity (`name`, `logoURI`) and the
+link to the rest of the platform (`hasTokenPage`, `assetId`), resolved from our own token index at read
+time; the taxonomy and values are the data team's as delivered.
+
+## What an item carries
+
+Every registry item has the same shape, in the list and in the single-mint lookup:
+
+| Field | Meaning |
+| --- | --- |
+| `mint`, `symbol`, `name`, `logoURI` | Identity. `name` and `logoURI` are `null` when neither our index nor a provider knows the mint. |
+| `group`, `category`, `assetClass` | The Foundation taxonomy, top tier to leaf. See [Taxonomy](/registry/taxonomy). |
+| `alliumClass`, `alliumValueUsd` | Allium's classification and on-chain value in USD. |
+| `rwaClass`, `rwaValueUsd` | RWA.xyz's classification and on-chain value in USD. |
+| `marketCapUsd` | Market cap from CoinGecko; `null` when CoinGecko does not track the mint. |
+| `rank` | The data team's row order, 0-based and stable across pages. |
+| `hasTokenPage`, `assetId` | The link to API assets; see below. |
+
+Any of the classification and value fields can be `null`. Most crypto-native assets carry no Allium or
+RWA.xyz class because those providers classify real-world and stablecoin assets only.
+
+## How the tiers relate
+
+`group` is the broadest split (`Crypto Native`, `RWA`, `Stablecoins`). `category` divides a group by
+the kind of underlying (`Equities`, `Fixed Income`, `Fiat-Backed`, …), and `assetClass` is the leaf
+(`Stocks`, `US Treasuries`, `USD Stablecoins`, …). Each class belongs to exactly one category and each
+category to exactly one group, so filtering on `class` alone is unambiguous. USDC, for example, is
+`Stablecoins` › `Fiat-Backed` › `USD Stablecoins`.
+
+Allium and RWA.xyz classify independently with their own vocabularies. Their classes often agree with
+the Foundation leaf (USDC is `stablecoins` for Allium and `Stablecoins` for RWA.xyz) but they are not
+derived from it and can disagree. Treat them as three views of the same asset, not one hierarchy.
+
+## Attribution
+
+`alliumClass` and `alliumValueUsd` are Allium's classifications and values; `rwaClass` and
+`rwaValueUsd` are RWA.xyz's. Credit the provider when you display either of them.
+
+## Freshness and ordering
+
+The data team regenerates the registry periodically and we sync it into our own index on a schedule,
+so a call never waits on an upstream. Two timestamps tell you how fresh a response is:
+
+- `generatedAt` is the data team's snapshot timestamp (ISO 8601).
+- `syncedAt` is our last successful sync (unix milliseconds).
+
+Expect `generatedAt` to lag the data team by up to about an hour. If the registry backend is
+unavailable the endpoints serve the last good payload with a `200` rather than a `5xx`; treat
+`syncedAt` as the freshness signal.
+
+Items come back in the data team's order and `rank` preserves it across pages: by `alliumValueUsd`,
+falling back to `rwaValueUsd`, descending with empties last, then by market cap. Keep that order
+if you want to match tokens.xyz; re-sorting by market cap floats market-cap-only assets above the
+valued RWAs.
+
+## Relationship to API assets
+
+The registry is wider than the assets the API serves. A registry row for a mint nobody has registered
+keeps its taxonomy and values but has no page and no market data in the API.
+
+- `hasTokenPage: true` means tokens.xyz has a page for the mint, at `tokens.xyz/{assetId}?solana={mint}`.
+- `assetId` is set when the mint is a variant of a curated asset. It is a canonical id such as `usd`,
+  or a `solana-{mint}` id for an asset registered under its own mint (an approved launch coin, for
+  example). It is the same id [`GET /v1/assets/resolve?mint=`](/v1/endpoints/search-and-resolve)
+  returns. When it is `null`, `hasTokenPage` is `false` and v1 has nothing for the mint.
+
+Browse the registry at [tokens.xyz/registry](https://tokens.xyz/registry); the "Response" button on
+each row shows exactly what `GET /v2/registry/{mint}` returns.
+
+## Using the registry
+
+**Build a sector list.** Filter the list endpoint by one taxonomy tier, for example
+`GET /v2/registry?group=RWA&category=Equities`, and page through it with `limit` and `offset`. The whole
+registry fits in one page at `limit=5000`.
+
+**Attach live market data.** The registry carries market cap only. For price, volume, liquidity and
+advisories, join each item's `mint` to
+[`GET /v2/variants/solana/{mint}`](/v2/endpoints/variants) (batch up to 50 at a time with the
+variants batch endpoint). Mints with `hasTokenPage: false` return `404` there.
+
+**Reach the asset view.** When `assetId` is set, [`GET /v1/assets/{assetId}`](/v1/endpoints/asset-detail)
+gives you the curated asset the mint belongs to — its other mints, profile and risk data — and
+`GET /v2/assets/{assetId}` the cross-chain view.
+
+Field-level details, response types and curl examples are on [Endpoints](/registry/endpoints).

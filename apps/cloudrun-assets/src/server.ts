@@ -6,6 +6,7 @@ import { isValidBearerToken } from '@tokens/cloudrun-shutdown';
 import {
     getByAssetId,
     getByAssetIds,
+    listAssetIdRenames,
     IdentityRequiredError,
     InvalidArgsError,
     UnauthorizedError,
@@ -20,8 +21,11 @@ import {
 import { loadAssetBaseForApi, type AssetsApiRepo } from './handlers/assetsApi';
 import { assetsApiCuratedPrefetchForApi } from './handlers/assetsApiCuratedPrefetch';
 import { assetsApiSearchPrefetchForApi } from './handlers/assetsApiSearchPrefetch';
+import { assetsApiSpeculativeBatchForApi } from './handlers/assetsApiSpeculativeBatch';
 import { setAssetDescriptionByAssetId } from './handlers/assetsMutations';
 import { listDeletedRefs, type AssetDeletionTombstonesRepo } from './handlers/assetDeletionTombstones';
+import { listAdvisories, type AssetAdvisoriesRepo } from './handlers/assetAdvisoriesReads';
+import { stablecoinHealthGetByMints, type StablecoinHealthReadsRepo } from './handlers/stablecoinHealthReads';
 import {
     listActive as sanctumListActive,
     resolveRef as sanctumResolveRef,
@@ -33,6 +37,7 @@ import {
     type AssetMarketsRepo,
 } from './handlers/assetMarkets';
 import { getLatestByMints as variantMarketsGetLatestByMints, type VariantMarketsRepo } from './handlers/variantMarkets';
+import { getLatestByMints as assetRiskGetLatestByMints, type AssetRiskReadsRepo } from './handlers/assetRiskReads';
 import {
     getByMint as assetVariantsGetByMint,
     getSolanaDefaultVariantsViewForApi,
@@ -97,6 +102,7 @@ import {
 } from './handlers/tokenListsAdmin';
 import {
     getCoinById as coingeckoReadsGetCoinById,
+    getCoinBySolanaMint as coingeckoReadsGetCoinBySolanaMint,
     getPriceLatestByCoinId as coingeckoReadsGetPriceLatestByCoinId,
     getPriceLatestByCoinIds as coingeckoReadsGetPriceLatestByCoinIds,
     getTickersLatestByCoinId as coingeckoReadsGetTickersLatestByCoinId,
@@ -148,6 +154,38 @@ import {
     type DepthSampleDeps,
     type LiveQuoteDeps,
 } from './handlers/liveQuotes';
+import { launchpadJobs, type LaunchpadCronDeps, type LaunchpadJobHandler } from './handlers/crons.launchpad';
+import { logoSyncJobs, type LogoSyncCronDeps, type LogoSyncJobHandler } from './handlers/crons.logoSync';
+import {
+    adminListLaunchpadPairs,
+    adminListLaunchpadTokensForQuote,
+    adminPreviewLaunchpadMint,
+    adminSyncLaunchpadMint,
+    type LaunchpadAdminDeps,
+} from './handlers/launchpadAdminActions';
+import {
+    approvedMints as launchpadApprovedMints,
+    listByQuoteMints as launchpadListByQuoteMints,
+    type LaunchpadReadsRepo,
+} from './handlers/launchpadReads';
+import { solanaDataJobs, type SolanaDataCronDeps, type SolanaDataJobHandler } from './handlers/crons.solanaData';
+import {
+    getByMint as solanaDataAssetsGetByMint,
+    listAssets as solanaDataAssetsList,
+    type SolanaDataReadsRepo,
+} from './handlers/solanaDataReads';
+import { depegJobs, type DepegCronDeps, type DepegJobHandler } from './handlers/crons.depeg';
+import { v2AssetsJobs, type V2AssetsCronDeps, type V2AssetsJobHandler } from './handlers/crons.v2Assets';
+import {
+    v2AssetsChains,
+    v2AssetsCuratedPrefetch,
+    v2AssetsGetDetail,
+    v2AssetsGetMarketsByKeys,
+    v2AssetsGetVariant,
+    v2AssetsListVariantsByAssetIds,
+    type V2AssetsReadsDeps,
+    type V2AssetsReadsRepo,
+} from './handlers/v2AssetsReads';
 import { trendingJobs, type TrendingCronDeps, type TrendingJobHandler } from './handlers/crons.trending';
 import {
     clickhouseExtrasJobs,
@@ -158,7 +196,9 @@ import {
     adminAddCheckedVariant,
     adminCheckVariantMintForCanonical,
     adminRefreshChartData,
+    adminRefreshV2VariantMarket,
     adminSeedAsset,
+    adminSyncV2SolanaVariants,
     type AdminActionsDeps,
 } from './handlers/adminActions';
 import {
@@ -177,7 +217,7 @@ import {
     type CacheWarmDeps,
 } from './handlers/cacheWarm';
 import { OidcAuthError, parseBearer, type VerifyOidc } from './oidc';
-import { runAtomicReadWithRetry, structuredDatabaseFailure } from './transientDb';
+import { databaseErrorCode, runAtomicReadWithRetry, structuredDatabaseFailure } from './transientDb';
 
 export type ServiceRole = 'api' | 'worker' | 'hybrid';
 
@@ -185,6 +225,8 @@ export interface ServerDeps {
     repo: AssetsRepo;
     assetsApiRepo: AssetsApiRepo;
     deletionTombstonesRepo: AssetDeletionTombstonesRepo;
+    assetAdvisoriesRepo: AssetAdvisoriesRepo;
+    stablecoinHealthReadsRepo: StablecoinHealthReadsRepo;
     sanctumLstsRepo: SanctumLstsRepo;
     assetMarketsRepo: AssetMarketsRepo;
     variantMarketsRepo: VariantMarketsRepo;
@@ -193,6 +235,7 @@ export interface ServerDeps {
     trendingReadsRepo: TrendingReadsRepo;
     fillQualityReadsRepo: FillQualityReadsRepo;
     depthCurveReadsRepo: DepthCurveReadsRepo;
+    assetRiskReadsRepo: AssetRiskReadsRepo;
     assetCollectionsReadsRepo: AssetCollectionsReadsRepo;
     curatedMembershipSource: CuratedMembershipSource;
     tokenListsReadsRepo: TokenListsReadsRepo;
@@ -201,13 +244,20 @@ export interface ServerDeps {
     stockReadsRepo: StockReadsRepo;
     ohlcvReadsRepo: OhlcvReadsRepo;
     prestocksReadsRepo: PrestocksReadsRepo;
-    authToken: string;
+    launchpadReadsRepo: LaunchpadReadsRepo;
+    /** v2 multichain tables (migration 0033); served as the `v2Assets*` queries. */
+    v2AssetsReadsRepo: V2AssetsReadsRepo;
+    solanaDataReadsRepo: SolanaDataReadsRepo;
+    /** Current shared bearer, or [current, previous] during a rotation. */
+    authToken: string | readonly string[];
     /** API serves RPC routes; worker serves Cloud Scheduler jobs only. */
     serviceRole?: ServiceRole;
     /** Production injects a SELECT 1 check for the Cloud Run startup probe. */
     checkDatabase?: () => Promise<void>;
     /** Test seam; production leaves the database-aware startup timeout at 2.8s. */
     startupDatabaseTimeoutMs?: number;
+    /** Test seam; production logs `cloudrun_assets_job_stalled` 30s past a job's `budgetMs`. */
+    jobStallGraceMs?: number;
     cronDeps?: CronDeps;
     clickhouseCronDeps?: CronDeps & ClickhouseCronDeps;
     miscCronDeps?: MiscCronDeps;
@@ -219,6 +269,17 @@ export interface ServerDeps {
     depthCronDeps?: DepthCronDeps;
     liveQuoteDeps?: LiveQuoteDeps;
     depthSampleDeps?: DepthSampleDeps;
+    launchpadCronDeps?: LaunchpadCronDeps;
+    /** First-party logo re-hosting (`/jobs/logo-sync`); absent when GCS_LOGO_BUCKET is unset. */
+    logoSyncCronDeps?: LogoSyncCronDeps;
+    /** Project Canon registry sync (`/jobs/sync-solana-data-assets`); absent when SOLANA_DATA_API_KEY is unset. */
+    solanaDataCronDeps?: SolanaDataCronDeps;
+    /** stonk.fun lookups for the admin Launches page (allowlist-gated, read-only). */
+    launchpadAdminDeps?: LaunchpadAdminDeps;
+    /** Webacy depeg reconcile + structural health; present only when WEBACY_API_KEY is set. */
+    depegCronDeps?: DepegCronDeps;
+    /** v2 multichain jobs (Solana mirror, EVM derivation, EVM market refresh); present with BIRDEYE_API_KEY. */
+    v2AssetsCronDeps?: V2AssetsCronDeps;
     cacheWarmDeps?: CacheWarmDeps;
     adminActionsDeps?: AdminActionsDeps;
     /** Admin-only token-list build tools (CSV import, create-for-project); allowlist-gated. */
@@ -256,10 +317,18 @@ type JobHandler = (deps: CronDeps, args: unknown) => Promise<CronResult>;
 // never replays an entire fan-out.
 const ATOMIC_RETRY_QUERY_NAMES = new Set([
     'getByAssetId',
+    'v2AssetsChains',
+    'v2AssetsGetDetail',
+    'v2AssetsListVariantsByAssetIds',
+    'v2AssetsGetVariant',
+    'v2AssetsGetMarketsByKeys',
     'getByAssetIds',
     'listActiveWithCoinGeckoIds',
     'listByCategory',
     'listDeletedRefs',
+    'listAssetIdRenames',
+    'assetAdvisoriesList',
+    'stablecoinHealthGetByMints',
     'sanctumListActive',
     'assetMarketsGetLatestByAssetId',
     'assetMarketsGetLatestByAssetIds',
@@ -276,6 +345,7 @@ const ATOMIC_RETRY_QUERY_NAMES = new Set([
     'freshTrendingMarketsList',
     'variantFillQualityGetLatestByMints',
     'variantDepthCurvesGetLatestByMints',
+    'assetRiskGetLatestByMints',
     'assetCollectionsGetMembers',
     'assetCollectionsGetMemberMints',
     'assetCollectionsGetSummaries',
@@ -288,6 +358,7 @@ const ATOMIC_RETRY_QUERY_NAMES = new Set([
     'tokenListsGetMembers',
     'tokenListsGetSlugsByMints',
     'coingeckoReadsGetCoinById',
+    'coingeckoReadsGetCoinBySolanaMint',
     'coingeckoReadsListOhlcv',
     'coingeckoReadsGetPriceLatestByCoinId',
     'coingeckoReadsGetPriceLatestByCoinIds',
@@ -297,6 +368,10 @@ const ATOMIC_RETRY_QUERY_NAMES = new Set([
     'stockPricesGetLatestByAssetId',
     'stockPricesGetLatestByAssetIds',
     'prestocksGetLatestByMints',
+    'launchpadListByQuoteMints',
+    'launchpadApprovedMints',
+    'solanaDataAssetsList',
+    'solanaDataAssetsGetByMint',
     'stockOhlcvList',
     'ohlcvBounds',
     'ohlcvList',
@@ -311,15 +386,53 @@ function cronJobResponse(c: Context, result: CronResult) {
 }
 
 /**
+ * Stall threshold for a job whose body declares no `budgetMs`: under the
+ * worker's 540s Cloud Run request timeout so the line lands before the
+ * request is killed.
+ */
+const JOB_STALL_DEFAULT_MS = 480_000;
+/** Grace past the declared budget before an in-flight job counts as stalled. */
+const JOB_STALL_GRACE_MS = 30_000;
+
+/**
+ * One JSON line per call, tagged with the revision and instance like the
+ * database-failure events, so the job lifecycle events
+ * (`cloudrun_assets_job_*`) join the same dashboards and Loki filters.
+ */
+function logJson(level: 'log' | 'warn' | 'error', line: Record<string, unknown>): void {
+    console[level](
+        JSON.stringify({
+            ...line,
+            revision: process.env.K_REVISION?.trim() || 'local',
+            instanceId: process.env.HOSTNAME?.trim() || 'local',
+        }),
+    );
+}
+
+/** `budgetMs` from a job body when it is a positive finite number; every scheduler body declares one. */
+function readJobBudgetMs(args: unknown): number | null {
+    const value = args && typeof args === 'object' ? (args as Record<string, unknown>).budgetMs : undefined;
+    return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : null;
+}
+
+/**
  * Shared error mapping for job handlers: invalid args (either the legacy
  * CronInvalidArgsError or @tokens/effect's BadRequestError from decodeJobArgs)
- * map to 400; everything else logs the full error (stack preserved) and 500s.
+ * map to 400; everything else logs the full error (stack preserved), one
+ * structured `cloudrun_assets_job_failed` line for alerting, and 500s.
  */
-function jobErrorResponse(c: Context, name: string, err: unknown) {
+function jobErrorResponse(c: Context, name: string, err: unknown, startedAt: number) {
     if (err instanceof CronInvalidArgsError || err instanceof BadRequestError) {
         return c.json({ error: 'invalid_args', message: err.message }, 400);
     }
     console.error(`[cloudrun-assets] job ${name} threw`, err);
+    logJson('error', {
+        event: 'cloudrun_assets_job_failed',
+        job: name,
+        duration_ms: Date.now() - startedAt,
+        errorCode: databaseErrorCode(err) ?? 'UNKNOWN',
+        errorMessage: (err instanceof Error ? err.message : String(err)).slice(0, 500),
+    });
     return c.json({ error: 'handler_error' }, 500);
 }
 
@@ -396,6 +509,7 @@ export function createApp(deps: ServerDeps) {
     const queries: Record<string, Handler> = Object.create(null);
     queries.getByAssetId = args => getByAssetId(deps.repo, args);
     queries.getByAssetIds = args => getByAssetIds(deps.repo, args);
+    queries.listAssetIdRenames = args => listAssetIdRenames(deps.repo, args);
     queries.search = args => search(deps.repo, args);
     queries.resolveAssetRef = args => resolveAssetRef(deps.repo, args);
     queries.resolveAssetRefForApi = args => resolveAssetRefForApi(deps.repo, args);
@@ -434,7 +548,27 @@ export function createApp(deps: ServerDeps) {
             },
             args,
         );
+    // Speculative batch for apps/api multi-hop routes. Deliberately NOT in
+    // ATOMIC_RETRY_QUERY_NAMES: it fans out, so a replay is not cheap.
+    queries.assetsApiSpeculativeBatchForApi = args =>
+        assetsApiSpeculativeBatchForApi(
+            {
+                assetsRepo: deps.repo,
+                assetVariantsRepo: deps.assetVariantsRepo,
+                deletionTombstonesRepo: deps.deletionTombstonesRepo,
+                sanctumLstsRepo: deps.sanctumLstsRepo,
+                stockReadsRepo: deps.stockReadsRepo,
+                tokensReadsRepo: deps.tokensReadsRepo,
+                variantMarketsRepo: deps.variantMarketsRepo,
+                fillQualityReadsRepo: deps.fillQualityReadsRepo,
+                assetMarketsRepo: deps.assetMarketsRepo,
+                coingeckoReadsRepo: deps.coingeckoReadsRepo,
+            },
+            args,
+        );
     queries.listDeletedRefs = args => listDeletedRefs(deps.deletionTombstonesRepo, args);
+    queries.assetAdvisoriesList = () => listAdvisories(deps.assetAdvisoriesRepo);
+    queries.stablecoinHealthGetByMints = args => stablecoinHealthGetByMints(deps.stablecoinHealthReadsRepo, args);
     queries.sanctumListActive = args => sanctumListActive(deps.sanctumLstsRepo, args);
     queries.sanctumResolveRef = args => sanctumResolveRef(deps.sanctumLstsRepo, args);
     queries.assetMarketsGetLatestByAssetId = args => assetMarketsGetLatestByAssetId(deps.assetMarketsRepo, args);
@@ -448,7 +582,8 @@ export function createApp(deps: ServerDeps) {
     queries.assetVariantsListSolanaVariantsForApi = args => listSolanaVariantsForApi(deps.assetVariantsRepo, args);
     queries.tokensGetByAddress = args => tokensGetByAddress(deps.tokensReadsRepo, args);
     queries.tokensSearchTokens = args => tokensSearchTokens(deps.tokensReadsRepo, args);
-    queries.tokensGetSearchTokensByAddresses = args => tokensGetSearchTokensByAddresses(deps.tokensReadsRepo, args);
+    queries.tokensGetSearchTokensByAddresses = args =>
+        tokensGetSearchTokensByAddresses(deps.tokensReadsRepo, deps.variantMarketsRepo, args);
     queries.tokenMarketsGetLatestByMint = args => tokenMarketsGetLatestByMint(deps.tokensReadsRepo, args);
     queries.tokenMarketsGetLatestByMints = args => tokenMarketsGetLatestByMints(deps.tokensReadsRepo, args);
     queries.tokenMarketsGetTopMarketsByMints = args => tokenMarketsGetTopMarketsByMints(deps.tokensReadsRepo, args);
@@ -470,6 +605,7 @@ export function createApp(deps: ServerDeps) {
         if (!liveQuoteDeps) throw new InvalidArgsError('live quotes are not configured on this service');
         return executionQuoteTokenMetadata(liveQuoteDeps, args);
     };
+    queries.assetRiskGetLatestByMints = args => assetRiskGetLatestByMints(deps.assetRiskReadsRepo, args);
     queries.assetCollectionsGetMembers = args => assetCollectionsGetMembers(deps.assetCollectionsReadsRepo, args);
     queries.assetCollectionsGetMemberMints = args =>
         assetCollectionsGetMemberMints(deps.assetCollectionsReadsRepo, args);
@@ -483,6 +619,8 @@ export function createApp(deps: ServerDeps) {
     queries.tokenListsGetMembers = args => tokenListsGetMembers(deps.tokenListsReadsRepo, args);
     queries.tokenListsGetSlugsByMints = args => tokenListsGetSlugsByMints(deps.tokenListsReadsRepo, args);
     queries.coingeckoReadsGetCoinById = args => coingeckoReadsGetCoinById(deps.coingeckoReadsRepo, args);
+    queries.coingeckoReadsGetCoinBySolanaMint = args =>
+        coingeckoReadsGetCoinBySolanaMint(deps.coingeckoReadsRepo, args);
     queries.coingeckoReadsSearchCoins = args => coingeckoReadsSearchCoins(deps.coingeckoReadsRepo, args);
     queries.coingeckoReadsListOhlcv = args => coingeckoReadsListOhlcv(deps.coingeckoReadsRepo, args);
     queries.coingeckoReadsGetPriceLatestByCoinId = args =>
@@ -496,6 +634,24 @@ export function createApp(deps: ServerDeps) {
     queries.stockPricesGetLatestByAssetId = args => stockGetPriceLatestByAssetId(deps.stockReadsRepo, args);
     queries.stockPricesGetLatestByAssetIds = args => stockGetPriceLatestByAssetIds(deps.stockReadsRepo, args);
     queries.prestocksGetLatestByMints = args => prestocksGetLatestByMints(deps.prestocksReadsRepo, args);
+    queries.launchpadListByQuoteMints = args => launchpadListByQuoteMints(deps.launchpadReadsRepo, args);
+    queries.launchpadApprovedMints = args => launchpadApprovedMints(deps.launchpadReadsRepo, args);
+    const v2AssetsReadsDeps: V2AssetsReadsDeps = {
+        v2: deps.v2AssetsReadsRepo,
+        assetsRepo: deps.repo,
+        assetCollectionsReadsRepo: deps.assetCollectionsReadsRepo,
+        deletionTombstonesRepo: deps.deletionTombstonesRepo,
+        stockReadsRepo: deps.stockReadsRepo,
+        coingeckoReadsRepo: deps.coingeckoReadsRepo,
+    };
+    queries.v2AssetsChains = args => v2AssetsChains(v2AssetsReadsDeps, args);
+    queries.v2AssetsCuratedPrefetch = args => v2AssetsCuratedPrefetch(v2AssetsReadsDeps, args);
+    queries.v2AssetsGetDetail = args => v2AssetsGetDetail(v2AssetsReadsDeps, args);
+    queries.v2AssetsListVariantsByAssetIds = args => v2AssetsListVariantsByAssetIds(v2AssetsReadsDeps, args);
+    queries.v2AssetsGetVariant = args => v2AssetsGetVariant(v2AssetsReadsDeps, args);
+    queries.v2AssetsGetMarketsByKeys = args => v2AssetsGetMarketsByKeys(v2AssetsReadsDeps, args);
+    queries.solanaDataAssetsList = args => solanaDataAssetsList(deps.solanaDataReadsRepo, args);
+    queries.solanaDataAssetsGetByMint = args => solanaDataAssetsGetByMint(deps.solanaDataReadsRepo, args);
     queries.stockOhlcvList = args => listStockOhlcv(deps.ohlcvReadsRepo, args);
     queries.ohlcvBounds = args => getOhlcvBounds(deps.ohlcvReadsRepo, args);
     queries.ohlcvList = args => listOhlcv(deps.ohlcvReadsRepo, args);
@@ -553,6 +709,21 @@ export function createApp(deps: ServerDeps) {
         mutations.adminAddCheckedVariant = (args, identity) => adminAddCheckedVariant(adminActionsDeps, args, identity);
         mutations.adminSeedAsset = (args, identity) => adminSeedAsset(adminActionsDeps, args, identity);
         mutations.adminRefreshChartData = (args, identity) => adminRefreshChartData(adminActionsDeps, args, identity);
+        mutations.adminSyncV2SolanaVariants = (args, identity) =>
+            adminSyncV2SolanaVariants(adminActionsDeps, args, identity);
+        mutations.adminRefreshV2VariantMarket = (args, identity) =>
+            adminRefreshV2VariantMarket(adminActionsDeps, args, identity);
+    }
+    const launchpadAdminDeps = deps.launchpadAdminDeps;
+    if (launchpadAdminDeps) {
+        mutations.adminPreviewLaunchpadMint = (args, identity) =>
+            adminPreviewLaunchpadMint(launchpadAdminDeps, args, identity);
+        mutations.adminListLaunchpadTokensForQuote = (args, identity) =>
+            adminListLaunchpadTokensForQuote(launchpadAdminDeps, args, identity);
+        mutations.adminListLaunchpadPairs = (args, identity) =>
+            adminListLaunchpadPairs(launchpadAdminDeps, args, identity);
+        mutations.adminSyncLaunchpadMint = (args, identity) =>
+            adminSyncLaunchpadMint(launchpadAdminDeps, args, identity);
     }
 
     // Admin token-list build tools, called by the apps/admin proxy. Unlike the
@@ -665,6 +836,7 @@ export function createApp(deps: ServerDeps) {
     const clickhouseJobsTable: Record<string, ClickhouseJobHandler> = {
         ...clickhouseJobs,
     };
+    const depthJobsTable: Record<string, DepthJobHandler> = { ...depthJobs };
 
     const miscJobsTable: Record<string, MiscJobHandler> = { ...miscJobs };
     const assetVariantsJobsTable: Record<string, AssetVariantsJobHandler> = {
@@ -678,7 +850,11 @@ export function createApp(deps: ServerDeps) {
     const prestocksJobsTable: Record<string, PrestocksJobHandler> = {
         ...prestocksJobs,
     };
-    const depthJobsTable: Record<string, DepthJobHandler> = { ...depthJobs };
+    const launchpadJobsTable: Record<string, LaunchpadJobHandler> = { ...launchpadJobs };
+    const logoSyncJobsTable: Record<string, LogoSyncJobHandler> = { ...logoSyncJobs };
+    const solanaDataJobsTable: Record<string, SolanaDataJobHandler> = { ...solanaDataJobs };
+    const depegJobsTable: Record<string, DepegJobHandler> = { ...depegJobs };
+    const v2AssetsJobsTable: Record<string, V2AssetsJobHandler> = { ...v2AssetsJobs };
 
     interface JobGroup {
         has(name: string): boolean;
@@ -730,11 +906,46 @@ export function createApp(deps: ServerDeps) {
                 : null,
         },
         {
+            has: name => Object.hasOwn(launchpadJobsTable, name),
+            run: deps.launchpadCronDeps
+                ? (name, args) => launchpadJobsTable[name]!(deps.launchpadCronDeps!, args)
+                : null,
+            disabledError: 'launchpad_jobs_disabled',
+        },
+        {
+            has: name => Object.hasOwn(logoSyncJobsTable, name),
+            run: deps.logoSyncCronDeps
+                ? (name, args) => logoSyncJobsTable[name]!(deps.logoSyncCronDeps!, args)
+                : null,
+            disabledError: 'logo_sync_disabled',
+        },
+        {
+            has: name => Object.hasOwn(solanaDataJobsTable, name),
+            run: deps.solanaDataCronDeps
+                ? (name, args) => solanaDataJobsTable[name]!(deps.solanaDataCronDeps!, args)
+                : null,
+            disabledError: 'solana_data_jobs_disabled',
+        },
+        {
+            has: name => Object.hasOwn(depegJobsTable, name),
+            run: deps.depegCronDeps ? (name, args) => depegJobsTable[name]!(deps.depegCronDeps!, args) : null,
+            disabledError: 'depeg_jobs_disabled',
+        },
+        {
+            has: name => Object.hasOwn(v2AssetsJobsTable, name),
+            run: deps.v2AssetsCronDeps ? (name, args) => v2AssetsJobsTable[name]!(deps.v2AssetsCronDeps!, args) : null,
+            disabledError: 'v2_assets_jobs_disabled',
+        },
+        {
             has: name => Object.hasOwn(depthJobsTable, name),
             run: deps.depthCronDeps ? (name, args) => depthJobsTable[name]!(deps.depthCronDeps!, args) : null,
             disabledError: 'depth_jobs_disabled',
         },
     ];
+
+    /** In-flight runs per job name (this process only), each with a unique id. */
+    const inFlightJobs = new Map<string, Array<{ id: number; startedAt: number }>>();
+    let jobRunSeq = 0;
 
     app.post('/jobs/:name', async (c: Context) => {
         if (serviceRole === 'api') return c.json({ error: 'not_found' }, 404);
@@ -762,10 +973,57 @@ export function createApp(deps: ServerDeps) {
             if (!group.run) {
                 return c.json({ error: group.disabledError ?? 'jobs_disabled' }, 404);
             }
+            // Lifecycle visibility (incident 2026-10-12: peg guard runs went
+            // silent mid-flight with no line anywhere). Overlap and stall are
+            // logged, never enforced: Cloud Run owns concurrency, and a stalled
+            // run must keep going so a late finish is recorded too.
+            const startedAt = Date.now();
+            const runId = ++jobRunSeq;
+            const running = inFlightJobs.get(name) ?? [];
+            if (running.length > 0) {
+                logJson('warn', {
+                    event: 'cloudrun_assets_job_overlap',
+                    job: name,
+                    in_flight: running.length,
+                    previous_elapsed_ms: startedAt - Math.min(...running.map(run => run.startedAt)),
+                });
+            }
+            running.push({ id: runId, startedAt });
+            inFlightJobs.set(name, running);
+            const declaredBudgetMs = readJobBudgetMs(args);
+            const budgetMs = declaredBudgetMs ?? JOB_STALL_DEFAULT_MS;
+            const stallTimer = setTimeout(
+                () =>
+                    logJson('warn', {
+                        event: 'cloudrun_assets_job_stalled',
+                        job: name,
+                        elapsed_ms: Date.now() - startedAt,
+                        budget_ms: budgetMs,
+                        budget_declared: declaredBudgetMs !== null,
+                    }),
+                budgetMs + (deps.jobStallGraceMs ?? JOB_STALL_GRACE_MS),
+            );
             try {
-                return cronJobResponse(c, await group.run(name, args));
+                const result = await group.run(name, args);
+                const durationMs = Date.now() - startedAt;
+                if (durationMs > budgetMs) {
+                    logJson('warn', {
+                        event: 'cloudrun_assets_job_finished_late',
+                        job: name,
+                        duration_ms: durationMs,
+                        budget_ms: budgetMs,
+                        budget_declared: declaredBudgetMs !== null,
+                        ok: result.ok !== false,
+                    });
+                }
+                return cronJobResponse(c, result);
             } catch (err) {
-                return jobErrorResponse(c, name, err);
+                return jobErrorResponse(c, name, err, startedAt);
+            } finally {
+                clearTimeout(stallTimer);
+                const stillRunning = (inFlightJobs.get(name) ?? []).filter(run => run.id !== runId);
+                if (stillRunning.length > 0) inFlightJobs.set(name, stillRunning);
+                else inFlightJobs.delete(name);
             }
         }
         return c.json({ error: `unknown job: ${name}` }, 404);

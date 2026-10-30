@@ -3,8 +3,9 @@ import { PRE_STOCKS, type PreStockListing } from '@tokens/asset-registry';
 import type { CronResult } from './crons';
 
 // PreStocks reference data for tokenized pre-IPO equities, from
-// `GET https://prestocks.com/api/<SYMBOL>` (unauthenticated). The payload has
-// no timestamp, so `lastFetchedAt` is stamped by the cron.
+// `GET https://prestocks.com/api/prestocks` (unauthenticated), which returns
+// every listed token in one array. The payload has no timestamp, so
+// `lastFetchedAt` is stamped by the cron.
 
 export interface PreStocksApiSnapshot {
     symbol: string;
@@ -20,7 +21,7 @@ export interface PreStocksApiSnapshot {
 }
 
 export interface PreStocksClient {
-    fetchBySymbol(symbol: string): Promise<PreStocksApiSnapshot | null>;
+    fetchAll(): Promise<PreStocksApiSnapshot[]>;
 }
 
 export interface PrestocksPriceUpsert extends PreStocksApiSnapshot {
@@ -37,16 +38,10 @@ export interface PrestocksCronDeps {
     now: () => number;
     listings?: readonly PreStockListing[];
     isRefreshEnabled?: () => boolean;
-    delayMs?: number;
 }
 
 function defaultIsRefreshEnabled(): boolean {
     return (process.env.PRESTOCKS_REFRESH_ENABLED ?? '').trim().toLowerCase() === 'true';
-}
-
-function sleep(ms: number): Promise<void> {
-    if (ms <= 0) return Promise.resolve();
-    return new Promise(resolve => setTimeout(resolve, ms));
 }
 
 const DIVERGENCE_LOG_THRESHOLD = 0.01;
@@ -79,25 +74,31 @@ export async function refreshPrestocksPrices(
     }
 
     const listings = deps.listings ?? PRE_STOCKS;
-    const delayMs = deps.delayMs ?? 200;
     let succeeded = 0;
     let failed = 0;
 
-    for (const [index, listing] of listings.entries()) {
-        if (index > 0) await sleep(delayMs);
+    // Our listings are the allowlist: provider entries for any other mint are
+    // never written.
+    const snapshotByMint = await deps.prestocks.fetchAll().then(
+        entries => new Map(entries.map(entry => [entry.mint, entry] as const)),
+        (err: unknown) => {
+            console.error('[refreshPrestocksPrices] refresh failed', err);
+            return null;
+        },
+    );
+
+    for (const listing of listings) {
+        if (!snapshotByMint) {
+            failed += 1;
+            continue;
+        }
         try {
-            const snapshot = await deps.prestocks.fetchBySymbol(listing.symbol);
+            const snapshot = snapshotByMint.get(listing.mint);
             if (!snapshot) {
                 failed += 1;
-                console.warn('[refreshPrestocksPrices] no snapshot returned', { symbol: listing.symbol });
-                continue;
-            }
-            if (snapshot.mint !== listing.mint) {
-                failed += 1;
-                console.error('[refreshPrestocksPrices] mint mismatch — skipping upsert', {
+                console.warn('[refreshPrestocksPrices] listing missing from provider response', {
                     symbol: listing.symbol,
-                    expected: listing.mint,
-                    received: snapshot.mint,
+                    mint: listing.mint,
                 });
                 continue;
             }

@@ -16,6 +16,12 @@ import * as hardDeleteHandlers from './handlers/hardDelete';
 import type { HardDeleteRepo } from './handlers/hardDelete';
 import * as tokenListsAdminHandlers from './handlers/tokenListsAdmin';
 import type { TokenListsAdminRepo } from './handlers/tokenListsAdmin';
+import * as variantAdvisoriesHandlers from './handlers/variantAdvisories';
+import type { VariantAdvisoriesRepo } from './handlers/variantAdvisories';
+import * as launchpadApprovalsHandlers from './handlers/launchpadApprovals';
+import type { LaunchpadApprovalsRepo } from './handlers/launchpadApprovals';
+import * as assetTagsImportHandlers from './handlers/assetTagsImport';
+import type { AssetTagsImportRepo } from './handlers/assetTagsImport';
 import * as logoUploadsHandlers from './handlers/logoUploads';
 import type { LogoUploadSigner } from './handlers/logoUploads';
 
@@ -33,11 +39,15 @@ export interface ServerDeps {
     mutations: AdminMutationsRepo;
     hardDelete: HardDeleteRepo;
     tokenListsAdmin: TokenListsAdminRepo;
+    variantAdvisories: VariantAdvisoriesRepo;
+    launchpadApprovals: LaunchpadApprovalsRepo;
+    assetTagsImport: AssetTagsImportRepo;
     /** GCS signed-PUT signer for logo uploads; absent → uploads unavailable. */
     logoSigner?: LogoUploadSigner;
     /** Admin allowlist (TOKENS_ADMIN_CLERK_USER_IDS ∪ TOKENS_ADMIN_EMAILS). */
     adminAllowlist: AdminAllowlist;
-    authToken: string;
+    /** Current shared bearer, or [current, previous] during a rotation. */
+    authToken: string | readonly string[];
     /**
      * When set, RPC routes also accept a Google OIDC ID token (audience/SA
      * pinned) as the bearer — the Vercel admin app's WIF-minted token. The
@@ -108,6 +118,21 @@ export function createApp(deps: ServerDeps) {
         adminAllowlist: deps.adminAllowlist,
         now: () => Date.now(),
     };
+    const variantAdvisoriesDeps: variantAdvisoriesHandlers.VariantAdvisoriesDeps = {
+        repo: deps.variantAdvisories,
+        adminAllowlist: deps.adminAllowlist,
+        now: () => Date.now(),
+    };
+    const launchpadApprovalsDeps: launchpadApprovalsHandlers.LaunchpadApprovalsDeps = {
+        repo: deps.launchpadApprovals,
+        adminAllowlist: deps.adminAllowlist,
+        now: () => Date.now(),
+    };
+    const assetTagsImportDeps: assetTagsImportHandlers.AssetTagsImportDeps = {
+        repo: deps.assetTagsImport,
+        adminAllowlist: deps.adminAllowlist,
+        now: () => Date.now(),
+    };
 
     // Every handler (queries and mutations alike) calls requireAdmin(identity)
     // first — defense in depth on top of the Next.js proxy's own admin check.
@@ -116,11 +141,17 @@ export function createApp(deps: ServerDeps) {
     queries.listCanonicalAssets = (args, identity) => reads.listCanonicalAssets(readsDeps, args, identity);
     queries.listVariantsByAssetIds = (args, identity) => reads.listVariantsByAssetIds(readsDeps, args, identity);
     queries.getCanonicalEditor = (args, identity) => reads.getCanonicalEditor(readsDeps, args, identity);
+    queries.previewAssetTagsImport = (args, identity) =>
+        assetTagsImportHandlers.previewAssetTagsImport(assetTagsImportDeps, args, identity);
     queries.getVariantEditor = (args, identity) => reads.getVariantEditor(readsDeps, args, identity);
     queries.searchCanonicalAssets = (args, identity) => reads.searchCanonicalAssets(readsDeps, args, identity);
     queries.previewMint = (args, identity) => reads.previewMint(readsDeps, args, identity);
     queries.adminListTokenLists = (args, identity) =>
         tokenListsAdminHandlers.adminListTokenLists(tokenListsAdminDeps, args, identity);
+    queries.listVariantAdvisories = (args, identity) =>
+        variantAdvisoriesHandlers.listVariantAdvisories(variantAdvisoriesDeps, args, identity);
+    queries.listLaunchpadCandidates = (args, identity) =>
+        launchpadApprovalsHandlers.listLaunchpadCandidates(launchpadApprovalsDeps, args, identity);
 
     const mutations: Record<string, Handler> = Object.create(null);
     mutations.createCanonicalAsset = (args, identity) =>
@@ -141,10 +172,20 @@ export function createApp(deps: ServerDeps) {
     mutations.updateCollectionMeta = (args, identity) =>
         mutationsHandlers.updateCollectionMeta(mutationsDeps, args, identity);
     mutations.hardDeleteAsset = (args, identity) => hardDeleteHandlers.hardDeleteAsset(hardDeleteDeps, args, identity);
+    mutations.applyAssetTagsImport = (args, identity) =>
+        assetTagsImportHandlers.applyAssetTagsImport(assetTagsImportDeps, args, identity);
     mutations.adminArchiveTokenList = (args, identity) =>
         tokenListsAdminHandlers.adminArchiveTokenList(tokenListsAdminDeps, args, identity);
     mutations.adminUnlockTokenList = (args, identity) =>
         tokenListsAdminHandlers.adminUnlockTokenList(tokenListsAdminDeps, args, identity);
+    mutations.setVariantAdvisory = (args, identity) =>
+        variantAdvisoriesHandlers.setVariantAdvisory(variantAdvisoriesDeps, args, identity);
+    mutations.clearVariantAdvisory = (args, identity) =>
+        variantAdvisoriesHandlers.clearVariantAdvisory(variantAdvisoriesDeps, args, identity);
+    mutations.approveLaunchpadMint = (args, identity) =>
+        launchpadApprovalsHandlers.approveLaunchpadMint(launchpadApprovalsDeps, args, identity);
+    mutations.revokeLaunchpadMint = (args, identity) =>
+        launchpadApprovalsHandlers.revokeLaunchpadMint(launchpadApprovalsDeps, args, identity);
     const logoUploadsDeps: logoUploadsHandlers.LogoUploadsDeps = {
         ...(deps.logoSigner ? { signer: deps.logoSigner } : {}),
         adminAllowlist: deps.adminAllowlist,

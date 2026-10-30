@@ -24,7 +24,7 @@ import {
     useSelectRevealTransition,
     type ListSelection,
 } from './use-list-selection';
-import { TokenIdentity, formatDate, shortMint, type V2ListToken } from './token-bits';
+import { AdvisoryChip, TokenIdentity, formatDate, shortMint, type V2ListToken } from './token-bits';
 
 /**
  * Member table structured after the svela screener table (MIT,
@@ -61,6 +61,7 @@ function createMemberColumns(): ColumnDef<V2ListToken>[] {
                     logoURI={row.original.logoURI}
                     verified={row.original.verified}
                     layout="inline"
+                    symbolAccessory={<AdvisoryChip advisory={row.original.advisory} />}
                     symbolClassName="text-[13px]"
                     nameClassName="truncate text-[11px] text-muted-foreground"
                     indicatorClassName="size-2"

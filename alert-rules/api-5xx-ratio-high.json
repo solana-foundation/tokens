@@ -2,14 +2,14 @@
   "uid": "tokens-api-5xx-ratio-high",
   "title": "tokens-api: 5xx ratio > 1% for 5m",
   "ruleGroup": "tokens-api-availability",
-  "folderUID": "tokens-xyz",
+  "folderUID": "tokens",
   "noDataState": "OK",
   "execErrState": "OK",
   "for": "5m",
   "data": [
     {
       "refId": "A",
-      "datasourceUid": "grafanacloud-logs",
+      "datasourceUid": "tokens-logs",
       "queryType": "range",
       "relativeTimeRange": {
         "from": 600,
@@ -79,7 +79,7 @@
     },
     {
       "refId": "D",
-      "datasourceUid": "grafanacloud-logs",
+      "datasourceUid": "tokens-logs",
       "queryType": "range",
       "relativeTimeRange": {
         "from": 600,
@@ -136,5 +136,15 @@
     "summary": "tokens-api 5xx ratio > 1%",
     "description": "tokens-api is returning 5xx for more than 1% of requests over the last 5 minutes across 2+ endpoints. Single-endpoint failures alert to Slack only (tokens-api: single endpoint erroring). Open the API overview dashboard for endpoint breakdown.",
     "runbook_url": "https://example.com/runbooks/api-5xx-ratio-high"
+  },
+  "notification_settings": {
+    "receiver": "tokens-critical",
+    "group_by": [
+      "grafana_folder",
+      "alertname"
+    ],
+    "group_wait": "30s",
+    "group_interval": "5m",
+    "repeat_interval": "4h"
   }
 }

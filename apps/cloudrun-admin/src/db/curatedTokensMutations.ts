@@ -9,11 +9,24 @@
 
 import type { Sql, TransactionSql } from 'postgres';
 
-import { ALIAS_PRIORITIES, type AdminMutationsRepo } from '../handlers/curatedTokensMutations';
+import {
+    ALIAS_PRIORITIES,
+    type AdminMutationsRepo,
+    type MoveVariantOutcome,
+    type UpdateVariantWrite,
+    type VariantWriteRef,
+} from '../handlers/curatedTokensMutations';
 import { ASSET_ALIAS_KINDS, CURATED_CATEGORY_SLUGS, type CuratedCategorySlug } from '../handlers/shared';
 import { CURATED_LIST_FALLBACK_NAMES } from '@tokens/asset-registry/curated-lists';
 
 import { randomId } from '../db';
+import {
+    deleteSolanaVariantRow,
+    deleteV2AssetRows,
+    mirrorSolanaVariantRow,
+    moveSolanaVariantRow,
+    renameV2AssetId,
+} from './v2Mirror';
 
 type Tx = TransactionSql;
 
@@ -94,6 +107,113 @@ export async function syncCollections(
     }
 }
 
+export type RenameAssetIdOutcome =
+    | 'renamed'
+    | 'asset_id_exists'
+    | 'asset_id_reserved'
+    | 'asset_id_aliased'
+    | 'asset_id_deleted';
+
+/**
+ * Rename an asset id inside the caller's transaction. `asset_id` is a bare
+ * text column with no foreign keys, so every table carrying a copy is rewritten
+ * here (same table set as `db/hardDelete.ts`, minus the mint-keyed caches).
+ *
+ * The rename is recorded by the alias rows themselves: the asset's existing
+ * `kind = 'assetId'` alias for `from` moves with it, so it now points at `to`.
+ * An `assetId`-kind alias whose `normalized` differs from `lower(asset_id)` is
+ * the "renamed from" marker that keeps the old id resolving and that the
+ * registry seed / public API use to follow the rename.
+ *
+ * The caller must already hold the `assets` row for `from` (`FOR UPDATE`).
+ * Exported for tests (recording fake `tx`).
+ */
+export async function renameAssetId(
+    tx: Tx,
+    args: { from: string; to: string; nowMs: number },
+): Promise<RenameAssetIdOutcome> {
+    const { from, to } = args;
+    const normalizedTo = to.toLowerCase();
+    const now = new Date(args.nowMs);
+
+    const existingAsset = await tx`SELECT 1 FROM assets WHERE asset_id = ${to} LIMIT 1`;
+    if (existingAsset.length > 0) return 'asset_id_exists';
+    // Variants without an asset row would be silently merged into this asset.
+    const existingVariants = await tx`SELECT 1 FROM asset_variants WHERE asset_id = ${to} LIMIT 1`;
+    if (existingVariants.length > 0) return 'asset_id_exists';
+    // `to` already resolves to another asset, as its former id (`assetId`
+    // kind) or its name, symbol, coingecko id or custom alias. An asset id
+    // outranks every alias, so taking it would redirect that reference here.
+    const aliased = await tx<Array<{ kind: string }>>`
+        SELECT kind FROM asset_aliases
+        WHERE normalized = ${normalizedTo}
+          AND asset_id <> ${from} AND asset_id <> ${to}
+        ORDER BY priority DESC
+        LIMIT 1
+    `;
+    if (aliased.length > 0) return aliased[0]!.kind === 'assetId' ? 'asset_id_reserved' : 'asset_id_aliased';
+    // `to` belongs to a hard-deleted asset. Its tombstones (id, name, symbol,
+    // mints, aliases) are what stop the nightly seed from re-creating it, and
+    // public reads hide any asset whose id carries one: the id cannot be
+    // reused without either resurrecting the deleted asset or hiding this one.
+    const tombstoned = await tx`
+        SELECT 1 FROM asset_deletion_tombstones
+        WHERE asset_id = ${to} OR normalized_ref = ${normalizedTo}
+        LIMIT 1
+    `;
+    if (tombstoned.length > 0) return 'asset_id_deleted';
+
+    // No asset owns `to` and it was never hard-deleted (checked above), so rows
+    // already keyed by it are orphans. Clear them first: most of these tables
+    // have a unique index on asset_id and the UPDATEs below would otherwise
+    // collide.
+    await tx`DELETE FROM asset_aliases WHERE asset_id = ${to}`;
+    await tx`DELETE FROM asset_collection_members WHERE asset_id = ${to}`;
+    await tx`DELETE FROM asset_markets_latest WHERE asset_id = ${to}`;
+    await tx`DELETE FROM asset_risk_latest WHERE asset_id = ${to}`;
+    await tx`DELETE FROM stock_instruments_latest WHERE asset_id = ${to}`;
+    await tx`DELETE FROM stock_prices_latest WHERE asset_id = ${to}`;
+    await tx`DELETE FROM stock_ohlcv_candles WHERE asset_id = ${to}`;
+
+    await tx`
+        UPDATE assets
+        SET asset_id = ${to}, updated_at = ${now}, admin_edited_at = ${args.nowMs}
+        WHERE asset_id = ${from}
+    `;
+    await tx`UPDATE asset_aliases SET asset_id = ${to}, updated_at = ${now} WHERE asset_id = ${from}`;
+    await tx`UPDATE asset_variants SET asset_id = ${to}, updated_at = ${now} WHERE asset_id = ${from}`;
+    await tx`UPDATE asset_collection_members SET asset_id = ${to} WHERE asset_id = ${from}`;
+    await tx`UPDATE asset_markets_latest SET asset_id = ${to} WHERE asset_id = ${from}`;
+    await tx`UPDATE asset_risk_latest SET asset_id = ${to} WHERE asset_id = ${from}`;
+    await tx`UPDATE stock_instruments_latest SET asset_id = ${to} WHERE asset_id = ${from}`;
+    await tx`UPDATE stock_prices_latest SET asset_id = ${to} WHERE asset_id = ${from}`;
+    await tx`UPDATE stock_ohlcv_candles SET asset_id = ${to} WHERE asset_id = ${from}`;
+    await tx`UPDATE trending_markets SET asset_id = ${to} WHERE asset_id = ${from}`;
+    await tx`UPDATE fresh_trending_markets SET asset_id = ${to} WHERE asset_id = ${from}`;
+    // v2 (multichain) rows follow the asset too, derived EVM rows included.
+    await renameV2AssetId(tx, { from, to });
+
+    await tx`
+        INSERT INTO asset_aliases (id, normalized, alias, asset_id, kind, priority, created_at, updated_at)
+        VALUES (
+            ${randomId('aal')}, ${normalizedTo}, ${to}, ${to},
+            'assetId', ${ALIAS_PRIORITIES.assetId}, ${now}, ${now}
+        )
+        ON CONFLICT (asset_id, normalized, kind) DO NOTHING
+    `;
+    // Assets created through the admin have no `assetId` alias for their own
+    // id, so write the old id explicitly: it is what keeps `from` resolving.
+    await tx`
+        INSERT INTO asset_aliases (id, normalized, alias, asset_id, kind, priority, created_at, updated_at)
+        VALUES (
+            ${randomId('aal')}, ${from.toLowerCase()}, ${from}, ${to},
+            'assetId', ${ALIAS_PRIORITIES.assetId}, ${now}, ${now}
+        )
+        ON CONFLICT (asset_id, normalized, kind) DO NOTHING
+    `;
+    return 'renamed';
+}
+
 interface CurrentAssetRow {
     category: string;
     name: string | null;
@@ -102,6 +222,8 @@ interface CurrentAssetRow {
     description: string | null;
     image_url: string | null;
     is_active: boolean;
+    region: string | null;
+    industry: string | null;
 }
 
 interface CurrentVariantRow {
@@ -118,6 +240,207 @@ interface CurrentVariantRow {
     is_active: boolean;
 }
 
+interface CurrentV2VariantRow {
+    asset_id: string;
+    variant_id: string;
+    kind: string;
+    trust_tier: string;
+    tags: unknown;
+    label: string | null;
+    issuer: string | null;
+    issuer_url: string | null;
+    stock_variant_tier: string | null;
+    is_active: boolean;
+    origin: string;
+}
+
+/* ------------------------------------------------------------------------- *
+ * v2-native (non-Solana) variant writes. Every edit adopts the row
+ * (`origin = 'admin'`, `source = 'admin'`): the daily `sync-v2-evm-variants`
+ * only upserts/deactivates rows whose origin is still coingecko|config, so an
+ * admin deactivation or relabel is never undone by the next derivation run.
+ * Exported for tests (recording fake `tx`).
+ * ------------------------------------------------------------------------- */
+
+async function lockV2Variant(tx: Tx, ref: VariantWriteRef): Promise<CurrentV2VariantRow | null> {
+    if (!ref.assetId) return null;
+    const rows = await tx<CurrentV2VariantRow[]>`
+        SELECT asset_id, variant_id, kind, trust_tier, tags, label, issuer, issuer_url,
+               stock_variant_tier, is_active, origin
+        FROM v2_asset_variants
+        WHERE chain = ${ref.chain} AND address = ${ref.address} AND asset_id = ${ref.assetId}
+        LIMIT 1
+        FOR UPDATE
+    `;
+    return rows[0] ?? null;
+}
+
+export async function updateV2Variant(
+    tx: Tx,
+    args: UpdateVariantWrite,
+): Promise<'updated' | 'not_found' | 'variant_id_collision'> {
+    const current = await lockV2Variant(tx, args);
+    if (!current) return 'not_found';
+
+    let nextVariantId = current.variant_id;
+    if (args.variantId !== undefined && args.variantId !== current.variant_id) {
+        const collision = await tx<Array<{ address: string }>>`
+            SELECT address FROM v2_asset_variants
+            WHERE asset_id = ${current.asset_id} AND variant_id = ${args.variantId}
+            LIMIT 1
+        `;
+        if (collision[0] && collision[0].address !== args.address) return 'variant_id_collision';
+        nextVariantId = args.variantId;
+    }
+    const currentTags = Array.isArray(current.tags) ? (current.tags as string[]) : [];
+    const nextTags = args.tags !== undefined ? args.tags : currentTags;
+    await tx`
+        UPDATE v2_asset_variants SET
+            variant_id = ${nextVariantId},
+            kind = ${args.kind !== undefined ? args.kind : current.kind},
+            trust_tier = ${args.trustTier !== undefined ? args.trustTier : current.trust_tier},
+            tags = ${tx.json(nextTags as never)}::jsonb,
+            label = ${args.label !== undefined ? args.label : current.label},
+            issuer = ${args.issuer !== undefined ? args.issuer : current.issuer},
+            issuer_url = ${args.issuerUrl !== undefined ? args.issuerUrl : current.issuer_url},
+            stock_variant_tier = ${
+                args.stockVariantTier !== undefined ? args.stockVariantTier : current.stock_variant_tier
+            },
+            is_active = ${args.isActive !== undefined ? args.isActive : current.is_active},
+            origin = 'admin',
+            source = 'admin',
+            updated_at = ${new Date(args.nowMs)}
+        WHERE chain = ${args.chain} AND address = ${args.address} AND asset_id = ${current.asset_id}
+    `;
+
+    if (args.marketSymbol !== undefined || args.marketName !== undefined || args.marketLogoURI !== undefined) {
+        // Display fields only; the next Birdeye refresh overwrites them (same
+        // as v1's variant_markets_latest today).
+        const market = await tx<Array<{ symbol: string | null; name: string | null; logo_uri: string | null }>>`
+            SELECT symbol, name, logo_uri FROM v2_variant_markets_latest
+            WHERE chain = ${args.chain} AND address = ${args.address}
+            LIMIT 1 FOR UPDATE
+        `;
+        if (market[0]) {
+            const m = market[0];
+            await tx`
+                UPDATE v2_variant_markets_latest SET
+                    symbol = ${args.marketSymbol !== undefined ? args.marketSymbol : m.symbol},
+                    name = ${args.marketName !== undefined ? args.marketName : m.name},
+                    logo_uri = ${args.marketLogoURI !== undefined ? args.marketLogoURI : m.logo_uri},
+                    updated_at = ${new Date(args.nowMs)}
+                WHERE chain = ${args.chain} AND address = ${args.address}
+            `;
+        }
+    }
+    return 'updated';
+}
+
+/**
+ * "Delete" a v2-native row. The row is NOT removed: it becomes an inactive
+ * `origin='admin'` row (the same tombstone a move leaves behind). The coin
+ * usually still lists the contract on this chain (an adopted derived row, a
+ * move tombstone, or an admin add for a listed contract), and a hard DELETE
+ * would let the next `sync-v2-evm-variants` re-insert an active derived row,
+ * so a delete only stuck until the daily sync. The derivation skips
+ * non-derived rows, so the tombstone is what makes the removal permanent.
+ * The market row stays (keyed by address; another asset may share it).
+ */
+export async function deleteV2Variant(tx: Tx, ref: VariantWriteRef): Promise<'deleted' | 'not_found'> {
+    if (!ref.assetId) return 'not_found';
+    const rows = await tx<Array<{ address: string }>>`
+        UPDATE v2_asset_variants
+        SET is_active = false, origin = 'admin', source = 'admin', updated_at = now()
+        WHERE chain = ${ref.chain} AND address = ${ref.address} AND asset_id = ${ref.assetId}
+        RETURNING address
+    `;
+    return rows.length > 0 ? 'deleted' : 'not_found';
+}
+
+export async function deactivateV2Variant(
+    tx: Tx,
+    args: VariantWriteRef & { isActive: boolean; nowMs: number },
+): Promise<'updated' | 'not_found'> {
+    if (!args.assetId) return 'not_found';
+    const rows = await tx<Array<{ address: string }>>`
+        UPDATE v2_asset_variants
+        SET is_active = ${args.isActive}, origin = 'admin', source = 'admin', updated_at = ${new Date(args.nowMs)}
+        WHERE chain = ${args.chain} AND address = ${args.address} AND asset_id = ${args.assetId}
+        RETURNING address
+    `;
+    return rows.length > 0 ? 'updated' : 'not_found';
+}
+
+export async function moveV2Variant(
+    tx: Tx,
+    args: VariantWriteRef & { toAssetId: string; nowMs: number },
+): Promise<MoveVariantOutcome> {
+    const current = await lockV2Variant(tx, args);
+    if (!current) return { status: 'variant_not_found' };
+    const target = await tx`SELECT 1 FROM assets WHERE asset_id = ${args.toAssetId} LIMIT 1`;
+    if (target.length === 0) return { status: 'asset_not_found' };
+    if (current.asset_id === args.toAssetId) return { status: 'noop', fromAssetId: current.asset_id };
+    const now = new Date(args.nowMs);
+
+    // A row may already sit at the destination key: the inactive admin row a
+    // previous move left behind (moving back), or a derived row for the same
+    // contract. Reuse it — copy the source's fields onto it and adopt it —
+    // instead of treating it as a collision, so moves are reversible. Its
+    // variant_id is kept (it is unique per asset already).
+    const reused = await tx<Array<{ address: string }>>`
+        UPDATE v2_asset_variants d
+        SET kind = s.kind,
+            trust_tier = s.trust_tier,
+            stock_variant_tier = s.stock_variant_tier,
+            tags = s.tags,
+            label = s.label,
+            issuer = s.issuer,
+            issuer_url = s.issuer_url,
+            decimals = coalesce(s.decimals, d.decimals),
+            origin = 'admin',
+            source = 'admin',
+            is_active = s.is_active,
+            last_seen_at = ${args.nowMs},
+            updated_at = ${now}
+        FROM v2_asset_variants s
+        WHERE s.chain = ${args.chain} AND s.address = ${args.address} AND s.asset_id = ${current.asset_id}
+          AND d.chain = ${args.chain} AND d.address = ${args.address} AND d.asset_id = ${args.toAssetId}
+        RETURNING d.address
+    `;
+    if (reused.length === 0) {
+        const collision = await tx`
+            SELECT 1 FROM v2_asset_variants
+            WHERE asset_id = ${args.toAssetId} AND variant_id = ${current.variant_id}
+            LIMIT 1
+        `;
+        if (collision.length > 0) return { status: 'variant_id_collision' };
+        // Fresh copy under the destination (adopted); the source's active flag
+        // travels with it so a deactivated variant does not go live by moving.
+        await tx`
+            INSERT INTO v2_asset_variants (
+                chain, address, asset_id, variant_id, kind, trust_tier, stock_variant_tier, tags,
+                label, issuer, issuer_url, decimals, origin, source, is_active,
+                first_seen_at, last_seen_at, created_at, updated_at
+            )
+            SELECT chain, address, ${args.toAssetId}, variant_id, kind, trust_tier, stock_variant_tier, tags,
+                   label, issuer, issuer_url, decimals, 'admin', 'admin', is_active,
+                   first_seen_at, ${args.nowMs}, ${now}, ${now}
+            FROM v2_asset_variants
+            WHERE chain = ${args.chain} AND address = ${args.address} AND asset_id = ${current.asset_id}
+        `;
+    }
+    // Keep an INACTIVE admin-owned row at the old key rather than deleting it:
+    // the source asset still lists this contract on CoinGecko, so the daily
+    // derivation would otherwise re-insert it there and the token would show
+    // under both.
+    await tx`
+        UPDATE v2_asset_variants
+        SET is_active = false, origin = 'admin', source = 'admin', updated_at = ${now}
+        WHERE chain = ${args.chain} AND address = ${args.address} AND asset_id = ${current.asset_id}
+    `;
+    return { status: 'moved', fromAssetId: current.asset_id };
+}
+
 export function makePostgresAdminMutationsRepo(sql: Sql): AdminMutationsRepo {
     return {
         async createCanonicalAsset(args) {
@@ -128,12 +451,14 @@ export function makePostgresAdminMutationsRepo(sql: Sql): AdminMutationsRepo {
                 await tx`
                     INSERT INTO assets (
                         id, asset_id, category, name, symbol, coingecko_id, description,
-                        image_url, is_active, created_at, updated_at, admin_edited_at
+                        image_url, is_active, created_at, updated_at, admin_edited_at,
+                        region, industry
                     )
                     VALUES (
                         ${randomId('ast')}, ${args.assetId}, ${args.category},
                         ${args.name}, ${args.symbol}, ${args.coingeckoId}, ${args.description},
-                        ${args.imageUrl}, true, ${now}, ${now}, ${args.nowMs}
+                        ${args.imageUrl}, true, ${now}, ${now}, ${args.nowMs},
+                        ${args.region}, ${args.industry}
                     )
                 `;
                 await replaceAliasesForKind(tx, {
@@ -171,13 +496,27 @@ export function makePostgresAdminMutationsRepo(sql: Sql): AdminMutationsRepo {
         async updateCanonicalAsset(args) {
             return await sql.begin(async tx => {
                 const rows = await tx<CurrentAssetRow[]>`
-                    SELECT category, name, symbol, coingecko_id, description, image_url, is_active
+                    SELECT category, name, symbol, coingecko_id, description, image_url, is_active,
+                           region, industry
                     FROM assets WHERE asset_id = ${args.assetId}
                     LIMIT 1
                     FOR UPDATE
                 `;
                 const current = rows[0];
                 if (!current) return 'not_found' as const;
+
+                // Rename first; everything below then targets the new id. A
+                // refused rename returns before any write, so nothing is saved.
+                let assetId = args.assetId;
+                if (args.newAssetId !== undefined && args.newAssetId !== args.assetId) {
+                    const renamed = await renameAssetId(tx, {
+                        from: args.assetId,
+                        to: args.newAssetId,
+                        nowMs: args.nowMs,
+                    });
+                    if (renamed !== 'renamed') return renamed;
+                    assetId = args.newAssetId;
+                }
 
                 const nextCategory = args.category !== undefined ? args.category : current.category;
                 const nextName = args.name !== undefined ? args.name : current.name;
@@ -190,6 +529,8 @@ export function makePostgresAdminMutationsRepo(sql: Sql): AdminMutationsRepo {
                       ? args.imageUrl
                       : current.image_url;
                 const nextIsActive = args.isActive !== undefined ? args.isActive : current.is_active;
+                const nextRegion = args.region !== undefined ? args.region : current.region;
+                const nextIndustry = args.industry !== undefined ? args.industry : current.industry;
 
                 await tx`
                     UPDATE assets SET
@@ -200,14 +541,16 @@ export function makePostgresAdminMutationsRepo(sql: Sql): AdminMutationsRepo {
                         description = ${nextDescription},
                         image_url = ${nextImageUrl},
                         is_active = ${nextIsActive},
+                        region = ${nextRegion},
+                        industry = ${nextIndustry},
                         updated_at = ${new Date(args.nowMs)},
                         admin_edited_at = ${args.nowMs}
-                    WHERE asset_id = ${args.assetId}
+                    WHERE asset_id = ${assetId}
                 `;
 
                 if (args.name !== undefined) {
                     await replaceAliasesForKind(tx, {
-                        assetId: args.assetId,
+                        assetId,
                         kind: 'name',
                         alias: args.name,
                         nowMs: args.nowMs,
@@ -215,7 +558,7 @@ export function makePostgresAdminMutationsRepo(sql: Sql): AdminMutationsRepo {
                 }
                 if (args.symbol !== undefined) {
                     await replaceAliasesForKind(tx, {
-                        assetId: args.assetId,
+                        assetId,
                         kind: 'symbol',
                         alias: args.symbol,
                         nowMs: args.nowMs,
@@ -223,7 +566,7 @@ export function makePostgresAdminMutationsRepo(sql: Sql): AdminMutationsRepo {
                 }
                 if (args.coingeckoId !== undefined) {
                     await replaceAliasesForKind(tx, {
-                        assetId: args.assetId,
+                        assetId,
                         kind: 'coingeckoId',
                         alias: args.coingeckoId,
                         nowMs: args.nowMs,
@@ -231,14 +574,14 @@ export function makePostgresAdminMutationsRepo(sql: Sql): AdminMutationsRepo {
                 }
                 if (args.aliases !== undefined) {
                     await replaceCustomAliases(tx, {
-                        assetId: args.assetId,
+                        assetId,
                         aliases: args.aliases,
                         nowMs: args.nowMs,
                     });
                 }
                 if (args.collections !== undefined) {
                     await syncCollections(tx, {
-                        assetId: args.assetId,
+                        assetId,
                         collections: args.collections,
                         nowMs: args.nowMs,
                     });
@@ -251,8 +594,14 @@ export function makePostgresAdminMutationsRepo(sql: Sql): AdminMutationsRepo {
             return await sql.begin(async tx => {
                 const existing = await tx`SELECT 1 FROM assets WHERE asset_id = ${args.assetId} LIMIT 1 FOR UPDATE`;
                 if (existing.length === 0) return 'not_found' as const;
+                // Live variants block a soft delete on either side: v1 rows and
+                // active v2 rows (derived or admin EVM). Inactive v2 leftovers
+                // are swept by the cascade below.
                 const variants = await tx`
-                    SELECT 1 FROM asset_variants WHERE asset_id = ${args.assetId} LIMIT 1
+                    SELECT 1 FROM asset_variants WHERE asset_id = ${args.assetId}
+                    UNION ALL
+                    SELECT 1 FROM v2_asset_variants WHERE asset_id = ${args.assetId} AND is_active = true
+                    LIMIT 1
                 `;
                 if (variants.length > 0) return 'has_variants' as const;
 
@@ -267,6 +616,8 @@ export function makePostgresAdminMutationsRepo(sql: Sql): AdminMutationsRepo {
                       AND kind = ANY(${sql.array(ASSET_ALIAS_KINDS as unknown as string[])}::text[])
                 `;
                 await tx`DELETE FROM asset_markets_latest WHERE asset_id = ${args.assetId}`;
+                // Derived / admin EVM rows would otherwise outlive the asset in v2.
+                await deleteV2AssetRows(tx, args.assetId);
                 await tx`DELETE FROM assets WHERE asset_id = ${args.assetId}`;
                 return 'deleted' as const;
             });
@@ -299,7 +650,7 @@ export function makePostgresAdminMutationsRepo(sql: Sql): AdminMutationsRepo {
                     VALUES (
                         ${randomId('avr')}, ${args.assetId}, 'solana', ${args.mint}, ${args.variantId},
                         ${args.kind}, ${args.trustTier}, ${args.stockVariantTier},
-                        ${JSON.stringify(args.tags)}::jsonb,
+                        ${tx.json(args.tags as never)}::jsonb, -- tx.json, not JSON.stringify: see db/hardDelete.ts
                         ${args.issuer}, ${args.issuerUrl}, ${args.label},
                         ${args.isActive}, ${now}, ${now}
                     )
@@ -332,12 +683,14 @@ export function makePostgresAdminMutationsRepo(sql: Sql): AdminMutationsRepo {
                         )
                     `;
                 }
+                await mirrorSolanaVariantRow(tx, { assetId: args.assetId, mint: args.mint, nowMs: args.nowMs });
                 return { status: 'created' as const };
             });
         },
 
         async updateVariant(args) {
             return await sql.begin(async tx => {
+                if (args.chain !== 'solana') return await updateV2Variant(tx, args);
                 const rows = await tx<CurrentVariantRow[]>`
                     SELECT id, asset_id, variant_id, kind, trust_tier, tags, label,
                            issuer, issuer_url, stock_variant_tier, is_active
@@ -368,7 +721,7 @@ export function makePostgresAdminMutationsRepo(sql: Sql): AdminMutationsRepo {
                         variant_id = ${nextVariantId},
                         kind = ${args.kind !== undefined ? args.kind : current.kind},
                         trust_tier = ${args.trustTier !== undefined ? args.trustTier : current.trust_tier},
-                        tags = ${JSON.stringify(nextTags)}::jsonb,
+                        tags = ${tx.json(nextTags as never)}::jsonb,
                         label = ${args.label !== undefined ? args.label : current.label},
                         issuer = ${args.issuer !== undefined ? args.issuer : current.issuer},
                         issuer_url = ${args.issuerUrl !== undefined ? args.issuerUrl : current.issuer_url},
@@ -402,28 +755,32 @@ export function makePostgresAdminMutationsRepo(sql: Sql): AdminMutationsRepo {
                         `;
                     }
                 }
+                await mirrorSolanaVariantRow(tx, { assetId: current.asset_id, mint: args.mint, nowMs: args.nowMs });
                 return 'updated' as const;
             });
         },
 
         async deleteVariant(args) {
             return await sql.begin(async tx => {
-                const rows = await tx<Array<{ id: string }>>`
-                    SELECT id FROM asset_variants WHERE mint = ${args.mint} ORDER BY id ASC LIMIT 1 FOR UPDATE
+                if (args.chain !== 'solana') return await deleteV2Variant(tx, args);
+                const rows = await tx<Array<{ id: string; asset_id: string }>>`
+                    SELECT id, asset_id FROM asset_variants WHERE mint = ${args.mint} ORDER BY id ASC LIMIT 1 FOR UPDATE
                 `;
                 const variant = rows[0];
                 if (!variant) return 'not_found' as const;
                 await tx`DELETE FROM variant_markets_latest WHERE mint = ${args.mint}`;
                 await tx`DELETE FROM token_markets_latest WHERE mint = ${args.mint}`;
                 await tx`DELETE FROM asset_variants WHERE id = ${variant.id}`;
+                await deleteSolanaVariantRow(tx, { assetId: variant.asset_id, mint: args.mint });
                 return 'deleted' as const;
             });
         },
 
         async deactivateVariant(args) {
             return await sql.begin(async tx => {
-                const rows = await tx<Array<{ id: string }>>`
-                    SELECT id FROM asset_variants WHERE mint = ${args.mint} ORDER BY id ASC LIMIT 1 FOR UPDATE
+                if (args.chain !== 'solana') return await deactivateV2Variant(tx, args);
+                const rows = await tx<Array<{ id: string; asset_id: string }>>`
+                    SELECT id, asset_id FROM asset_variants WHERE mint = ${args.mint} ORDER BY id ASC LIMIT 1 FOR UPDATE
                 `;
                 const variant = rows[0];
                 if (!variant) return 'not_found' as const;
@@ -432,12 +789,14 @@ export function makePostgresAdminMutationsRepo(sql: Sql): AdminMutationsRepo {
                     SET is_active = ${args.isActive}, updated_at = ${new Date(args.nowMs)}
                     WHERE id = ${variant.id}
                 `;
+                await mirrorSolanaVariantRow(tx, { assetId: variant.asset_id, mint: args.mint, nowMs: args.nowMs });
                 return 'updated' as const;
             });
         },
 
         async moveVariantToCanonical(args) {
             return await sql.begin(async tx => {
+                if (args.chain !== 'solana') return await moveV2Variant(tx, args);
                 const rows = await tx<Array<{ id: string; asset_id: string; variant_id: string }>>`
                     SELECT id, asset_id, variant_id FROM asset_variants
                     WHERE mint = ${args.mint} ORDER BY id ASC LIMIT 1 FOR UPDATE
@@ -464,6 +823,12 @@ export function makePostgresAdminMutationsRepo(sql: Sql): AdminMutationsRepo {
                     SET asset_id = ${args.toAssetId}, updated_at = ${new Date(args.nowMs)}
                     WHERE id = ${variant.id}
                 `;
+                await moveSolanaVariantRow(tx, {
+                    mint: args.mint,
+                    fromAssetId: variant.asset_id,
+                    toAssetId: args.toAssetId,
+                    nowMs: args.nowMs,
+                });
                 return { status: 'moved' as const, fromAssetId: variant.asset_id };
             });
         },

@@ -1,0 +1,115 @@
+---
+title: Overview
+description: API v2 adds community token lists, risk-aware search and resolve, and chain-native multichain assets on the same host and key as v1.
+---
+
+API v2 is additive: every v1 endpoint keeps working unchanged. v2 covers four things:
+
+- **Token lists** — named, ordered sets of Solana mints with an accountable curator. Read ours,
+  publish your own, and compose the lists you trust into one corpus.
+- **Risk-aware search and resolve** — a judgment pipeline over the long tail of Solana tokens
+  that ranks, warns and suppresses by a policy you can tune, and explains every decision.
+- **Multichain assets** — the curated assets you know from v1, with their tokens on Solana and
+  the EVM chains, addressed by `<chain>:<address>`.
+- **Execution research** — venue deep links for a mint, and live cross-router quote comparisons
+  (Jupiter and Titan) at one or more sizes, for an asset's variants or a single mint.
+
+The base URL is `https://api.tokens.xyz/v2`. Every v2 endpoint takes the same `x-api-key` header
+as v1 and needs only the default `assets:read` scope; see [Authentication](/v2/authentication).
+Start with the [Quickstart](/v2/quickstart) for one working call per family.
+
+## Token lists
+
+A list is a plugin: consuming apps name the lists they trust and compose them with
+`GET /v2/lists/tokens`. There is deliberately no global "all lists" union, because trust in a
+curator is the whole model. Any API key can create lists; the creating key's project owns them.
+Lists may include mints outside the curated registry — those tokens carry `verified: false` so
+your UI can show caution.
+
+Read [Token lists](/v2/concepts/token-lists) for the model and
+[Lists](/v2/endpoints/lists) for the reference.
+
+## Risk-aware search and resolve
+
+`GET /v2/search` merges candidates from a live market-data provider, the token index and the
+curated registry, then runs them through hard gates, a weighted score and explanations. You pick
+a policy (`strict`, `default`, `degen`) and can override individual gates. Whatever a gate removes
+comes back in `suppressed[]` with the gate that fired, so nothing is silently hidden.
+
+`GET /v2/resolve` answers "which mint is *USDC*?" with one confident result, or refuses
+explicitly (`ambiguous`, `no_confident_match`) rather than guessing.
+
+`POST /v2/judge` runs the same judgment over candidates you already have — from your own search,
+another provider, or a watchlist — with no provider lookup and no provider budget.
+
+Read [Risk-aware search](/v2/concepts/risk-aware-search) for policies and codes and
+[Search, Resolve & Judge](/v2/endpoints/search) for the reference.
+
+## Multichain assets
+
+The asset surface has two nouns. An **asset** is the curated, chain-agnostic thing (`usd`,
+`bitcoin`, `tesla`). A **variant** is one token on one chain that represents it, identified by
+exactly one key, `<chain>:<address>`. Every number on an asset is computed over all of its chains
+by default; `chain=` narrows what is listed, never what is summed. `GET /v2/chains` publishes a
+capability flag set per chain so you gate features on the flags, not on `chain === 'solana'`.
+
+v2 returns **only curated assets**. An address-shaped `{assetId}` is `400 invalid_asset_id`, and a
+token the registry does not know is `404 variant_not_found` (or `missing[]` in a batch). The same
+is true of v1: an unregistered Solana mint is `404` with `details.code: "asset_not_registered"`.
+For the long tail of unregistered Solana tokens use [Token lists](/v2/concepts/token-lists) or
+[`GET /v2/search`](/v2/endpoints/search).
+
+Read [Multichain assets](/v2/concepts/multichain-assets) for the rules and
+[Migrating from v1](/v2/migrating-from-v1) for the endpoint and field maps.
+
+## Execution
+
+`GET /v2/execution/links` returns venue deep links for buying a token — the building block for a
+"Buy" call-to-action in any app. Callers choose which venues to show; we return our recommendation
+as `primary`.
+
+`GET /v2/execution/evaluate` compares **live quotes across every router we integrate** (Jupiter
+and Titan today) for one mint at one or more sizes: who wins each size, by how many basis points,
+and via which route. Use it for router selection, best-execution evidence, pre-trade sizing, and
+monitoring a router's performance on your flow. Jupiter's candidate comes from quote-only Swap V2,
+where Metis, JupiterZ, Dflow, and OKX compete before the fee-inclusive output is compared with
+Titan.
+
+`GET /v2/execution/route` is the asset-level view: given a canonical asset (`assetId=bitcoin`) and
+a size, it quotes the asset's variant mints, then splits the order across them for the best total
+fill — with the evidence and an edge-vs-single-variant number attached. These endpoints return
+quotes and evidence only; they never build or submit a transaction.
+
+All three require the `execution:read` scope, granted to all keys by default. Read
+[Execution](/v2/endpoints/execution) for the reference.
+
+## Route index
+
+| Family | Routes | Reference |
+|---|---|---|
+| Chains | `GET /v2/chains` | [Chains](/v2/endpoints/chains) |
+| Assets | `GET /v2/assets`, `GET /v2/assets/{assetId}`, `GET /v2/assets/{assetId}/variants` | [Assets](/v2/endpoints/assets) |
+| Variants | `GET /v2/variants/{chain}/{address}`, `GET /v2/variants?keys=` | [Variants](/v2/endpoints/variants) |
+| Search | `GET /v2/search`, `GET /v2/resolve`, `POST /v2/judge` | [Search, Resolve & Judge](/v2/endpoints/search) |
+| Execution | `GET /v2/execution/links`, `GET /v2/execution/evaluate`, `GET /v2/execution/route` | [Execution](/v2/endpoints/execution) |
+| Lists: read | `GET /v2/lists`, `GET /v2/lists/{slug}`, `GET /v2/lists/tokens` | [Lists](/v2/endpoints/lists) |
+| Lists: manage | `GET /v2/lists/check-slug`, `POST /v2/lists`, `PATCH /v2/lists/{slug}`, `DELETE /v2/lists/{slug}`, `POST /v2/lists/{slug}/members`, `PUT /v2/lists/{slug}/members/{mint}`, `DELETE /v2/lists/{slug}/members/{mint}` | [Lists → Managing lists](/v2/endpoints/lists#managing-lists) |
+| Lists: curator search | `GET /v2/lists/search-tokens` | [Lists](/v2/endpoints/lists#get-v2listssearch-tokens) |
+| Registry | `GET /v2/registry`, `GET /v2/registry/{mint}` | [Registry](/registry/endpoints) |
+
+The Solana Foundation's asset registry is served under the `/v2` prefix but documented in its own
+section: see [Registry](/registry).
+
+## Which API should I use?
+
+- You need Solana market data, OHLCV, risk, DEX markets or swap routing for a registered asset:
+  stay on [v1](/v1). Those features have not moved to v2.
+- You need an asset's tokens on more than one chain, or you address tokens by
+  `<chain>:<address>`: use the v2 [asset](/v2/endpoints/assets) and
+  [variant](/v2/endpoints/variants) routes.
+- You need tokens that are not in the curated registry: use [lists](/v2/endpoints/lists) when a
+  curator you trust publishes them, and [search](/v2/endpoints/search) when you need to find
+  them by symbol, name or mint.
+- You are building a token picker or a swap input: start with
+  [`GET /v2/resolve`](/v2/endpoints/search#get-v2resolve) and fall back to search when it is
+  `ambiguous`.

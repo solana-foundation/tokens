@@ -4,7 +4,16 @@ import { useEffect, useState } from 'react';
 import { toast } from 'sonner';
 
 import { useAdminMutation, useAdminQuery } from '@/hooks/use-admin-api';
-import type { StockVariantTier, TrustTier, UpdateVariantResult, VariantEditor, VariantKind } from '@/lib/admin-types';
+import type {
+    StockVariantTier,
+    TrustTier,
+    UpdateVariantResult,
+    VariantEditor,
+    VariantKind,
+    VariantRef,
+} from '@/lib/admin-types';
+import { variantRefArgs } from '@/lib/admin-types';
+import { chainLabel, isDerivedOrigin } from '@/lib/variant-ref';
 import { Button } from '@tokens/ui/button';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@tokens/ui/dialog';
 import { Input } from '@tokens/ui/input';
@@ -29,13 +38,22 @@ const TRUST_TIERS: TrustTier[] = ['tier1', 'tier2', 'tier3', 'experimental'];
 const STOCK_VARIANT_TIERS: StockVariantTier[] = ['share_redeemable', 'cash_redeemable', 'not_redeemable'];
 
 interface EditVariantDialogProps {
-    mint: string | null;
+    variantRef: VariantRef | null;
     open: boolean;
     onOpenChange: (open: boolean) => void;
 }
 
-export function EditVariantDialog({ mint, open, onOpenChange }: EditVariantDialogProps): React.JSX.Element {
-    const { data: editor } = useAdminQuery<VariantEditor>('getVariantEditor', open && mint ? { mint } : 'skip');
+export function EditVariantDialog({ variantRef, open, onOpenChange }: EditVariantDialogProps): React.JSX.Element {
+    const mint = variantRef?.address ?? null;
+    const isSolana = variantRef === null || variantRef.chain === 'solana';
+    const {
+        data: editor,
+        error: editorError,
+        isLoading: isEditorLoading,
+    } = useAdminQuery<VariantEditor | null>(
+        'getVariantEditor',
+        open && variantRef ? variantRefArgs(variantRef) : 'skip',
+    );
     const updateVariant = useAdminMutation<UpdateVariantResult>('updateVariant');
 
     const [variantId, setVariantId] = useState('');
@@ -77,13 +95,13 @@ export function EditVariantDialog({ mint, open, onOpenChange }: EditVariantDialo
     }, [open]);
 
     async function onSubmit() {
-        if (!mint) return;
+        if (!variantRef) return;
         setIsSubmitting(true);
         const toastId = toast.loading('Saving variant…');
         const showStockVariantTier = kind === 'tokenized_equity' || stockVariantTier !== 'none';
         try {
             const result = await updateVariant({
-                mint,
+                ...variantRefArgs(variantRef),
                 variantId,
                 kind,
                 trustTier,
@@ -118,14 +136,30 @@ export function EditVariantDialog({ mint, open, onOpenChange }: EditVariantDialo
                     <DialogTitle>Edit Variant</DialogTitle>
                     <DialogDescription>
                         Update variant metadata and display fields without changing canonical metadata.
+                        {!isSolana && editor && isDerivedOrigin(editor.variant.origin)
+                            ? ' This row was derived from CoinGecko; saving takes it over for admin so the daily sync stops rewriting it.'
+                            : ''}
+                        {!isSolana
+                            ? ' Market symbol, name and logo on EVM rows are overwritten by the next Birdeye refresh.'
+                            : ''}
                     </DialogDescription>
                 </DialogHeader>
 
                 {!editor ? (
-                    <div className="flex items-center justify-center py-10">
-                        <Button variant="outline" size="sm" disabled>
-                            Loading…
-                        </Button>
+                    <div className="flex items-center justify-center py-10 text-center text-sm text-muted-foreground">
+                        {editorError ? (
+                            <span className="text-destructive">Could not load this variant: {editorError.message}</span>
+                        ) : isEditorLoading ? (
+                            <Button variant="outline" size="sm" disabled>
+                                Loading…
+                            </Button>
+                        ) : (
+                            <span>
+                                This variant could not be found
+                                {variantRef ? ` (${chainLabel(variantRef.chain)} · ${variantRef.address})` : ''}. It may
+                                have been removed or moved to another canonical asset.
+                            </span>
+                        )}
                     </div>
                 ) : (
                     <div className="grid gap-6 py-2 md:grid-cols-2">
@@ -139,9 +173,27 @@ export function EditVariantDialog({ mint, open, onOpenChange }: EditVariantDialo
                                 />
                             </div>
                             <div className="space-y-1.5">
-                                <Label htmlFor="variant-mint">Mint</Label>
-                                <Input id="variant-mint" value={editor.variant.mint} disabled />
+                                <Label htmlFor="variant-chain">Chain</Label>
+                                <Input
+                                    id="variant-chain"
+                                    value={`${chainLabel(editor.variant.chain ?? 'solana')}${editor.variant.origin && editor.variant.origin !== 'v1' ? ` · ${editor.variant.origin}` : ''}`}
+                                    disabled
+                                />
                             </div>
+                            <div className="space-y-1.5">
+                                <Label htmlFor="variant-mint">{isSolana ? 'Mint' : 'Address'}</Label>
+                                <Input id="variant-mint" value={editor.variant.address ?? editor.variant.mint} disabled />
+                            </div>
+                            {!isSolana ? (
+                                <div className="space-y-1.5">
+                                    <Label htmlFor="variant-decimals">Decimals</Label>
+                                    <Input
+                                        id="variant-decimals"
+                                        value={editor.variant.decimals === null || editor.variant.decimals === undefined ? '—' : String(editor.variant.decimals)}
+                                        disabled
+                                    />
+                                </div>
+                            ) : null}
                             <div className="space-y-1.5">
                                 <Label htmlFor="variant-id">Variant ID</Label>
                                 <Input

@@ -1,4 +1,5 @@
 import { InvalidArgsError } from './assets';
+import { resolveLogoUri } from './logoUrl';
 
 export interface SanctumLstRow {
     mint: string;
@@ -6,6 +7,7 @@ export interface SanctumLstRow {
     symbol_lower: string;
     name: string | null;
     logo_uri: string | null;
+    logo_cdn_url?: string | null;
     website_url: string | null;
     tvl_usd: number | null;
     apy: number | null;
@@ -59,7 +61,8 @@ function rowToResult(row: SanctumLstRow): SanctumLstResult {
     };
     if (row.symbol !== null) out.symbol = row.symbol;
     if (row.name !== null) out.name = row.name;
-    if (row.logo_uri !== null) out.logoURI = row.logo_uri;
+    const logoURI = resolveLogoUri(row);
+    if (logoURI !== null) out.logoURI = logoURI;
     if (row.website_url !== null) out.websiteUrl = row.website_url;
     if (row.tvl_usd !== null) out.tvlUsd = row.tvl_usd;
     if (row.apy !== null) out.apy = row.apy;

@@ -3,9 +3,18 @@ import { Array as Arr, Effect } from 'effect';
 
 import { route } from '@/effect/next-route';
 import { withStaleFallback } from '@/effect/stale-response-cache';
-import { decodeLimit, decodeOffset } from '@tokens/effect';
+import { BadRequestError, decodeLimit, decodeOffset } from '@tokens/effect';
 import { tapErrorAndDefault } from '@tokens/effect';
+import {
+    annotateAssetAdvisories,
+    filterHiddenVariants,
+    getAdvisoryRevisionSync,
+    loadAdvisoriesOrEmpty,
+    summarizeAssetAdvisories,
+    type AssetAdvisorySummaryEntry,
+} from '@/lib/advisories';
 import { scheduleCoinPriceWarm as scheduleCoinPriceWarmShared } from '@/lib/cloudrun/cacheWarm';
+import { prestocksGetLatestByMints } from '@/lib/cloudrun/prestocksReads';
 import {
     assetCollectionsGetMembers,
     assetMarketsGetLatestByAssetIds,
@@ -13,7 +22,6 @@ import {
     coingeckoGetPriceLatestByCoinIds,
     curatedPrefetchForApi,
     getByAssetIds as cloudRunGetByAssetIds,
-    listDeletedRefs,
     sanctumListActive,
     tokenMarketsGetLatestByMints,
     variantFillQualityGetLatestByMints,
@@ -30,12 +38,21 @@ import {
     type TokenMarketsGetLatestByMintsResult,
     type VariantMarketsGetLatestByMintsResult,
 } from '@/lib/cloudrun';
+import { listDeletedRefs } from '@/lib/deleted-refs';
 import { isRetryableCloudRunError, type CloudRunError } from '@/lib/cloudrun/errors';
 
 import {
+    ASSET_INDUSTRIES,
+    ASSET_REGIONS,
     getVariantByMint,
+    isAssetIndustry,
+    isAssetRegion,
     resolveAlias as resolveRegistryAlias,
+    toAssetIndustryOrNull,
+    toAssetRegionOrNull,
     type AssetCategory,
+    type AssetIndustry,
+    type AssetRegion,
     type CanonicalAsset,
     type VariantKind,
 } from '@tokens/asset-registry';
@@ -49,8 +66,11 @@ import { getEffectiveCuratedAddresses } from '../../../_curated-addresses';
 import {
     resolveAssetImageUrl,
     aggregateTokenStats,
+    assessTokenMarkets,
+    hasExcludedMarkets,
     buildCuratedMintRank,
     buildSnapshotFromTokenMarketsDoc,
+    matchRegistryAssetForDbAsset,
     mergeAssetStatsWithAggregates,
     optionalSymbol,
     optionalText,
@@ -68,6 +88,11 @@ import {
     type TokenMarketSnapshot,
     type VariantExecutionQualitySnapshot,
 } from '../_asset-helpers';
+import {
+    buildPreStocksCanonicalMarket,
+    freshPreStocksByMint,
+    selectPreStocksMints,
+} from '../_prestocks-canonical';
 import { looksLikeSolanaMintAddress, mintToSingletonAssetId } from '../_singleton-asset-id';
 import { normalizeCoinGeckoCoinIdForAsset } from '../_coingecko-id';
 import { addMemberFallbackAssets } from './_member-fallback-assets';
@@ -197,6 +222,12 @@ function isTransientCuratedFailure(error: unknown): boolean {
  * that the handler would reject (e.g. `limit=abc`) still produce a key, but
  * those requests fail with a 4xx and never reach the fallback path.
  */
+/** `null` for absent/blank/unknown; the handler turns unknown into a 400, the cache key just ignores it. */
+function parseTagParam<T extends string>(raw: string | null, guard: (value: unknown) => value is T): T | null {
+    const trimmed = (raw ?? '').trim();
+    return guard(trimmed) ? trimmed : null;
+}
+
 function curatedStaleCacheKey(request: Request): string | null {
     try {
         const searchParams = new URL(request.url).searchParams;
@@ -209,8 +240,19 @@ function curatedStaleCacheKey(request: Request): string | null {
         const shouldPaginate = searchParams.has('limit') || searchParams.has('offset');
         const offset = shouldPaginate ? (searchParams.get('offset') ?? '').trim() : '';
         const limit = shouldPaginate ? (searchParams.get('limit') ?? '').trim() : '';
-        // `variants` is spread conditionally so pre-existing key hashes (incl.
-        // the warmer's) stay stable.
+        // An unknown region/industry must reach the handler and 400: sharing
+        // the unfiltered key would let `freshSeconds` serve a cached 200.
+        const rawRegion = (searchParams.get('region') ?? '').trim();
+        const rawIndustry = (searchParams.get('industry') ?? '').trim();
+        if (rawRegion && !isAssetRegion(rawRegion)) return null;
+        if (rawIndustry && !isAssetIndustry(rawIndustry)) return null;
+        const region = parseTagParam(rawRegion, isAssetRegion);
+        const industry = parseTagParam(rawIndustry, isAssetIndustry);
+        // `variants` (and the region/industry filters) are spread conditionally
+        // so pre-existing key hashes (incl. the warmer's) stay stable. `advisoryRevision` bumps on every advisory
+        // set/clear so the `freshSeconds` serve-without-handler path can never
+        // keep serving a pre-flag payload (the Redis client has no `del`;
+        // revision-keying is the bust mechanism).
         const canonical = JSON.stringify({
             listId,
             groupBy,
@@ -218,6 +260,9 @@ function curatedStaleCacheKey(request: Request): string | null {
             strategy,
             pagination: shouldPaginate ? { offset, limit } : null,
             ...(includeVariants ? { variants: 'all' } : {}),
+            ...(region ? { region } : {}),
+            ...(industry ? { industry } : {}),
+            advisoryRevision: getAdvisoryRevisionSync(),
         });
         const shapeHash = createHash('sha256').update(canonical).digest('hex').slice(0, 32);
         return `stale-response:v2:assets-curated:${shapeHash}`;
@@ -253,6 +298,31 @@ export const GET = route(
                 requestedPrimaryVariantStrategy === null && listId === 'stocks'
                     ? 'stock_redeemability'
                     : parsePrimaryVariantStrategy(requestedPrimaryVariantStrategy);
+
+            // Admin-curated segmentation tags: exact-match, AND-combined, applied
+            // after membership expansion and before pagination so `total` is
+            // the filtered count.
+            const rawRegion = (searchParams.get('region') ?? '').trim() || null;
+            const region: AssetRegion | null = parseTagParam(rawRegion, isAssetRegion);
+            if (rawRegion && !region) {
+                return yield* Effect.fail(
+                    new BadRequestError({
+                        message: `Invalid region: ${rawRegion}`,
+                        details: { regions: [...ASSET_REGIONS] },
+                    }),
+                );
+            }
+            const rawIndustry = (searchParams.get('industry') ?? '').trim() || null;
+            const industry: AssetIndustry | null = parseTagParam(rawIndustry, isAssetIndustry);
+            if (rawIndustry && !industry) {
+                return yield* Effect.fail(
+                    new BadRequestError({
+                        message: `Invalid industry: ${rawIndustry}`,
+                        details: { industries: [...ASSET_INDUSTRIES] },
+                    }),
+                );
+            }
+            const hasTagFilter = region !== null || industry !== null;
 
             const mintRank = buildCuratedMintRank();
 
@@ -419,8 +489,14 @@ export const GET = route(
                         if (registryAssetId && registryAssetId !== a.assetId) continue;
                     }
 
-                    const registryAsset =
-                        resolveRegistryAlias(a.assetId) ?? (a.coingeckoId ? resolveRegistryAlias(a.coingeckoId) : null);
+                    const registryAsset = matchRegistryAssetForDbAsset({
+                        registryAsset:
+                            resolveRegistryAlias(a.assetId) ??
+                            (a.coingeckoId ? resolveRegistryAlias(a.coingeckoId) : null),
+                        assetId: a.assetId,
+                        coingeckoId: a.coingeckoId,
+                        mints: variantsForList.map(variant => variant.mint),
+                    });
                     const name = (registryAsset?.name ?? '').trim() || (a.name ?? '').trim();
                     const symbol = (registryAsset?.symbol ?? '').trim() || (a.symbol ?? '').trim();
                     const coingeckoId = (a.coingeckoId ?? '').trim() || (registryAsset?.coingeckoId ?? '').trim();
@@ -433,6 +509,8 @@ export const GET = route(
                         aliases: a.aliases,
                         ...(coingeckoId ? { coingeckoId } : {}),
                         variants: variantsForList,
+                        region: toAssetRegionOrNull(a.region),
+                        industry: toAssetIndustryOrNull(a.industry),
                     });
                 }
             }
@@ -504,13 +582,33 @@ export const GET = route(
                             : variant.name
                               ? { name: variant.name }
                               : {}),
+                        ...(variant.advisory !== undefined ? { advisory: variant.advisory } : {}),
                     };
                 });
 
                 return { ...asset, variants: mergedVariants };
             }
 
-            const canonicalAssets = Array.from(canonicalAssetById.values()).map(mergeRegistryVariantMetadata);
+            // Annotate every variant, summarize per asset (including variants
+            // hidden below, so the page can show a sibling notice), then drop
+            // `blocked` variants — and whole assets when nothing remains.
+            // `compromised` stays listed (badged, never primary).
+            const advisoriesByMint = yield* loadAdvisoriesOrEmpty();
+            const advisoriesByAssetId = new Map<string, AssetAdvisorySummaryEntry[]>();
+            const canonicalAssets = Array.from(canonicalAssetById.values())
+                .flatMap(asset => {
+                    const annotated = annotateAssetAdvisories(mergeRegistryVariantMetadata(asset), advisoriesByMint);
+                    advisoriesByAssetId.set(annotated.assetId, summarizeAssetAdvisories(annotated));
+                    const visible = filterHiddenVariants(annotated, advisoriesByMint);
+                    return visible ? [visible] : [];
+                })
+                // Registry/fallback-only members carry no tags, so any filter
+                // drops them; `total` below counts the filtered set.
+                .filter(
+                    asset =>
+                        !hasTagFilter ||
+                        ((!region || asset.region === region) && (!industry || asset.industry === industry)),
+                );
 
             // variants=all needs sanctum ranks too: shouldIncludeMintRow gates
             // nested solana LST variants on sanctum membership.
@@ -556,34 +654,44 @@ export const GET = route(
                         marketMetaByMint.set(row.mint, { lastFetchedAt: market.lastFetchedAt });
                         tokenByMint.set(row.mint, tokenMarketSnapshotFromConvexMarket(row.mint, market));
                     }
+                    // Safety net for mints the composite did not cover (old
+                    // server, failed chunk). Normally empty: the prefetch now
+                    // covers every variant mint of the canonical assets. Chunks
+                    // are disjoint per mint, so they run concurrently.
                     const missingMints = uniqueMints.filter(m => !prefetchMints.has(m));
                     if (missingMints.length > 0) {
-                        for (let i = 0; i < missingMints.length; i += 250) {
-                            const chunk = missingMints.slice(i, i + 250);
-                            const rows = yield* variantMarketsGetLatestByMints({ mints: chunk }).pipe(
-                                tapErrorAndDefault(
-                                    'assets.curated.variantMarkets.gapfill',
-                                    [] as VariantMarketsGetLatestByMintsResult,
-                                    { count: chunk.length },
+                        const gapChunks: string[][] = [];
+                        for (let i = 0; i < missingMints.length; i += 250) gapChunks.push(missingMints.slice(i, i + 250));
+                        const marketChunks = yield* Effect.all(
+                            gapChunks.map(chunk =>
+                                variantMarketsGetLatestByMints({ mints: chunk }).pipe(
+                                    tapErrorAndDefault(
+                                        'assets.curated.variantMarkets.gapfill',
+                                        [] as VariantMarketsGetLatestByMintsResult,
+                                        { count: chunk.length },
+                                    ),
                                 ),
-                            );
-                            for (const row of rows) {
-                                const market = row.market;
-                                if (!market) continue;
-                                if (!Number.isFinite(market.lastFetchedAt) || market.lastFetchedAt <= 0) continue;
-                                marketMetaByMint.set(row.mint, { lastFetchedAt: market.lastFetchedAt });
-                                tokenByMint.set(row.mint, tokenMarketSnapshotFromConvexMarket(row.mint, market));
-                            }
+                            ),
+                            { concurrency: 4 },
+                        );
+                        for (const row of marketChunks.flat()) {
+                            const market = row.market;
+                            if (!market) continue;
+                            if (!Number.isFinite(market.lastFetchedAt) || market.lastFetchedAt <= 0) continue;
+                            marketMetaByMint.set(row.mint, { lastFetchedAt: market.lastFetchedAt });
+                            tokenByMint.set(row.mint, tokenMarketSnapshotFromConvexMarket(row.mint, market));
                         }
-                        for (let i = 0; i < missingMints.length; i += 250) {
-                            const chunk = missingMints.slice(i, i + 250);
-                            const rows = yield* variantFillQualityGetLatestByMints({ mints: chunk }).pipe(
-                                tapErrorAndDefault('assets.curated.fillQuality.gapfill', [], { count: chunk.length }),
-                            );
-                            for (const row of rows) {
-                                const snapshot = executionQualitySnapshotFromConvexFillQuality(row.fillQuality);
-                                if (snapshot) fillQualityByMint.set(row.mint, snapshot);
-                            }
+                        const fillChunks = yield* Effect.all(
+                            gapChunks.map(chunk =>
+                                variantFillQualityGetLatestByMints({ mints: chunk }).pipe(
+                                    tapErrorAndDefault('assets.curated.fillQuality.gapfill', [], { count: chunk.length }),
+                                ),
+                            ),
+                            { concurrency: 4 },
+                        );
+                        for (const row of fillChunks.flat()) {
+                            const snapshot = executionQualitySnapshotFromConvexFillQuality(row.fillQuality);
+                            if (snapshot) fillQualityByMint.set(row.mint, snapshot);
                         }
                     }
                     for (const row of prefetch.fillQuality) {
@@ -714,6 +822,8 @@ export const GET = route(
 
                     const merged: TokenMarketSnapshot = {
                         address: mint,
+                        // Keep the row's fetch time (else the document's) so the quality guard can still find it stale.
+                        lastFetchedAt: existing.lastFetchedAt ?? snapshot.lastFetchedAt ?? null,
                         symbol: existing.symbol && existing.symbol.trim() ? existing.symbol : snapshot.symbol,
                         name: existing.name && existing.name.trim() ? existing.name : snapshot.name,
                         decimals:
@@ -836,9 +946,34 @@ export const GET = route(
                 if (row.snapshot) stockSnapshotByAssetId.set(row.assetId, row.snapshot);
             }
 
+            // PreStocks tokens have no public market to quote: their canonical
+            // market is the valuation implied by the PreStocks reference mark.
+            const preStocksMints = selectPreStocksMints(
+                canonicalAssets.flatMap(asset => asset.variants.map(variant => variant.mint)),
+            );
+            const preStocksByMint = freshPreStocksByMint(
+                preStocksMints.length > 0
+                    ? yield* prestocksGetLatestByMints({ mints: preStocksMints }).pipe(
+                          tapErrorAndDefault('assets.curated.prestocks', [], { count: preStocksMints.length }),
+                      )
+                    : [],
+            );
+            function preStocksCanonicalMarketForAsset(asset: CanonicalAsset) {
+                return buildPreStocksCanonicalMarket({
+                    variantMints: asset.variants.map(variant => variant.mint),
+                    preStocksByMint,
+                    onChainPriceUsd: mint => tokenByMint.get(mint)?.price,
+                });
+            }
+            // A fresh PreStocks reference keeps admin-created PreStocks assets
+            // (no pre-IPO marker in their id or aliases) off the stock benchmark.
+            function usesStockCanonicalMarket(asset: CanonicalAsset): boolean {
+                if (stockInstrumentByAssetId.has(asset.assetId)) return true;
+                return isCanonicalPublicEquityAsset(asset) && !preStocksCanonicalMarketForAsset(asset);
+            }
+
             function applyCanonicalStats(asset: CanonicalAsset, stats: AssetStats | null): AssetStats | null {
-                const stockInstrument = stockInstrumentByAssetId.get(asset.assetId) ?? null;
-                const shouldUseStockCanonicalMarket = Boolean(stockInstrument) || isCanonicalPublicEquityAsset(asset);
+                const shouldUseStockCanonicalMarket = usesStockCanonicalMarket(asset);
                 const coinId =
                     normalizeCoinGeckoCoinIdForAsset({ assetId: asset.assetId, coinId: asset.coingeckoId }) ?? '';
                 const stockSnapshot = stockSnapshotByAssetId.get(asset.assetId) ?? null;
@@ -858,10 +993,17 @@ export const GET = route(
                 });
             }
 
+            /** Reference price for the quality guard: CoinGecko, or the stock price when one token is one share. */
+            function qualityReferenceForAsset(asset: CanonicalAsset): { priceUsd: number | null } | null {
+                const market = canonicalMarketForAsset(asset);
+                if (!market) return null;
+                if (market.source === 'coingecko') return { priceUsd: market.price };
+                if (market.source === 'clickhouse_stock' && isCanonicalPublicEquityAsset(asset)) return { priceUsd: market.price };
+                return null;
+            }
             function canonicalMarketForAsset(asset: CanonicalAsset) {
                 const stockInstrument = stockInstrumentByAssetId.get(asset.assetId) ?? null;
-                const shouldUseStockCanonicalMarket = Boolean(stockInstrument) || isCanonicalPublicEquityAsset(asset);
-                if (shouldUseStockCanonicalMarket) {
+                if (usesStockCanonicalMarket(asset)) {
                     const snapshot = stockSnapshotByAssetId.get(asset.assetId) ?? null;
                     return {
                         source: 'clickhouse_stock' as const,
@@ -875,6 +1017,9 @@ export const GET = route(
                         asOf: snapshot?.asOf ?? null,
                     };
                 }
+
+                const preStocksCanonicalMarket = preStocksCanonicalMarketForAsset(asset);
+                if (preStocksCanonicalMarket) return preStocksCanonicalMarket;
 
                 if ((asset.coingeckoId ?? '').trim().length === 0) return null;
                 const coinId =
@@ -892,6 +1037,9 @@ export const GET = route(
                     priceChange24hPercent: snapshot?.priceChange24hPercent ?? null,
                     lastFetchedAt: snapshot?.lastFetchedAt ?? null,
                     providerLastUpdatedAt: snapshot?.providerLastUpdatedAt ?? null,
+                    circulatingSupply: snapshot?.circulatingSupply ?? null,
+                    totalSupply: snapshot?.totalSupply ?? null,
+                    maxSupply: snapshot?.maxSupply ?? null,
                 };
             }
 
@@ -1039,9 +1187,11 @@ export const GET = route(
                               const primaryTokenForStats = primaryVariantForStats
                                   ? tokenByMint.get(primaryVariantForStats.mint)
                                   : undefined;
+                              const quality = assessTokenMarkets(asset, tokenByMint, qualityReferenceForAsset(asset), Date.now());
                               const stats = mergeAssetStatsWithAggregates(
-                                  aggregateTokenStats(asset, tokenByMint, primaryTokenForStats),
+                                  aggregateTokenStats(asset, tokenByMint, primaryTokenForStats, quality),
                                   aggregates,
+                                  { keepGuardedTotals: hasExcludedMarkets(quality) },
                               );
                               const effectiveStats = applyCanonicalStats(asset, stats);
                               const canonicalMarket = canonicalMarketForAsset(asset);
@@ -1068,9 +1218,12 @@ export const GET = route(
                                           name: asset.name,
                                           symbol: responseSymbol,
                                           category: asset.category,
+                                          region: asset.region ?? null,
+                                          industry: asset.industry ?? null,
                                           imageUrl,
                                           stats: effectiveStats,
                                           ...(canonicalMarket ? { canonicalMarket } : {}),
+                                          advisories: advisoriesByAssetId.get(asset.assetId) ?? [],
                                           primaryVariant: buildVariantWithMarket(variant),
                                       };
 
@@ -1104,9 +1257,11 @@ export const GET = route(
                               const token = primaryVariant ? tokenByMint.get(primaryVariant.mint) : undefined;
                               const aggregates = aggregatesByAssetId.get(asset.assetId) ?? null;
 
+                              const quality = assessTokenMarkets(asset, tokenByMint, qualityReferenceForAsset(asset), Date.now());
                               const stats = mergeAssetStatsWithAggregates(
-                                  aggregateTokenStats(asset, tokenByMint, token),
+                                  aggregateTokenStats(asset, tokenByMint, token, quality),
                                   aggregates,
+                                  { keepGuardedTotals: hasExcludedMarkets(quality) },
                               );
                               const effectiveStats = applyCanonicalStats(asset, stats);
                               const canonicalMarket = canonicalMarketForAsset(asset);
@@ -1137,9 +1292,12 @@ export const GET = route(
                                   name: asset.name,
                                   symbol: responseSymbol,
                                   category: asset.category,
+                                  region: asset.region ?? null,
+                                  industry: asset.industry ?? null,
                                   imageUrl,
                                   stats: effectiveStats,
                                   ...(canonicalMarket ? { canonicalMarket } : {}),
+                                  advisories: advisoriesByAssetId.get(asset.assetId) ?? [],
                                   primaryVariant: primaryVariant ? buildVariantWithMarket(primaryVariant) : null,
                                   ...(variants ? { variants } : {}),
                               };

@@ -1,0 +1,888 @@
+import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
+
+import type { ChainKind } from '@tokens/asset-registry/chains';
+
+import type { BirdeyeClient, BirdeyeOverview } from './crons';
+import {
+    EVM_NATIVE_ASSET_ADDRESS,
+    COIN_LIST_FRESHNESS_WINDOW_MS,
+    birdeyeOverviewToV2Upsert,
+    deriveVariantKindForChain,
+    isEvmChainDown,
+    parseEvmChainsArg,
+    refreshEvmVariantMarkets,
+    rollupChainVolume30d,
+    syncEvmVariants,
+    syncSolanaVariants,
+    type V2AssetsCronDeps,
+    type V2AssetsJobsRepo,
+    type V2AssetCoinSourceRow,
+    type V2DerivedVariantRow,
+    type V2DerivedVariantUpsert,
+    type V2VariantKeyRef,
+} from './crons.v2Assets';
+
+const NOW = 1_800_000_000_000;
+const USDC_ETH = '0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48';
+const USDC_BASE = '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913';
+
+function fakeRepo(overrides: Partial<V2AssetsJobsRepo> = {}): V2AssetsJobsRepo & {
+    upserts: V2DerivedVariantUpsert[];
+    deactivated: unknown[];
+    touched: V2VariantKeyRef[];
+    marketUpserts: unknown[];
+} {
+    const upserts: V2DerivedVariantUpsert[] = [];
+    const deactivated: unknown[] = [];
+    const touched: V2VariantKeyRef[] = [];
+    const marketUpserts: unknown[] = [];
+    return {
+        upserts,
+        deactivated,
+        touched,
+        marketUpserts,
+        async mirrorSolanaVariants() {
+            return { inserted: 1, updated: 2, replaced: 0 };
+        },
+        async deactivateUnseenSolanaVariants() {
+            return 0;
+        },
+        async mirrorSolanaMarkets() {
+            return 3;
+        },
+        async mirrorSolanaRollups() {
+            return 1;
+        },
+        async resolveVariantCoinIds() {
+            return {};
+        },
+        async listAssetCoinSources() {
+            return [];
+        },
+        async listActiveAssets() {
+            return [];
+        },
+        async findCoinPlatformsByCoinIds() {
+            return [];
+        },
+        async listDerivedVariants() {
+            return [];
+        },
+        async upsertDerivedVariant(args) {
+            upserts.push(args);
+            return 'inserted';
+        },
+        async upsertAdminVariant() {
+            return 'inserted';
+        },
+        async deactivateDerivedVariants(keys) {
+            deactivated.push(...keys);
+            return keys.length;
+        },
+        async listStaleActiveVariantsByChains() {
+            return [];
+        },
+        async upsertVariantMarketFromBirdeye(args) {
+            marketUpserts.push(args);
+        },
+        async touchVariantMarket(chain, address) {
+            touched.push({ chain, address });
+        },
+        async rollupChainVolume30d() {
+            return { assetsWritten: 0, rowsWritten: 0 };
+        },
+        async pruneVolumeDaily() {
+            return 0;
+        },
+        async setVariantDecimalsIfNull() {},
+        ...overrides,
+    };
+}
+
+function deps(
+    repo: V2AssetsJobsRepo,
+    birdeyeByChain: Partial<Record<ChainKind, BirdeyeClient>> = {},
+): V2AssetsCronDeps {
+    return { repo, birdeyeByChain, now: () => NOW };
+}
+
+const ORIGINAL_LOG = console.log;
+const ORIGINAL_WARN = console.warn;
+const ORIGINAL_ERROR = console.error;
+beforeEach(() => {
+    console.log = () => undefined;
+    console.warn = () => undefined;
+    console.error = () => undefined;
+});
+afterEach(() => {
+    console.log = ORIGINAL_LOG;
+    console.warn = ORIGINAL_WARN;
+    console.error = ORIGINAL_ERROR;
+});
+
+describe('parseEvmChainsArg', () => {
+    test('defaults to every EVM chain and rejects solana / unknown ids', () => {
+        expect(parseEvmChainsArg(undefined)).toEqual(['ethereum', 'base', 'arbitrum', 'polygon', 'bnb']);
+        expect(parseEvmChainsArg(['base', 'base', 'bnb'])).toEqual(['base', 'bnb']);
+        expect(() => parseEvmChainsArg(['solana'])).toThrow();
+        expect(() => parseEvmChainsArg(['polygon-pos'])).toThrow();
+        expect(() => parseEvmChainsArg([])).toThrow();
+    });
+});
+
+describe('deriveVariantKindForChain', () => {
+    test('category wins, then home platform decides native vs bridged', () => {
+        expect(deriveVariantKindForChain({ category: 'stablecoin', assetPlatformId: null, chain: 'base' })).toBe(
+            'stablecoin',
+        );
+        expect(deriveVariantKindForChain({ category: 'equity', assetPlatformId: null, chain: 'base' })).toBe(
+            'tokenized_equity',
+        );
+        expect(deriveVariantKindForChain({ category: 'crypto', assetPlatformId: 'ethereum', chain: 'ethereum' })).toBe(
+            'native',
+        );
+        expect(deriveVariantKindForChain({ category: 'crypto', assetPlatformId: 'ethereum', chain: 'arbitrum' })).toBe(
+            'bridged',
+        );
+        expect(
+            deriveVariantKindForChain({ category: 'crypto', assetPlatformId: 'binance-smart-chain', chain: 'bnb' }),
+        ).toBe('native');
+    });
+
+    test('an equity or stablecoin source variant pins the kind regardless of category', () => {
+        expect(
+            deriveVariantKindForChain({ category: 'equity', assetPlatformId: null, chain: 'bnb', sourceKind: 'tokenized_equity' }),
+        ).toBe('tokenized_equity');
+        expect(
+            deriveVariantKindForChain({ category: 'crypto', assetPlatformId: 'ethereum', chain: 'bnb', sourceKind: 'stablecoin' }),
+        ).toBe('stablecoin');
+        expect(deriveVariantKindForChain({ category: 'crypto', assetPlatformId: 'ethereum', chain: 'bnb', sourceKind: 'yield' })).toBe(
+            'bridged',
+        );
+    });
+
+    test('without the home platform, the platforms map decides instead of defaulting to bridged', () => {
+        const base = { category: 'crypto', assetPlatformId: null, chain: 'ethereum' as const };
+        // A Solana deployment marks the EVM copies as bridged.
+        expect(deriveVariantKindForChain({ ...base, platforms: { solana: 'So1', ethereum: '0xaa' } })).toBe('bridged');
+        // The token's only deployment is this chain: native by definition.
+        expect(deriveVariantKindForChain({ ...base, platforms: { ethereum: '0xaa', base: '' } })).toBe('native');
+        // Several EVM deployments and no home: not excluded from supply on a guess.
+        expect(deriveVariantKindForChain({ ...base, platforms: { ethereum: '0xaa', arbitrum: '0xbb' } })).toBe('spot');
+        expect(deriveVariantKindForChain(base)).toBe('spot');
+    });
+});
+
+describe('sync-v2-solana-variants', () => {
+    test('reports the three mirror counts', async () => {
+        const result = await syncSolanaVariants(deps(fakeRepo()), {});
+        expect(result.ok).toBe(true);
+        expect(result.variantsInserted).toBe(1);
+        expect(result.variantsUpdated).toBe(2);
+        expect(result.variantsReplaced).toBe(0);
+        expect(result.marketsWritten).toBe(3);
+        expect(result.rollupsWritten).toBe(1);
+    });
+
+    test('mirror rows removed because v1 re-minted their variant_id are reported as replaced', async () => {
+        const repo = fakeRepo({
+            async mirrorSolanaVariants() {
+                return { inserted: 1, updated: 0, replaced: 1 };
+            },
+        });
+        const result = await syncSolanaVariants(deps(repo), {});
+        expect(result.ok).toBe(true);
+        expect(result.variantsReplaced).toBe(1);
+    });
+
+    test('a failed variants mirror aborts the run with ok:false and skips markets', async () => {
+        let marketsCalled = false;
+        const repo = fakeRepo({
+            async mirrorSolanaVariants() {
+                throw new Error('boom');
+            },
+            async mirrorSolanaMarkets() {
+                marketsCalled = true;
+                return 0;
+            },
+        });
+        const result = await syncSolanaVariants(deps(repo), {});
+        expect(result.ok).toBe(false);
+        expect(result.reason).toBe('mirror_failed');
+        expect(marketsCalled).toBe(false);
+    });
+
+    test('a failed markets mirror is partial, not fatal', async () => {
+        const repo = fakeRepo({
+            async mirrorSolanaMarkets() {
+                throw new Error('boom');
+            },
+        });
+        const result = await syncSolanaVariants(deps(repo), {});
+        expect(result.ok).toBe(true);
+        expect(result.partial).toBe(true);
+        expect(result.rollupsWritten).toBe(1);
+    });
+});
+
+describe('sync-v2-evm-variants', () => {
+    const usdcCoin = (lastSyncedAt: number | null): V2AssetCoinSourceRow => ({
+        assetId: 'usd-coin-asset',
+        category: 'stablecoin',
+        coinId: 'usd-coin',
+        role: 'reference',
+        source: null,
+        platforms: {
+            ethereum: USDC_ETH.toUpperCase().replace('0X', '0x'),
+            base: USDC_BASE,
+            solana: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
+        },
+        decimalsByPlatform: { ethereum: 6 },
+        assetPlatformId: 'ethereum',
+        coinSymbol: 'usdc',
+        coinLastSyncedAt: lastSyncedAt,
+    });
+
+    test('derives one normalized variant per EVM platform with decimals from detail_platforms', async () => {
+        const repo = fakeRepo({
+            async listAssetCoinSources() {
+                return [usdcCoin(NOW)];
+            },
+            async listActiveAssets() {
+                return [{ assetId: 'usd-coin-asset', category: 'stablecoin' }];
+            },
+        });
+        const result = await syncEvmVariants(deps(repo), { chains: ['ethereum', 'base'] });
+        expect(result.ok).toBe(true);
+        expect(result.desired).toBe(2);
+        expect(result.inserted).toBe(2);
+        expect(result.byChain).toEqual({ ethereum: { desired: 1 }, base: { desired: 1 } });
+        const eth = repo.upserts.find(u => u.chain === 'ethereum')!;
+        expect(eth.address).toBe(USDC_ETH);
+        expect(eth.variantId).toBe(`ethereum:${USDC_ETH}`);
+        expect(eth.kind).toBe('stablecoin');
+        expect(eth.decimals).toBe(6);
+        expect(eth.label).toBe('USDC');
+        expect(eth.tags).toEqual(['coingecko-derived', 'coin:usd-coin']);
+        expect(eth.origin).toBe('coingecko');
+        expect(eth.coingeckoId).toBe('usd-coin');
+        const base = repo.upserts.find(u => u.chain === 'base')!;
+        expect(base.decimals).toBeNull();
+    });
+
+    test('a variant coin derives the issuer\'s own EVM rows under the same asset, tagged with the issuer', async () => {
+        const ONDO_ETH = '0x0000000000000000000000000000000000000aaa';
+        const ONDO_BNB = '0x0000000000000000000000000000000000000bbb';
+        const XSTOCK_ETH = '0x0000000000000000000000000000000000000ccc';
+        const sources: V2AssetCoinSourceRow[] = [
+            {
+                assetId: 'tesla',
+                category: 'equity',
+                coinId: 'tesla-xstock',
+                role: 'reference',
+                source: null,
+                platforms: { solana: 'TSLAx', ethereum: XSTOCK_ETH },
+                decimalsByPlatform: {},
+                assetPlatformId: 'arbitrum-one',
+                coinSymbol: 'tslax',
+                coinLastSyncedAt: NOW,
+            },
+            {
+                assetId: 'tesla',
+                category: 'equity',
+                coinId: 'tesla-ondo-tokenized-stock',
+                role: 'variant',
+                source: { chain: 'solana', address: 'TSLAon', kind: 'tokenized_equity', tags: ['Ondo'], label: 'Ondo' },
+                platforms: { solana: 'TSLAon', ethereum: ONDO_ETH, 'binance-smart-chain': ONDO_BNB },
+                decimalsByPlatform: { ethereum: 18 },
+                assetPlatformId: 'ethereum',
+                coinSymbol: 'tslaon',
+                coinLastSyncedAt: NOW,
+            },
+        ];
+        const repo = fakeRepo({
+            async listAssetCoinSources() {
+                return sources;
+            },
+            async listActiveAssets() {
+                return [{ assetId: 'tesla', category: 'equity' }];
+            },
+        });
+        const result = await syncEvmVariants(deps(repo), { chains: ['ethereum', 'bnb'] });
+        expect(result.ok).toBe(true);
+        expect(result.coinSources).toBe(2);
+        expect(result.desired).toBe(3);
+        const ondoEth = repo.upserts.find(u => u.address === ONDO_ETH)!;
+        expect(ondoEth.assetId).toBe('tesla');
+        expect(ondoEth.coingeckoId).toBe('tesla-ondo-tokenized-stock');
+        expect(ondoEth.kind).toBe('tokenized_equity');
+        expect(ondoEth.tags).toEqual(['coingecko-derived', 'coin:tesla-ondo-tokenized-stock', 'issuer:Ondo']);
+        expect(ondoEth.decimals).toBe(18);
+        expect(repo.upserts.find(u => u.address === ONDO_BNB)?.chain).toBe('bnb');
+        const xstockEth = repo.upserts.find(u => u.address === XSTOCK_ETH)!;
+        expect(xstockEth.coingeckoId).toBe('tesla-xstock');
+        expect(xstockEth.tags).toEqual(['coingecko-derived', 'coin:tesla-xstock']);
+    });
+
+    test('a derivative (LST) source variant contributes no deployments; two coins on one address keep the first', async () => {
+        const SHARED = '0x0000000000000000000000000000000000000ddd';
+        const sources: V2AssetCoinSourceRow[] = [
+            {
+                assetId: 'solana',
+                category: 'crypto',
+                coinId: 'solana',
+                role: 'reference',
+                source: null,
+                platforms: { ethereum: SHARED },
+                decimalsByPlatform: {},
+                assetPlatformId: null,
+                coinSymbol: 'sol',
+                coinLastSyncedAt: NOW,
+            },
+            {
+                assetId: 'solana',
+                category: 'crypto',
+                coinId: 'jito-staked-sol',
+                role: 'variant',
+                source: { chain: 'solana', address: 'J1to', kind: 'yield', tags: [], label: 'JitoSOL' },
+                platforms: { solana: 'J1to', ethereum: '0x0000000000000000000000000000000000000eee' },
+                decimalsByPlatform: {},
+                assetPlatformId: 'solana',
+                coinSymbol: 'jitosol',
+                coinLastSyncedAt: NOW,
+            },
+            {
+                assetId: 'solana',
+                category: 'crypto',
+                coinId: 'wrapped-solana-other',
+                role: 'variant',
+                source: { chain: 'solana', address: 'So11', kind: 'spot', tags: [], label: null },
+                platforms: { ethereum: SHARED },
+                decimalsByPlatform: {},
+                assetPlatformId: 'solana',
+                coinSymbol: 'wsol',
+                coinLastSyncedAt: NOW,
+            },
+        ];
+        const repo = fakeRepo({
+            async listAssetCoinSources() {
+                return sources;
+            },
+            async listActiveAssets() {
+                return [{ assetId: 'solana', category: 'crypto' }];
+            },
+        });
+        const result = await syncEvmVariants(deps(repo), { chains: ['ethereum'] });
+        expect(result.coinSourcesSkipped).toBe(1);
+        expect(result.coinConflicts).toBe(1);
+        expect(result.desired).toBe(1);
+        expect(repo.upserts[0]?.coingeckoId).toBe('solana');
+    });
+
+    test('resolveOnly links rows to coins and stops before deriving', async () => {
+        let listed = false;
+        const repo = fakeRepo({
+            async resolveVariantCoinIds() {
+                return { solana: 1464, ethereum: 12 };
+            },
+            async listAssetCoinSources() {
+                listed = true;
+                return [];
+            },
+        });
+        const result = await syncEvmVariants(deps(repo), { resolveOnly: true });
+        expect(result.ok).toBe(true);
+        expect(result.resolved).toEqual({ solana: 1464, ethereum: 12 });
+        expect(listed).toBe(false);
+    });
+
+    test('native config rows carry the asset\'s reference coin id', async () => {
+        const repo = fakeRepo({
+            async listAssetCoinSources() {
+                return [
+                    {
+                        assetId: 'ethereum',
+                        category: 'crypto',
+                        coinId: 'ethereum',
+                        role: 'reference',
+                        source: null,
+                        platforms: {},
+                        decimalsByPlatform: {},
+                        assetPlatformId: null,
+                        coinSymbol: 'eth',
+                        coinLastSyncedAt: NOW,
+                    },
+                ];
+            },
+            async listActiveAssets() {
+                return [{ assetId: 'ethereum', category: 'crypto' }];
+            },
+        });
+        await syncEvmVariants(deps(repo), { chains: ['ethereum'] });
+        expect(repo.upserts.every(u => u.coingeckoId === 'ethereum')).toBe(true);
+    });
+
+    test('native coins come from the registry table for registered assets only', async () => {
+        const repo = fakeRepo({
+            async listActiveAssets() {
+                return [{ assetId: 'ethereum', category: 'crypto' }];
+            },
+        });
+        const result = await syncEvmVariants(deps(repo), { chains: ['ethereum', 'bnb'] });
+        const keys = repo.upserts.map(u => `${u.chain}:${u.address}`);
+        expect(keys).toContain(`ethereum:${EVM_NATIVE_ASSET_ADDRESS}`);
+        expect(keys).toContain('ethereum:0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2');
+        // BNB's native rows need the `bnb` asset, which is not active here.
+        expect(keys.some(k => k.startsWith('bnb:'))).toBe(false);
+        expect(
+            repo.upserts.every(u => u.origin === 'config' && u.tags.includes('native-coin') && u.decimals === 18),
+        ).toBe(true);
+        expect(result.byChain).toEqual({ ethereum: { desired: 2 } });
+    });
+
+    test('the native coin is issued on its home chain only; elsewhere it is a bridged claim', async () => {
+        const repo = fakeRepo({
+            async listActiveAssets() {
+                return [{ assetId: 'ethereum', category: 'crypto' }];
+            },
+        });
+        await syncEvmVariants(deps(repo), { chains: ['ethereum', 'base', 'arbitrum'] });
+        const native = repo.upserts.filter(u => u.address === EVM_NATIVE_ASSET_ADDRESS);
+        expect(native.find(u => u.chain === 'ethereum')?.kind).toBe('native');
+        expect(native.find(u => u.chain === 'ethereum')?.tags).toEqual(['native-coin', 'native-home']);
+        expect(native.find(u => u.chain === 'base')?.kind).toBe('bridged');
+        expect(native.find(u => u.chain === 'base')?.tags).toEqual(['native-coin']);
+        expect(native.find(u => u.chain === 'arbitrum')?.kind).toBe('bridged');
+        expect(repo.upserts.filter(u => u.kind === 'wrapped')).toHaveLength(3);
+    });
+
+    test('dry run computes but writes nothing', async () => {
+        const repo = fakeRepo({
+            async listAssetCoinSources() {
+                return [usdcCoin(NOW)];
+            },
+            async listActiveAssets() {
+                return [{ assetId: 'usd-coin-asset', category: 'stablecoin' }];
+            },
+        });
+        const result = await syncEvmVariants(deps(repo), { dryRun: true });
+        expect(result.desired).toBe(2);
+        expect(result.inserted).toBe(0);
+        expect(repo.upserts).toHaveLength(0);
+    });
+
+    test('deactivates a dropped platform only when the coin row is fresh', async () => {
+        const stale: V2DerivedVariantRow = {
+            chain: 'base',
+            address: USDC_BASE,
+            assetId: 'usd-coin-asset',
+            variantId: `base:${USDC_BASE}`,
+            isActive: true,
+        };
+        const withoutBase = (lastSyncedAt: number | null): V2AssetCoinSourceRow => ({
+            ...usdcCoin(lastSyncedAt),
+            platforms: { ethereum: USDC_ETH },
+        });
+
+        const freshRepo = fakeRepo({
+            async listAssetCoinSources() {
+                return [withoutBase(NOW)];
+            },
+            async listActiveAssets() {
+                return [{ assetId: 'usd-coin-asset', category: 'stablecoin' }];
+            },
+            async listDerivedVariants() {
+                return [stale];
+            },
+        });
+        const fresh = await syncEvmVariants(deps(freshRepo), {});
+        expect(fresh.deactivated).toBe(1);
+        expect(fresh.keptStale).toBe(0);
+
+        const staleRepo = fakeRepo({
+            async listAssetCoinSources() {
+                return [withoutBase(NOW - COIN_LIST_FRESHNESS_WINDOW_MS - 1)];
+            },
+            async listActiveAssets() {
+                return [{ assetId: 'usd-coin-asset', category: 'stablecoin' }];
+            },
+            async listDerivedVariants() {
+                return [stale];
+            },
+        });
+        const kept = await syncEvmVariants(deps(staleRepo), {});
+        expect(kept.deactivated).toBe(0);
+        expect(kept.keptStale).toBe(1);
+    });
+
+    test('an asset whose coin id is unknown still counts as scanned, derives nothing and keeps its rows', async () => {
+        const ghostRow: V2DerivedVariantRow = {
+            chain: 'base',
+            address: '0x2222222222222222222222222222222222222222',
+            assetId: 'ghost',
+            variantId: 'base:0x2222222222222222222222222222222222222222',
+            isActive: true,
+        };
+        const otherRow: V2DerivedVariantRow = { ...ghostRow, address: '0x3333333333333333333333333333333333333333', assetId: 'other-asset', variantId: 'base:0x3333333333333333333333333333333333333333' };
+        const unknown: V2AssetCoinSourceRow = {
+            assetId: 'ghost',
+            category: 'crypto',
+            coinId: 'not-a-coin',
+            role: 'reference',
+            source: null,
+            coinKnown: false,
+            platforms: {},
+            decimalsByPlatform: {},
+            assetPlatformId: null,
+            coinSymbol: null,
+            coinLastSyncedAt: null,
+        };
+        const repo = fakeRepo({
+            async listAssetCoinSources() {
+                return [unknown];
+            },
+            async listActiveAssets() {
+                return [
+                    { assetId: 'ghost', category: 'crypto' },
+                    { assetId: 'other-asset', category: 'crypto' },
+                ];
+            },
+            async listDerivedVariants() {
+                return [ghostRow, otherRow];
+            },
+        });
+        // maxAssets equals the scoped rows: the scan may have been cut short, so
+        // other-asset (never examined) keeps its row, and ghost keeps its own
+        // because its coin has no synced-at to judge staleness by.
+        const result = await syncEvmVariants(deps(repo), { maxAssets: 1 });
+        expect(result.coinSourcesUnknown).toBe(1);
+        expect(result.inserted).toBe(0);
+        expect(result.updated).toBe(0);
+        expect(result.deactivated).toBe(0);
+        expect(result.keptUnscanned).toBe(1);
+        expect(result.keptStale).toBe(1);
+    });
+
+    test("a fresh sibling coin does not deactivate rows that a stale coin's deployments could still own", async () => {
+        const fresh: V2AssetCoinSourceRow = { ...usdcCoin(NOW), assetId: 'two-issuers', coinId: 'issuer-a' };
+        const stale: V2AssetCoinSourceRow = {
+            ...usdcCoin(NOW - 400 * 24 * 60 * 60 * 1000),
+            assetId: 'two-issuers',
+            coinId: 'issuer-b',
+            role: 'variant',
+            source: { chain: 'solana', address: 'IssuerBMint', kind: 'spot', tags: [], label: 'Issuer B' },
+            platforms: {},
+        };
+        const oldRow: V2DerivedVariantRow = {
+            chain: 'base',
+            address: '0x4444444444444444444444444444444444444444',
+            assetId: 'two-issuers',
+            variantId: 'base:0x4444444444444444444444444444444444444444',
+            isActive: true,
+        };
+        const repo = fakeRepo({
+            async listAssetCoinSources() {
+                return [fresh, stale];
+            },
+            async listActiveAssets() {
+                return [{ assetId: 'two-issuers', category: 'crypto' }];
+            },
+            async listDerivedVariants() {
+                return [oldRow];
+            },
+        });
+        const result = await syncEvmVariants(deps(repo), {});
+        expect(result.deactivated).toBe(0);
+        expect(result.keptStale).toBe(1);
+    });
+
+    test('a coin past the per-asset cap keeps its existing deployments active', async () => {
+        const coinSource = (i: number): V2AssetCoinSourceRow => ({
+            assetId: 'fanout',
+            category: 'crypto',
+            coinId: `coin-${String(i).padStart(2, '0')}`,
+            role: i === 0 ? 'reference' : 'variant',
+            source: i === 0 ? null : { chain: 'solana', address: `Mint${i}`, kind: 'spot', tags: [], label: null },
+            platforms: { ethereum: `0x${String(i).padStart(40, '0')}` },
+            decimalsByPlatform: {},
+            assetPlatformId: null,
+            coinSymbol: null,
+            coinLastSyncedAt: NOW,
+        });
+        const sources = Array.from({ length: 9 }, (_, i) => coinSource(i));
+        const cappedRow: V2DerivedVariantRow = {
+            chain: 'ethereum',
+            address: `0x${String(8).padStart(40, '0')}`,
+            assetId: 'fanout',
+            variantId: `ethereum:0x${String(8).padStart(40, '0')}`,
+            isActive: true,
+        };
+        const repo = fakeRepo({
+            async listAssetCoinSources() {
+                return sources;
+            },
+            async listActiveAssets() {
+                return [{ assetId: 'fanout', category: 'crypto' }];
+            },
+            async listDerivedVariants() {
+                return [cappedRow];
+            },
+        });
+        const result = await syncEvmVariants(deps(repo), { maxAssets: 10 });
+        expect(result.coinSourcesCapped).toBe(1);
+        expect(result.keptCapped).toBe(1);
+        expect(result.deactivated).toBe(0);
+    });
+
+    test('a bounded scan leaves the derived rows of unscanned assets alone', async () => {
+        const otherAssetRow: V2DerivedVariantRow = {
+            chain: 'base',
+            address: '0x1111111111111111111111111111111111111111',
+            assetId: 'other-asset',
+            variantId: 'base:0x1111111111111111111111111111111111111111',
+            isActive: true,
+        };
+        const repoFor = () =>
+            fakeRepo({
+                // One scanned asset (usd-coin), the other active asset fell outside the window.
+                async listAssetCoinSources() {
+                    return [usdcCoin(NOW)];
+                },
+                async listActiveAssets() {
+                    return [
+                        { assetId: 'usd-coin-asset', category: 'stablecoin' },
+                        { assetId: 'other-asset', category: 'crypto' },
+                    ];
+                },
+                async listDerivedVariants() {
+                    return [otherAssetRow];
+                },
+            });
+
+        // maxAssets equals the rows returned: the scan may have been cut short.
+        const bounded = await syncEvmVariants(deps(repoFor()), { maxAssets: 1 });
+        expect(bounded.deactivated).toBe(0);
+        expect(bounded.keptUnscanned).toBe(1);
+
+        // The scan came back short of the bound, so it saw every linked asset:
+        // other-asset really has no coin link any more and loses its row.
+        const complete = await syncEvmVariants(deps(repoFor()), { maxAssets: 10 });
+        expect(complete.deactivated).toBe(1);
+        expect(complete.keptUnscanned).toBe(0);
+    });
+
+    test('a replaced address is not deactivated while its replacement write failed', async () => {
+        const oldBase: V2DerivedVariantRow = {
+            chain: 'base',
+            address: '0x2222222222222222222222222222222222222222',
+            assetId: 'usd-coin-asset',
+            variantId: 'base:0x2222222222222222222222222222222222222222',
+            isActive: true,
+        };
+        const goneRow: V2DerivedVariantRow = {
+            chain: 'base',
+            address: '0x3333333333333333333333333333333333333333',
+            assetId: 'gone',
+            variantId: 'base:0x3333333333333333333333333333333333333333',
+            isActive: true,
+        };
+        const repo = fakeRepo({
+            async listAssetCoinSources() {
+                return [usdcCoin(NOW)];
+            },
+            async listActiveAssets() {
+                return [{ assetId: 'usd-coin-asset', category: 'stablecoin' }];
+            },
+            async listDerivedVariants() {
+                return [oldBase, goneRow];
+            },
+            async upsertDerivedVariant(args) {
+                if (args.chain === 'base') throw new Error('write failed');
+                return 'inserted';
+            },
+        });
+        const result = await syncEvmVariants(deps(repo), { chains: ['ethereum', 'base'] });
+        expect(result.ok).toBe(true);
+        expect(result.partial).toBe(true);
+        expect(result.failed).toBe(1);
+        // usd-coin's old Base row stays until its new Base row is actually written…
+        expect(result.keptPendingWrite).toBe(1);
+        // …while the inactive asset's row, unaffected by the failure, is still removed.
+        expect(result.deactivated).toBe(1);
+        expect(repo.deactivated).toEqual([{ chain: 'base', address: goneRow.address, assetId: 'gone' }]);
+    });
+
+    test('a run where every write fails is ok:false so the scheduler retries', async () => {
+        const repo = fakeRepo({
+            async listAssetCoinSources() {
+                return [usdcCoin(NOW)];
+            },
+            async listActiveAssets() {
+                return [{ assetId: 'usd-coin-asset', category: 'stablecoin' }];
+            },
+            async upsertDerivedVariant() {
+                throw new Error('db down');
+            },
+        });
+        const result = await syncEvmVariants(deps(repo), { chains: ['ethereum', 'base'] });
+        expect(result.ok).toBe(false);
+        expect(result.reason).toBe('upserts_failed');
+        expect(result.failed).toBe(2);
+        expect(result.inserted).toBe(0);
+    });
+
+    test('an asset that is no longer active loses its derived rows regardless of coin freshness', async () => {
+        const repo = fakeRepo({
+            async listDerivedVariants() {
+                return [
+                    {
+                        chain: 'base',
+                        address: USDC_BASE,
+                        assetId: 'gone',
+                        variantId: `base:${USDC_BASE}`,
+                        isActive: true,
+                    },
+                ];
+            },
+        });
+        const result = await syncEvmVariants(deps(repo), {});
+        expect(result.deactivated).toBe(1);
+        expect(repo.deactivated).toEqual([{ chain: 'base', address: USDC_BASE, assetId: 'gone' }]);
+    });
+});
+
+describe('refresh-v2-evm-variant-markets', () => {
+    const overview = (decimals?: number): BirdeyeOverview => ({
+        symbol: 'WETH',
+        name: 'Wrapped Ether',
+        price: 2500,
+        liquidity: 1e6,
+        ...(decimals !== undefined ? { decimals } : {}),
+    });
+    const client = (fn: (address: string) => Promise<BirdeyeOverview | null>): BirdeyeClient => ({
+        fetchTokenOverview: fn,
+    });
+
+    test('birdeyeOverviewToV2Upsert never defaults decimals', () => {
+        const withDecimals = birdeyeOverviewToV2Upsert('base', '0xabc', overview(18), NOW)!;
+        expect(withDecimals.decimals).toBe(18);
+        expect(withDecimals.chain).toBe('base');
+        expect('mint' in withDecimals).toBe(false);
+        const without = birdeyeOverviewToV2Upsert('base', '0xabc', overview(), NOW)!;
+        expect(without.decimals).toBeNull();
+        expect(birdeyeOverviewToV2Upsert('base', '0xabc', { symbol: '', name: 'x' }, NOW)).toBeNull();
+    });
+
+    test('empty rows get the slower cutoff; both cutoffs derive from the run start', async () => {
+        const calls: Array<{ beforeOverviewFetchedAt: number; beforeEmptyFetchedAt?: number }> = [];
+        const repo = fakeRepo({
+            async listStaleActiveVariantsByChains(_chains, cutoffs) {
+                calls.push(cutoffs);
+                return [];
+            },
+        });
+        await refreshEvmVariantMarkets(deps(repo), { chains: ['base'], minAgeMs: 900_000, emptyMinAgeMs: 3_600_000 });
+        expect(calls[0]).toEqual({ beforeOverviewFetchedAt: NOW - 900_000, beforeEmptyFetchedAt: NOW - 3_600_000 });
+        // emptyMinAgeMs never undercuts minAgeMs.
+        await refreshEvmVariantMarkets(deps(repo), { chains: ['base'], minAgeMs: 900_000, emptyMinAgeMs: 60_000 });
+        expect(calls[1]).toEqual({ beforeOverviewFetchedAt: NOW - 900_000, beforeEmptyFetchedAt: NOW - 900_000 });
+    });
+
+    test('refreshes per chain, touches misses, and reports byChain', async () => {
+        const repo = fakeRepo({
+            async listStaleActiveVariantsByChains(chains) {
+                return [
+                    { chain: 'base', address: '0x1' },
+                    { chain: 'base', address: '0x2' },
+                    { chain: 'arbitrum', address: '0x3' },
+                ].filter(ref => chains.includes(ref.chain as ChainKind)) as V2VariantKeyRef[];
+            },
+        });
+        const result = await refreshEvmVariantMarkets(
+            deps(repo, {
+                base: client(async address => (address === '0x2' ? null : overview(18))),
+                arbitrum: client(async () => overview()),
+            }),
+            { chains: ['base', 'arbitrum'], delayMs: 0 },
+        );
+        expect(result.ok).toBe(true);
+        expect(result.refreshed).toBe(2);
+        expect(result.failed).toBe(1);
+        expect(repo.touched).toEqual([{ chain: 'base', address: '0x2' }]);
+        expect(result.byChain).toEqual({
+            base: { attempted: 2, refreshed: 1, failed: 1, noClient: 0 },
+            arbitrum: { attempted: 1, refreshed: 1, failed: 0, noClient: 0 },
+        });
+    });
+
+    test('a chain with ≥3 attempts and no successes flips ok:false with downChains', async () => {
+        const repo = fakeRepo({
+            async listStaleActiveVariantsByChains() {
+                return [
+                    { chain: 'bnb', address: '0x1' },
+                    { chain: 'bnb', address: '0x2' },
+                    { chain: 'bnb', address: '0x3' },
+                ];
+            },
+        });
+        const result = await refreshEvmVariantMarkets(deps(repo, { bnb: client(async () => null) }), {
+            chains: ['bnb'],
+            delayMs: 0,
+        });
+        expect(result.ok).toBe(false);
+        expect(result.downChains).toEqual(['bnb']);
+        expect(isEvmChainDown({ attempted: 2, refreshed: 0, failed: 2, noClient: 0 })).toBe(false);
+    });
+
+    test('a chain without a Birdeye client is counted, not attempted', async () => {
+        const repo = fakeRepo({
+            async listStaleActiveVariantsByChains() {
+                return [{ chain: 'polygon', address: '0x1' }];
+            },
+        });
+        const result = await refreshEvmVariantMarkets(deps(repo, {}), { chains: ['polygon'], delayMs: 0 });
+        expect(result.ok).toBe(true);
+        expect(result.noClient).toBe(1);
+        expect(repo.touched).toHaveLength(0);
+    });
+});
+
+describe('rollup-v2-chain-volume-30d', () => {
+    test('rolls every EVM chain plus Solana up by default, prunes, and reports counts', async () => {
+        const calls: Array<{ chains: readonly ChainKind[]; nowMs: number }> = [];
+        const pruneCalls: number[] = [];
+        const repo = fakeRepo({
+            async rollupChainVolume30d(chains, nowMs) {
+                calls.push({ chains, nowMs });
+                return { assetsWritten: 12, rowsWritten: 20 };
+            },
+            async pruneVolumeDaily(olderThanDays) {
+                pruneCalls.push(olderThanDays);
+                return 7;
+            },
+        });
+        const result = await rollupChainVolume30d(deps(repo), {});
+        expect(result.ok).toBe(true);
+        expect(result.rowsWritten).toBe(20);
+        expect(result.assetsWritten).toBe(12);
+        expect(result.pruned).toBe(7);
+        // Every EVM chain by default, plus Solana (its samples come from the v1 mirror).
+        expect(calls[0]?.chains).toEqual(['ethereum', 'base', 'arbitrum', 'polygon', 'bnb', 'solana']);
+        expect(calls[0]?.nowMs).toBe(NOW);
+        expect(pruneCalls).toEqual([45]);
+    });
+
+    test('a failed prune does not fail the run', async () => {
+        const repo = fakeRepo({
+            async rollupChainVolume30d() {
+                return { assetsWritten: 1, rowsWritten: 1 };
+            },
+            async pruneVolumeDaily() {
+                throw new Error('boom');
+            },
+        });
+        const result = await rollupChainVolume30d(deps(repo), { chains: ['base'], retentionDays: 60 });
+        expect(result.ok).toBe(true);
+        expect(result.pruned).toBe(0);
+    });
+});

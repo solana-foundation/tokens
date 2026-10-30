@@ -10,15 +10,21 @@ import { describe, expect, it } from 'bun:test';
 
 import { classifyQuery } from './intent';
 import { judgeCandidates } from './pipeline';
-import { POLICIES } from './policies';
+import { applyGateOverrides, POLICIES, type PolicyDocument } from './policies';
 import { buildIndexFromEntries } from './protected-symbols';
 import { resolveFromJudged } from './resolve';
 import type { EnrichedCandidate } from './types';
 import {
+    BLOCKED_MINT,
     BONK_MINT,
+    CAUTION_MINT,
+    COMPROMISED_MINT,
     NOW_MS,
     USDC_MINT,
     NEW_DOG_MINT,
+    blockedToken,
+    cautionToken,
+    compromisedToken,
     fakeUsdc,
     homoglyphUsdc,
     lowLiqDogToken,
@@ -33,11 +39,14 @@ const index = buildIndexFromEntries([
     { symbol: 'BONK', mints: [BONK_MINT], protectedBy: ['curated:majors'] },
 ]);
 
-function run(query: string, candidates: EnrichedCandidate[], policyId: keyof typeof POLICIES, limit = 20) {
+function runWithPolicy(query: string, candidates: EnrichedCandidate[], policy: PolicyDocument, limit = 20) {
     const interpretation = classifyQuery(query);
-    const policy = POLICIES[policyId];
     const output = judgeCandidates(candidates, interpretation, policy, index, { nowMs: NOW_MS, limit });
     return { interpretation, policy, ...output };
+}
+
+function run(query: string, candidates: EnrichedCandidate[], policyId: keyof typeof POLICIES, limit = 20) {
+    return runWithPolicy(query, candidates, POLICIES[policyId], limit);
 }
 
 describe('golden: exact-ticker USDC', () => {
@@ -125,6 +134,49 @@ describe('golden: tombstones', () => {
             expect(results).toEqual([]);
             expect(suppressed[0]?.suppressedBy).toContain('gate_tombstoned');
         }
+    });
+});
+
+describe('golden: advisories', () => {
+    it('compromised tokens are suppressed under every policy with gate_advisory_compromised, despite top-tier standing', () => {
+        for (const policyId of ['strict', 'default', 'degen'] as const) {
+            const { results, suppressed } = run('SILV', [compromisedToken()], policyId);
+            expect(results).toEqual([]);
+            expect(suppressed[0]?.mint).toBe(COMPROMISED_MINT);
+            expect(suppressed[0]?.suppressedBy).toEqual(['gate_advisory_compromised']);
+        }
+    });
+
+    it('blocked tokens are suppressed under every policy with gate_advisory_blocked (not both codes)', () => {
+        for (const policyId of ['strict', 'default', 'degen'] as const) {
+            const { results, suppressed } = run('BLKD', [blockedToken()], policyId);
+            expect(results).toEqual([]);
+            expect(suppressed[0]?.mint).toBe(BLOCKED_MINT);
+            expect(suppressed[0]?.suppressedBy).toEqual(['gate_advisory_blocked']);
+        }
+    });
+
+    it('caution tokens are shown with the advisory_caution warning and an advisory badge, never gated', () => {
+        for (const policyId of ['strict', 'default', 'degen'] as const) {
+            const { results, suppressed } = run('CAUT', [cautionToken()], policyId);
+            expect(suppressed).toEqual([]);
+            const caut = results.find(r => r.mint === CAUTION_MINT);
+            expect(caut).toBeDefined();
+            expect(caut?.warnings).toContain('advisory_caution');
+            expect(caut?.badges).toContain('advisory:caution');
+        }
+    });
+
+    it('unflagged tokens carry neither the warning nor the badge', () => {
+        const { results } = run('BONK', [realBonk()], 'default');
+        expect(results[0]?.warnings).not.toContain('advisory_caution');
+        expect(results[0]?.badges.some(b => b.startsWith('advisory:'))).toBe(false);
+    });
+
+    it('a compromised sibling never displaces the healthy token in a mixed result set', () => {
+        const { results, suppressed } = run('silver', [compromisedToken(), realBonk()], 'default');
+        expect(results.map(r => r.mint)).not.toContain(COMPROMISED_MINT);
+        expect(suppressed.map(s => s.mint)).toContain(COMPROMISED_MINT);
     });
 });
 
@@ -272,5 +324,90 @@ describe('golden: attested off-AMM asset (Ondo-style tokenized stock)', () => {
         );
         expect(results.length).toBe(0);
         expect(suppressed[0]?.suppressedBy).toContain('gate_min_liquidity');
+    });
+});
+
+describe('golden: per-gate overrides (public /v2/search flags)', () => {
+    it('verifiedOnly: unattested tokens are suppressed with gate_unverified, registry tokens survive', () => {
+        const policy = applyGateOverrides(POLICIES.degen, { requireRegistry: true }).policy;
+        const { results, suppressed } = runWithPolicy('dog', [newDogToken(), realBonk()], policy);
+        expect(results.map(r => r.mint)).toEqual([BONK_MINT]);
+        expect(suppressed[0]?.mint).toBe(NEW_DOG_MINT);
+        expect(suppressed[0]?.suppressedBy).toEqual(['gate_unverified']);
+    });
+
+    it('verifiedOnly is off in every preset', () => {
+        for (const policyId of ['strict', 'default', 'degen'] as const) {
+            const { suppressed } = run('dogwif', [newDogToken()], policyId);
+            expect(suppressed.flatMap(s => s.suppressedBy)).not.toContain('gate_unverified');
+        }
+    });
+
+    it('minMarketScore: a weak-metrics token is suppressed once the gate is set', () => {
+        const weak: EnrichedCandidate = { ...newDogToken(), risk: { marketScore: 30, grade: 'C', webacyTags: [] } };
+
+        const shown = run('dogwif', [weak], 'degen');
+        expect(shown.results[0]?.mint).toBe(NEW_DOG_MINT);
+        expect(shown.results[0]?.warnings).toContain('weak_market_score');
+        expect(shown.results[0]?.badges).toContain('grade:C');
+
+        const policy = applyGateOverrides(POLICIES.degen, { minMarketScore: 40 }).policy;
+        const gated = runWithPolicy('dogwif', [weak], policy);
+        expect(gated.results).toEqual([]);
+        expect(gated.suppressed[0]?.suppressedBy).toEqual(['gate_min_market_score']);
+    });
+
+    it('minMarketScore never gates a token whose score is unknown', () => {
+        const policy = applyGateOverrides(POLICIES.degen, { minMarketScore: 90 }).policy;
+        const { results, suppressed } = runWithPolicy('dogwif', [{ ...newDogToken(), risk: null }], policy);
+        expect(results.length).toBe(1);
+        expect(suppressed).toEqual([]);
+    });
+
+    it('minLiquidityUsd=none lets dust through the default policy (still warned)', () => {
+        const policy = applyGateOverrides(POLICIES.default, { minLiquidityUsd: null }).policy;
+        const { results, suppressed } = runWithPolicy('dog', [newDogToken(), lowLiqDogToken()], policy);
+        expect(suppressed).toEqual([]);
+        const dust = results.find(r => r.mint === lowLiqDogToken().mint);
+        expect(dust?.warnings).toContain('low_liquidity');
+    });
+
+    it('suppressImpersonation=false on default shows impostors ranked below the real token', () => {
+        const policy = applyGateOverrides(POLICIES.default, { suppressImpersonation: false }).policy;
+        const { results } = runWithPolicy('USDC', [fakeUsdc(), realUsdc()], policy);
+        expect(results[0]?.mint).toBe(USDC_MINT);
+        expect(results.map(r => r.mint)).toContain(fakeUsdc().mint);
+    });
+
+    it('overrides never relax the advisory and tombstone gates', () => {
+        const policy = applyGateOverrides(POLICIES.degen, {
+            minLiquidityUsd: null,
+            requireMarketData: false,
+            suppressImpersonation: false,
+            minMarketScore: null,
+            minAgeDays: null,
+            requireRegistry: false,
+        }).policy;
+        const { results, suppressed } = runWithPolicy('x', [compromisedToken(), blockedToken(), tombstonedToken()], policy);
+        expect(results).toEqual([]);
+        expect(suppressed.map(s => s.suppressedBy[0])).toEqual([
+            'gate_advisory_compromised',
+            'gate_advisory_blocked',
+            'gate_tombstoned',
+        ]);
+    });
+
+    it('resolve: relaxing the liquidity gate flips a gated exact-ticker match from refusal to an answer', () => {
+        const refused = run('DOGGO', [lowLiqDogToken()], 'default');
+        expect(resolveFromJudged(refused.results, refused.interpretation, refused.policy).status).toBe(
+            'no_confident_match',
+        );
+
+        const policy = applyGateOverrides(POLICIES.degen, { minLiquidityUsd: null }).policy;
+        const relaxed = runWithPolicy('DOGGO', [lowLiqDogToken()], policy);
+        expect(relaxed.suppressed).toEqual([]);
+        const outcome = resolveFromJudged(relaxed.results, relaxed.interpretation, relaxed.policy);
+        expect(outcome.status).toBe('resolved');
+        expect(outcome.best?.mint).toBe(lowLiqDogToken().mint);
     });
 });

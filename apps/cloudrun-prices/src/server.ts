@@ -5,7 +5,8 @@ import { getLatestByCoinId, InvalidArgsError, type PricesRepo } from './handlers
 
 export interface ServerDeps {
     repo: PricesRepo;
-    authToken: string;
+    /** Current shared bearer, or [current, previous] during a rotation. */
+    authToken: string | readonly string[];
 }
 
 type QueryHandler = (args: unknown) => Promise<unknown>;

@@ -1,5 +1,12 @@
 import { liquidityTierPriority, normalizeLegacyTier } from './liquidity-tier';
-import type { AssetCategory, AssetVariant, CanonicalAsset, LiquidityTier, StockVariantTier } from './types';
+import {
+    isTradeRestrictedAdvisory,
+    type AssetCategory,
+    type AssetVariant,
+    type CanonicalAsset,
+    type LiquidityTier,
+    type StockVariantTier,
+} from './types';
 
 export const FILL_QUALITY_SCORING_VERSION = 'fill-quality-24h-5s-v1';
 export const SIZE_AWARE_SCORING_VERSION = 'size-aware-exec-v1';
@@ -45,10 +52,17 @@ export interface PrimaryVariantRankingOptions {
     nowSeconds?: number;
     lexicalTieBreak?: boolean;
     strategy?: PrimaryVariantStrategy;
+    /**
+     * How the activity gate treats a candidate with no volume and no trade data.
+     * `'pass'` (default, v1 behaviour) lets it through; `'fail'` drops it so an
+     * unpriced variant cannot beat a lightly traded one.
+     */
+    missingActivity?: 'pass' | 'fail';
 }
 
 export type PrimaryVariantSelectionReason =
     | 'only_candidate'
+    | 'advisory_filter'
     | 'activity_filter'
     | 'execution_quality_zero_liquidity'
     | 'execution_quality_override'
@@ -136,30 +150,59 @@ export function isSpotLikeVariantKind(kind: AssetVariant['kind']): boolean {
     );
 }
 
+/**
+ * A variant is ineligible for primary when the caller excluded its mint or it
+ * carries a trade-restricting advisory (`compromised` / `blocked`).
+ */
+export function isPrimaryEligibleVariant(variant: AssetVariant, excludeMints?: ReadonlySet<string>): boolean {
+    if (excludeMints?.has(variant.mint)) return false;
+    return !isTradeRestrictedAdvisory(variant.advisory);
+}
+
 export function pickPrimaryVariantWithRanking(params: {
     asset: CanonicalAsset;
     mintRank: ReadonlyMap<string, number>;
     marketByMint?: ReadonlyMap<string, VariantMarketRankingSnapshot | null | undefined>;
     fillQualityByMint?: ReadonlyMap<string, VariantFillQualityRankingSnapshot | null | undefined>;
+    /**
+     * Mints that must not become primary (e.g. advisory-flagged mints known to
+     * the caller but not annotated on the variant objects). Variants whose own
+     * `advisory` is trade-restricting are excluded regardless.
+     */
+    excludeMints?: ReadonlySet<string>;
     options?: PrimaryVariantRankingOptions;
 }): PrimaryVariantSelectionResult {
     if (params.asset.variants.length === 0) return { variant: null, reason: null };
 
-    const spotLikeVariants = params.asset.variants.filter(v => isSpotLikeVariantKind(v.kind));
-    const baseCandidates = spotLikeVariants.length > 0 ? spotLikeVariants : params.asset.variants;
+    // Advisory gate first: a flagged variant never wins primary while an
+    // unflagged sibling exists. If every variant is flagged, fall back to the
+    // full pool — the asset still needs a primary so its page can render the
+    // warning (callers see the advisory on the returned variant).
+    const eligibleVariants = params.asset.variants.filter(v => isPrimaryEligibleVariant(v, params.excludeMints));
+    const advisoryFiltered = eligibleVariants.length > 0 && eligibleVariants.length !== params.asset.variants.length;
+    const pool = eligibleVariants.length > 0 ? eligibleVariants : params.asset.variants;
+
+    const spotLikeVariants = pool.filter(v => isSpotLikeVariantKind(v.kind));
+    const baseCandidates = spotLikeVariants.length > 0 ? spotLikeVariants : pool;
     const candidates = filterPrimaryCandidatesByActivity({
         candidates: baseCandidates,
         marketByMint: params.marketByMint,
         fillQualityByMint: params.fillQualityByMint,
+        missingActivity: params.options?.missingActivity ?? 'pass',
     });
-    if (candidates.length === 1) return { variant: candidates[0]!, reason: 'only_candidate' };
+    if (candidates.length === 1) {
+        return { variant: candidates[0]!, reason: advisoryFiltered ? 'advisory_filter' : 'only_candidate' };
+    }
 
     const nowSeconds = params.options?.nowSeconds ?? Math.floor(Date.now() / 1000);
     const lexicalTieBreak = params.options?.lexicalTieBreak ?? false;
     const strategy = params.options?.strategy ?? 'liquidity';
     let best = candidates[0]!;
-    let reason: PrimaryVariantSelectionReason =
-        candidates.length !== baseCandidates.length ? 'activity_filter' : 'first_candidate';
+    let reason: PrimaryVariantSelectionReason = advisoryFiltered
+        ? 'advisory_filter'
+        : candidates.length !== baseCandidates.length
+          ? 'activity_filter'
+          : 'first_candidate';
 
     for (let i = 1; i < candidates.length; i++) {
         const next = candidates[i]!;
@@ -321,6 +364,7 @@ export function rankVariantsWithReasons(params: {
         candidates: baseCandidates,
         marketByMint: params.marketByMint,
         fillQualityByMint: params.fillQualityByMint,
+        missingActivity: params.options?.missingActivity ?? 'pass',
     });
 
     const nowSeconds = params.options?.nowSeconds ?? Math.floor(Date.now() / 1000);
@@ -436,6 +480,7 @@ function filterPrimaryCandidatesByActivity(params: {
     candidates: AssetVariant[];
     marketByMint?: ReadonlyMap<string, VariantMarketRankingSnapshot | null | undefined>;
     fillQualityByMint?: ReadonlyMap<string, VariantFillQualityRankingSnapshot | null | undefined>;
+    missingActivity: 'pass' | 'fail';
 }): AssetVariant[] {
     if (params.candidates.length <= 1) return params.candidates;
 
@@ -444,7 +489,7 @@ function filterPrimaryCandidatesByActivity(params: {
         activity: getActivitySnapshot(variant.mint, params.marketByMint, params.fillQualityByMint),
     }));
 
-    const minimumFiltered = withActivity.filter(row => passesMinimumActivityGate(row.activity));
+    const minimumFiltered = withActivity.filter(row => passesMinimumActivityGate(row.activity, params.missingActivity));
     const afterMinimum = minimumFiltered.length > 0 ? minimumFiltered : withActivity;
     const outlierMints = new Set<string>([
         ...computeRobustActivityOutliers(afterMinimum, 'volume24hUSD'),
@@ -469,10 +514,29 @@ function getActivitySnapshot(
     };
 }
 
-function passesMinimumActivityGate(activity: { volume24hUSD: number | null; trade24h: number | null }): boolean {
+function passesMinimumActivityGate(
+    activity: { volume24hUSD: number | null; trade24h: number | null },
+    missingActivity: 'pass' | 'fail',
+): boolean {
+    if (missingActivity === 'fail' && activity.volume24hUSD === null && activity.trade24h === null) return false;
     if (activity.volume24hUSD !== null && activity.volume24hUSD < MIN_ACTIVITY_VOLUME_24H_USD) return false;
     if (activity.trade24h !== null && activity.trade24h < MIN_ACTIVITY_TRADES_24H) return false;
     return true;
+}
+
+/**
+ * True when a market snapshot shows real trading: both 24h volume and trade
+ * count are known and clear the same minimums the activity gate uses.
+ */
+export function hasPrimaryActivity(market: VariantMarketRankingSnapshot | null | undefined): boolean {
+    const volume24hUSD = finiteNonNegativeOrNull(market?.volume24hUSD);
+    const trade24h = finiteNonNegativeOrNull(market?.trade24h);
+    return (
+        volume24hUSD !== null &&
+        trade24h !== null &&
+        volume24hUSD >= MIN_ACTIVITY_VOLUME_24H_USD &&
+        trade24h >= MIN_ACTIVITY_TRADES_24H
+    );
 }
 
 function computeRobustActivityOutliers(

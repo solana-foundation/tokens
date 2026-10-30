@@ -53,12 +53,24 @@ export { searchPrefetchForApi, type SearchPrefetchArgs, type SearchPrefetchResul
 
 export {
     authenticateApiKey,
+    authenticateAndEnforce,
+    limitsEnforce,
     logApiRequest,
+    syncUsageAggregates,
+    type AuthenticateAndEnforceArgs,
+    type AuthenticateAndEnforceResult,
     type AuthenticateApiKeyResult,
+    type LimitsEnforceArgs,
+    type LimitsEnforceResult,
     type LogApiRequestArgs,
+    type UsageAggregateBucket,
 } from './platformAuth';
 
 export { listDeletedRefs, type ListDeletedRefsArgs, type ListDeletedRefsResult } from './assetDeletionTombstones';
+
+export { listAssetIdRenames, type AssetIdRename, type ListAssetIdRenamesResult } from './assetIdRenames';
+
+export { assetAdvisoriesList, type AssetAdvisoriesListResult, type AssetAdvisoryRow } from './assetAdvisories';
 
 export {
     listActive as sanctumListActive,
@@ -68,6 +80,26 @@ export {
     type ResolveRefArgs as SanctumResolveRefArgs,
     type ResolveRefResult as SanctumResolveRefResult,
 } from './sanctumLsts';
+
+export {
+    launchpadApprovedMints,
+    launchpadListByQuoteMints,
+    type ApprovedMintsArgs,
+    type ApprovedMintsResult,
+    type LaunchpadTokenResult,
+    type ListByQuoteMintsArgs as LaunchpadListByQuoteMintsArgs,
+    type ListByQuoteMintsResult as LaunchpadListByQuoteMintsResult,
+} from './launchpadReads';
+
+export {
+    solanaDataAssetsGetByMint,
+    solanaDataAssetsList,
+    type SolanaDataAssetDetailResult,
+    type SolanaDataAssetResult,
+    type SolanaDataAssetsGetByMintArgs,
+    type SolanaDataAssetsListArgs,
+    type SolanaDataAssetsListResult,
+} from './solanaDataReads';
 
 export {
     getLatestByAssetId as assetMarketsGetLatestByAssetId,
@@ -157,6 +189,16 @@ export {
 } from './liveQuotes';
 
 export {
+    stablecoinHealthGetByMints,
+    type PegHealthRead,
+    type StablecoinHealthEntry,
+    type StablecoinHealthGetByMintsArgs,
+    type StablecoinHealthGetByMintsResult,
+    type StructuralHealthCategoryRead,
+    type StructuralHealthRead,
+} from './stablecoinHealthReads';
+
+export {
     assetCollectionsGetMembers,
     type AssetCollectionsGetMembersArgs,
     type AssetCollectionsGetMembersResult,
@@ -203,6 +245,7 @@ export {
 
 export {
     getCoinById as coingeckoGetCoinById,
+    getCoinBySolanaMint as coingeckoGetCoinBySolanaMint,
     getPriceLatestByCoinId as coingeckoGetPriceLatestByCoinId,
     getPriceLatestByCoinIds as coingeckoGetPriceLatestByCoinIds,
     getTickersLatestByCoinId as coingeckoGetTickersLatestByCoinId,
@@ -210,6 +253,8 @@ export {
     searchCoins as coingeckoSearchCoins,
     type GetCoinByIdArgs as CoingeckoGetCoinByIdArgs,
     type GetCoinByIdResult as CoingeckoGetCoinByIdResult,
+    type GetCoinBySolanaMintArgs as CoingeckoGetCoinBySolanaMintArgs,
+    type GetCoinBySolanaMintResult as CoingeckoGetCoinBySolanaMintResult,
     type GetPriceLatestByCoinIdArgs as CoingeckoGetPriceLatestByCoinIdArgs,
     type GetPriceLatestByCoinIdResult as CoingeckoGetPriceLatestByCoinIdResult,
     type GetPriceLatestByCoinIdsArgs as CoingeckoGetPriceLatestByCoinIdsArgs,
@@ -249,3 +294,34 @@ export {
     type StockOhlcvListArgs,
     type StockOhlcvListResult,
 } from './ohlcvReads';
+
+export {
+    v2AssetsChains,
+    v2AssetsCuratedPrefetch,
+    v2AssetsGetDetail,
+    v2AssetsGetMarketsByKeys,
+    v2AssetsGetVariant,
+    v2AssetsListVariantsByAssetIds,
+    type V2AssetDetailResult,
+    type V2AssetsCuratedPrefetchArgs,
+    type V2AssetsGetDetailArgs,
+    type V2AssetsGetMarketsByKeysArgs,
+    type V2AssetsGetVariantArgs,
+    type V2AssetsListVariantsByAssetIdsArgs,
+    type V2ChainId,
+    type V2ChainRollupResult,
+    type V2ChainsResult,
+    type V2CuratedPrefetchResult,
+    type V2MarketResult,
+    type V2MarketsByKeysEntry,
+    type V2VariantLookupResult,
+    type V2VariantResult,
+    type V2VariantsByAssetIdsEntry,
+} from './v2AssetsReads';
+export {
+    assetRiskGetLatestByMints,
+    type AssetRiskDoc,
+    type AssetSecurityDoc,
+    type AssetRiskGetLatestByMintsArgs,
+    type AssetRiskGetLatestByMintsResult,
+} from './assetRiskReads';

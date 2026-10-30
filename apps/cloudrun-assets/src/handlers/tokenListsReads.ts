@@ -1,4 +1,5 @@
 import { InvalidArgsError } from './assets';
+import { resolveLogoUri } from './logoUrl';
 
 /**
  * Reads for community token lists ("lists as plugins"): project-owned,
@@ -40,6 +41,7 @@ export interface TokenListMemberRow {
     symbol: string | null;
     name: string | null;
     logo_uri: string | null;
+    logo_cdn_url?: string | null;
     decimals: number | null;
     /** An active, non-tombstoned registry variant exists for this mint. */
     verified: boolean;
@@ -232,7 +234,7 @@ export async function getMembers(repo: TokenListsReadsRepo, args: unknown): Prom
         addedAt: Number(row.added_at),
         symbol: row.symbol,
         name: row.name,
-        logoUri: row.logo_uri,
+        logoUri: resolveLogoUri(row),
         decimals: row.decimals,
         verified: row.verified === true,
     }));

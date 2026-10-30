@@ -52,6 +52,10 @@ export interface CoingeckoPriceLatestRow {
     price_change_24h_percent: number | null;
     provider_last_updated_at: number | null;
     last_fetched_at: number;
+    circulating_supply?: number | null;
+    total_supply?: number | null;
+    max_supply?: number | null;
+    fdv_usd?: number | null;
 }
 
 export interface CoingeckoTickersLatestRow {
@@ -64,6 +68,8 @@ export interface CoingeckoTickersLatestRow {
 
 export interface CoingeckoReadsRepo {
     findCoinByCoinId(coinId: string): Promise<CoingeckoCoinRow | null>;
+    /** Catalog row whose CoinGecko `platforms.solana` contract is exactly `mint` (base58, case-sensitive). */
+    findCoinBySolanaMint(mint: string): Promise<CoingeckoCoinRow | null>;
     searchCoinsById(query: string, limit: number): Promise<CoingeckoCoinSearchRow[]>;
     searchCoinsBySymbol(query: string, limit: number): Promise<CoingeckoCoinSearchRow[]>;
     searchCoinsByName(query: string, limit: number): Promise<CoingeckoCoinSearchRow[]>;
@@ -111,6 +117,7 @@ export interface CoingeckoCoinDoc {
         total_volume?: Record<string, number | undefined>;
         circulating_supply?: number;
         total_supply?: number;
+        max_supply?: number | null;
         price_change_percentage_24h?: number;
         ath?: Record<string, number | undefined>;
         ath_date?: Record<string, string | undefined>;
@@ -148,6 +155,11 @@ export interface CoingeckoPriceSnapshot {
     priceChange24hPercent: number | null;
     providerLastUpdatedAt: number | null;
     lastFetchedAt: number;
+    /** Canonical (cross-chain) supply from CoinGecko; `null` when unknown or, for `maxSupply`, uncapped. */
+    circulatingSupply: number | null;
+    totalSupply: number | null;
+    maxSupply: number | null;
+    fdvUsd: number | null;
 }
 
 export interface CoingeckoPriceBatchEntry {
@@ -248,6 +260,10 @@ function priceRowToSnapshot(row: CoingeckoPriceLatestRow): CoingeckoPriceSnapsho
         priceChange24hPercent: row.price_change_24h_percent,
         providerLastUpdatedAt: row.provider_last_updated_at,
         lastFetchedAt: row.last_fetched_at,
+        circulatingSupply: row.circulating_supply ?? null,
+        totalSupply: row.total_supply ?? null,
+        maxSupply: row.max_supply ?? null,
+        fdvUsd: row.fdv_usd ?? null,
     };
 }
 
@@ -271,6 +287,22 @@ export async function getCoinById(
     const id = readString(a, 'id').trim();
     if (!id) return null;
     const row = await repo.findCoinByCoinId(id);
+    if (!row) return null;
+    return coinRowToResult(row);
+}
+
+/**
+ * Resolve a Solana mint to its CoinGecko catalog row. Used by the news feed to
+ * serve coin-specific news for mints that are not registered assets.
+ */
+export async function getCoinBySolanaMint(
+    repo: CoingeckoReadsRepo,
+    args: unknown,
+): Promise<CoingeckoCoinResult | null> {
+    const a = asObject(args);
+    const mint = readString(a, 'mint').trim();
+    if (!mint) return null;
+    const row = await repo.findCoinBySolanaMint(mint);
     if (!row) return null;
     return coinRowToResult(row);
 }

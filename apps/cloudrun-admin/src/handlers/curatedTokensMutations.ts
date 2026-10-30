@@ -11,12 +11,17 @@
  * transaction (postgres-js `sql.begin`).
  */
 
-import type { AssetCategory, StockVariantTier, VariantKind } from '@tokens/asset-registry';
+import type { AssetCategory, AssetIndustry, AssetRegion, StockVariantTier, VariantKind } from '@tokens/asset-registry';
+import type { ChainKind } from '@tokens/asset-registry/chains';
 import { CURATED_LIST_SLUGS, type CuratedListSlug } from '@tokens/asset-registry/curated-lists';
 
 import { InvalidArgsError } from './errors';
 import {
     ASSET_CATEGORY_VALUES,
+    ASSET_INDUSTRY_VALUES,
+    ASSET_REGION_VALUES,
+    ASSET_ID_FORMAT_MESSAGE,
+    ASSET_ID_PATTERN,
     CURATED_CATEGORY_SLUGS,
     STOCK_VARIANT_TIER_VALUES,
     TRUST_TIER_VALUES,
@@ -31,18 +36,22 @@ import {
     optionalNullableString,
     optionalString,
     optionalStringArray,
+    parseVariantRef,
     requireEnum,
     requireString,
     requireStringArray,
     uniqueStrings,
     type CuratedCategorySlug,
     type StoredTrustTier,
+    type VariantRef,
 } from './shared';
 import { requireAdmin, type AdminAllowlist } from '../adminAuth';
 import type { CallerIdentity } from '../server';
 
 /** Alias priorities per kind (mirrors Convex `replaceAliasesForKind*` call sites). */
 export const ALIAS_PRIORITIES = {
+    /** The asset's own id; also the "renamed from" marker after a rename (see `renameAssetId`). */
+    assetId: 1000,
     name: 900,
     symbol: 800,
     coingeckoId: 700,
@@ -61,6 +70,9 @@ export interface CreateCanonicalAssetWrite {
     coingeckoId: string | null;
     description: string | null;
     imageUrl: string | null;
+    /** Admin-curated segmentation tags (migration 0032). */
+    region: AssetRegion | null;
+    industry: AssetIndustry | null;
     /** Unique, trimmed custom aliases (priority 500). */
     aliases: string[];
     collections: CuratedCategorySlug[];
@@ -69,6 +81,8 @@ export interface CreateCanonicalAssetWrite {
 
 export interface UpdateCanonicalAssetWrite {
     assetId: string;
+    /** Rename target; only set when it differs from `assetId` (already validated). */
+    newAssetId?: string;
     category?: AssetCategory;
     /** undefined = unchanged; null = clear; string = set (already normalized). */
     name?: string | null;
@@ -77,6 +91,9 @@ export interface UpdateCanonicalAssetWrite {
     description?: string | null;
     imageUrl?: string | null;
     clearImage: boolean;
+    /** undefined = unchanged; null = clear; slug = set. */
+    region?: AssetRegion | null;
+    industry?: AssetIndustry | null;
     aliases?: string[];
     collections?: CuratedCategorySlug[];
     isActive?: boolean;
@@ -102,8 +119,24 @@ export interface CreateVariantWrite {
     nowMs: number;
 }
 
-export interface UpdateVariantWrite {
+/**
+ * Which row a variant mutation targets. Solana rows live in v1
+ * `asset_variants` (keyed by mint; every write is mirrored into v2 in the
+ * same transaction). Other chains are v2-native rows keyed by
+ * (chain, address, asset_id); editing one adopts it (`origin = 'admin'`) so
+ * the daily CoinGecko derivation stops overwriting it.
+ */
+export interface VariantWriteRef {
+    chain: ChainKind;
+    /** Normalized address (base58 mint on Solana, lowercase 0x on EVM). */
+    address: string;
+    /** Owning asset; required for non-Solana rows (part of the v2 primary key). */
+    assetId?: string;
+    /** Same value as `address`; kept for the v1 tables and legacy callers. */
     mint: string;
+}
+
+export interface UpdateVariantWrite extends VariantWriteRef {
     variantId?: string;
     kind?: VariantKind;
     trustTier?: StoredTrustTier;
@@ -143,13 +176,26 @@ export interface UpdateCollectionMetaWrite {
 
 export interface AdminMutationsRepo {
     createCanonicalAsset(args: CreateCanonicalAssetWrite): Promise<'created' | 'exists'>;
-    updateCanonicalAsset(args: UpdateCanonicalAssetWrite): Promise<'updated' | 'not_found'>;
+    /**
+     * `asset_id_exists`: the rename target is already an asset.
+     * `asset_id_reserved`: the rename target is another asset's former id.
+     * `asset_id_aliased`: the rename target is another asset's name, symbol,
+     * coingecko id or custom alias.
+     * `asset_id_deleted`: the rename target belongs to a hard-deleted asset.
+     * In every case nothing is written.
+     */
+    updateCanonicalAsset(
+        args: UpdateCanonicalAssetWrite,
+    ): Promise<
+        'updated' | 'not_found' | 'asset_id_exists' | 'asset_id_reserved' | 'asset_id_aliased' | 'asset_id_deleted'
+    >;
     deleteCanonicalAsset(args: { assetId: string }): Promise<'deleted' | 'not_found' | 'has_variants'>;
     createVariant(args: CreateVariantWrite): Promise<CreateVariantOutcome>;
     updateVariant(args: UpdateVariantWrite): Promise<'updated' | 'not_found' | 'variant_id_collision'>;
-    deleteVariant(args: { mint: string }): Promise<'deleted' | 'not_found'>;
-    deactivateVariant(args: { mint: string; isActive: boolean; nowMs: number }): Promise<'updated' | 'not_found'>;
-    moveVariantToCanonical(args: { mint: string; toAssetId: string; nowMs: number }): Promise<MoveVariantOutcome>;
+    deleteVariant(args: VariantWriteRef): Promise<'deleted' | 'not_found'>;
+    deactivateVariant(args: VariantWriteRef & { isActive: boolean; nowMs: number }): Promise<'updated' | 'not_found'>;
+    /** `assetId` on the ref is the CURRENT owner (required for non-Solana rows); `toAssetId` is the destination. */
+    moveVariantToCanonical(args: VariantWriteRef & { toAssetId: string; nowMs: number }): Promise<MoveVariantOutcome>;
     /** Returns true when a membership row was deleted. */
     removeFromCategory(args: { slug: CuratedCategorySlug; assetId: string }): Promise<boolean>;
     updateCollectionMeta(args: UpdateCollectionMetaWrite): Promise<void>;
@@ -165,6 +211,21 @@ function nowMs(deps: AdminMutationsDeps): number {
     return deps.now ? deps.now() : Date.now();
 }
 
+function toWriteRef(ref: VariantRef): VariantWriteRef {
+    return { chain: ref.chain, address: ref.address, mint: ref.address, ...(ref.assetId ? { assetId: ref.assetId } : {}) };
+}
+
+/** Result fields every variant mutation echoes back (legacy `mint` = `address`). */
+interface VariantRefResult {
+    chain: ChainKind;
+    address: string;
+    mint: string;
+}
+
+function refResult(ref: VariantRef): VariantRefResult {
+    return { chain: ref.chain, address: ref.address, mint: ref.address };
+}
+
 /* ------------------------------------------------------------------------- *
  * createCanonicalAsset
  * ------------------------------------------------------------------------- */
@@ -178,6 +239,7 @@ export async function createCanonicalAsset(
     const obj = asArgsObject(args);
     const assetId = requireString(obj, 'assetId').trim();
     if (!assetId) throw new InvalidArgsError('assetId is required');
+    if (!ASSET_ID_PATTERN.test(assetId)) throw new InvalidArgsError(ASSET_ID_FORMAT_MESSAGE);
     const category = requireEnum(obj, 'category', ASSET_CATEGORY_VALUES);
     const aliases = optionalStringArray(obj, 'aliases') ?? [];
     const collections = optionalCuratedSlugArray(obj, 'collections') ?? [];
@@ -190,6 +252,8 @@ export async function createCanonicalAsset(
         coingeckoId: normalizeOptionalText(optionalNullableString(obj, 'coingeckoId')),
         description: normalizeOptionalText(optionalNullableString(obj, 'description')),
         imageUrl: normalizeOptionalText(optionalNullableString(obj, 'imageUrl')),
+        region: optionalNullableEnum(obj, 'region', ASSET_REGION_VALUES) ?? null,
+        industry: optionalNullableEnum(obj, 'industry', ASSET_INDUSTRY_VALUES) ?? null,
         aliases: uniqueStrings(aliases),
         collections,
         nowMs: nowMs(deps),
@@ -212,6 +276,18 @@ export async function updateCanonicalAsset(
     const assetId = requireString(obj, 'assetId').trim();
     if (!assetId) throw new InvalidArgsError('assetId is required');
 
+    // Rename: only the NEW id is format-checked (legacy ids may not conform).
+    let newAssetId: string | undefined;
+    const rawNewAssetId = optionalString(obj, 'newAssetId');
+    if (rawNewAssetId !== undefined) {
+        const trimmed = rawNewAssetId.trim();
+        if (!trimmed) throw new InvalidArgsError('newAssetId must not be empty');
+        if (trimmed !== assetId) {
+            if (!ASSET_ID_PATTERN.test(trimmed)) throw new InvalidArgsError(ASSET_ID_FORMAT_MESSAGE);
+            newAssetId = trimmed;
+        }
+    }
+
     const clearImage = optionalBoolean(obj, 'clearImage') ?? false;
     const normalizeTriState = (key: string): string | null | undefined => {
         const value = optionalNullableString(obj, key);
@@ -224,12 +300,15 @@ export async function updateCanonicalAsset(
     const coingeckoId = normalizeTriState('coingeckoId');
     const description = normalizeTriState('description');
     const imageUrl = normalizeTriState('imageUrl');
+    const region = optionalNullableEnum(obj, 'region', ASSET_REGION_VALUES);
+    const industry = optionalNullableEnum(obj, 'industry', ASSET_INDUSTRY_VALUES);
     const aliases = optionalStringArray(obj, 'aliases');
     const collections = optionalCuratedSlugArray(obj, 'collections');
     const isActive = optionalBoolean(obj, 'isActive');
 
     const outcome = await deps.repo.updateCanonicalAsset({
         assetId,
+        ...(newAssetId !== undefined ? { newAssetId } : {}),
         ...(category !== undefined ? { category } : {}),
         ...(name !== undefined ? { name } : {}),
         ...(symbol !== undefined ? { symbol } : {}),
@@ -237,13 +316,25 @@ export async function updateCanonicalAsset(
         ...(description !== undefined ? { description } : {}),
         ...(imageUrl !== undefined ? { imageUrl } : {}),
         clearImage,
+        ...(region !== undefined ? { region } : {}),
+        ...(industry !== undefined ? { industry } : {}),
         ...(aliases !== undefined ? { aliases: uniqueStrings(aliases) } : {}),
         ...(collections !== undefined ? { collections } : {}),
         ...(isActive !== undefined ? { isActive } : {}),
         nowMs: nowMs(deps),
     });
     if (outcome === 'not_found') throw new InvalidArgsError('Canonical asset not found');
-    return { assetId, updated: true };
+    if (outcome === 'asset_id_exists') throw new InvalidArgsError('An asset with that id already exists');
+    if (outcome === 'asset_id_reserved') {
+        throw new InvalidArgsError('That id is the former id of another asset and still resolves to it');
+    }
+    if (outcome === 'asset_id_aliased') {
+        throw new InvalidArgsError('That id is already a name, symbol or alias of another asset and resolves to it');
+    }
+    if (outcome === 'asset_id_deleted') {
+        throw new InvalidArgsError('That id belongs to a hard-deleted asset and cannot be reused');
+    }
+    return { assetId: newAssetId ?? assetId, updated: true };
 }
 
 /* ------------------------------------------------------------------------- *
@@ -334,11 +425,10 @@ export async function updateVariant(
     deps: AdminMutationsDeps,
     args: unknown,
     identity: CallerIdentity | null,
-): Promise<{ mint: string; updated: boolean }> {
+): Promise<VariantRefResult & { updated: boolean }> {
     requireAdmin(deps.adminAllowlist, identity);
     const obj = asArgsObject(args);
-    const mint = requireString(obj, 'mint').trim();
-    if (!mint) throw new InvalidArgsError('mint is required');
+    const ref = parseVariantRef(obj);
 
     let variantId: string | undefined;
     const rawVariantId = optionalString(obj, 'variantId');
@@ -364,7 +454,7 @@ export async function updateVariant(
     const marketLogoURI = triState('marketLogoURI');
 
     const outcome = await deps.repo.updateVariant({
-        mint,
+        ...toWriteRef(ref),
         ...(variantId !== undefined ? { variantId } : {}),
         ...(kind !== undefined ? { kind } : {}),
         ...(trustTier !== undefined ? { trustTier } : {}),
@@ -384,7 +474,7 @@ export async function updateVariant(
     if (outcome === 'variant_id_collision') {
         throw new InvalidArgsError('variantId already exists for this canonical asset');
     }
-    return { mint, updated: true };
+    return { ...refResult(ref), updated: true };
 }
 
 /* ------------------------------------------------------------------------- *
@@ -395,46 +485,46 @@ export async function deleteVariant(
     deps: AdminMutationsDeps,
     args: unknown,
     identity: CallerIdentity | null,
-): Promise<{ mint: string; deleted: boolean }> {
+): Promise<VariantRefResult & { deleted: boolean }> {
     requireAdmin(deps.adminAllowlist, identity);
     const obj = asArgsObject(args);
-    const mint = requireString(obj, 'mint').trim();
-    if (!mint) throw new InvalidArgsError('mint is required');
+    const ref = parseVariantRef(obj);
 
-    const outcome = await deps.repo.deleteVariant({ mint });
+    const outcome = await deps.repo.deleteVariant(toWriteRef(ref));
     if (outcome === 'not_found') throw new InvalidArgsError('Variant not found');
-    return { mint, deleted: true };
+    return { ...refResult(ref), deleted: true };
 }
 
 export async function deactivateVariant(
     deps: AdminMutationsDeps,
     args: unknown,
     identity: CallerIdentity | null,
-): Promise<{ mint: string; isActive: boolean; updated: boolean }> {
+): Promise<VariantRefResult & { isActive: boolean; updated: boolean }> {
     requireAdmin(deps.adminAllowlist, identity);
     const obj = asArgsObject(args);
-    const mint = requireString(obj, 'mint').trim();
-    if (!mint) throw new InvalidArgsError('mint is required');
+    const ref = parseVariantRef(obj);
     const isActive = optionalBoolean(obj, 'isActive') ?? false;
 
-    const outcome = await deps.repo.deactivateVariant({ mint, isActive, nowMs: nowMs(deps) });
+    const outcome = await deps.repo.deactivateVariant({ ...toWriteRef(ref), isActive, nowMs: nowMs(deps) });
     if (outcome === 'not_found') throw new InvalidArgsError('Variant not found');
-    return { mint, isActive, updated: true };
+    return { ...refResult(ref), isActive, updated: true };
 }
 
 export async function moveVariantToCanonical(
     deps: AdminMutationsDeps,
     args: unknown,
     identity: CallerIdentity | null,
-): Promise<{ mint: string; fromAssetId: string; toAssetId: string; moved: boolean }> {
+): Promise<VariantRefResult & { fromAssetId: string; toAssetId: string; moved: boolean }> {
     requireAdmin(deps.adminAllowlist, identity);
     const obj = asArgsObject(args);
-    const mint = requireString(obj, 'mint').trim();
-    const toAssetId = requireString(obj, 'assetId').trim();
-    if (!mint) throw new InvalidArgsError('mint is required');
+    // Wire shape: `toAssetId` is the destination; legacy callers sent it as
+    // `assetId`. For non-Solana rows the ref's owner travels as `fromAssetId`
+    // (the v2 key includes the asset), so `assetId` can keep its legacy meaning.
+    const toAssetId = (optionalString(obj, 'toAssetId') ?? optionalString(obj, 'assetId') ?? '').trim();
     if (!toAssetId) throw new InvalidArgsError('assetId is required');
+    const ref = parseVariantRef({ ...obj, assetId: obj.fromAssetId });
 
-    const outcome = await deps.repo.moveVariantToCanonical({ mint, toAssetId, nowMs: nowMs(deps) });
+    const outcome = await deps.repo.moveVariantToCanonical({ ...toWriteRef(ref), toAssetId, nowMs: nowMs(deps) });
     if (outcome.status === 'variant_not_found') throw new InvalidArgsError('Variant not found');
     if (outcome.status === 'asset_not_found') {
         throw new InvalidArgsError('Destination canonical asset not found');
@@ -443,9 +533,9 @@ export async function moveVariantToCanonical(
         throw new InvalidArgsError('Destination canonical already has this variantId');
     }
     if (outcome.status === 'noop') {
-        return { mint, fromAssetId: outcome.fromAssetId, toAssetId, moved: false };
+        return { ...refResult(ref), fromAssetId: outcome.fromAssetId, toAssetId, moved: false };
     }
-    return { mint, fromAssetId: outcome.fromAssetId, toAssetId, moved: true };
+    return { ...refResult(ref), fromAssetId: outcome.fromAssetId, toAssetId, moved: true };
 }
 
 /* ------------------------------------------------------------------------- *

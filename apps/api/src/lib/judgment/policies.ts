@@ -8,7 +8,7 @@
 
 import type { ScoreComponents } from './types';
 
-export const POLICY_VERSION = 'v2-policy-2026-07-05.1' as const;
+export const POLICY_VERSION = 'v2-policy-2026-10-26.1' as const;
 
 export const POLICY_IDS = ['strict', 'default', 'degen'] as const;
 export type PolicyId = (typeof POLICY_IDS)[number];
@@ -27,6 +27,14 @@ export interface PolicyDocument {
         minMarketScore: number | null;
         /** Suppress tokens younger than this (days). `null` disables. */
         minAgeDays: number | null;
+        /** Suppress mints with no canonical-registry variant (`verifiedOnly`). */
+        requireRegistry: boolean;
+        /**
+         * Suppress unattested mints whose supply can still be minted or whose
+         * accounts can be frozen. Registry/curated assets are exempt
+         * (stablecoins and tokenized stocks legitimately keep both).
+         */
+        suppressUnsafeAuthorities: boolean;
     };
     /** Relative component weights (normalized at scoring time). */
     weights: ScoreComponents;
@@ -48,6 +56,8 @@ export const POLICIES: Record<PolicyId, PolicyDocument> = {
             suppressImpersonation: true,
             minMarketScore: null,
             minAgeDays: 1,
+            requireRegistry: false,
+            suppressUnsafeAuthorities: true,
         },
         weights: {
             matchQuality: 30,
@@ -67,6 +77,8 @@ export const POLICIES: Record<PolicyId, PolicyDocument> = {
             suppressImpersonation: true,
             minMarketScore: null,
             minAgeDays: null,
+            requireRegistry: false,
+            suppressUnsafeAuthorities: false,
         },
         weights: {
             matchQuality: 35,
@@ -86,6 +98,8 @@ export const POLICIES: Record<PolicyId, PolicyDocument> = {
             suppressImpersonation: false,
             minMarketScore: null,
             minAgeDays: null,
+            requireRegistry: false,
+            suppressUnsafeAuthorities: false,
         },
         weights: {
             matchQuality: 40,
@@ -98,6 +112,42 @@ export const POLICIES: Record<PolicyId, PolicyDocument> = {
         refusal: { minScore: 45, minSeparation: 8 },
     },
 };
+
+/** Per-request gate overrides layered on a preset (weights stay internal). */
+export type GateOverrides = Partial<PolicyDocument['gates']>;
+
+export const GATE_OVERRIDE_KEYS = [
+    'minLiquidityUsd',
+    'minAgeDays',
+    'minMarketScore',
+    'requireMarketData',
+    'suppressImpersonation',
+    'requireRegistry',
+    'suppressUnsafeAuthorities',
+] as const satisfies readonly (keyof PolicyDocument['gates'])[];
+export type GateOverrideKey = (typeof GATE_OVERRIDE_KEYS)[number];
+
+/**
+ * Layer request-supplied gate overrides onto a preset. Only keys explicitly
+ * present (not `undefined`) override; `null` is a real value ("disable this
+ * gate"). Returns the effective policy and the keys that were applied so the
+ * response can say exactly what was tuned.
+ */
+export function applyGateOverrides(
+    base: PolicyDocument,
+    overrides: GateOverrides,
+): { policy: PolicyDocument; overrides: GateOverrideKey[] } {
+    const applied: GateOverrideKey[] = [];
+    const gates = { ...base.gates };
+    for (const key of GATE_OVERRIDE_KEYS) {
+        if (!(key in overrides) || overrides[key] === undefined) continue;
+        if (Object.is(overrides[key], gates[key])) continue;
+        (gates as Record<GateOverrideKey, unknown>)[key] = overrides[key];
+        applied.push(key);
+    }
+    if (applied.length === 0) return { policy: base, overrides: [] };
+    return { policy: { ...base, gates }, overrides: applied };
+}
 
 export function parsePolicyId(raw: string | null): PolicyId | null {
     if (raw === null || raw.trim() === '') return 'default';

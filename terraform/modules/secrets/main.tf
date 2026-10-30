@@ -42,6 +42,48 @@ resource "google_secret_manager_secret_iam_member" "cloudrun_auth_token_accessor
   depends_on = [google_project_service.secretmanager]
 }
 
+# HMAC key for the signed `x-tokens-identity` token apps/app sends to the usage
+# service (see docs/security/threat-model-api-keys.md). Generated here like the
+# bearer token; the value must also be set on the Vercel app project
+# (Production = prd, Preview = stg) as TOKENS_IDENTITY_SIGNING_SECRET.
+resource "random_password" "identity_signing_secret" {
+  length  = 64
+  special = false
+
+  keepers = {
+    env = var.env
+  }
+}
+
+resource "google_secret_manager_secret" "identity_signing_secret" {
+  project   = var.project_id
+  secret_id = "tokens-identity-signing-secret-${var.env}"
+
+  replication {
+    user_managed {
+      replicas {
+        location = var.region
+      }
+    }
+  }
+
+  depends_on = [google_project_service.secretmanager]
+}
+
+resource "google_secret_manager_secret_version" "identity_signing_secret" {
+  secret      = google_secret_manager_secret.identity_signing_secret.id
+  secret_data = random_password.identity_signing_secret.result
+}
+
+resource "google_secret_manager_secret_iam_member" "identity_signing_secret_accessor" {
+  project   = var.project_id
+  secret_id = google_secret_manager_secret.identity_signing_secret.secret_id
+  role      = "roles/secretmanager.secretAccessor"
+  member    = "serviceAccount:${var.runtime_sa_email}"
+
+  depends_on = [google_project_service.secretmanager]
+}
+
 # API key reveal-encryption secret. NO version is managed here: the value MUST
 # be byte-identical to the TOKENS_API_KEY_ENCRYPTION_SECRET Convex used (keys
 # encrypted before the migration must still decrypt). Seed it out-of-band:
@@ -72,15 +114,17 @@ resource "google_secret_manager_secret_iam_member" "api_key_encryption_secret_ac
 }
 
 # Observability/webhook ingest secrets for the usage service's /hooks/* routes
-# (Vercel log drain + Clerk webhook → Loki). Versions are seeded out-of-band
-# from Doppler, mirroring the Convex deployment's env:
-#   LOKI_PUSH_URL, LOKI_PUSH_AUTH, VERCEL_DRAIN_SECRET, CLERK_WEBHOOK_SECRET
+# (Vercel log drain + Clerk webhook → Loki, Webacy depeg webhook → jobs worker).
+# Versions are seeded out-of-band from Doppler via scripts/seed-usage-hook-secrets.sh:
+#   LOKI_PUSH_URL, LOKI_PUSH_AUTH, VERCEL_DRAIN_SECRET, CLERK_WEBHOOK_SECRET,
+#   WEBACY_WEBHOOK_SECRET
 resource "google_secret_manager_secret" "usage_hooks" {
   for_each = toset([
     "loki-push-url",
     "loki-push-auth",
     "vercel-drain-secret",
     "clerk-webhook-secret",
+    "webacy-webhook-secret",
   ])
 
   project   = var.project_id
@@ -102,6 +146,68 @@ resource "google_secret_manager_secret_iam_member" "usage_hooks_accessor" {
 
   project   = var.project_id
   secret_id = each.value.secret_id
+  role      = "roles/secretmanager.secretAccessor"
+  member    = "serviceAccount:${var.runtime_sa_email}"
+
+  depends_on = [google_project_service.secretmanager]
+}
+
+# Pinata dedicated-gateway access token for the assets `logo-sync` job
+# (IPFS-hosted token artwork; public gateways 429/403 everyone). NO version is
+# managed here — seed it out-of-band once the gateway exists:
+#   printf '%s' "$PINATA_GATEWAY_TOKEN" \
+#     | gcloud secrets versions add tokens-pinata-gateway-token-<env> --data-file=-
+# The job runs without it (skips the Pinata source), so the scheduler entry can
+# go live first. See docs/operations/logo-sync.md.
+resource "google_secret_manager_secret" "pinata_gateway_token" {
+  project   = var.project_id
+  secret_id = "tokens-pinata-gateway-token-${var.env}"
+
+  replication {
+    user_managed {
+      replicas {
+        location = var.region
+      }
+    }
+  }
+
+  depends_on = [google_project_service.secretmanager]
+}
+
+resource "google_secret_manager_secret_iam_member" "pinata_gateway_token_accessor" {
+  project   = var.project_id
+  secret_id = google_secret_manager_secret.pinata_gateway_token.secret_id
+  role      = "roles/secretmanager.secretAccessor"
+  member    = "serviceAccount:${var.runtime_sa_email}"
+
+  depends_on = [google_project_service.secretmanager]
+}
+
+# data.solana.com API key for the assets `sync-solana-data-assets` job (the
+# Solana Foundation data team's Project Canon asset registry, issued by the data
+# team; 403 without it). NO version is managed here — seed it out-of-band:
+#   printf '%s' "$SOLANA_DATA_API_KEY" \
+#     | gcloud secrets versions add tokens-solana-data-api-key-<env> --data-file=-
+# Without it the job group answers 404 solana_data_jobs_disabled, so the
+# scheduler entry can exist first. See docs/operations/solana-data-registry.md.
+resource "google_secret_manager_secret" "solana_data_api_key" {
+  project   = var.project_id
+  secret_id = "tokens-solana-data-api-key-${var.env}"
+
+  replication {
+    user_managed {
+      replicas {
+        location = var.region
+      }
+    }
+  }
+
+  depends_on = [google_project_service.secretmanager]
+}
+
+resource "google_secret_manager_secret_iam_member" "solana_data_api_key_accessor" {
+  project   = var.project_id
+  secret_id = google_secret_manager_secret.solana_data_api_key.secret_id
   role      = "roles/secretmanager.secretAccessor"
   member    = "serviceAccount:${var.runtime_sa_email}"
 

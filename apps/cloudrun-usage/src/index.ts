@@ -1,7 +1,8 @@
-import { registerGracefulShutdown, wrapFetchWithShutdownGuard } from '@tokens/cloudrun-shutdown';
+import { bearerTokenCandidates, registerGracefulShutdown, wrapFetchWithShutdownGuard } from '@tokens/cloudrun-shutdown';
 import { getSql, makePostgresPlatformAuthRepo, makePostgresUsageIngestRepo } from './db';
 import { makePostgresDashboardRepo, makePostgresIdentityRepo } from './db/dashboard';
 import { makePostgresUsageDashboardRepo } from './db/usageDashboard';
+import { makeLimitsRedis } from './redis';
 import { createApp } from './server';
 
 const authToken = process.env.TOKENS_CLOUDRUN_AUTH_TOKEN?.trim();
@@ -10,13 +11,43 @@ if (!authToken) {
     process.exit(1);
 }
 
+// Signed x-tokens-identity verification. Mode table (secret = signing secret,
+// flag = TOKENS_IDENTITY_ACCEPT_UNSIGNED):
+//   secret set,   flag off → signed only (target state)
+//   secret set,   flag on  → signed + legacy (rollout window)
+//   secret unset           → legacy only, logged as an error on every boot
+//                            (pre-rollout; the flag is implied so a deploy
+//                            that lands before the secret is wired keeps the
+//                            dashboard working instead of failing to start)
+// Rollout order per env: wire the secret + flag here → set the secret on the
+// dashboard (it signs as soon as it has one) → remove the flag.
+const identitySigningSecret = process.env.TOKENS_IDENTITY_SIGNING_SECRET?.trim();
+const identitySigningSecretPrevious = process.env.TOKENS_IDENTITY_SIGNING_SECRET_PREVIOUS?.trim();
+const acceptUnsignedIdentity = !identitySigningSecret || process.env.TOKENS_IDENTITY_ACCEPT_UNSIGNED?.trim() === 'true';
+if (!identitySigningSecret) {
+    console.error(
+        'TOKENS_IDENTITY_SIGNING_SECRET is not set — accepting legacy unsigned identity headers only; wire the secret (see docs/security/secret-rotation.md)',
+    );
+} else if (acceptUnsignedIdentity) {
+    console.warn('TOKENS_IDENTITY_ACCEPT_UNSIGNED is on — legacy unsigned identity headers are still accepted');
+}
+
 const apiKeyEncryptionSecret = process.env.TOKENS_API_KEY_ENCRYPTION_SECRET?.trim();
+const apiKeyEncryptionSecretPrevious = process.env.TOKENS_API_KEY_ENCRYPTION_SECRET_PREVIOUS?.trim();
 if (!apiKeyEncryptionSecret) {
     console.warn('TOKENS_API_KEY_ENCRYPTION_SECRET is not set — API key reset/reveal will be unavailable');
+}
+if (apiKeyEncryptionSecretPrevious || identitySigningSecretPrevious || process.env.TOKENS_CLOUDRUN_AUTH_TOKEN_PREVIOUS?.trim()) {
+    console.warn('secret rotation in progress — *_PREVIOUS values are accepted; remove them once the rotation completes');
 }
 
 const port = Number(process.env.PORT) || 8080;
 const sql = getSql();
+const redisHost = process.env.REDIS_HOST?.trim();
+const redisPort = Number(process.env.REDIS_PORT?.trim() || 6379);
+if (!redisHost) {
+    console.warn('REDIS_HOST is not set — limitsEnforce will be unavailable (API falls open)');
+}
 const app = createApp({
     platformAuth: makePostgresPlatformAuthRepo(sql),
     usageIngest: makePostgresUsageIngestRepo(sql),
@@ -24,6 +55,8 @@ const app = createApp({
     usageDashboard: makePostgresUsageDashboardRepo(sql),
     identity: makePostgresIdentityRepo(sql),
     ...(apiKeyEncryptionSecret ? { apiKeyEncryptionSecret } : {}),
+    ...(apiKeyEncryptionSecretPrevious ? { apiKeyEncryptionSecretPrevious } : {}),
+    ...(redisHost ? { limitsRedis: makeLimitsRedis({ host: redisHost, port: redisPort }) } : {}),
     hooks: {
         ...(process.env.LOKI_PUSH_URL?.trim() ? { lokiPushUrl: process.env.LOKI_PUSH_URL.trim() } : {}),
         ...(process.env.LOKI_PUSH_AUTH?.trim() ? { lokiPushAuth: process.env.LOKI_PUSH_AUTH.trim() } : {}),
@@ -38,7 +71,19 @@ const app = createApp({
             : {}),
         ...(process.env.TOKENS_ENV?.trim() ? { envLabel: process.env.TOKENS_ENV.trim() } : {}),
     },
-    authToken,
+    // Webacy depeg webhooks: verified + deduped here, then forwarded to the
+    // assets jobs worker (see hooks.webacy.ts). Both values are deploy-time env;
+    // the route still mounts without them so misconfiguration surfaces as
+    // 500 / forward_failed instead of a 404 that Webacy would silently retry.
+    webacyHooks: {
+        sql,
+        webhookSecret: process.env.WEBACY_WEBHOOK_SECRET?.trim() || undefined,
+        assetsJobsUrl: process.env.TOKENS_CLOUDRUN_ASSETS_JOBS_URL?.trim() || undefined,
+    },
+    authToken: bearerTokenCandidates(authToken, process.env.TOKENS_CLOUDRUN_AUTH_TOKEN_PREVIOUS),
+    ...(identitySigningSecret ? { identitySigningSecret } : {}),
+    ...(identitySigningSecretPrevious ? { identitySigningSecretPrevious } : {}),
+    ...(acceptUnsignedIdentity ? { acceptUnsignedIdentity } : {}),
 });
 
 registerGracefulShutdown({ sql, serviceName: 'cloudrun-usage' });

@@ -1,7 +1,7 @@
 import type { ReactNode } from 'react';
 import { ArrowLeftRight, Info } from 'lucide-react';
-import { formatPrice } from '@/lib/format';
-import type { GlobalTokenStats } from '@/lib/coingecko';
+import { formatPrice, toEpochMs } from '@/lib/format';
+import type { V2AssetStats } from '@/lib/api-v2-types';
 import { Tooltip } from '@solana/design-system/tooltip';
 import { formatNumber, formatPercent, formatUsd } from '@/app/token/[address]/lib/format';
 
@@ -25,8 +25,12 @@ interface AssetMarketSnapshot {
     totalSupply?: number | null;
     circulatingSupply?: number | null;
     priceChange24hPercent: number | null;
+    /** Unix ms (the v2 `*At` convention). */
     lastTradeAt?: number | null;
+    /** Provider timestamp; seconds or ms, normalised on render. */
     asOf?: number | null;
+    /** Canonical view: where each headline figure came from (`stats.source`). */
+    statsSource?: V2AssetStats['source'];
     /** PreStocks reference data for tokenized pre-IPO exposure. */
     preStocks?: {
         markPriceUsd: number | null;
@@ -37,10 +41,26 @@ interface AssetMarketSnapshot {
     } | null;
 }
 
+/** Figures to show when a variant has no market row at all: its own CoinGecko coin, never the asset's. */
+export interface AssetStatsFallback {
+    price: number | null;
+    marketCap: number | null;
+    fdv: number | null;
+    circulatingSupply: number | null;
+    totalSupply: number | null;
+    priceChange24h: number | null;
+    volume24h: number | null;
+}
+
 interface AssetStatsSectionProps {
     market: AssetMarketSnapshot | null;
-    globalStats: GlobalTokenStats | null;
+    /** Variant view only; applied as a whole when `market` is null, never per field. */
+    globalStats: AssetStatsFallback | null;
     mode?: 'canonical' | 'variant';
+    /** Label of the active variant's chain for the per-variant tooltip copy (default Solana). */
+    chainLabel?: string;
+    /** "Solana", "Solana and Base", … for the aggregate tooltip copy (default Solana). */
+    chainList?: string;
 }
 
 function pickPositive(primary: number | undefined | null, fallback: number | undefined | null): number | null {
@@ -57,10 +77,20 @@ function pickFinite(primary: number | undefined | null, fallback: number | undef
     return b;
 }
 
-export function AssetStatsSection({ market, globalStats, mode = 'variant' }: AssetStatsSectionProps) {
+export function AssetStatsSection({
+    market,
+    globalStats,
+    mode = 'variant',
+    chainLabel = 'Solana',
+    chainList = 'Solana',
+}: AssetStatsSectionProps) {
     const isCanonical = mode === 'canonical';
 
-    const hasSolanaData = Boolean(
+    // Canonical: `market` is the reference-first headline, already complete.
+    // Variant: the variant's own market row, or, when there is none at all, the
+    // variant's own CoinGecko figures as a whole. Never field by field, so a Base
+    // row without a market cap does not show the asset's global cap under its symbol.
+    const hasMarketRow = Boolean(
         pickPositive(market?.price, null) ??
         pickPositive(market?.liquidity, null) ??
         pickPositive(market?.volume24hUSD, null) ??
@@ -69,47 +99,27 @@ export function AssetStatsSection({ market, globalStats, mode = 'variant' }: Ass
         pickPositive(market?.totalSupply, null) ??
         pickPositive(market?.circulatingSupply, null),
     );
+    const fallback = !isCanonical && !hasMarketRow ? globalStats : null;
+    const usesFallback = fallback !== null;
 
-    const marketCap = isCanonical
-        ? pickPositive(market?.marketCap, globalStats?.marketCap)
-        : pickPositive(hasSolanaData ? market?.marketCap : null, globalStats?.marketCap);
-
-    const liquidity = isCanonical
-        ? pickPositive(market?.liquidity, null)
-        : pickPositive(hasSolanaData ? market?.liquidity : null, null);
-
-    const volume24h = isCanonical
-        ? pickPositive(market?.volume24hUSD, globalStats?.volume24h)
-        : pickPositive(hasSolanaData ? market?.volume24hUSD : null, globalStats?.volume24h);
+    const marketCap = pickPositive(usesFallback ? fallback.marketCap : market?.marketCap, null);
+    const liquidity = pickPositive(usesFallback ? null : market?.liquidity, null);
+    const volume24h = pickPositive(usesFallback ? fallback.volume24h : market?.volume24hUSD, null);
     const underlyingVolume24h =
         isCanonical && market?.underlyingVolume24hUSD !== volume24h
             ? pickPositive(market?.underlyingVolume24hUSD, null)
             : null;
-
-    const circulatingSupply = isCanonical
-        ? pickPositive(market?.circulatingSupply, globalStats?.circulatingSupply)
-        : pickPositive(hasSolanaData ? market?.circulatingSupply : null, globalStats?.circulatingSupply);
-
-    const price = isCanonical
-        ? pickPositive(market?.price, globalStats?.price)
-        : pickPositive(hasSolanaData ? market?.price : null, globalStats?.price);
-
-    const priceChange24h = isCanonical
-        ? pickFinite(market?.priceChange24hPercent, globalStats?.priceChange24h)
-        : pickFinite(hasSolanaData ? market?.priceChange24hPercent : null, globalStats?.priceChange24h);
-
-    const fdv = isCanonical
-        ? pickPositive(market?.fdv, globalStats?.fdv)
-        : pickPositive(hasSolanaData ? market?.fdv : null, globalStats?.fdv);
-    const totalSupply = isCanonical
-        ? pickPositive(market?.totalSupply, globalStats?.totalSupply)
-        : pickPositive(hasSolanaData ? market?.totalSupply : null, globalStats?.totalSupply);
+    const circulatingSupply = pickPositive(usesFallback ? fallback.circulatingSupply : market?.circulatingSupply, null);
+    const price = pickPositive(usesFallback ? fallback.price : market?.price, null);
+    const priceChange24h = pickFinite(usesFallback ? fallback.priceChange24h : market?.priceChange24hPercent, null);
+    const fdv = pickPositive(usesFallback ? fallback.fdv : market?.fdv, null);
+    const totalSupply = pickPositive(usesFallback ? fallback.totalSupply : market?.totalSupply, null);
     const volume1h = pickPositive(market?.volume1hUSD, null);
     const trade1h = pickPositive(market?.trade1h, null);
     const trade24h = pickPositive(market?.trade24h, null);
     const uniqueWallet24h = pickPositive(market?.uniqueWallet24h, null);
-    const lastTradeAt = pickPositive(market?.lastTradeAt, null);
-    const asOf = pickPositive(market?.asOf, null);
+    const lastTradeAt = toEpochMs(market?.lastTradeAt);
+    const asOf = toEpochMs(market?.asOf);
     const hasTradeMetrics = Boolean(volume1h ?? trade1h ?? trade24h ?? uniqueWallet24h ?? lastTradeAt ?? asOf);
 
     const preStocks = market?.preStocks ?? null;
@@ -128,34 +138,44 @@ export function AssetStatsSection({ market, globalStats, mode = 'variant' }: Ass
               ? 'positive'
               : 'negative';
 
+    const statsSource: V2AssetStats['source'] = market?.statsSource ?? {};
+    const onChain = (what: string) =>
+        `${what} aggregated across ${chainList} on-chain markets, leaving out stale, dust and outlier rows.`;
+    const fromSource = (what: string, key: keyof V2AssetStats['source'], fallbackCopy: string) => {
+        const kind = statsSource[key];
+        if (kind === 'coingecko') return `${what} from CoinGecko (global, all venues).`;
+        if (kind === 'stock') return `${what} from the stock market reference.`;
+        if (kind === 'onchain') return onChain(what);
+        return fallbackCopy;
+    };
+    const variantCopy = (what: string) =>
+        usesFallback
+            ? `${what} from this token's own CoinGecko listing; no ${chainLabel} market data is available.`
+            : `${what} from ${chainLabel} markets.`;
     const tooltips =
         mode === 'canonical'
             ? {
                   marketCap:
                       market?.marketCapSource === 'company'
                           ? 'Company market cap (stock price × shares outstanding).'
-                          : 'Market cap from aggregated variant data. Falls back to CoinGecko when unavailable.',
-                  liquidity: 'Aggregate liquidity across available Solana variant markets.',
-                  volume24h:
-                      'Aggregate 24h volume across available on-chain variant markets. For crypto and stock assets, supported canonical provider volume appears as a secondary pill.',
-                  price: 'Current price from aggregated variant data. Falls back to CoinGecko when unavailable.',
-                  priceChange24h:
-                      '24h price change from aggregated variant data. Falls back to CoinGecko when unavailable.',
-                  fdv: 'FDV from aggregated variant data. Falls back to CoinGecko when unavailable.',
-                  totalSupply: 'Total supply from aggregated variant data. Falls back to CoinGecko when unavailable.',
-                  supply: 'Circulating supply from aggregated variant data. Falls back to CoinGecko when unavailable.',
+                          : fromSource('Market cap', 'marketCap', onChain('Market cap')),
+                  liquidity: onChain('Liquidity'),
+                  volume24h: `${onChain('24h DEX volume')} For crypto and stock assets, the provider's all-venue volume appears as a secondary pill.`,
+                  price: fromSource('Price', 'price', onChain('Price')),
+                  priceChange24h: fromSource('24h price change', 'priceChange24hPercent', onChain('24h price change')),
+                  fdv: fromSource('FDV', 'fdv', onChain('FDV')),
+                  totalSupply: fromSource('Total supply', 'totalSupply', onChain('Total supply (issued variants only)')),
+                  supply: fromSource('Circulating supply', 'circulatingSupply', onChain('Circulating supply (issued variants only)')),
               }
             : {
-                  marketCap: 'Market cap from Solana markets. Falls back to global data when Solana is unavailable.',
-                  liquidity: 'Liquidity in Solana DEX pools.',
-                  volume24h:
-                      'Volume on Solana DEX pools in the last 24 hours. Falls back to global data when Solana is unavailable.',
-                  price: 'Current price from Solana markets. Falls back to global data when Solana is unavailable.',
-                  priceChange24h:
-                      '24h price change from Solana markets. Falls back to global data when Solana is unavailable.',
-                  fdv: 'Fully diluted valuation from Birdeye. Falls back to global data when Solana is unavailable.',
-                  totalSupply: 'Total supply from Birdeye. Falls back to global data when Solana is unavailable.',
-                  supply: 'Circulating supply from Birdeye. Falls back to global data when Solana is unavailable.',
+                  marketCap: variantCopy('Market cap'),
+                  liquidity: `Liquidity in ${chainLabel} DEX pools.`,
+                  volume24h: usesFallback ? variantCopy('24h volume') : `Volume on ${chainLabel} DEX pools in the last 24 hours.`,
+                  price: variantCopy('Price'),
+                  priceChange24h: variantCopy('24h price change'),
+                  fdv: variantCopy('Fully diluted valuation'),
+                  totalSupply: variantCopy('Total supply'),
+                  supply: variantCopy('Circulating supply'),
               };
 
     return (
@@ -190,7 +210,7 @@ export function AssetStatsSection({ market, globalStats, mode = 'variant' }: Ass
                     label="24H Volume"
                     tooltip={
                         underlyingVolume24h !== null ? (
-                            <CanonicalVolumeTooltipContent />
+                            <CanonicalVolumeTooltipContent chainList={chainList} label={market?.underlyingVolume24hLabel ?? null} />
                         ) : (
                             tooltips.volume24h
                         )
@@ -207,7 +227,7 @@ export function AssetStatsSection({ market, globalStats, mode = 'variant' }: Ass
                     tooltip={
                         premiumToMark !== null ? (
                             <div className="max-w-[260px]">
-                                <p>Token price from Solana markets.</p>
+                                <p>Token price from {chainLabel} markets.</p>
                                 <p className="mt-1 text-white/80">
                                     The chip shows the token&apos;s premium or discount to the PreStocks reference
                                     (mark) price{markPrice !== null ? ` of ${formatPrice(markPrice)}` : ''}.
@@ -225,7 +245,7 @@ export function AssetStatsSection({ market, globalStats, mode = 'variant' }: Ass
                 {showImpliedValuation ? (
                     <StatCard
                         label="Tokenized Float"
-                        tooltip="Value of the issued Solana token float (token price × issued token supply). This is the tokenized float, not the company's valuation."
+                        tooltip={`Value of the issued ${chainLabel} token float (token price × issued token supply). This is the tokenized float, not the company's valuation.`}
                         value={formatUsd(tokenizedFloat)}
                     />
                 ) : (
@@ -238,14 +258,14 @@ export function AssetStatsSection({ market, globalStats, mode = 'variant' }: Ass
                 <div className="grid grid-cols-2 md:grid-cols-4 border-t border-border-light overflow-hidden [&>*]:border-border-light [&>*:nth-child(even)]:border-l md:[&>*:nth-child(n+2)]:border-l max-md:[&>*:nth-child(n+3)]:border-t">
                     <StatCard
                         label="1H Volume"
-                        tooltip="USD volume from direct stable-pair Solana trades in the last hour."
+                        tooltip={`USD volume from direct stable-pair ${chainLabel} trades in the last hour.`}
                         value={formatUsd(volume1h)}
                     />
                     <StatCard
                         label="1H Trades"
                         tooltip={
                             <TradeMetricTooltipContent lastTradeAt={lastTradeAt} asOf={asOf}>
-                                Successful direct stable-pair Solana trades in the last hour.
+                                Successful direct stable-pair {chainLabel} trades in the last hour.
                             </TradeMetricTooltipContent>
                         }
                         value={formatInteger(trade1h)}
@@ -254,14 +274,14 @@ export function AssetStatsSection({ market, globalStats, mode = 'variant' }: Ass
                         label="24H Trades"
                         tooltip={
                             <TradeMetricTooltipContent lastTradeAt={lastTradeAt} asOf={asOf}>
-                                Successful direct stable-pair Solana trades in the last 24 hours.
+                                Successful direct stable-pair {chainLabel} trades in the last 24 hours.
                             </TradeMetricTooltipContent>
                         }
                         value={formatInteger(trade24h)}
                     />
                     <StatCard
                         label="24H Wallets"
-                        tooltip="Unique trader wallets in direct stable-pair Solana trades over the last 24 hours."
+                        tooltip={`Unique trader wallets in direct stable-pair ${chainLabel} trades over the last 24 hours.`}
                         value={formatInteger(uniqueWallet24h)}
                     />
                 </div>
@@ -313,12 +333,13 @@ function StatCard({ label, tooltip, value, badge, badgeTone }: StatCardProps) {
     );
 }
 
-function CanonicalVolumeTooltipContent() {
+function CanonicalVolumeTooltipContent({ chainList, label }: { chainList: string; label: string | null }) {
     return (
         <div className="max-w-[260px]">
-            <p>Canonical crypto 24h volume from CoinGecko.</p>
+            <p>{label ? `${label}: all-venue 24h volume from the reference provider.` : '24h volume from the reference provider (all venues).'}</p>
             <p className="mt-1 text-white/80">
-                The main number is aggregate on-chain volume across available Solana variant markets.
+                The main number is 24h DEX volume aggregated across {chainList} on-chain markets, leaving out stale, dust
+                and outlier rows.
             </p>
         </div>
     );
@@ -342,9 +363,9 @@ function TradeMetricTooltipContent({
                 <div className="mt-2 flex items-start gap-1.5 border-t border-white/20 pt-2 text-white/80">
                     <ArrowLeftRight className="mt-0.5 h-3 w-3 shrink-0" aria-hidden />
                     <span className="leading-snug">
-                        {lastTradeAt ? <span>Last trade {formatUnixSeconds(lastTradeAt)}</span> : null}
+                        {lastTradeAt ? <span>Last trade {formatEpochMs(lastTradeAt)}</span> : null}
                         {lastTradeAt && asOf ? <span className="px-1.5 text-white/50">/</span> : null}
-                        {asOf ? <span>As of {formatUnixSeconds(asOf)}</span> : null}
+                        {asOf ? <span>As of {formatEpochMs(asOf)}</span> : null}
                     </span>
                 </div>
             ) : null}
@@ -357,14 +378,15 @@ function formatInteger(value: number | undefined | null): string {
     return Math.round(value).toLocaleString();
 }
 
-const unixSecondsFormatter = new Intl.DateTimeFormat(undefined, {
+const epochFormatter = new Intl.DateTimeFormat(undefined, {
     month: 'short',
     day: 'numeric',
     hour: 'numeric',
     minute: '2-digit',
 });
 
-function formatUnixSeconds(value: number): string {
+/** `value` is already milliseconds (see `toEpochMs`); the old formatter multiplied v2's ms `lastTradeAt` by 1000. */
+function formatEpochMs(value: number): string {
     if (!Number.isFinite(value) || value <= 0) return '—';
-    return unixSecondsFormatter.format(new Date(value * 1000));
+    return epochFormatter.format(new Date(value));
 }

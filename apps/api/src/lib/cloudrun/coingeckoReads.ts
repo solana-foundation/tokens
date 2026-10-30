@@ -19,6 +19,15 @@ export function getCoinById(args: GetCoinByIdArgs): Effect.Effect<GetCoinByIdRes
     return cloudRunQuery<GetCoinByIdResult>('assets', 'coingeckoReadsGetCoinById', { ...args });
 }
 
+export type GetCoinBySolanaMintArgs = { mint: string };
+export type GetCoinBySolanaMintResult = CoingeckoCoinResult | null;
+
+export function getCoinBySolanaMint(
+    args: GetCoinBySolanaMintArgs,
+): Effect.Effect<GetCoinBySolanaMintResult, CloudRunError> {
+    return cloudRunQuery<GetCoinBySolanaMintResult>('assets', 'coingeckoReadsGetCoinBySolanaMint', { ...args });
+}
+
 export type SearchCoinsArgs = { query: string; limit?: number };
 export type SearchCoinsResult = CoingeckoCoinSearchResult[];
 

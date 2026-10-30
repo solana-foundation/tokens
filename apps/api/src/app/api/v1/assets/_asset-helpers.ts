@@ -1,4 +1,11 @@
 import {
+    assessMarkets,
+    type MarketQuality,
+    type MarketQualityInput,
+    type MarketQualityReference,
+} from './_market-quality';
+export { hasExcludedMarkets } from './_market-quality';
+import {
     STOCK_VARIANT_TIERS,
     classifyLiquidityTier,
     pickPrimaryVariantWithRanking,
@@ -8,7 +15,10 @@ import {
     type PrimaryVariantStrategy,
     type StockVariantTier,
     type TrustTier,
+    type VariantAdvisory,
+    resolveAssetIssuance,
 } from '@tokens/asset-registry';
+import { getAdvisoriesByMintSync, tradeRestrictedMints } from '@/lib/advisories';
 import { getCuratedMintRankSync } from '@/lib/curated-membership';
 import { getTokenLogoURLWithSecondarySymbol } from '@/lib/logo-overrides';
 
@@ -63,6 +73,8 @@ export interface TokenMarketSnapshot {
     circulatingSupply: number | null;
     lastTradeAt?: number | null;
     asOf?: number | null;
+    /** ms epoch of the last successful provider write (the quality guard's staleness input). */
+    lastFetchedAt?: number | null;
 }
 
 export interface VariantExecutionQualitySnapshot {
@@ -148,7 +160,9 @@ export function resolveVariantSymbol(args: {
     canonicalSymbol?: unknown;
 }): string | null {
     const canonicalSymbol = optionalSymbol(args.canonicalSymbol);
-    const provider = getProviderOnlyLabel(args.label);
+    // A label that is literally the asset's own symbol (e.g. ONDO's variant labelled "ONDO") is not the
+    // Ondo/xStock issuer marker; treating it as one would synthesize "ONDOon".
+    const provider = isCanonicalSymbolMatch(args.label, canonicalSymbol) ? null : getProviderOnlyLabel(args.label);
     const variantSymbol = optionalSymbol(args.variantSymbol);
     const marketSymbol = optionalSymbol(args.marketSymbol);
     const labelSymbol = optionalSymbol(args.label);
@@ -170,6 +184,38 @@ export function resolveVariantSymbol(args: {
     return (
         (variantIsBackfill ? null : variantSymbol) ?? providerSymbol ?? (marketIsBackfill ? null : marketSymbol) ?? null
     );
+}
+
+/**
+ * Registry lookups by alias can return an unrelated asset (an alias collision), which must never
+ * override a DB-authored asset's identity. Accept the registry asset only when it is the same asset:
+ * same id, same CoinGecko id, or at least one shared variant mint (keeps legacy/renamed DB ids such as
+ * `susd` -> registry `usd` working).
+ */
+export function matchRegistryAssetForDbAsset(args: {
+    registryAsset: CanonicalAsset | null | undefined;
+    assetId: string;
+    coingeckoId?: string | null;
+    mints?: Iterable<string>;
+}): CanonicalAsset | null {
+    const registryAsset = args.registryAsset ?? null;
+    if (!registryAsset) return null;
+
+    const assetId = args.assetId.trim();
+    if (registryAsset.assetId === assetId) return registryAsset;
+
+    const coingeckoId = (args.coingeckoId ?? '').trim();
+    if (coingeckoId && registryAsset.coingeckoId === coingeckoId) return registryAsset;
+    if (registryAsset.coingeckoId && registryAsset.coingeckoId === assetId) return registryAsset;
+
+    const mints = new Set(
+        Array.from(args.mints ?? [])
+            .map(mint => mint.trim())
+            .filter(Boolean),
+    );
+    if (mints.size > 0 && registryAsset.variants.some(variant => mints.has(variant.mint))) return registryAsset;
+
+    return null;
 }
 
 export function toFiniteNumberOrNull(value: unknown): number | null {
@@ -353,7 +399,42 @@ export function tokenMarketSnapshotFromConvexMarket(address: string, market: obj
         circulatingSupply: toFiniteNumberOrNull(fields.circulatingSupply),
         lastTradeAt: toFiniteNumberOrNull(fields.lastTradeAt),
         asOf: toFiniteNumberOrNull(fields.asOf),
+        lastFetchedAt: toFiniteNumberOrNull(fields.lastFetchedAt),
     };
+}
+
+/**
+ * Quality verdict per Solana mint of a v1 asset (see `_market-quality.ts`).
+ * `reference` is the asset's off-chain price in the token's units when the
+ * caller has one (CoinGecko, or the stock price for a share-per-token equity).
+ */
+export function assessTokenMarkets(
+    asset: Pick<CanonicalAsset, 'variants' | 'category'>,
+    tokenByMint: ReadonlyMap<string, TokenMarketSnapshot>,
+    reference: MarketQualityReference | null,
+    nowMs: number,
+): Map<string, MarketQuality> {
+    // Derivative-class variants (an LST, an ETF share) are not priced in the
+    // asset's units and skip the outlier pass; see `resolveAssetIssuance`.
+    const issuance = resolveAssetIssuance(
+        asset.variants.map(v => ({ chain: 'solana' as const, address: v.mint, kind: v.kind, tags: v.tags ?? [] })),
+        { category: asset.category },
+    );
+    const rows: MarketQualityInput[] = [];
+    asset.variants.forEach((variant, index) => {
+        const token = tokenByMint.get(variant.mint);
+        if (!token) return;
+        rows.push({
+            key: variant.mint,
+            chain: 'solana',
+            price: token.price,
+            liquidity: token.liquidity,
+            volume24hUSD: token.volume24hUSD,
+            lastFetchedAt: token.lastFetchedAt ?? null,
+            priceChecked: issuance[index] !== 'derivative',
+        });
+    });
+    return assessMarkets(rows, reference, nowMs);
 }
 
 export function executionQualitySnapshotFromConvexFillQuality(
@@ -446,11 +527,17 @@ export function deriveVariantTierFields(liquidity: unknown): { liquidityTier: Li
     return { liquidityTier, trustTier: liquidityTier };
 }
 
+/**
+ * Public variant serialization: derived tier fields plus the `advisory` key,
+ * which is ALWAYS present (`null` when the mint has no active advisory). Every
+ * serialized variant object in the v1 surface passes through here.
+ */
 export function withDerivedVariantTier<T extends object>(
     value: T,
     liquidity: unknown,
-): T & { liquidityTier: LiquidityTier; trustTier: TrustTier } {
-    return { ...value, ...deriveVariantTierFields(liquidity) };
+): T & { liquidityTier: LiquidityTier; trustTier: TrustTier; advisory: VariantAdvisory | null } {
+    const advisory = (value as { advisory?: VariantAdvisory | null }).advisory ?? null;
+    return { ...value, advisory, ...deriveVariantTierFields(liquidity) };
 }
 
 /**
@@ -483,11 +570,16 @@ export function pickPrimaryVariant(
     fillQualityByMint?: ReadonlyMap<string, VariantExecutionQualitySnapshot | null | undefined>,
     options?: { strategy?: PrimaryVariantStrategy },
 ): AssetVariant | null {
+    // Advisory-flagged mints (compromised/blocked) never win primary while an
+    // unflagged sibling exists. The sync read serves the last-good set, so this
+    // also covers callers whose variants were not annotated (e.g. registry
+    // fallbacks); annotated variants are excluded by the ranking itself.
     return pickPrimaryVariantWithRanking({
         asset,
         mintRank,
         marketByMint: tokenByMint,
         fillQualityByMint,
+        excludeMints: tradeRestrictedMints(getAdvisoriesByMintSync()),
         options: { strategy: options?.strategy ?? 'liquidity' },
     }).variant;
 }
@@ -659,11 +751,24 @@ export function aggregateTokenStats(
     asset: CanonicalAsset,
     tokenByMint: ReadonlyMap<string, TokenMarketSnapshot>,
     primaryToken: TokenMarketSnapshot | undefined,
+    /** From `assessTokenMarkets`; rows marked excluded leave every sum and average. Absent = everything counts. */
+    qualityByMint?: ReadonlyMap<string, MarketQuality>,
 ): AssetStats | null {
+    // Price, supply and market cap come from the spot-like variants (an ETF
+    // share or a leveraged token is not priced in the asset's units); liquidity
+    // and 24h volume are activity and sum over every accepted variant, the way
+    // the worker rollup these totals stand in for does.
     const spotLikeVariants = asset.variants.filter(v => isSpotLikeKind(v.kind));
     const variants = spotLikeVariants.length > 0 ? spotLikeVariants : asset.variants;
+    const pricedMints = new Set(variants.map(v => v.mint));
+    const included = (mint: string) => qualityByMint?.get(mint)?.included !== false;
+    // The primary's verdict is keyed like `tokenByMint` (a mint on v1, `chain:address`
+    // on v2), not necessarily like the snapshot's own `address`, so find its key by identity.
+    const primaryKey = primaryToken
+        ? (Array.from(tokenByMint.entries()).find(([, token]) => token === primaryToken)?.[0] ?? primaryToken.address)
+        : null;
 
-    const base = tokenToStats(primaryToken) ?? {
+    const base = tokenToStats(primaryToken && primaryKey && included(primaryKey) ? primaryToken : undefined) ?? {
         price: null,
         liquidity: null,
         volume24hUSD: null,
@@ -681,21 +786,31 @@ export function aggregateTokenStats(
         fdv: 0,
         totalSupply: 0,
         circulatingSupply: 0,
+        liquidity: 0,
+        volume24hUSD: 0,
     };
     const hasTotals = {
         marketCap: false,
         fdv: false,
         totalSupply: false,
         circulatingSupply: false,
+        liquidity: false,
+        volume24hUSD: false,
     };
     const tokensForWeightedStats: TokenMarketSnapshot[] = [];
 
-    for (const variant of variants) {
+    const activityKeys = new Set<keyof typeof totals>(['liquidity', 'volume24hUSD']);
+    const seenMints = new Set<string>();
+    for (const variant of asset.variants) {
+        if (seenMints.has(variant.mint)) continue;
+        seenMints.add(variant.mint);
         const token = tokenByMint.get(variant.mint);
-        if (!token) continue;
-        tokensForWeightedStats.push(token);
+        if (!token || !included(variant.mint)) continue;
+        const priced = pricedMints.has(variant.mint);
+        if (priced) tokensForWeightedStats.push(token);
 
         for (const key of Object.keys(totals) as Array<keyof typeof totals>) {
+            if (!priced && !activityKeys.has(key)) continue;
             const value = token[key];
             if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) continue;
             totals[key] += value;
@@ -725,6 +840,10 @@ export function aggregateTokenStats(
     return {
         ...base,
         price: weightedPrice ?? base.price,
+        // Guarded sums over the included rows (pools are distinct), so a caller
+        // that keeps them over the worker rollup still has cross-variant totals.
+        liquidity: hasTotals.liquidity ? totals.liquidity : base.liquidity,
+        volume24hUSD: hasTotals.volume24hUSD ? totals.volume24hUSD : base.volume24hUSD,
         marketCap: hasTotals.marketCap ? totals.marketCap : base.marketCap,
         fdv: hasTotals.fdv ? totals.fdv : base.fdv,
         priceChange24hPercent: weightedPriceChange24hPercent ?? base.priceChange24hPercent,
@@ -737,8 +856,38 @@ export function aggregateTokenStats(
 export function mergeAssetStatsWithAggregates(
     stats: AssetStats | null,
     aggregates: { liquidity: number; volume24hUSD: number; volume30dUSD?: number | null } | null,
+    options: {
+        /**
+         * The worker rollup sums every variant without the quality guard. When the
+         * guard rejected a row, keep the guarded liquidity / volume from `stats`
+         * and take only the 30d figure (v1 keeps no per-mint 30d history) from it.
+         */
+        keepGuardedTotals?: boolean;
+    } = {},
 ): AssetStats | null {
     if (!aggregates) return stats;
+    if (options.keepGuardedTotals) {
+        const volume30dUSD =
+            typeof aggregates.volume30dUSD === 'number' && Number.isFinite(aggregates.volume30dUSD)
+                ? aggregates.volume30dUSD
+                : (stats?.volume30dUSD ?? null);
+        if (stats) return { ...stats, volume30dUSD };
+        // Every market failed the guard: the rollup's liquidity / volume are
+        // exactly the rejected rows' activity and must not come back here.
+        if (volume30dUSD === null) return null;
+        return {
+            price: null,
+            liquidity: null,
+            volume24hUSD: null,
+            volume30dUSD,
+            marketCap: null,
+            fdv: null,
+            priceChange24hPercent: null,
+            priceChange1hPercent: null,
+            totalSupply: null,
+            circulatingSupply: null,
+        };
+    }
 
     const liquidity =
         typeof aggregates.liquidity === 'number' && Number.isFinite(aggregates.liquidity) ? aggregates.liquidity : 0;
@@ -773,6 +922,8 @@ export function mergeAssetStatsWithAggregates(
 }
 
 export interface TokenMarketsDocLike {
+    /** ms epoch of the provider fetch behind the document; carried onto the snapshot for the staleness check. */
+    lastFetchedAt?: number | null;
     markets: Array<{
         liquidity?: number;
         volume24h?: number;
@@ -847,6 +998,8 @@ export function buildSnapshotFromTokenMarketsDoc(params: {
         holder: null,
         totalSupply: null,
         circulatingSupply: null,
+        // The document's fetch time, so a fallback-only row can still go stale.
+        lastFetchedAt: toFiniteNumberOrNull(doc.lastFetchedAt),
     };
 }
 

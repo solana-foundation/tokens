@@ -4,6 +4,7 @@ import {
     DEFAULT_FLOATING_MARKET_FEED_SETTINGS,
     getFloatingMarketFeedSource,
     getNextFloatingMarketFeedSize,
+    getNextHeatmapSector,
     isFloatingMarketFeedSize,
     resolveNextFloatingMarketFeedSettings,
     sanitizeFloatingMarketFeedSettings,
@@ -14,9 +15,9 @@ describe('floating market feed settings', () => {
         expect(JSON.stringify(sanitizeFloatingMarketFeedSettings(null))).toBe(
             JSON.stringify(DEFAULT_FLOATING_MARKET_FEED_SETTINGS),
         );
-        expect(JSON.stringify(sanitizeFloatingMarketFeedSettings({ feedSize: 100, showNews: false, showTweets: false }))).toBe(
-            JSON.stringify(DEFAULT_FLOATING_MARKET_FEED_SETTINGS),
-        );
+        expect(
+            JSON.stringify(sanitizeFloatingMarketFeedSettings({ feedSize: 100, showNews: false, showTweets: false })),
+        ).toBe(JSON.stringify(DEFAULT_FLOATING_MARKET_FEED_SETTINGS));
     });
 
     it('defaults to 25 pulled items', () => {
@@ -51,6 +52,7 @@ describe('floating market feed settings', () => {
                         feedSize: 25,
                         showNews: true,
                         showTweets: false,
+                        heatmapSector: 'stocks',
                     },
                     { showNews: false },
                 ),
@@ -60,6 +62,7 @@ describe('floating market feed settings', () => {
                 feedSize: 25,
                 showNews: false,
                 showTweets: true,
+                heatmapSector: 'stocks',
             }),
         );
 
@@ -70,6 +73,7 @@ describe('floating market feed settings', () => {
                         feedSize: 25,
                         showNews: false,
                         showTweets: true,
+                        heatmapSector: 'stocks',
                     },
                     { showTweets: false },
                 ),
@@ -79,13 +83,53 @@ describe('floating market feed settings', () => {
                 feedSize: 25,
                 showNews: true,
                 showTweets: false,
+                heatmapSector: 'stocks',
             }),
         );
     });
 
     it('maps settings to API source values', () => {
-        expect(getFloatingMarketFeedSource({ feedSize: 25, showNews: true, showTweets: true })).toBe('all');
-        expect(getFloatingMarketFeedSource({ feedSize: 25, showNews: true, showTweets: false })).toBe('news');
-        expect(getFloatingMarketFeedSource({ feedSize: 25, showNews: false, showTweets: true })).toBe('tweets');
+        expect(
+            getFloatingMarketFeedSource({ feedSize: 25, showNews: true, showTweets: true, heatmapSector: 'stocks' }),
+        ).toBe('all');
+        expect(
+            getFloatingMarketFeedSource({ feedSize: 25, showNews: true, showTweets: false, heatmapSector: 'stocks' }),
+        ).toBe('news');
+        expect(
+            getFloatingMarketFeedSource({ feedSize: 25, showNews: false, showTweets: true, heatmapSector: 'stocks' }),
+        ).toBe('tweets');
+    });
+});
+
+describe('floating market feed heat map category', () => {
+    it('defaults to Stocks and keeps a valid persisted category', () => {
+        expect(DEFAULT_FLOATING_MARKET_FEED_SETTINGS.heatmapSector).toBe('stocks');
+        expect(sanitizeFloatingMarketFeedSettings({ showTweets: true, heatmapSector: 'majors' }).heatmapSector).toBe(
+            'majors',
+        );
+    });
+
+    it('rejects malformed categories', () => {
+        for (const heatmapSector of [42, '', 'Stocks', '../etc', 'x'.repeat(41)]) {
+            expect(sanitizeFloatingMarketFeedSettings({ showTweets: true, heatmapSector }).heatmapSector).toBe(
+                'stocks',
+            );
+        }
+    });
+
+    it('keeps the category when the sources fall back to defaults', () => {
+        expect(
+            sanitizeFloatingMarketFeedSettings({ showNews: false, showTweets: false, heatmapSector: 'etfs' })
+                .heatmapSector,
+        ).toBe('etfs');
+    });
+
+    it('cycles through the available categories and wraps', () => {
+        const available = ['majors', 'currencies', 'stocks'];
+        expect(getNextHeatmapSector('majors', available)).toBe('currencies');
+        expect(getNextHeatmapSector('stocks', available)).toBe('majors');
+        // A category that disappeared restarts the cycle.
+        expect(getNextHeatmapSector('rwas', available)).toBe('majors');
+        expect(getNextHeatmapSector('stocks', [])).toBe('stocks');
     });
 });

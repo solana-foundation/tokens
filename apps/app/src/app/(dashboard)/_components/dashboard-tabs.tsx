@@ -370,7 +370,7 @@ export default function DashboardTabs() {
                 }
 
                 // No keys yet: show a full-page empty state with a clear CTA.
-                if (!currentApiKey && apiKeysCount === 0) {
+                if (!hasActiveApiKey && !currentApiKeyIsFresh) {
                     return (
                         <div className="space-y-6 container max-w-7xl mx-auto py-16 px-6">
                             <div className="mb-6">

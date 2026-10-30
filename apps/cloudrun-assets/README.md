@@ -32,6 +32,11 @@ be implemented incrementally by the maintainers.
 | `TOKENS_ADMIN_EMAILS`         | no       | Comma-separated verified-email allowlist (case-insensitive) for the `/mutation/admin*` endpoints, unioned with the user-id list; when both lists are empty every admin call is rejected (403) |
 | `TOKENS_RPC_INVOKER_SA`       | no       | Service-account email whose Google OIDC ID tokens are accepted on `/query`/`/mutation` (the Vercel admin app's WIF invoker); unset ⇒ shared bearer only                                       |
 | `TOKENS_RPC_OIDC_AUDIENCE`    | no       | Expected `aud` of those ID tokens (this service's run.app URL); recommended whenever `TOKENS_RPC_INVOKER_SA` is set                                                                           |
+| `GCS_LOGO_BUCKET`             | no       | Public asset-logo bucket the `logo-sync` job uploads 256px WebP copies to (`solana/<mint>.webp`); unset ⇒ `/jobs/logo-sync` disabled. Written with the runtime SA's default credentials      |
+| `GCS_LOGO_PUBLIC_BASE_URL`    | no       | Base URL served as `logoURI` for those copies; defaults to `https://storage.googleapis.com/<bucket>`                                                                                          |
+| `PINATA_GATEWAY_HOST`         | no       | Pinata dedicated gateway (e.g. `tokens.mypinata.cloud`) used to fetch IPFS-hosted artwork; unset ⇒ IPFS logos rely on the dexscreener / Jupiter fallbacks                                     |
+| `PINATA_GATEWAY_TOKEN`        | no       | Gateway access token sent as `x-pinata-gateway-token` (Secret Manager `tokens-pinata-gateway-token-<env>`)                                                                                     |
+| `JUPITER_TOKEN_API_URL`       | no       | Jupiter token-API lookup template for the last-resort logo source (`{mint}` placeholder); defaults to `https://lite-api.jup.ag/tokens/v2/search?query={mint}`                                 |
 
 ## Local dev
 

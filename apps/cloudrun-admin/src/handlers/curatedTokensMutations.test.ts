@@ -18,15 +18,26 @@ import {
     type MoveVariantOutcome,
 } from './curatedTokensMutations';
 import { IdentityRequiredError, InvalidArgsError, UnauthorizedError } from './errors';
+import { parseVariantRef } from './shared';
 
 const ADMIN = { clerkUserId: 'admin_1' };
 const ADMIN_IDS: ReadonlySet<string> = new Set(['admin_1']);
 const NOW = 1_750_000_000_000;
 const MINT = 'So11111111111111111111111111111111111111112';
+/** What every Solana variant mutation echoes back (legacy `mint` = `address`). */
+const SOL_REF = { chain: 'solana', address: MINT, mint: MINT } as const;
+const EVM_ADDRESS = '0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48';
+const EVM_ADDRESS_LC = EVM_ADDRESS.toLowerCase();
 
 interface RepoState {
     createAsset?: 'created' | 'exists';
-    updateAsset?: 'updated' | 'not_found';
+    updateAsset?:
+        | 'updated'
+        | 'not_found'
+        | 'asset_id_exists'
+        | 'asset_id_reserved'
+        | 'asset_id_aliased'
+        | 'asset_id_deleted';
     deleteAsset?: 'deleted' | 'not_found' | 'has_variants';
     createVariant?: CreateVariantOutcome;
     updateVariant?: 'updated' | 'not_found' | 'variant_id_collision';
@@ -111,7 +122,7 @@ describe('authz (mutations)', () => {
 
 describe('alias priorities', () => {
     it('mirror the Convex replaceAliasesForKind call sites', () => {
-        expect(ALIAS_PRIORITIES).toEqual({ name: 900, symbol: 800, coingeckoId: 700, custom: 500 });
+        expect(ALIAS_PRIORITIES).toEqual({ assetId: 1000, name: 900, symbol: 800, coingeckoId: 700, custom: 500 });
     });
 });
 
@@ -141,10 +152,28 @@ describe('createCanonicalAsset', () => {
             coingeckoId: null,
             description: null,
             imageUrl: 'https://img/x.png',
+            region: null,
+            industry: null,
             aliases: ['BTC', 'digital gold'],
             collections: ['majors'],
             nowMs: NOW,
         });
+    });
+
+    it('accepts region/industry slugs and rejects unknown ones', async () => {
+        const { deps, calls } = makeDeps();
+        await createCanonicalAsset(
+            deps,
+            { assetId: 'sk-hynix', category: 'equity', region: 'asia', industry: 'semiconductors' },
+            ADMIN,
+        );
+        expect(calls.createCanonicalAsset?.[0]).toMatchObject({ region: 'asia', industry: 'semiconductors' });
+        await expect(
+            createCanonicalAsset(deps, { assetId: 'x', category: 'equity', region: 'mars' }, ADMIN),
+        ).rejects.toThrow(/region must be one of/);
+        await expect(
+            createCanonicalAsset(deps, { assetId: 'x', category: 'equity', industry: 'Defense' }, ADMIN),
+        ).rejects.toThrow(/industry must be one of/);
     });
 
     it('maps repo outcomes to the Convex error messages', async () => {
@@ -158,6 +187,16 @@ describe('createCanonicalAsset', () => {
         await expect(
             createCanonicalAsset(deps, { assetId: 'x', category: 'nope' }, ADMIN),
         ).rejects.toBeInstanceOf(InvalidArgsError);
+    });
+
+    it('rejects ids that are not lowercase slugs before touching the repo', async () => {
+        const { deps, calls } = makeDeps();
+        for (const assetId of ['Bitcoin', 'bit coin', '-btc', 'btc/usd']) {
+            await expect(createCanonicalAsset(deps, { assetId, category: 'crypto' }, ADMIN)).rejects.toThrow(
+                'assetId must be lowercase',
+            );
+        }
+        expect(calls.createCanonicalAsset).toBeUndefined();
     });
 });
 
@@ -173,6 +212,23 @@ describe('updateCanonicalAsset', () => {
         expect('aliases' in args).toBe(false);
         expect('collections' in args).toBe(false);
         expect(args.clearImage).toBe(false);
+    });
+
+    it('forwards region/industry as tri-state (slug sets, null clears, omitted untouched)', async () => {
+        const { deps, calls } = makeDeps();
+        await updateCanonicalAsset(deps, { assetId: 'asml', region: 'europe', industry: null }, ADMIN);
+        const args = calls.updateCanonicalAsset?.[0] as Record<string, unknown>;
+        expect(args.region).toBe('europe');
+        expect(args.industry).toBeNull();
+
+        await updateCanonicalAsset(deps, { assetId: 'asml', name: 'ASML' }, ADMIN);
+        const untouched = calls.updateCanonicalAsset?.[1] as Record<string, unknown>;
+        expect('region' in untouched).toBe(false);
+        expect('industry' in untouched).toBe(false);
+
+        await expect(updateCanonicalAsset(deps, { assetId: 'asml', region: 'ASIA' }, ADMIN)).rejects.toThrow(
+            /region must be one of/,
+        );
     });
 
     it('forwards clearImage, collections and deduped aliases', async () => {
@@ -193,6 +249,58 @@ describe('updateCanonicalAsset', () => {
         await expect(updateCanonicalAsset(deps, { assetId: 'ghost' }, ADMIN)).rejects.toThrow(
             'Canonical asset not found',
         );
+    });
+
+    it('forwards a trimmed newAssetId and returns the new id', async () => {
+        const { deps, calls } = makeDeps();
+        const result = await updateCanonicalAsset(deps, { assetId: 'bitcoin', newAssetId: ' btc ' }, ADMIN);
+        expect(result).toEqual({ assetId: 'btc', updated: true });
+        const args = calls.updateCanonicalAsset?.[0] as Record<string, unknown>;
+        expect(args.assetId).toBe('bitcoin');
+        expect(args.newAssetId).toBe('btc');
+    });
+
+    it('drops newAssetId when it equals the current id, even a legacy non-slug id', async () => {
+        const { deps, calls } = makeDeps();
+        const legacy = `solana-${MINT}`;
+        const result = await updateCanonicalAsset(deps, { assetId: legacy, newAssetId: legacy }, ADMIN);
+        expect(result).toEqual({ assetId: legacy, updated: true });
+        expect('newAssetId' in (calls.updateCanonicalAsset?.[0] as Record<string, unknown>)).toBe(false);
+    });
+
+    it('rejects an empty or malformed newAssetId before touching the repo', async () => {
+        const { deps, calls } = makeDeps();
+        await expect(updateCanonicalAsset(deps, { assetId: 'bitcoin', newAssetId: '  ' }, ADMIN)).rejects.toThrow(
+            'newAssetId must not be empty',
+        );
+        for (const newAssetId of ['BTC', 'b tc', '.btc', 'btc/usd']) {
+            await expect(updateCanonicalAsset(deps, { assetId: 'bitcoin', newAssetId }, ADMIN)).rejects.toThrow(
+                'assetId must be lowercase',
+            );
+        }
+        await expect(updateCanonicalAsset(deps, { assetId: 'bitcoin', newAssetId: 7 }, ADMIN)).rejects.toBeInstanceOf(
+            InvalidArgsError,
+        );
+        expect(calls.updateCanonicalAsset).toBeUndefined();
+    });
+
+    it('maps rename refusals to messages', async () => {
+        const exists = makeDeps({ updateAsset: 'asset_id_exists' });
+        await expect(
+            updateCanonicalAsset(exists.deps, { assetId: 'bitcoin', newAssetId: 'ethereum' }, ADMIN),
+        ).rejects.toThrow('An asset with that id already exists');
+        const reserved = makeDeps({ updateAsset: 'asset_id_reserved' });
+        await expect(
+            updateCanonicalAsset(reserved.deps, { assetId: 'bitcoin', newAssetId: 'xbt' }, ADMIN),
+        ).rejects.toThrow('former id of another asset');
+        const aliased = makeDeps({ updateAsset: 'asset_id_aliased' });
+        await expect(
+            updateCanonicalAsset(aliased.deps, { assetId: 'wrapped-bitcoin', newAssetId: 'btc' }, ADMIN),
+        ).rejects.toThrow('name, symbol or alias of another asset');
+        const deleted = makeDeps({ updateAsset: 'asset_id_deleted' });
+        await expect(
+            updateCanonicalAsset(deleted.deps, { assetId: 'bitcoin', newAssetId: 'gone' }, ADMIN),
+        ).rejects.toThrow('hard-deleted asset');
     });
 });
 
@@ -298,19 +406,19 @@ describe('deleteVariant / deactivateVariant', () => {
         const notFound = makeDeps({ deleteVariant: 'not_found' });
         await expect(deleteVariant(notFound.deps, { mint: MINT }, ADMIN)).rejects.toThrow('Variant not found');
         const ok = makeDeps();
-        expect(await deleteVariant(ok.deps, { mint: ` ${MINT} ` }, ADMIN)).toEqual({ mint: MINT, deleted: true });
+        expect(await deleteVariant(ok.deps, { mint: ` ${MINT} ` }, ADMIN)).toEqual({ ...SOL_REF, deleted: true });
     });
 
     it('deactivateVariant defaults isActive to false', async () => {
         const { deps, calls } = makeDeps();
         expect(await deactivateVariant(deps, { mint: MINT }, ADMIN)).toEqual({
-            mint: MINT,
+            ...SOL_REF,
             isActive: false,
             updated: true,
         });
-        expect(calls.deactivateVariant?.[0]).toEqual({ mint: MINT, isActive: false, nowMs: NOW });
+        expect(calls.deactivateVariant?.[0]).toEqual({ ...SOL_REF, isActive: false, nowMs: NOW });
         expect(await deactivateVariant(deps, { mint: MINT, isActive: true }, ADMIN)).toEqual({
-            mint: MINT,
+            ...SOL_REF,
             isActive: true,
             updated: true,
         });
@@ -321,7 +429,7 @@ describe('moveVariantToCanonical', () => {
     it('maps outcomes to Convex messages and shapes', async () => {
         const moved = makeDeps({ moveVariant: { status: 'moved', fromAssetId: 'ethereum' } });
         expect(await moveVariantToCanonical(moved.deps, { mint: MINT, assetId: 'bitcoin' }, ADMIN)).toEqual({
-            mint: MINT,
+            ...SOL_REF,
             fromAssetId: 'ethereum',
             toAssetId: 'bitcoin',
             moved: true,
@@ -329,7 +437,7 @@ describe('moveVariantToCanonical', () => {
 
         const noop = makeDeps({ moveVariant: { status: 'noop', fromAssetId: 'bitcoin' } });
         expect(await moveVariantToCanonical(noop.deps, { mint: MINT, assetId: 'bitcoin' }, ADMIN)).toEqual({
-            mint: MINT,
+            ...SOL_REF,
             fromAssetId: 'bitcoin',
             toAssetId: 'bitcoin',
             moved: false,
@@ -430,5 +538,91 @@ describe('updateCollectionMeta', () => {
         const { deps, calls } = makeDeps();
         await expect(updateCollectionMeta(deps, { slug: 'majors' }, ADMIN)).rejects.toBeInstanceOf(InvalidArgsError);
         expect(calls.updateCollectionMeta).toBeUndefined();
+    });
+});
+
+/* ------------------------------------------------------------------------- *
+ * Multichain refs
+ * ------------------------------------------------------------------------- */
+
+describe('parseVariantRef', () => {
+    it('reads legacy { mint } as a Solana ref and validates the base58 shape', () => {
+        expect(parseVariantRef({ mint: ` ${MINT} ` })).toEqual({ chain: 'solana', address: MINT });
+        expect(parseVariantRef({ chain: 'solana', address: MINT, assetId: 'wsol' })).toEqual({
+            chain: 'solana',
+            address: MINT,
+            assetId: 'wsol',
+        });
+        expect(() => parseVariantRef({ mint: '  ' })).toThrow('mint is required');
+        expect(() => parseVariantRef({ mint: 'nope' })).toThrow('Not a valid Solana mint address');
+        expect(() => parseVariantRef({})).toThrow('mint must be a string');
+    });
+
+    it('lowercases EVM addresses and requires the owning asset id', () => {
+        expect(parseVariantRef({ chain: 'ethereum', address: EVM_ADDRESS, assetId: 'usdc' })).toEqual({
+            chain: 'ethereum',
+            address: EVM_ADDRESS_LC,
+            assetId: 'usdc',
+        });
+        // `mint` is accepted as the address key on every chain.
+        expect(parseVariantRef({ chain: 'base', mint: EVM_ADDRESS_LC, assetId: 'usdc' }).address).toBe(EVM_ADDRESS_LC);
+        expect(() => parseVariantRef({ chain: 'ethereum', address: EVM_ADDRESS })).toThrow(
+            'assetId is required for non-Solana variants',
+        );
+        expect(() => parseVariantRef({ chain: 'ethereum', address: MINT, assetId: 'usdc' })).toThrow(
+            'Not a valid Ethereum contract address',
+        );
+        expect(() => parseVariantRef({ chain: 'tron', address: EVM_ADDRESS, assetId: 'usdc' })).toThrow(
+            'chain must be one of',
+        );
+        expect(() => parseVariantRef({ chain: 7, address: EVM_ADDRESS })).toThrow('chain must be a string');
+    });
+});
+
+describe('variant mutations with EVM refs', () => {
+    const REF = { chain: 'ethereum', address: EVM_ADDRESS, assetId: 'usdc' };
+    const WRITE_REF = { chain: 'ethereum', address: EVM_ADDRESS_LC, mint: EVM_ADDRESS_LC, assetId: 'usdc' };
+    const RESULT_REF = { chain: 'ethereum' as const, address: EVM_ADDRESS_LC, mint: EVM_ADDRESS_LC };
+
+    it('updateVariant forwards the normalized ref and echoes it back', async () => {
+        const { deps, calls } = makeDeps();
+        expect(await updateVariant(deps, { ...REF, label: 'USDC (Circle)' }, ADMIN)).toEqual({ ...RESULT_REF, updated: true });
+        expect(calls.updateVariant?.[0]).toEqual({ ...WRITE_REF, label: 'USDC (Circle)', nowMs: NOW });
+    });
+
+    it('deleteVariant / deactivateVariant forward the ref', async () => {
+        const { deps, calls } = makeDeps();
+        expect(await deleteVariant(deps, REF, ADMIN)).toEqual({ ...RESULT_REF, deleted: true });
+        expect(calls.deleteVariant?.[0]).toEqual(WRITE_REF);
+        expect(await deactivateVariant(deps, { ...REF, isActive: false }, ADMIN)).toEqual({
+            ...RESULT_REF,
+            isActive: false,
+            updated: true,
+        });
+        expect(calls.deactivateVariant?.[0]).toEqual({ ...WRITE_REF, isActive: false, nowMs: NOW });
+    });
+
+    it('moveVariantToCanonical takes the owner as fromAssetId and the destination as toAssetId', async () => {
+        const { deps, calls } = makeDeps({ moveVariant: { status: 'moved', fromAssetId: 'usdc' } });
+        expect(
+            await moveVariantToCanonical(
+                deps,
+                { chain: 'ethereum', address: EVM_ADDRESS, fromAssetId: 'usdc', toAssetId: 'usd' },
+                ADMIN,
+            ),
+        ).toEqual({ ...RESULT_REF, fromAssetId: 'usdc', toAssetId: 'usd', moved: true });
+        expect(calls.moveVariantToCanonical?.[0]).toEqual({ ...WRITE_REF, toAssetId: 'usd', nowMs: NOW });
+        // Without the owner the v2 key is incomplete.
+        await expect(
+            moveVariantToCanonical(deps, { chain: 'ethereum', address: EVM_ADDRESS, toAssetId: 'usd' }, ADMIN),
+        ).rejects.toThrow('assetId is required for non-Solana variants');
+    });
+
+    it('moveVariantToCanonical keeps the legacy Solana shape (assetId = destination)', async () => {
+        const { deps, calls } = makeDeps({ moveVariant: { status: 'moved', fromAssetId: 'wsol' } });
+        await moveVariantToCanonical(deps, { mint: MINT, assetId: 'solana' }, ADMIN);
+        expect(calls.moveVariantToCanonical?.[0]).toEqual({ ...SOL_REF, toAssetId: 'solana', nowMs: NOW });
+        await moveVariantToCanonical(deps, { mint: MINT, toAssetId: 'solana' }, ADMIN);
+        expect(calls.moveVariantToCanonical?.[1]).toEqual({ ...SOL_REF, toAssetId: 'solana', nowMs: NOW });
     });
 });

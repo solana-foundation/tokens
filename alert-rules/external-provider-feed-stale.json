@@ -1,93 +1,112 @@
 {
-  "uid": "tokens-external-provider-feed-stale",
-  "title": "External provider feed went silent (no successful calls in 15m)",
-  "ruleGroup": "tokens-external-providers",
-  "folderUID": "tokens-xyz",
-  "noDataState": "Alerting",
-  "execErrState": "OK",
-  "for": "15m",
-  "data": [
-    {
-      "refId": "A",
-      "datasourceUid": "grafanacloud-logs",
-      "queryType": "range",
-      "relativeTimeRange": {
-        "from": 900,
-        "to": 0
-      },
-      "model": {
-        "expr": "sum(rate({service=~\"tokens-.+\"} | json | event=\"external_call\" | ok=\"true\" [5m]))",
-        "queryType": "range",
-        "refId": "A"
-      }
-    },
-    {
-      "refId": "B",
-      "datasourceUid": "__expr__",
-      "queryType": "",
-      "relativeTimeRange": {
-        "from": 0,
-        "to": 0
-      },
-      "model": {
-        "type": "reduce",
-        "refId": "B",
-        "expression": "A",
-        "reducer": "last",
-        "settings": {
-          "mode": "replaceNN",
-          "replaceWithValue": 0
+    "uid": "tokens-external-provider-feed-stale",
+    "title": "External provider feed went silent (no successful calls in 15m)",
+    "ruleGroup": "tokens-external-providers",
+    "folderUID": "tokens",
+    "noDataState": "Alerting",
+    "execErrState": "OK",
+    "for": "15m",
+    "data": [
+        {
+            "refId": "A",
+            "datasourceUid": "tokens-logs",
+            "queryType": "range",
+            "relativeTimeRange": {
+                "from": 900,
+                "to": 0
+            },
+            "model": {
+                "expr": "sum(rate({service=~\"tokens-.+\"} | json | event=\"external_call\" | provider!~\"logo_.*\" | ok=\"true\" [5m])) or vector(0)",
+                "queryType": "range",
+                "refId": "A"
+            }
+        },
+        {
+            "refId": "B",
+            "datasourceUid": "__expr__",
+            "queryType": "",
+            "relativeTimeRange": {
+                "from": 0,
+                "to": 0
+            },
+            "model": {
+                "type": "reduce",
+                "refId": "B",
+                "expression": "A",
+                "reducer": "last",
+                "settings": {
+                    "mode": "replaceNN",
+                    "replaceWithValue": 0
+                }
+            }
+        },
+        {
+            "refId": "D",
+            "datasourceUid": "tokens-logs",
+            "queryType": "instant",
+            "relativeTimeRange": {
+                "from": 600,
+                "to": 0
+            },
+            "model": {
+                "expr": "max(max_over_time({service=\"tokens-logs-pipeline\", env=\"prd\"} | json | event=\"gcp_logs_push\" | unwrap lag_s [10m])) or vector(0)",
+                "queryType": "instant",
+                "instant": true,
+                "range": false,
+                "refId": "D"
+            }
+        },
+        {
+            "refId": "E",
+            "datasourceUid": "__expr__",
+            "queryType": "",
+            "relativeTimeRange": {
+                "from": 0,
+                "to": 0
+            },
+            "model": {
+                "type": "reduce",
+                "refId": "E",
+                "expression": "D",
+                "reducer": "last",
+                "settings": {
+                    "mode": "replaceNN",
+                    "replaceWithValue": 0
+                }
+            }
+        },
+        {
+            "refId": "C",
+            "datasourceUid": "__expr__",
+            "queryType": "",
+            "relativeTimeRange": {
+                "from": 0,
+                "to": 0
+            },
+            "model": {
+                "type": "math",
+                "refId": "C",
+                "expression": "$B < 0.001 && $E < 600"
+            }
         }
-      }
+    ],
+    "condition": "C",
+    "labels": {
+        "scope": "external",
+        "severity": "critical",
+        "pagerduty": "true",
+        "slack": "true"
     },
-    {
-      "refId": "C",
-      "datasourceUid": "__expr__",
-      "queryType": "",
-      "relativeTimeRange": {
-        "from": 0,
-        "to": 0
-      },
-      "model": {
-        "type": "threshold",
-        "refId": "C",
-        "expression": "B",
-        "conditions": [
-          {
-            "evaluator": {
-              "type": "lt",
-              "params": [
-                0.001
-              ]
-            },
-            "operator": {
-              "type": "and"
-            },
-            "query": {
-              "params": [
-                "B"
-              ]
-            },
-            "reducer": {
-              "type": "last",
-              "params": []
-            },
-            "type": "query"
-          }
-        ]
-      }
+    "annotations": {
+        "summary": "External provider calls have stopped — possible outage",
+        "description": "No successful external_call events from any provider in the last 15 minutes. Either tokens.xyz isn't generating any traffic that calls upstreams, or every upstream is failing. Check the External providers dashboard and the API overview dashboard for traffic levels. Excludes logo-sync probes (provider=logo_*) so successful artwork fetches cannot mask a silent data feed. Suppressed while tokens-logs-pipeline-lagging fires (Cloud Logging → Loki ingestion more than 10 minutes behind): the lines may simply not have reached Loki yet; confirm the run in Cloud Logging before treating this as a job outage.",
+        "runbook_url": "https://example.com/runbooks/external-provider-feed-stale"
+    },
+    "notification_settings": {
+        "receiver": "tokens-critical",
+        "group_by": ["grafana_folder", "alertname"],
+        "group_wait": "30s",
+        "group_interval": "5m",
+        "repeat_interval": "4h"
     }
-  ],
-  "condition": "C",
-  "labels": {
-    "scope": "external",
-    "severity": "critical",
-    "pagerduty": "true",
-    "slack": "true"
-  },
-  "annotations": {
-    "summary": "External provider calls have stopped \u2014 possible outage",
-    "description": "No successful external_call events from any provider in the last 15 minutes. Either tokens.xyz isn't generating any traffic that calls upstreams, or every upstream is failing. Check the External providers dashboard and the API overview dashboard for traffic levels.",
-    "runbook_url": "https://example.com/runbooks/external-provider-feed-stale"
-  }
 }

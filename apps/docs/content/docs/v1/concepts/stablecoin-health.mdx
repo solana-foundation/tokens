@@ -1,0 +1,101 @@
+---
+title: Stablecoin health
+description: Live peg status and the slower structural health grade for stablecoin mints, and how to read their tiers.
+---
+
+Two blocks describe how a stablecoin mint is holding up: a live **peg status** and a slower **structural health** grade. Both are keyed by mint and both are `null` when the mint is not monitored, which is every non-stablecoin today.
+
+## Where they appear
+
+| Surface                                                         | `pegHealth`                 | `structuralHealth`                               |
+| --------------------------------------------------------------- | --------------------------- | ------------------------------------------------ |
+| `GET /v1/assets/{assetId}` variant objects (stablecoins only)   | `CompactPegHealth \| null`  | not present                                      |
+| `GET /v1/assets/{assetId}?include=risk` (`includes.risk.data`)  | `PegHealth \| null`         | `StructuralHealth \| null`                       |
+| `GET /v1/assets/{assetId}/risk-summary` (`risk`)                | `PegHealth \| null`         | `{ provider, grade, updatedAt, stale } \| null`  |
+| `GET /v1/assets/{assetId}/risk-details` (`risk`)                | `PegHealth \| null`         | `StructuralHealth \| null`                       |
+
+## Shapes
+
+```ts
+type PegTier = 'ok' | 'watch' | 'warning' | 'critical' | 'premium';
+type PegProvider = 'webacy' | 'tokens';
+type PegReferenceKind = 'fixed' | 'fx' | 'high_water';
+
+interface PegHealth {
+  provider: PegProvider;            // which observer produced the row; tier semantics differ
+  pegCurrency: string | null;       // ISO 4217 code of the peg; null when unknown
+  referenceKind: PegReferenceKind;  // what pegUsd is
+  tier: PegTier;
+  overallRisk: number | null;       // Webacy 0-100, higher = riskier; null for provider 'tokens'
+  deviationPct: number | null;      // signed percent from the reference; negative = below
+  priceUsd: number | null;
+  pegUsd: number | null;            // the reference the tier was judged against
+  liquidityUsd?: number | null;     // DEX liquidity behind the price; provider 'tokens' only
+  tierSince: number | null;         // unix ms the current tier streak began
+  updatedAt: number;                // unix ms of the last observation
+  stale: boolean;                   // true when updatedAt is older than about 9 hours
+}
+
+// On GET /v1/assets/{assetId} variant objects, stablecoin assets only.
+interface CompactPegHealth {
+  provider: PegProvider;
+  referenceKind: PegReferenceKind;
+  tier: PegTier;
+  deviationPct: number | null;
+  updatedAt: number;
+  stale: boolean;
+}
+
+type StructuralGrade =
+  | 'A+' | 'A' | 'A-' | 'B+' | 'B' | 'B-' | 'C+' | 'C' | 'C-' | 'D+' | 'D' | 'D-' | 'F';
+
+interface StructuralHealth {
+  provider: 'webacy';
+  grade: StructuralGrade;           // A+ is lowest risk, F is critical
+  score: number | null;             // composite 0-100, higher = riskier
+  categories: Array<{
+    key: 'asset_collateral' | 'market_liquidity' | 'smart_contract'
+       | 'operational_governance' | 'hack_exploit_history';
+    label: string;
+    score: number | null;           // 0-100, higher = riskier
+    weight: number | null;          // 0-1 share of the composite
+    status: 'pass' | 'warn' | 'fail' | 'unknown';
+  }>;
+  updatedAt: number;                // unix ms
+  stale: boolean;                   // true when older than about 3 days
+}
+```
+
+## Providers
+
+Peg status comes from one of two observers per mint, named by `provider`:
+
+- `webacy`: the Webacy depeg monitor, refreshed on tier-change webhooks and reconciled every few hours. Served while Webacy has a healthy, recent observation.
+- `tokens`: the tokens.xyz peg monitor, which prices every curated stablecoin from DEX prices every few minutes. Served for mints Webacy does not cover, or while Webacy's observation is stale.
+
+Structural health is always Webacy's, refreshed daily.
+
+## Reference kinds
+
+`pegUsd` is always the reference the tier was judged against, and `referenceKind` says what it is:
+
+- `fixed`: 1.00 per unit of `pegCurrency`. Every Webacy row, and every USD stablecoin judged by the tokens.xyz monitor.
+- `fx`: a non-USD peg (EUR, GBP, CHF, SGD, JPY, TRY, BRL, MXN, NGN, ZAR, AUD, MYR, IDR). `pegUsd` is the USD value of one unit of `pegCurrency`, implied from USDC and USDT quotes in that currency and refreshed every run. A provider outage reuses the last good rate for up to 6 hours; after that the mint is not judged and its last tier is served with `stale: true` once the observation ages out.
+- `high_water`: a yield-bearing USD variant (USDY, syrupUSDC, sUSD and similar) whose price accrues above 1.00 by design, judged against its own recent high. The reference only rises, only on observations with enough liquidity, and by at most 0.1% per elapsed day, so a thin-market wick cannot inflate it.
+
+Render a `high_water` `ok` row as "Holding value" rather than "On peg", and its `watch` row as "Slipping": a small dip below a recent high is not a peg wobble.
+
+## Reading the tiers
+
+Tier semantics depend on `provider` and `referenceKind`:
+
+- **`webacy`**: `tier` is derived by Webacy from `overallRisk` (ok under 25, watch 25 to 49, warning 50 to 69, critical 70 and above). `premium` means the token trades 2% or more **above** its peg with no risk signals; it is not a depeg.
+- **`tokens` with `fixed` or `fx`**: `tier` is derived from `deviationPct` and the pool's DEX liquidity, and only below-reference deviation counts. With $1M or more of liquidity: `ok` at or above -0.5%, `watch` to -1%, `warning` to -3%, `critical` below -3%. Thin pools (under $1M) use wider bands so market noise does not read as a depeg: `ok` at or above -1%, `watch` to -2%, `warning` to -5%, `critical` below -5%. A tier is left only once the deviation recovers 0.25 points (0.5 on the wide bands) past the edge it was entered at, so `tier` can lag `deviationPct` on the way back up. `overallRisk` is always `null`.
+- **`tokens` with `high_water`**: the wide bands against the recent high. Never `premium`; any deviation at or above zero reads as `ok`.
+
+Other rules:
+
+- **Higher score is riskier.** `overallRisk`, `score` and every category `score` are 0 to 100 with 0 best. Prefer `tier`, `grade` and category `status` in UI.
+- `stale: true` means the observation is older than the serving bound (about 9 hours for peg, 3 days for structural). Show the block with a staleness note rather than hiding it.
+- A `warning` or `critical` tier normally arrives with a `caution` [advisory](/v1/concepts/advisories) whose `source` matches the peg `provider`. Use the advisory for the banner and `pegHealth` for the live numbers.
+- **Attribution.** Structural data is provided by [Webacy](https://dd.xyz). Peg data is Webacy's only when `provider` is `webacy`; `tokens` rows are produced by the tokens.xyz peg monitor.

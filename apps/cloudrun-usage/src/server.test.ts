@@ -1,10 +1,12 @@
 import { describe, expect, it } from 'bun:test';
+import { IDENTITY_TOKEN_TTL_MS, signIdentityToken } from '@tokens/cloudrun-shutdown/identity';
 
 import type { IdentityRepo } from './handlers/clerkIdentity';
 import type { DashboardRepo } from './handlers/dashboard';
 import type { PlatformAuthRepo } from './handlers/platformAuth';
 import type { UsageDashboardRepo } from './handlers/usageDashboard';
 import type { UsageIngestRepo } from './handlers/usageIngest';
+import type { LimitsRedis } from './redis';
 import { createApp, decodeIdentityHeader } from './server';
 
 const noopPlatformAuth: PlatformAuthRepo = {
@@ -19,10 +21,10 @@ const noopPlatformAuth: PlatformAuthRepo = {
 
 const noopUsageIngest: UsageIngestRepo = {
     applyIngestBuckets: async () => {},
+    applySyncBuckets: async () => {},
 };
 
 export const noopIdentity: IdentityRepo = {
-    getUserPrimaryEmail: async () => null,
     listClerkUserIdsByEmail: async () => [],
     getIdentityScoreInputs: async () => ({ memberships: 0, keys: 0, activeKeys: 0 }),
 };
@@ -47,6 +49,8 @@ const noopDashboard: DashboardRepo = {
     getApiKeyByHash: async () => null,
     revokeApiKey: async () => {},
     insertApiKeyRevokingActive: async () => 'key_test',
+    listEncryptedApiKeys: async () => [],
+    updateApiKeyEncryption: async () => {},
 };
 
 const noopUsageDashboard: UsageDashboardRepo = {
@@ -63,8 +67,22 @@ async function call(app: ReturnType<typeof createApp>, path: string, init: Reque
     return app.fetch(new Request(`http://test${path}`, init));
 }
 
+/** Legacy unsigned header (only accepted while `acceptUnsignedIdentity` is on). */
 export function identityHeader(identity: { clerkUserId: string; projectId?: string; email?: string }): string {
     return Buffer.from(JSON.stringify(identity), 'utf8').toString('base64');
+}
+
+const SIGNING_SECRET = 'sig-secret';
+
+/** Signed header bound to the RPC and body the test is about to send. */
+export function signedIdentityHeader(
+    identity: { clerkUserId: string; projectId?: string; email?: string },
+    kind: 'query' | 'mutation',
+    fn: string,
+    body: string,
+    opts: { secret?: string; nowMs?: number } = {},
+): Promise<string> {
+    return signIdentityToken(identity, { kind, fn, body }, opts.secret ?? SIGNING_SECRET, opts.nowMs);
 }
 
 function makeApp(
@@ -76,9 +94,16 @@ function makeApp(
         identity?: IdentityRepo;
         apiKeyEncryptionSecret?: string;
         authToken?: string;
+        /** Defaults to SIGNING_SECRET; pass null to simulate an unconfigured verifier. */
+        identitySigningSecret?: string | null;
+        identitySigningSecretPrevious?: string;
+        acceptUnsignedIdentity?: boolean;
+        limitsRedis?: LimitsRedis;
     } = {},
 ) {
+    const signingSecret = overrides.identitySigningSecret === undefined ? SIGNING_SECRET : overrides.identitySigningSecret;
     return createApp({
+        ...(overrides.limitsRedis ? { limitsRedis: overrides.limitsRedis } : {}),
         platformAuth: overrides.platformAuth ?? noopPlatformAuth,
         usageIngest: overrides.usageIngest ?? noopUsageIngest,
         dashboard: overrides.dashboard ?? noopDashboard,
@@ -86,6 +111,11 @@ function makeApp(
         identity: overrides.identity ?? noopIdentity,
         ...(overrides.apiKeyEncryptionSecret ? { apiKeyEncryptionSecret: overrides.apiKeyEncryptionSecret } : {}),
         authToken: overrides.authToken ?? 'tok',
+        ...(signingSecret ? { identitySigningSecret: signingSecret } : {}),
+        ...(overrides.identitySigningSecretPrevious
+            ? { identitySigningSecretPrevious: overrides.identitySigningSecretPrevious }
+            : {}),
+        ...(overrides.acceptUnsignedIdentity ? { acceptUnsignedIdentity: true } : {}),
     });
 }
 
@@ -253,6 +283,7 @@ describe('createApp', () => {
     it('POST /mutation/ingestUsageAggregates applies buckets', async () => {
         const applied: unknown[] = [];
         const usageIngest: UsageIngestRepo = {
+            ...noopUsageIngest,
             applyIngestBuckets: async args => {
                 applied.push(args);
             },
@@ -300,14 +331,20 @@ describe('createApp', () => {
 
     it('identity-scoped mutations map UnauthorizedError to 403', async () => {
         // usersUpdateProject with an identity that has no membership → 403.
+        const body = JSON.stringify({ projectId: 'proj_1', name: 'New name' });
         const res = await call(makeApp(), '/mutation/usersUpdateProject', {
             method: 'POST',
             headers: {
                 authorization: 'Bearer tok',
                 'content-type': 'application/json',
-                'x-tokens-identity': identityHeader({ clerkUserId: 'user_1' }),
+                'x-tokens-identity': await signedIdentityHeader(
+                    { clerkUserId: 'user_1' },
+                    'mutation',
+                    'usersUpdateProject',
+                    body,
+                ),
             },
-            body: JSON.stringify({ projectId: 'proj_1', name: 'New name' }),
+            body,
         });
         expect(res.status).toBe(403);
         expect(((await res.json()) as { error: string }).error).toBe('unauthorized');
@@ -330,7 +367,7 @@ describe('createApp', () => {
             headers: {
                 authorization: 'Bearer tok',
                 'content-type': 'application/json',
-                'x-tokens-identity': identityHeader({ clerkUserId: 'user_1' }),
+                'x-tokens-identity': await signedIdentityHeader({ clerkUserId: 'user_1' }, 'query', 'usersGetMe', '{}'),
             },
             body: '{}',
         });
@@ -338,8 +375,139 @@ describe('createApp', () => {
         expect(((await res.json()) as { clerkUserId: string }).clerkUserId).toBe('user_1');
     });
 
+    describe('x-tokens-identity verification', () => {
+        const userRow = {
+            _id: 'usr_1',
+            _creationTime: 1,
+            clerkUserId: 'user_1',
+            primaryEmail: 'a@b.co',
+            createdAt: 1,
+            updatedAt: 2,
+        };
+        const dashboard: DashboardRepo = { ...noopDashboard, getUserByClerkId: async () => userRow };
+
+        async function getMe(app: ReturnType<typeof createApp>, header: string, body = '{}') {
+            return call(app, '/query/usersGetMe', {
+                method: 'POST',
+                headers: { authorization: 'Bearer tok', 'content-type': 'application/json', 'x-tokens-identity': header },
+                body,
+            });
+        }
+
+        async function expectIdentityInvalid(res: Response, reason: string) {
+            expect(res.status).toBe(401);
+            expect(await res.json()).toEqual({ error: 'identity_invalid', reason });
+        }
+
+        it('rejects a token signed for a different function', async () => {
+            const header = await signedIdentityHeader({ clerkUserId: 'user_1' }, 'query', 'usersGetProjectById', '{}');
+            await expectIdentityInvalid(await getMe(makeApp({ dashboard }), header), 'binding_mismatch');
+        });
+
+        it('rejects a token whose body hash does not match the sent body', async () => {
+            const header = await signedIdentityHeader({ clerkUserId: 'user_1' }, 'query', 'usersGetMe', '{"a":1}');
+            await expectIdentityInvalid(await getMe(makeApp({ dashboard }), header, '{"a":2}'), 'binding_mismatch');
+        });
+
+        it('rejects an expired token', async () => {
+            const header = await signedIdentityHeader({ clerkUserId: 'user_1' }, 'query', 'usersGetMe', '{}', {
+                nowMs: Date.now() - IDENTITY_TOKEN_TTL_MS - 1_000,
+            });
+            await expectIdentityInvalid(await getMe(makeApp({ dashboard }), header), 'expired');
+        });
+
+        it('rejects a token signed with the wrong secret', async () => {
+            const header = await signedIdentityHeader({ clerkUserId: 'user_1' }, 'query', 'usersGetMe', '{}', {
+                secret: 'not-the-secret',
+            });
+            await expectIdentityInvalid(await getMe(makeApp({ dashboard }), header), 'bad_signature');
+        });
+
+        it('accepts a token signed with the previous secret during a rotation', async () => {
+            const header = await signedIdentityHeader({ clerkUserId: 'user_1' }, 'query', 'usersGetMe', '{}', {
+                secret: 'old-secret',
+            });
+            await expectIdentityInvalid(await getMe(makeApp({ dashboard }), header), 'bad_signature');
+            const res = await getMe(makeApp({ dashboard, identitySigningSecretPrevious: 'old-secret' }), header);
+            expect(res.status).toBe(200);
+        });
+
+        it('rejects a signed token when no signing secret is configured', async () => {
+            const header = await signedIdentityHeader({ clerkUserId: 'user_1' }, 'query', 'usersGetMe', '{}');
+            await expectIdentityInvalid(
+                await getMe(makeApp({ dashboard, identitySigningSecret: null }), header),
+                'signing_not_configured',
+            );
+        });
+
+        it('rejects a legacy unsigned header unless acceptUnsignedIdentity is on', async () => {
+            const header = identityHeader({ clerkUserId: 'user_1' });
+            await expectIdentityInvalid(await getMe(makeApp({ dashboard }), header), 'unsigned');
+
+            const res = await getMe(makeApp({ dashboard, acceptUnsignedIdentity: true }), header);
+            expect(res.status).toBe(200);
+            expect(((await res.json()) as { clerkUserId: string }).clerkUserId).toBe('user_1');
+        });
+
+        it('rejects a malformed legacy header even when acceptUnsignedIdentity is on', async () => {
+            const res = await getMe(makeApp({ dashboard, acceptUnsignedIdentity: true }), '!!!not-base64-json');
+            await expectIdentityInvalid(res, 'malformed');
+        });
+
+        it('fails closed: an invalid header on a non-identity RPC is still 401', async () => {
+            const res = await call(makeApp(), '/query/ping', {
+                method: 'POST',
+                headers: {
+                    authorization: 'Bearer tok',
+                    'content-type': 'application/json',
+                    'x-tokens-identity': 'garbage.signature',
+                },
+                body: '{}',
+            });
+            await expectIdentityInvalid(res, 'malformed');
+        });
+
+        it('still checks the bearer before the identity header', async () => {
+            const header = await signedIdentityHeader({ clerkUserId: 'user_1' }, 'query', 'usersGetMe', '{}');
+            const res = await call(makeApp({ dashboard }), '/query/usersGetMe', {
+                method: 'POST',
+                headers: { authorization: 'Bearer wrong', 'content-type': 'application/json', 'x-tokens-identity': header },
+                body: '{}',
+            });
+            expect(res.status).toBe(401);
+            expect(await res.json()).toEqual({ error: 'unauthorized' });
+        });
+    });
+
+    it('POST /mutation/syncUsageAggregates routes to the replay-safe write', async () => {
+        const added: unknown[] = [];
+        const synced: unknown[] = [];
+        const usageIngest: UsageIngestRepo = {
+            applyIngestBuckets: async args => {
+                added.push(args);
+            },
+            applySyncBuckets: async args => {
+                synced.push(args);
+            },
+        };
+        const res = await call(makeApp({ usageIngest }), '/mutation/syncUsageAggregates', {
+            method: 'POST',
+            headers: { authorization: 'Bearer tok', 'content-type': 'application/json' },
+            body: JSON.stringify({
+                buckets: [
+                    { projectId: 'p', day: '2026-07-01', totalCalls: 3, assetCalls: 1, successCalls: 3, sumLatencyMs: 9 },
+                ],
+            }),
+        });
+        expect(res.status).toBe(200);
+        expect(await res.json()).toEqual({ ingested: 1, dailyBuckets: 1, endpointBuckets: 0 });
+        expect(synced).toHaveLength(1);
+        expect(added).toHaveLength(0);
+    });
+
     it('POST /mutation hides handler-thrown errors as 500', async () => {
         const usageIngest: UsageIngestRepo = {
+            ...noopUsageIngest,
             applyIngestBuckets: async () => {
                 throw new Error('connection refused on db-internal');
             },
@@ -359,3 +527,64 @@ describe('createApp', () => {
         expect(payload.message).toBeUndefined();
     });
 });
+
+describe('POST /mutation/apiKeysAuthenticateAndEnforce', () => {
+    const DEFAULTS = {
+        rateLimit: { requests: 400, windowSeconds: 10 },
+        sustainedRateLimit: { requests: 1_000, windowSeconds: 60 },
+        quota: { requestsPerMonth: 1_000_000_000 },
+    };
+
+    it('401 without the bearer', async () => {
+        const res = await call(makeApp(), '/mutation/apiKeysAuthenticateAndEnforce', {
+            method: 'POST',
+            body: JSON.stringify({ keyHash: 'a'.repeat(64), defaults: DEFAULTS }),
+        });
+        expect(res.status).toBe(401);
+    });
+
+    it('400 on invalid defaults', async () => {
+        const res = await call(makeApp(), '/mutation/apiKeysAuthenticateAndEnforce', {
+            method: 'POST',
+            headers: { authorization: 'Bearer tok', 'content-type': 'application/json' },
+            body: JSON.stringify({ keyHash: 'a'.repeat(64), defaults: { quota: { requestsPerMonth: 1 } } }),
+        });
+        expect(res.status).toBe(400);
+    });
+
+    it('unknown key → { auth: null } (200)', async () => {
+        const res = await call(makeApp(), '/mutation/apiKeysAuthenticateAndEnforce', {
+            method: 'POST',
+            headers: { authorization: 'Bearer tok', 'content-type': 'application/json' },
+            body: JSON.stringify({ keyHash: 'a'.repeat(64), defaults: DEFAULTS }),
+        });
+        expect(res.status).toBe(200);
+        expect(await res.json()).toEqual({ auth: null });
+    });
+
+    it('known key without Redis → auth with limits null (fail-open signal), never a 500', async () => {
+        const platformAuth: PlatformAuthRepo = {
+            ...noopPlatformAuth,
+            findApiKeyByHash: async () => ({
+                id: 'kh7test',
+                keyPrefix: 'tk_test',
+                projectId: 'prj_1',
+                ownerClerkUserId: 'user_1',
+                scopes: ['assets:read'],
+                revokedAt: null,
+            }),
+            getProject: async () => ({ limits: null }),
+        };
+        const res = await call(makeApp({ platformAuth }), '/mutation/apiKeysAuthenticateAndEnforce', {
+            method: 'POST',
+            headers: { authorization: 'Bearer tok', 'content-type': 'application/json' },
+            body: JSON.stringify({ keyHash: 'a'.repeat(64), defaults: DEFAULTS }),
+        });
+        expect(res.status).toBe(200);
+        const body = (await res.json()) as { auth: { apiKeyId: string } | null; limits: unknown; limitsError?: string };
+        expect(body.auth?.apiKeyId).toBe('kh7test');
+        expect(body.limits).toBeNull();
+        expect(body.limitsError).toContain('REDIS_HOST');
+    });
+});
+

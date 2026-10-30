@@ -71,7 +71,6 @@ const ANTHROPIC_PRESTOCK_MINT = 'Pren1FvFX6J3E4kXhJuCiAD5aDmGEb7qJRncwA8Lkhw';
 const ANDURIL_PRESTOCK_MINT = 'PresTj4Yc2bAR197Er7wz4UUKSfqt6FryBEdAriBoQB';
 const POLYMARKET_PRESTOCK_MINT = 'Pre8AREmFPtoJFT8mQSXQLh56cwJmM7CFDRuoGBZiUP';
 const KALSHI_PRESTOCK_MINT = 'PreLWGkkeqG1s4HEfFZSy9moCrJ7btsHuUtfcCeoRua';
-const XAI_PRESTOCK_MINT = 'PreC1KtJ1sBPPqaeeqL6Qb15GTLCYVvyYEwxhdfTwfx';
 
 const PRE_STOCK_MINTS: string[] = [
     SPACEX_PRESTOCK_MINT,
@@ -80,11 +79,10 @@ const PRE_STOCK_MINTS: string[] = [
     ANDURIL_PRESTOCK_MINT,
     POLYMARKET_PRESTOCK_MINT,
     KALSHI_PRESTOCK_MINT,
-    XAI_PRESTOCK_MINT,
 ];
 
 // Company identity for the standalone PreStocks assets (symbols match the
-// PreStocks reference API, `GET https://prestocks.com/api/<SYMBOL>`).
+// PreStocks reference API, `GET https://prestocks.com/api/prestocks`).
 // SpaceX and OpenAI PreStocks mints are variants of hand-written canonical
 // assets in `buildSpecialEquityAssets` and are intentionally absent here.
 const PRE_STOCK_METADATA: Record<string, { symbol: string; name: string; aliases: string[] }> = {
@@ -92,7 +90,6 @@ const PRE_STOCK_METADATA: Record<string, { symbol: string; name: string; aliases
     [ANDURIL_PRESTOCK_MINT]: { symbol: 'ANDURIL', name: 'Anduril', aliases: ['anduril', 'Anduril Industries', 'Anduril PreStocks'] },
     [POLYMARKET_PRESTOCK_MINT]: { symbol: 'POLYMARKET', name: 'Polymarket', aliases: ['polymarket', 'Polymarket PreStocks'] },
     [KALSHI_PRESTOCK_MINT]: { symbol: 'KALSHI', name: 'Kalshi', aliases: ['kalshi', 'Kalshi PreStocks'] },
-    [XAI_PRESTOCK_MINT]: { symbol: 'XAI', name: 'xAI', aliases: ['xai', 'x.ai', 'xAI PreStocks'] },
 };
 
 const UNLISTED_STOCK_MINTS: string[] = [
@@ -160,23 +157,13 @@ const UNLISTED_STOCK_MINTS: string[] = [
     ...ONDO_STOCK_MINTS_20260618,
 ];
 
-function mapXstockGroupToCoinGeckoId(group: {
-    id: string;
-    addresses: Array<{ label?: string | null }>;
-}): string | null {
-    if (!group.id.startsWith('xstock-')) return null;
-    const slug = group.id.slice('xstock-'.length).trim();
-    if (!slug) return null;
-
-    const labels = group.addresses.map(a => (a.label ?? '').trim().toLowerCase());
-    const hasXstock = labels.includes('xstock');
-
-    // Only emit a CoinGecko ID when the group includes an xStock variant.
-    // Ondo-only groups have inconsistent CoinGecko IDs (and some aren't listed),
-    // so they should be resolved at runtime when needed.
-    return hasXstock ? `${slug}-xstock` : null;
-}
-
+/**
+ * xStock groups carry no CoinGecko id in the registry. The old `${slug}-xstock`
+ * convention produced ids that do not exist for a third of the catalog (and
+ * for ~45 names CoinGecko has no xStock coin at all, only Ondo / Backpack /
+ * bStocks issues). `assets.coingecko_id` is resolved against CoinGecko by the
+ * worker's `validate-coingecko-ids` job (by Solana mint) and by admin edits.
+ */
 function mapXstockGroupIdToAssetId(groupId: string): string | null {
     if (!groupId.startsWith('xstock-')) return null;
     // Avoid collisions with real CoinGecko crypto IDs (e.g. `sui`).
@@ -232,7 +219,6 @@ function buildXstockGroupAssets(): CanonicalAsset[] {
         if (SUPPRESSED_XSTOCK_GROUP_IDS.has(group.id)) continue;
         const assetId = mapXstockGroupIdToAssetId(group.id) ?? group.id;
         const name = group.label.replace(/\s+variants$/i, '').trim();
-        const coingeckoId = mapXstockGroupToCoinGeckoId(group) ?? undefined;
         const symbol = EQUITY_TICKER_BY_SLUG[assetId] ?? undefined;
 
         const variantsByMint = new Map<string, AssetVariant>();
@@ -258,8 +244,7 @@ function buildXstockGroupAssets(): CanonicalAsset[] {
             group.id,
             name,
             ...(symbol ? [symbol] : []),
-            ...(coingeckoId ? [coingeckoId] : []),
-            ...variants.flatMap(v => [v.mint, v.label ?? '']),
+            ...variants.flatMap(v => [v.mint]),
         ]);
 
         assets.push({
@@ -268,7 +253,6 @@ function buildXstockGroupAssets(): CanonicalAsset[] {
             ...(symbol ? { symbol } : {}),
             category: 'equity',
             aliases,
-            coingeckoId,
             variants,
         });
     }
@@ -628,16 +612,22 @@ function buildPreStockAssets(existingMints: ReadonlySet<string>): CanonicalAsset
 export interface PreStockListing {
     /** Solana mint of the PreStocks token. */
     mint: string;
-    /** Symbol used by the PreStocks reference API (`GET https://prestocks.com/api/<SYMBOL>`). */
+    /** Symbol the PreStocks reference API (`GET https://prestocks.com/api/prestocks`) lists the token under. */
     symbol: string;
     name: string;
-    /** Canonical asset the mint belongs to (`spacex`/`openai` for variant mints, `pre-*` otherwise). */
+    /** Canonical asset the mint belongs to (`spacex`/`openai` for variant mints, `pre-*` for registry assets, the admin-chosen id otherwise). */
     assetId: string;
 }
 
-/** All PreStocks mints with their reference-API symbols, for the PreStocks price pipeline. */
+/**
+ * All PreStocks mints with their reference-API symbols, for the PreStocks price pipeline.
+ *
+ * SpaceX is deliberately absent: PreStocks delisted SPACEX from the feed on
+ * 2026-10-08 (SpaceX went public; holders must swap into SPCXx before
+ * 2027-03-12 23:59 UTC). The `spacex:prestocks` variant stays in the registry
+ * for the transition so the admin caution advisory has a variant to render on.
+ */
 export const PRE_STOCKS: readonly PreStockListing[] = [
-    { mint: SPACEX_PRESTOCK_MINT, symbol: 'SPACEX', name: 'SpaceX', assetId: 'spacex' },
     { mint: OPENAI_PRESTOCK_MINT, symbol: 'OPENAI', name: 'OpenAI', assetId: 'openai' },
     ...Object.entries(PRE_STOCK_METADATA).map(([mint, metadata]) => ({
         mint,
@@ -645,6 +635,10 @@ export const PRE_STOCKS: readonly PreStockListing[] = [
         name: metadata.name,
         assetId: preStockAssetId(mint),
     })),
+    // Admin-created assets: identity lives in the database, not this registry.
+    { mint: 'PreZad18qfPtbxNpMtMuAuX2zVpvkEU8DnJx56faCWd', symbol: 'FIGUREAI', name: 'Figure AI', assetId: 'figure-ai' },
+    { mint: 'PrekqLJvJ3qVdXmBGDiexvwUTF4rLFDa6HWS4HJbw9S', symbol: 'NEURALINK', name: 'Neuralink', assetId: 'neuralink' },
+    { mint: 'Pre9atBqkocK1QngFy7Q7zvyQictEFpXdLi6bZ2qnYy', symbol: 'OURA', name: 'Oura', assetId: 'oura' },
 ];
 
 function unlistedStockAssetId(mint: string): string {

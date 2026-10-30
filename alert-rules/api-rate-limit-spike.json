@@ -2,14 +2,14 @@
   "uid": "tokens-api-rate-limit-spike",
   "title": "tokens-api: rate-limit denials spike",
   "ruleGroup": "tokens-api-availability",
-  "folderUID": "tokens-xyz",
+  "folderUID": "tokens",
   "noDataState": "OK",
   "execErrState": "OK",
   "for": "15m",
   "data": [
     {
       "refId": "A",
-      "datasourceUid": "grafanacloud-logs",
+      "datasourceUid": "tokens-logs",
       "queryType": "range",
       "relativeTimeRange": {
         "from": 600,
@@ -89,5 +89,15 @@
     "summary": "tokens-api 429 rate above 3/sec",
     "description": "tokens-api returned HTTP 429 (rate-limited) at more than 3/sec sustained for 15 minutes. Known bursty consumers bouncing off the per-key default (100/10s) sit well below this; sustained firing means a denial storm — a runaway client or an over-firing limiter. Check 429s by key_prefix in Loki, then raise the project's limit via scripts/set-project-rate-limit.mjs or contact the owner.",
     "runbook_url": "https://example.com/runbooks/api-rate-limit-spike"
+  },
+  "notification_settings": {
+    "receiver": "tokens-slack",
+    "group_by": [
+      "grafana_folder",
+      "alertname"
+    ],
+    "group_wait": "30s",
+    "group_interval": "5m",
+    "repeat_interval": "4h"
   }
 }

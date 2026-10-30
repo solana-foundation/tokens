@@ -8,6 +8,9 @@ import { BadRequestError, UpstreamDataError } from './api-errors';
 // Base58 (no 0,O,I,l) and common Solana mint length range.
 export const SolanaAddress = Schema.String.check(Schema.isPattern(/^[1-9A-HJ-NP-Za-km-z]{32,44}$/));
 
+// `0x` + 40 hex chars, any casing (callers lowercase after decoding; see @tokens/asset-registry/chains).
+export const EvmAddress = Schema.String.check(Schema.isPattern(/^0x[0-9a-fA-F]{40}$/));
+
 export const TimeInterval = Schema.Literals(['1m', '5m', '15m', '1H', '4H', '1D', '1W']);
 
 export const NonEmptyString = Schema.NonEmptyString;
@@ -39,6 +42,22 @@ export function decodeUnknownOrBadRequest<S extends Schema.ConstraintDecoder<unk
     return Schema.decodeUnknownEffect(schema)(input).pipe(
         Effect.mapError(parseError => new BadRequestError({ message, details: parseErrorToMessage(parseError) })),
     );
+}
+
+/**
+ * Read a JSON request body. A body that is empty or not valid JSON is the
+ * caller's mistake, so it maps to a 400 `BadRequestError` (with the parser's
+ * reason in `details`) instead of surfacing as an `UnknownError` 500.
+ */
+export function readJsonBody(request: Request, message = 'Invalid JSON body'): Effect.Effect<unknown, BadRequestError> {
+    return Effect.tryPromise({
+        try: () => request.json() as Promise<unknown>,
+        catch: error =>
+            new BadRequestError({
+                message,
+                details: { reason: error instanceof Error ? error.message : String(error) },
+            }),
+    });
 }
 
 export function decodeRequiredSearchParam<S extends Schema.ConstraintDecoder<unknown>>(

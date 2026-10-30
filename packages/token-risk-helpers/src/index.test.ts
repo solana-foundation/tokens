@@ -1,6 +1,20 @@
 import { describe, expect, test } from 'bun:test';
 
-import { computeMarketScore, type MarketScoreInput } from './index';
+import { computeMarketScore, createInsufficientDataResult, estimate7dVolume, type MarketScoreInput } from './index';
+
+const SOL_MINT = 'So11111111111111111111111111111111111111112';
+const JUP_MINT = 'JUPyiwrYJFskUPiHa7hkeR8VUtAeFoSYbKedZNsDvCN';
+const RAY_MINT = '4k3Dyjzvzp8eMZWUXbBCjEvwSkkk59S5iCNLY3QrkX6R';
+
+const NO_DATA = {
+    liquidityUsd: null,
+    marketCapUsd: null,
+    holderCount: null,
+    top10HoldersPercent: null,
+    volume24hUsd: null,
+    volume7dUsd: null,
+    tokenMintTime: null,
+} as const;
 
 const BASE_INPUT: MarketScoreInput = {
     liquidityUsd: 1_000_000,
@@ -65,5 +79,51 @@ describe('computeMarketScore', () => {
         const trusted = computeMarketScore({ ...young, curatedListSlugs: ['majors'] });
         expect(trusted.isTrustedLaunch).toBe(true);
         expect(trusted.score).toBeGreaterThanOrEqual(70);
+    });
+
+    test('pins native SOL to 100 / A, even with no data', () => {
+        for (const tokenAddress of [SOL_MINT, `  ${SOL_MINT} `]) {
+            const result = computeMarketScore({ ...NO_DATA, tokenAddress });
+            expect(result.score).toBe(100);
+            expect(result.grade).toBe('A');
+            expect(result.hasInsufficientData).toBe(false);
+        }
+    });
+
+    // Regression: an unscored token must never look as safe as SOL.
+    test('never grades a token with no market data', () => {
+        for (const tokenAddress of [JUP_MINT, RAY_MINT, '', 'Unknown1111111111111111111111111111111111111']) {
+            const result = computeMarketScore({ ...NO_DATA, tokenAddress });
+            expect(result.hasInsufficientData).toBe(true);
+            expect(result.grade).toBe('C');
+            expect(result.score).toBe(0);
+            expect(result.label).toBe('Insufficient Data');
+            expect(result.tone).not.toBe('safe');
+        }
+    });
+});
+
+describe('createInsufficientDataResult', () => {
+    test('is an unscored result carrying the given reason', () => {
+        const result = createInsufficientDataResult('Market snapshot not available in cache');
+
+        expect(result.score).toBe(0);
+        expect(result.grade).toBe('C');
+        expect(result.label).toBe('Insufficient Data');
+        expect(result.tone).toBe('risk');
+        expect(result.hasInsufficientData).toBe(true);
+        expect(result.insufficientDataReason).toBe('Market snapshot not available in cache');
+        expect(result.caps).toEqual([]);
+        for (const component of Object.values(result.components)) expect(component.hasData).toBe(false);
+    });
+});
+
+describe('estimate7dVolume', () => {
+    test('scales a positive 24h volume to 7 days', () => {
+        expect(estimate7dVolume(100)).toBe(700);
+    });
+
+    test('is null when 24h volume is missing or not positive', () => {
+        for (const value of [null, undefined, 0, -5, Number.NaN]) expect(estimate7dVolume(value)).toBeNull();
     });
 });

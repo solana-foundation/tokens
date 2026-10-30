@@ -20,6 +20,7 @@ export { InvalidArgsError } from '@tokens/cloudrun-shutdown/http-errors';
 import { InvalidArgsError } from '@tokens/cloudrun-shutdown/http-errors';
 // Type-only: no runtime cycle with curatedMembershipReads.
 import type { CuratedMembershipSource } from './curatedMembershipReads';
+import { birdeyeOverviewToTokenUpsert, type TokenUpsertFromBirdeye } from './tokenUpsert';
 
 export interface VariantMarketUpsertFromBirdeye {
     mint: string;
@@ -328,6 +329,40 @@ export interface JobsRepo {
         interval: string,
         candles: readonly OhlcvCandle[],
     ): Promise<OhlcvUpsertResult>;
+
+    /**
+     * Legacy `tokens` row write-through. The token-price cron only refreshes
+     * rows that already exist, so curated mints only ever reach `tokens` via
+     * this write from the variant-market refresh.
+     */
+    upsertTokenFromBirdeye(args: TokenUpsertFromBirdeye): Promise<void>;
+
+    /**
+     * `candidates` (in rank order) not attempted for `interval` since
+     * `attemptedBeforeMs` AND with trades newer than their newest stored
+     * candle bucket (per the variant market snapshot's last trade time);
+     * never-attempted first, then longest-untouched, ties broken by rank.
+     * Backed by `ohlcv_refresh_state` + `variant_markets_latest`.
+     */
+    listStaleOhlcvMints(
+        interval: string,
+        intervalSeconds: number,
+        candidates: readonly string[],
+        attemptedBeforeMs: number,
+        limit: number,
+    ): Promise<string[]>;
+    touchOhlcvRefreshState(args: OhlcvRefreshStateTouch): Promise<void>;
+}
+
+export interface OhlcvRefreshStateTouch {
+    address: string;
+    interval: string;
+    /** ms epoch of this attempt (success, nothing-to-store, or error). */
+    attemptedAt: number;
+    /** ms epoch when the attempt completed without error; `null` keeps the stored value. */
+    refreshedAt: number | null;
+    /** Newest candle time known after the attempt (unix seconds); `null` keeps the stored value. */
+    lastCandleTime: number | null;
 }
 
 export interface CuratedMintsSource {
@@ -530,7 +565,7 @@ function normalizeUnixTimeMs(value: unknown): number | undefined {
     return value < 1_000_000_000_000 ? Math.floor(value * 1000) : Math.floor(value);
 }
 
-function birdeyeOverviewToUpsert(
+export function birdeyeOverviewToUpsert(
     mint: string,
     overview: BirdeyeOverview,
     lastFetchedAt: number,
@@ -776,6 +811,28 @@ async function tryShadowWriteFromRwaXyz(
     }
 }
 
+/**
+ * Keep the legacy `tokens` row for a curated mint in step with the variant
+ * market snapshot (same Birdeye overview, zero extra provider calls). Never
+ * fails the variant refresh: the snapshot is the source of truth, `tokens`
+ * is a compatibility surface.
+ */
+async function writeThroughLegacyToken(
+    deps: CronDeps,
+    mint: string,
+    overview: BirdeyeOverview,
+    nowMs: number,
+    label: string,
+): Promise<void> {
+    const upsert = birdeyeOverviewToTokenUpsert(mint, overview, nowMs);
+    if (!upsert) return;
+    try {
+        await deps.repo.upsertTokenFromBirdeye(upsert);
+    } catch (err) {
+        console.error(`[${label}] tokens write-through mint=${mint}`, err instanceof Error ? err.message : String(err));
+    }
+}
+
 export async function refreshCuratedVariantMarkets(deps: CronDeps, rawArgs: unknown): Promise<CronResult> {
     const args = asObject(rawArgs);
     const priorityCount = clampInt(args.priorityCount, 50, 0, 100);
@@ -836,6 +893,7 @@ export async function refreshCuratedVariantMarkets(deps: CronDeps, rawArgs: unkn
                         return;
                     }
                     await deps.repo.upsertVariantMarketFromBirdeye(upsert);
+                    await writeThroughLegacyToken(deps, mint, overview, start, 'refreshCuratedVariantMarkets');
                     await tryShadowWriteFromRwaXyz(deps, mint, start, 'refreshCuratedVariantMarkets');
                     refreshed += 1;
                 }),
@@ -901,6 +959,7 @@ export async function refreshStaleVariantMarkets(deps: CronDeps, rawArgs: unknow
                         return;
                     }
                     await deps.repo.upsertVariantMarketFromBirdeye(upsert);
+                    await writeThroughLegacyToken(deps, mint, overview, start, 'refreshStaleVariantMarkets');
                     await tryShadowWriteFromRwaXyz(deps, mint, start, 'refreshStaleVariantMarkets');
                     refreshed += 1;
                 }),
@@ -1801,29 +1860,84 @@ function chunkArr<T>(items: readonly T[], size: number): T[][] {
     return out;
 }
 
+type OhlcvSelection = 'rotating' | 'stale';
+
+function parseOhlcvSelection(value: unknown): OhlcvSelection {
+    if (value === undefined || value === null || value === 'rotating') return 'rotating';
+    if (value === 'stale') return 'stale';
+    throw new InvalidArgsError('selection must be "rotating" or "stale"');
+}
+
+/**
+ * Lag that matters: a priority mint whose refresh FAILED this run and whose
+ * newest stored candle is more than two intervals old. After a successful
+ * fetch up to `now` the stored candles are exactly what the provider has, so a
+ * mint with no recent candle is merely not trading, not lagging — flagging
+ * those made the signal fire on every dead/illiquid mint in the priority set.
+ * Steady state after a refresh is the in-progress bucket (lag < 1 interval) or
+ * the last complete one (lag < 2 intervals).
+ */
+function ohlcvLagThresholdSeconds(intervalSeconds: number): number {
+    return 2 * intervalSeconds;
+}
+
 export async function refreshCuratedOhlcv(deps: CronDeps, rawArgs: unknown): Promise<CronResult> {
     const args = asObject(rawArgs);
     const interval = parseOhlcvInterval(args.interval);
     const days = clampInt(args.days, 90, 1, 3650);
     const priorityCount = clampInt(args.priorityCount, 25, 0, 100);
-    const maxMints = clampInt(args.maxMints, 25, 1, 250);
+    // 500: the curated rotation is ~1.5k mints (every LST/yield variant counts),
+    // and a 250-mint 15m run only re-reached a mint every ~90 minutes.
+    const maxMints = clampInt(args.maxMints, 25, 1, 500);
     const concurrency = clampInt(args.concurrency, 2, 1, 5);
     const delayMs = clampInt(args.delayMs, 200, 0, 5_000);
     const selectionWindowMs = clampInt(args.selectionWindowMs, 60_000, 10_000, 24 * 60 * 60_000);
     const upsertChunkSize = clampInt(args.upsertChunkSize, 500, 50, 2_000);
     const budgetMs = clampInt(args.budgetMs, 0, 0, 3_600_000);
+    let selection = parseOhlcvSelection(args.selection);
 
     const explicitMints = parseExplicitTargets(args.mints, 'mints');
 
     const start = deps.now();
+    const intervalSeconds = intervalToSeconds(interval);
+    const allMints = explicitMints ? [] : deps.curated.getAllCuratedMintsInOrder();
+    const priorityMints = explicitMints || priorityCount === 0 ? [] : allMints.slice(0, priorityCount);
+    let staleCandidates: number | null = null;
     let mints: string[];
     if (explicitMints) {
         mints = explicitMints;
     } else {
-        const allMints = deps.curated.getAllCuratedMintsInOrder();
-        const priorityMints = priorityCount > 0 ? allMints.slice(0, priorityCount) : [];
-        const selectedMints = pickDeterministicBatch(allMints, maxMints, selectionWindowMs, start);
-        mints = uniqueStrings([...priorityMints, ...selectedMints]).slice(0, 250);
+        let rotating: string[] | null = null;
+        if (selection === 'stale') {
+            // Stalest first: never-attempted mints, then the longest-untouched.
+            // A mint attempted within the last interval has no new complete
+            // candle to fetch, so its slot goes to one that does. If the state
+            // table is unavailable (migration not applied yet), fall back to the
+            // rotating window rather than skipping the run.
+            try {
+                // Priority mints are always included, so they must not compete
+                // for the stale slots (they would win every run as "stalest").
+                const stale = await deps.repo.listStaleOhlcvMints(
+                    interval,
+                    intervalSeconds,
+                    allMints.slice(priorityMints.length),
+                    start - intervalSeconds * 1000,
+                    maxMints,
+                );
+                staleCandidates = stale.length;
+                rotating = stale;
+            } catch (err) {
+                selection = 'rotating';
+                console.error(
+                    `[refreshCuratedOhlcv:${interval}] stale selection unavailable, using rotating window`,
+                    err instanceof Error ? err.message : String(err),
+                );
+            }
+        }
+        rotating ??= pickDeterministicBatch(allMints, maxMints, selectionWindowMs, start);
+        // Priority mints are always included on top of the `maxMints` stale /
+        // rotating picks, so the run size is bounded by their sum.
+        mints = uniqueStrings([...priorityMints, ...rotating]).slice(0, priorityMints.length + maxMints);
     }
 
     let refreshed = 0;
@@ -1837,6 +1951,7 @@ export async function refreshCuratedOhlcv(deps: CronDeps, rawArgs: unknown): Pro
             processed: 0,
             durationMs: deps.now() - start,
             interval,
+            selection,
             refreshed,
             failed: 0,
             inserted,
@@ -1845,9 +1960,28 @@ export async function refreshCuratedOhlcv(deps: CronDeps, rawArgs: unknown): Pro
         };
     }
 
-    const intervalSeconds = intervalToSeconds(interval);
     const requestedFrom = Math.floor(start / 1000) - days * 24 * 60 * 60;
     const requestedTo = Math.floor(start / 1000);
+
+    // Newest candle time per processed mint (as stored before the fetch, then
+    // after it) plus the mints whose fetch failed, for the lag signal below.
+    const latestCandleTimeByMint = new Map<string, number | null>();
+    const failedMints = new Set<string>();
+    let touchWarned = false;
+    const touchState = async (address: string, refreshedAt: number | null, lastCandleTime: number | null) => {
+        try {
+            await deps.repo.touchOhlcvRefreshState({ address, interval, attemptedAt: start, refreshedAt, lastCandleTime });
+        } catch (err) {
+            // Bookkeeping only — never fail a refresh over it, and don't spam.
+            if (!touchWarned) {
+                touchWarned = true;
+                console.error(
+                    `[refreshCuratedOhlcv:${interval}] refresh-state write failed`,
+                    err instanceof Error ? err.message : String(err),
+                );
+            }
+        }
+    };
 
     const summary = await Effect.runPromise(
         runJobPool({
@@ -1859,53 +1993,117 @@ export async function refreshCuratedOhlcv(deps: CronDeps, rawArgs: unknown): Pro
             shouldStop: isShuttingDown,
             process: address =>
                 Effect.tryPromise(async () => {
-                const bounds = await deps.repo.getOhlcvBounds(address, interval);
-                const segments: Array<{ from: number; to: number }> = [];
-                if (bounds.minTime === null || bounds.maxTime === null) {
-                    segments.push({ from: requestedFrom, to: requestedTo });
-                } else {
-                    if (bounds.minTime > requestedFrom + intervalSeconds) {
-                        segments.push({ from: requestedFrom, to: bounds.minTime });
+                    const bounds = await deps.repo.getOhlcvBounds(address, interval);
+                    let latest = bounds.maxTime;
+                    latestCandleTimeByMint.set(address, latest);
+                    const segments: Array<{ from: number; to: number }> = [];
+                    if (bounds.minTime === null || bounds.maxTime === null) {
+                        segments.push({ from: requestedFrom, to: requestedTo });
+                    } else {
+                        if (bounds.minTime > requestedFrom + intervalSeconds) {
+                            segments.push({ from: requestedFrom, to: bounds.minTime });
+                        }
+                        if (bounds.maxTime < requestedTo - intervalSeconds) {
+                            segments.push({ from: bounds.maxTime, to: requestedTo });
+                        }
                     }
-                    if (bounds.maxTime < requestedTo - intervalSeconds) {
-                        segments.push({ from: bounds.maxTime, to: requestedTo });
+                    if (segments.length === 0) {
+                        skipped += 1;
+                        latestCandleTimeByMint.set(address, latest);
+                        await touchState(address, start, latest);
+                        return;
                     }
-                }
-                if (segments.length === 0) {
-                    skipped += 1;
-                    return;
-                }
-                for (const segment of segments) {
-                    const candles = await deps.birdeyeOhlcv.fetchOhlcv({
-                        address,
-                        interval,
-                        from: segment.from,
-                        to: segment.to,
-                    });
-                    for (const candlesChunk of chunkArr(candles, upsertChunkSize)) {
-                        const result = await deps.repo.upsertOhlcvCandles(address, interval, candlesChunk);
-                        inserted += result.inserted;
-                        updated += result.updated;
-                        skipped += result.skipped;
+                    for (const segment of segments) {
+                        const candles = await deps.birdeyeOhlcv.fetchOhlcv({
+                            address,
+                            interval,
+                            from: segment.from,
+                            to: segment.to,
+                        });
+                        for (const candle of candles) {
+                            if (latest === null || candle.time > latest) latest = candle.time;
+                        }
+                        for (const candlesChunk of chunkArr(candles, upsertChunkSize)) {
+                            const result = await deps.repo.upsertOhlcvCandles(address, interval, candlesChunk);
+                            inserted += result.inserted;
+                            updated += result.updated;
+                            skipped += result.skipped;
+                        }
                     }
-                }
-                refreshed += 1;
+                    // A fetch that returned nothing (no trades in the window) is
+                    // still a completed refresh; without this the mint is re-fetched
+                    // every run forever.
+                    latestCandleTimeByMint.set(address, latest);
+                    await touchState(address, start, latest);
+                    refreshed += 1;
+                }),
+            onItemError: address =>
+                Effect.tryPromise(async () => {
+                    failedMints.add(address);
+                    await touchState(address, null, null);
                 }),
         }),
     );
 
-    return {
+    const nowSeconds = Math.floor(deps.now() / 1000);
+    const lagThreshold = ohlcvLagThresholdSeconds(intervalSeconds);
+    const lagging: Array<{ mint: string; lagSeconds: number | null }> = [];
+    for (const mint of priorityMints) {
+        if (!failedMints.has(mint)) continue;
+        const latest = latestCandleTimeByMint.get(mint) ?? null;
+        const lagSeconds = latest === null ? null : nowSeconds - latest;
+        if (lagSeconds === null || lagSeconds > lagThreshold) lagging.push({ mint, lagSeconds });
+    }
+
+    const result: CronResult = {
         ok: !(summary.attempted > 0 && refreshed === 0 && skipped === 0 && summary.failed >= summary.attempted),
         processed: mints.length,
         durationMs: deps.now() - start,
         interval,
+        selection,
         refreshed,
         failed: summary.failed,
         inserted,
         updated,
         skipped,
+        ...(staleCandidates !== null ? { staleCandidates } : {}),
+        ...(lagging.length > 0 ? { laggingPriorityMints: lagging.length } : {}),
         ...(summary.partial ? { partial: true } : {}),
     };
+
+    console.log(
+        JSON.stringify({
+            event: 'ohlcv_refresh_summary',
+            interval,
+            selection,
+            processed: result.processed,
+            refreshed,
+            failed: summary.failed,
+            skipped,
+            inserted,
+            updated,
+            staleCandidates,
+            laggingPriorityMints: lagging.length,
+            partial: summary.partial === true,
+            durationMs: result.durationMs,
+        }),
+    );
+    if (lagging.length > 0) {
+        console.error(
+            JSON.stringify({
+                event: 'ohlcv_refresh_stale',
+                interval,
+                laggingCount: lagging.length,
+                maxLagSeconds: lagging.reduce<number | null>(
+                    (max, item) => (item.lagSeconds === null ? max : Math.max(max ?? 0, item.lagSeconds)),
+                    null,
+                ),
+                sample: lagging.slice(0, 5),
+            }),
+        );
+    }
+
+    return result;
 }
 
 export const __testing = {

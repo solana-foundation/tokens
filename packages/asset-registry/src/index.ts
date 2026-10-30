@@ -1,14 +1,78 @@
+export type { AssetIndustry, AssetRegion } from './taxonomy';
+export {
+    ASSET_INDUSTRIES,
+    ASSET_INDUSTRY_LABELS,
+    ASSET_REGION_LABELS,
+    ASSET_REGIONS,
+    isAssetIndustry,
+    isAssetRegion,
+    toAssetIndustryOrNull,
+    toAssetRegionOrNull,
+} from './taxonomy';
 export type {
+    AdvisorySource,
+    AdvisoryStatus,
+    SystemAdvisorySource,
     AssetCategory,
     AssetVariant,
     CanonicalAsset,
     LiquidityTier,
     StockVariantTier,
     TrustTier,
+    VariantAdvisory,
     VariantKind,
     VariantMatch,
 } from './types';
-export { ASSET_CATEGORIES, LIQUIDITY_TIERS, STOCK_VARIANT_TIERS, VARIANT_KINDS } from './types';
+export {
+    ADVISORY_SOURCES,
+    ADVISORY_STATUSES,
+    ADVISORY_SYSTEM_ACTOR_PREFIX,
+    ASSET_CATEGORIES,
+    LIQUIDITY_TIERS,
+    PEG_GUARD_ACTOR,
+    STOCK_VARIANT_TIERS,
+    SYSTEM_ACTOR_BY_SOURCE,
+    SYSTEM_ADVISORY_SOURCES,
+    VARIANT_KINDS,
+    WEBACY_DEPEG_ACTOR,
+    isAdvisorySource,
+    isAdvisoryStatus,
+    isHiddenAdvisory,
+    isSystemActorId,
+    isSystemAdvisorySource,
+    isSystemManagedAdvisory,
+    isTradeRestrictedAdvisory,
+} from './types';
+export type {
+    CompactPegHealth,
+    PegProvider,
+    PegReferenceKind,
+    PegTier,
+    PegHealth,
+    StablecoinHealth,
+    StructuralCategoryKey,
+    StructuralCategoryStatus,
+    StructuralGrade,
+    StructuralHealth,
+    StructuralHealthCategory,
+} from './stablecoin-health';
+export {
+    PEG_PROVIDERS,
+    PEG_REFERENCE_KINDS,
+    PEG_TIERS,
+    STRUCTURAL_CATEGORY_KEYS,
+    STRUCTURAL_CATEGORY_LABELS,
+    STRUCTURAL_CATEGORY_STATUSES,
+    STRUCTURAL_GRADES,
+    isPegProvider,
+    isPegReferenceKind,
+    isPegTier,
+    isStructuralCategoryKey,
+    isStructuralCategoryStatus,
+    isStructuralGrade,
+    pegTierSeverity,
+    structuralGradeBand,
+} from './stablecoin-health';
 export {
     LIQUIDITY_TIER_1_MIN_USD,
     LIQUIDITY_TIER_2_MIN_USD,
@@ -41,7 +105,9 @@ export {
     computeVariantExecutionScore,
     gradeImpactBps,
     interpolateImpactBps,
+    hasPrimaryActivity,
     isFillQualityEligibleForPrimary,
+    isPrimaryEligibleVariant,
     isSpotLikeVariantKind,
     pickPrimaryVariantWithRanking,
     rankVariantsWithReasons,
@@ -61,6 +127,8 @@ export {
 } from './registry';
 
 export { getCanonicalFallbackLogoPath } from './canonical-logo-fallbacks';
+
+export { buildRegistryTombstoneRefs } from './tombstone-refs';
 
 export type { PreStockListing } from './data/equities';
 export { PRE_STOCKS } from './data/equities';
@@ -85,3 +153,40 @@ export {
     isReservedListSlug,
     normalizeCuratedListSlug,
 } from './curated-lists';
+export type { ChainCapabilities, ChainConfig, ChainFamily, ChainKind, ChainProviders, EvmChainKind, VariantKey } from './chains';
+export {
+    CHAINS,
+    CHAIN_KINDS,
+    EVM_CHAIN_KINDS,
+    EVM_NATIVE_ASSET_ADDRESS,
+    birdeyeChains,
+    chainAddressKey,
+    chainSupports,
+    chainsSupporting,
+    explorerTokenUrl,
+    inferAddressFamily,
+    isChainKind,
+    isEvmChainKind,
+    looksLikeEvmAddress,
+    looksLikeSolanaAddress,
+    normalizeAddressForChain,
+    normalizeAddressForLookup,
+    parseChainAddressKey,
+    variantKeyFor,
+} from './chains';
+export { normalizeCoinGeckoCoinIdForAsset } from './coingecko-id';
+export type { AssetIssuanceOptions, IssuanceInput, IssuanceSource, VariantIssuance } from './issuance';
+export {
+    DERIVATIVE_KINDS,
+    NEVER_STANDALONE_PRODUCT_CATEGORIES,
+    ISSUANCE_TAG_PREFIX,
+    VARIANT_ISSUANCE,
+    isVariantIssuance,
+    issuanceFromKind,
+    issuanceOverrideKey,
+    resolveAssetIssuance,
+    resolveVariantIssuance,
+    resolveVariantIssuanceDetailed,
+} from './issuance';
+export type { IssuanceOverride } from './data/issuance-overrides';
+export { ISSUANCE_OVERRIDES } from './data/issuance-overrides';

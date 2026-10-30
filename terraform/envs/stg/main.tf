@@ -8,6 +8,16 @@ import {
   id = "projects/${data.google_project.this.project_id}/locations/${var.region}/services/tokens-assets-jobs-stg-us"
 }
 
+# The Project Canon registry sync job was created out-of-band on 2026-10-14 so
+# the PR #189 staging preview could be seeded before this module was applied
+# (the standalone Cloud Run deploy workflow cannot run from a branch). Adopt it
+# here; the definition in modules/env/crons_solana_data.tf is the source of
+# truth and the first apply reconciles any drift.
+import {
+  to = module.env.module.scheduler_jobs[0].google_cloud_scheduler_job.jobs["sync-solana-data-assets"]
+  id = "projects/${data.google_project.this.project_id}/locations/${var.region}/jobs/tokens-sync-solana-data-assets-stg"
+}
+
 module "env" {
   source = "../../modules/env"
 
@@ -43,6 +53,21 @@ module "env" {
 
   enable_load_balancer = false
   enable_crons         = true
+
+  # Assets logo-sync (docs/operations/logo-sync.md). Pinata dedicated gateway
+  # for IPFS-hosted artwork; tokens-pinata-gateway-token-stg version seeded
+  # 2026-09-22. Cloud Run env is ignore_changes, so the live value is pushed
+  # with gcloud (see the runbook) — this records the desired state.
+  pinata_gateway_host = "yellow-key-catshark-460.mypinata.cloud"
+  # logo_public_base_url = "https://img.tokens.xyz"  # after the img host fronts the bucket
+
+  # Stablecoin depeg advisories GO LIVE (shadow since 2026-10-07; see
+  # docs/operations/asset-advisory-runbook.md). These flip the scheduler
+  # bodies; the assets worker's WEBACY_DEPEG_DRY_RUN / PEG_GUARD_DRY_RUN
+  # (webhook-triggered runs) are Cloud Run env under ignore_changes and are
+  # flipped with gcloud alongside this (prod: env update, then update-traffic).
+  webacy_depeg_dry_run = false
+  peg_guard_dry_run    = false
 }
 
 output "wif_provider" {
@@ -97,6 +122,15 @@ output "cloudrun_auth_token_secret_id" {
 
 output "cloudrun_auth_token_value" {
   value     = module.env.cloudrun_auth_token_value
+  sensitive = true
+}
+
+output "identity_signing_secret_id" {
+  value = module.env.identity_signing_secret_id
+}
+
+output "identity_signing_secret_value" {
+  value     = module.env.identity_signing_secret_value
   sensitive = true
 }
 

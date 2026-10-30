@@ -1,0 +1,151 @@
+---
+title: Quickstart
+description: Base URL, environment setup, and one working curl per v2 endpoint family.
+---
+
+API v2 is served from the same host and with the same key as v1. If you already call v1, nothing
+changes except the path prefix.
+
+## Base URL
+
+- **Base URL**: `https://api.tokens.xyz/v2`
+- **Auth header**: `x-api-key: <YOUR_API_KEY>`; every v2 endpoint needs only the default
+  `assets:read` scope. See [Authentication](/v2/authentication) for scopes, ownership of writes
+  and how to keep the key out of the browser.
+- **Content type**: for `POST`, `PATCH` and `PUT` send `Content-Type: application/json`.
+
+Set these locally for the examples below:
+
+```bash
+export API_BASE_URL="https://api.tokens.xyz"
+export API_KEY="..."
+```
+
+## Lists
+
+Discover the catalog, then compose the lists you trust into one corpus.
+
+```bash
+# Catalog: curated lists first, then published community lists
+curl -sS "$API_BASE_URL/v2/lists?limit=50" -H "x-api-key: $API_KEY"
+
+# One list with hydrated tokens
+curl -sS "$API_BASE_URL/v2/lists/majors?limit=100" -H "x-api-key: $API_KEY"
+
+# Compose: the union of the lists you name, deduped by mint
+curl -sS "$API_BASE_URL/v2/lists/tokens?lists=majors,currencies" -H "x-api-key: $API_KEY"
+```
+
+Reference: [Lists](/v2/endpoints/lists). Model: [Token lists](/v2/concepts/token-lists).
+
+## Search, resolve and judge
+
+`/v2/search` ranks candidates through a policy; `/v2/resolve` returns one answer or refuses;
+`/v2/judge` judges candidates you already have, with no provider budget.
+
+```bash
+# Ranked results under the default policy, suppressed rows included
+curl -sS "$API_BASE_URL/v2/search?q=USDC&limit=5" -H "x-api-key: $API_KEY"
+
+# Registry-attested tokens with real depth only, no suppressed rows
+curl -sS "$API_BASE_URL/v2/search?q=bonk&verifiedOnly=true&minLiquidityUsd=250000&includeSuppressed=false" \
+  -H "x-api-key: $API_KEY"
+
+# One confident answer, or status: ambiguous | no_confident_match
+curl -sS "$API_BASE_URL/v2/resolve?q=USDC" -H "x-api-key: $API_KEY"
+
+# Judge mints your own search returned (no provider lookup, no provider budget)
+curl -sS -X POST "$API_BASE_URL/v2/judge" -H "x-api-key: $API_KEY" -H "content-type: application/json" \
+  -d '{ "q": "USDC", "candidates": [{ "mint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", "symbol": "USDC" }] }'
+```
+
+Reference: [Search, Resolve & Judge](/v2/endpoints/search). Model:
+[Risk-aware search](/v2/concepts/risk-aware-search).
+
+## Chains
+
+Every chain the asset surface covers, with CAIP-2 ids and the capability flags to gate your UI on.
+
+```bash
+curl -sS "$API_BASE_URL/v2/chains" -H "x-api-key: $API_KEY"
+```
+
+Reference: [Chains](/v2/endpoints/chains).
+
+## Assets
+
+Assets are chain-agnostic. Every number is computed across all chains; `chain=` narrows only what
+is listed.
+
+```bash
+# Majors with per-chain stats and a cross-chain aggregate, listing only the Base variants
+curl -sS "$API_BASE_URL/v2/assets?list=majors&chain=base&include=variants&limit=20" \
+  -H "x-api-key: $API_KEY"
+
+# One asset with every variant on every chain
+curl -sS "$API_BASE_URL/v2/assets/usd" -H "x-api-key: $API_KEY"
+
+# Its variants, filtered and paged
+curl -sS "$API_BASE_URL/v2/assets/usd/variants?chain=solana&limit=3" -H "x-api-key: $API_KEY"
+```
+
+Reference: [Assets](/v2/endpoints/assets). Model:
+[Multichain assets](/v2/concepts/multichain-assets).
+
+## Variants
+
+A variant is one token on one chain, keyed `<chain>:<address>`. The chain is always explicit.
+
+```bash
+# One token on one chain; EVM addresses come back lowercase
+curl -sS "$API_BASE_URL/v2/variants/base/0x833589fcd6edb6e08f4c7c32d4f71b54bda02913" \
+  -H "x-api-key: $API_KEY"
+
+# Batch lookup by key (up to 50), request order kept, unknown keys in missing[]
+curl -sS "$API_BASE_URL/v2/variants?keys=solana:EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v,ethereum:0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2" \
+  -H "x-api-key: $API_KEY"
+```
+
+Reference: [Variants](/v2/endpoints/variants).
+
+## Publish your own list
+
+Any key can create lists; the creating key's project owns them.
+
+```bash
+# Is the slug free?
+curl -sS "$API_BASE_URL/v2/lists/check-slug?slug=acme-core" -H "x-api-key: $API_KEY"
+
+# Create
+curl -sS -X POST "$API_BASE_URL/v2/lists" \
+  -H "x-api-key: $API_KEY" -H "Content-Type: application/json" \
+  -d '{"slug":"acme-core","name":"Acme Core","status":"draft"}'
+
+# Load it in one batch (up to 250 mints per call)
+curl -sS -X POST "$API_BASE_URL/v2/lists/acme-core/members" \
+  -H "x-api-key: $API_KEY" -H "Content-Type: application/json" \
+  -d '{"mints":["EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v","So11111111111111111111111111111111111111112"]}'
+
+# Publish
+curl -sS -X PATCH "$API_BASE_URL/v2/lists/acme-core" \
+  -H "x-api-key: $API_KEY" -H "Content-Type: application/json" \
+  -d '{"status":"published"}'
+
+# Your own lists, every status
+curl -sS "$API_BASE_URL/v2/lists?mine=true" -H "x-api-key: $API_KEY"
+```
+
+Reference: [Lists → Managing lists](/v2/endpoints/lists#managing-lists).
+
+## Registry
+
+The Solana Foundation's canonical asset registry (`GET /v2/registry` and
+`GET /v2/registry/{mint}`) shares the `/v2` prefix and the same key, but has its own section of
+these docs. See [Registry](/registry) for the taxonomy and
+[Registry endpoints](/registry/endpoints) for the reference.
+
+## Next
+
+- [Errors & limits](/v2/errors-and-limits) — the error envelope, every `details.code`, the
+  provider lookup budget behind `429`, and cache windows.
+- [Migrating from v1](/v2/migrating-from-v1) — the endpoint and field maps.

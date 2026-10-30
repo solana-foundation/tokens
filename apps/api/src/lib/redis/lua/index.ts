@@ -80,6 +80,54 @@ const SLIDING_WINDOW_REMAINING_TOKENS_SCRIPT_SRC = `
   return {effectiveLimit - usedTokens, effectiveLimit}
 `;
 
+/**
+ * Usage-aggregate drain (see `src/effect/usage-drain.ts`). Every key a script
+ * touches is declared in KEYS so the scripts stay valid on clustered Redis.
+ * Nothing here deletes usage: the hashes hold running totals and expire on
+ * their own TTL.
+ */
+const USAGE_DRAIN_LIST_DIRTY_SCRIPT_SRC = `
+  local dirtyKey = KEYS[1]           -- hash: usage key -> mark of its last write
+  local limit    = tonumber(ARGV[1]) -- max dirty keys to return
+
+  local entries = redis.call("HGETALL", dirtyKey) -- flat {field, value, ...}
+  local out = {}
+  for i = 1, math.min(#entries, limit * 2) do
+    out[i] = entries[i]
+  end
+  return out
+`;
+
+const USAGE_DRAIN_READ_SCRIPT_SRC = `
+  local out = {}
+  for i = 1, #KEYS do
+    out[i] = redis.call("HGETALL", KEYS[i])
+  end
+  return out
+`;
+
+const USAGE_DRAIN_ENDPOINT_NAMES_SCRIPT_SRC = `
+  return redis.call("MGET", unpack(KEYS))
+`;
+
+const USAGE_DRAIN_CLEAR_DIRTY_SCRIPT_SRC = `
+  local dirtyKey = KEYS[1] -- hash: usage key -> mark of its last write
+
+  -- ARGV is {field, mark, field, mark, ...}. Every write sets a fresh unique
+  -- mark, so a mark that differs from the one listed means a request wrote
+  -- after the read: keep it dirty for the next drain instead of dropping
+  -- that write. Unique marks also keep concurrent drains from clearing a
+  -- mark one of them did not read.
+  local cleared = 0
+  for i = 1, #ARGV, 2 do
+    if redis.call("HGET", dirtyKey, ARGV[i]) == ARGV[i + 1] then
+      redis.call("HDEL", dirtyKey, ARGV[i])
+      cleared = cleared + 1
+    end
+  end
+  return cleared
+`;
+
 function digest(script: string): string {
     return createHash('sha1').update(script, 'utf8').digest('hex');
 }
@@ -92,4 +140,24 @@ export const SLIDING_WINDOW_LIMIT_SCRIPT = {
 export const SLIDING_WINDOW_REMAINING_TOKENS_SCRIPT = {
     script: SLIDING_WINDOW_REMAINING_TOKENS_SCRIPT_SRC,
     sha1: digest(SLIDING_WINDOW_REMAINING_TOKENS_SCRIPT_SRC),
+};
+
+export const USAGE_DRAIN_LIST_DIRTY_SCRIPT = {
+    script: USAGE_DRAIN_LIST_DIRTY_SCRIPT_SRC,
+    sha1: digest(USAGE_DRAIN_LIST_DIRTY_SCRIPT_SRC),
+};
+
+export const USAGE_DRAIN_READ_SCRIPT = {
+    script: USAGE_DRAIN_READ_SCRIPT_SRC,
+    sha1: digest(USAGE_DRAIN_READ_SCRIPT_SRC),
+};
+
+export const USAGE_DRAIN_CLEAR_DIRTY_SCRIPT = {
+    script: USAGE_DRAIN_CLEAR_DIRTY_SCRIPT_SRC,
+    sha1: digest(USAGE_DRAIN_CLEAR_DIRTY_SCRIPT_SRC),
+};
+
+export const USAGE_DRAIN_ENDPOINT_NAMES_SCRIPT = {
+    script: USAGE_DRAIN_ENDPOINT_NAMES_SCRIPT_SRC,
+    sha1: digest(USAGE_DRAIN_ENDPOINT_NAMES_SCRIPT_SRC),
 };

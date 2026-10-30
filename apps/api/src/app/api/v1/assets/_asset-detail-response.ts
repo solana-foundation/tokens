@@ -1,6 +1,8 @@
-import type { CanonicalAsset, PrimaryVariantStrategy, VariantKind } from '@tokens/asset-registry';
+import type { CanonicalAsset, PrimaryVariantStrategy, StablecoinHealth, VariantKind } from '@tokens/asset-registry';
 import { liquidityTierPriority } from '@tokens/asset-registry';
 
+import type { AssetAdvisorySummaryEntry } from '@/lib/advisories';
+import { toCompactPegHealth } from '@/lib/stablecoin-health';
 import {
     computePreStocksDerived,
     optionalText,
@@ -24,6 +26,14 @@ type CanonicalMarket =
           priceChange24hPercent: number | null;
           lastFetchedAt: number | null;
           providerLastUpdatedAt: number | null;
+          /**
+           * Canonical (cross-chain) supply for the asset itself — NOT the
+           * on-Solana tokenized supply in `stats`. `maxSupply` is `null` for
+           * uncapped assets (SOL) as well as when the provider has no value.
+           */
+          circulatingSupply: number | null;
+          totalSupply: number | null;
+          maxSupply: number | null;
       }
     | {
           source: 'clickhouse_stock';
@@ -67,7 +77,20 @@ export interface PreStocksMintSnapshot {
 }
 
 export interface BuildAssetDetailResponseParams {
+    /** Variants should already carry `advisory` (see `annotateAssetAdvisories`). */
     asset: CanonicalAsset;
+    /**
+     * `asset.advisories[]` — every flagged variant of the asset, including
+     * ones a caller hid. Defaults to `[]`; the key is always emitted.
+     */
+    advisories?: AssetAdvisorySummaryEntry[];
+    /**
+     * Mint -> Webacy stablecoin health. Only read when `asset.category ===
+     * 'stablecoin'`; those assets always emit `pegHealth` (compact, `null` when
+     * the mint has no entry) on every variant row and on `primaryVariant`.
+     * Non-stablecoin assets never carry the key.
+     */
+    stablecoinHealthByMint?: ReadonlyMap<string, StablecoinHealth>;
     assetDescription?: string | null;
     primaryVariant: CanonicalAsset['variants'][number] | null;
     token: TokenMarketSnapshot | undefined;
@@ -117,6 +140,14 @@ export function buildAssetDetailResponse(params: BuildAssetDetailResponseParams)
     const responseSymbols = params.stockSymbol
         ? Array.from(new Set([params.stockSymbol, ...params.symbols].map(symbol => symbol.trim()).filter(Boolean)))
         : params.symbols;
+
+    // Stablecoin identity is the canonical category (never `variant.kind`: the
+    // `usd` group's variants are `native` / `yield`).
+    const isStablecoinAsset = params.asset.category === 'stablecoin';
+    const pegHealthBlock = (mint: string) =>
+        isStablecoinAsset
+            ? { pegHealth: toCompactPegHealth(params.stablecoinHealthByMint?.get(mint)?.pegHealth ?? null) }
+            : {};
 
     const variantsWithMarket = params.asset.variants.map(variant => {
         const token = params.tokenByMint.get(variant.mint);
@@ -168,6 +199,7 @@ export function buildAssetDetailResponse(params: BuildAssetDetailResponseParams)
                 ...(variantName ? { name: variantName } : {}),
                 market,
                 executionQuality,
+                ...pegHealthBlock(variant.mint),
                 ...(preStocks ? { preStocks } : {}),
             },
             market?.liquidity,
@@ -296,12 +328,15 @@ export function buildAssetDetailResponse(params: BuildAssetDetailResponseParams)
             symbol: responseAssetSymbol,
             ...(params.assetDescription ? { description: params.assetDescription } : {}),
             category: params.asset.category,
+            region: params.asset.region ?? null,
+            industry: params.asset.industry ?? null,
             aliases: params.asset.aliases,
             symbols: responseSymbols,
             imageUrl: params.imageUrl,
             stats: params.effectiveStats,
             primaryVariantStrategy: params.primaryVariantStrategy ?? 'liquidity',
             ...(params.canonicalMarket ? { canonicalMarket: params.canonicalMarket } : {}),
+            advisories: params.advisories ?? [],
             variantGroups,
             primaryVariant: params.primaryVariant
                 ? withDerivedVariantTier(
@@ -314,6 +349,7 @@ export function buildAssetDetailResponse(params: BuildAssetDetailResponseParams)
                           ...(primaryVariantName ? { name: primaryVariantName } : {}),
                           market: primaryMarket,
                           executionQuality: params.fillQualityByMint.get(params.primaryVariant.mint) ?? null,
+                          ...pegHealthBlock(params.primaryVariant.mint),
                           ...(primaryPreStocks ? { preStocks: primaryPreStocks } : {}),
                       },
                       primaryMarket?.liquidity,

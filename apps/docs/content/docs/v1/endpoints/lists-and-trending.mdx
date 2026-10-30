@@ -1,0 +1,196 @@
+---
+title: Lists and trending
+description: Curated asset lists, the list catalog, and the trending set.
+---
+
+All endpoints below use `https://api.tokens.xyz/v1` with an `x-api-key` header and the `assets:read` scope; see [Authentication](/v1/authentication).
+
+## `GET /v1/assets/curated`
+
+Assets from a curated list, with aggregate stats and the primary variant for each.
+
+### Query params
+
+| Param                    | Type                                                    | Default     | Notes                                                                                                                                       |
+| ------------------------ | ------------------------------------------------------- | ----------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| `list`                   | list id or `all`                                        | `all`       | Ids come from [`GET /v1/assets/curated/lists`](#get-v1assetscuratedlists), for example `majors`, `lsts`, `currencies`, `rwas`, `etfs`, `metals`, `stocks`. |
+| `groupBy`                | `asset`, `mint`                                         | `asset`     | `mint` returns one row per variant mint; `primaryVariant` is then always present.                                                            |
+| `limit`                  | integer 1 to 500                                        |             | Opts into pagination. Default `250` when only `offset` is given.                                                                             |
+| `offset`                 | integer                                                 |             | Opts into pagination from this zero-based offset.                                                                                            |
+| `variants`               | `all`                                                   |             | Adds `variants[]` to each asset (only with `groupBy=asset`). Responses grow a lot; paginate large lists.                                     |
+| `variantsMode`           | `all`                                                   |             | Disables the default liquidity floor on Solana LST rows (see notes).                                                                        |
+| `primaryVariantStrategy` | `liquidity`, `execution_quality`, `stock_redeemability` | `liquidity` | See [The primary variant](/v1/concepts/assets-and-variants#the-primary-variant).                                                            |
+| `region`, `industry`     | [tag slugs](/v1/concepts/assets-and-variants#region-and-industry-tags) |  | Exact match, AND-combined, applied before pagination so `pagination.total` is the filtered count. Any filter excludes untagged assets.    |
+
+### Response
+
+```ts
+interface AssetsCuratedResponse {
+  listId: string;
+  primaryVariantStrategy: 'liquidity' | 'execution_quality' | 'stock_redeemability';
+  pagination?: {                      // only when limit or offset was passed
+    offset: number;
+    limit: number;
+    total: number;
+    hasMore: boolean;
+    nextOffset: number | null;
+  };
+  assets: Array<{
+    assetId: string;
+    name?: string;
+    symbol?: string;
+    category: string;
+    region: string | null;
+    industry: string | null;
+    imageUrl: string | null;
+    stats: null | {
+      price: number | null;
+      liquidity: number | null;
+      volume24hUSD: number | null;
+      volume30dUSD: number | null;
+      marketCap: number | null;
+      priceChange24hPercent: number | null;
+      priceChange1hPercent: number | null;
+    };
+    advisories: AssetAdvisoryEntry[];
+    primaryVariant: Variant | null;
+    variants?: Variant[];             // with variants=all, sorted by market.liquidity descending
+  }>;
+}
+```
+
+`Variant` and `AssetAdvisoryEntry` are defined in [Assets and variants](/v1/concepts/assets-and-variants#variants) and [Advisories](/v1/concepts/advisories#shapes).
+
+### Notes
+
+- Sorted by `stats.volume24hUSD` descending.
+- Pagination is opt-in. Without `limit` or `offset` you get every matching row and no `pagination` object. With it, follow `pagination.nextOffset` with the same `list`, `groupBy` and `variants` until `hasMore` is `false`.
+- `list=lsts` is a dynamic set of active Solana liquid-staking tokens, not a fixed mint list, and `list=all` includes it. Rows for LST mints (and the `solana` asset's nested LST variants with `variants=all`) are limited to active LSTs with at least $250k of liquidity unless you pass `variantsMode=all`.
+- `blocked` variants are omitted, including `groupBy=mint` rows; `compromised` and `blocked` variants are never the `primaryVariant`. See [Advisories](/v1/concepts/advisories).
+- `imageUrl` is curated artwork for the asset. `primaryVariant.market.logoURI` is the per-token icon and may be `null`.
+- In `groupBy=mint`, `primaryVariant.market` is mint-specific while `stats` stays the asset aggregate.
+- Cached for 30 seconds.
+
+### Example
+
+```bash
+curl -sS "$API_BASE_URL/v1/assets/curated?list=stocks&variants=all&limit=100" \
+  -H "x-api-key: $API_KEY"
+```
+
+```bash
+curl -sS "$API_BASE_URL/v1/assets/curated?list=lsts&groupBy=mint&variantsMode=all" \
+  -H "x-api-key: $API_KEY"
+```
+
+## `GET /v1/assets/curated/lists`
+
+The catalog of curated lists: the ids to pass as `list`, display names, member counts and the most recent addition. The response is a bare array.
+
+### Response
+
+```ts
+type AssetsCuratedListsResponse = Array<{
+  id: 'majors' | 'currencies' | 'rwas' | 'etfs' | 'metals' | 'stocks';
+  name: string;
+  count: number;                     // active canonical assets in the list
+  lastAddedAssetId: string | null;
+  lastAddedAt: number | null;        // unix ms
+}>;
+```
+
+### Notes
+
+- `lsts` is not in the catalog because it is a dynamic set rather than a curated membership; it is still a valid `list` value.
+- Counts and names reflect operator changes within about ten minutes, without a release. An outage serves the last good catalog.
+
+### Example
+
+```bash
+curl -sS "$API_BASE_URL/v1/assets/curated/lists" \
+  -H "x-api-key: $API_KEY"
+```
+
+## `GET /v1/assets/trending`
+
+The ranked trending set: up to 50 Solana mints with short-window momentum.
+
+### Query params
+
+| Param      | Type                                                                               | Default | Notes                                              |
+| ---------- | ---------------------------------------------------------------------------------- | ------- | -------------------------------------------------- |
+| `category` | `crypto`, `stablecoin`, `lst`, `rwa`, `commodity`, `equity`, `etf`, `index`        |         | `stablecoin` is accepted but currently returns an empty list. |
+| `mode`     | `fresh`, `flow`                                                                    | `fresh` | `fresh` ranks from the cached market snapshots; `flow` ranks purely from recent direct-stable trade flow. |
+| `limit`    | integer 1 to 50                                                                    | `50`    |                                                    |
+| `offset`   | integer                                                                            | `0`     |                                                    |
+
+### Response
+
+```ts
+interface AssetsTrendingResponse {
+  trending: Array<{
+    rank: number;
+    assetId: string;
+    mint: string;
+    symbol: string;
+    name: string;
+    decimals: number;
+    category: string;
+    region: string | null;
+    industry: string | null;
+    imageUrl: string | null;
+    market: {
+      source: 'birdeye' | 'rwa_xyz' | 'clickhouse_trades';
+      metricsSource: 'birdeye' | 'rwa_xyz' | 'clickhouse_trades';
+      price: number | null;
+      liquidity: number | null;        // mode=fresh only
+      volume5mUSD: number | null;
+      volume15mUSD: number | null;
+      volume1hUSD: number | null;
+      volume6hUSD: number | null;
+      volume24hUSD: number | null;
+      trade5m: number | null;
+      trade15m: number | null;
+      trade1h: number | null;
+      trade6h: number | null;
+      trade24h: number | null;
+      uniqueWallet5m: number | null;
+      uniqueWallet1h: number | null;
+      uniqueWallet24h: number | null;
+      priceChange1hPercent: number | null;
+      priceChange24hPercent: number | null;
+      lastTradeAt: number | null;      // mode=fresh: unix ms (the snapshot's own stamp); mode=flow: unix seconds
+      asOf: number | null;             // unix seconds; in mode=flow shared by the whole run
+      lastFetchedAt?: number;          // unix ms, mode=fresh only
+    };
+    trending: {
+      score: number;
+      scoringVersion: string;
+    };
+  }>;
+  meta: {
+    limit: number;
+    offset: number;
+    total: number;                     // at most 50
+    asOf: number | null;
+    scoringVersion: string;
+    mode: 'fresh' | 'flow';
+  };
+}
+```
+
+With `mode=flow` every `market` field comes from direct USD-stable Solana trades (`source` is always `clickhouse_trades`, the window fields are never `null`, and there is no `liquidity` or `lastFetchedAt`). Timestamp units differ by mode: `flow` rows carry `lastTradeAt` and `asOf` in unix seconds, while `fresh` rows pass through the market snapshot's `lastTradeAt`, which is unix milliseconds.
+
+### Notes
+
+- Rows are individual mints, not asset aggregates. `imageUrl` prefers the token's own logo.
+- Ranking is computed from direct USD-stable Solana trades: 5m, 15m and 1h activity, acceleration against longer windows, 1h price movement and trade recency. `trending.score` is that balanced momentum score.
+- Native and wrapped SOL and stablecoins are excluded because they dominate routing and stable-pair liquidity. Mints flagged `compromised` or `blocked` are excluded at the source; `caution` mints stay ranked.
+- Cached for 30 seconds.
+
+### Example
+
+```bash
+curl -sS "$API_BASE_URL/v1/assets/trending?category=equity&limit=10" \
+  -H "x-api-key: $API_KEY"
+```

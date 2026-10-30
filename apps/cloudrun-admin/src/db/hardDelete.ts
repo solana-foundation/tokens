@@ -11,6 +11,7 @@ import type { Sql } from 'postgres';
 import { buildDeletionTombstoneRows, type HardDeleteCounters, type HardDeleteRepo } from '../handlers/hardDelete';
 import { HARD_DELETE_COLLECTION_SLUGS, uniqueStrings } from '../handlers/shared';
 import { randomId } from '../db';
+import { hardDeleteV2 } from './v2Mirror';
 
 export function makePostgresHardDeleteRepo(sql: Sql): HardDeleteRepo {
     return {
@@ -62,10 +63,15 @@ export function makePostgresHardDeleteRepo(sql: Sql): HardDeleteRepo {
                         ref: row.ref,
                         kind: row.kind,
                     }));
+                    // `tx.json(...)`, never `JSON.stringify(...)`: postgres-js
+                    // serializes every parameter the server types as json/jsonb
+                    // with JSON.stringify, so a pre-stringified value is encoded
+                    // twice and arrives as a JSON *string* ("cannot call
+                    // jsonb_to_recordset on a non-array").
                     const inserted = await tx`
                         INSERT INTO asset_deletion_tombstones (id, asset_id, normalized_ref, ref, kind, created_at)
                         SELECT r.id, ${assetId}, r.normalized_ref, r.ref, r.kind, ${new Date(nowMs)}
-                        FROM jsonb_to_recordset(${JSON.stringify(payload)}::jsonb)
+                        FROM jsonb_to_recordset(${tx.json(payload)}::jsonb)
                              AS r(id text, normalized_ref text, ref text, kind text)
                         WHERE NOT EXISTS (
                             SELECT 1 FROM asset_deletion_tombstones t WHERE t.normalized_ref = r.normalized_ref
@@ -107,6 +113,29 @@ export function makePostgresHardDeleteRepo(sql: Sql): HardDeleteRepo {
                 `;
                 const webacyHolders = await tx`
                     DELETE FROM webacy_holder_analysis_latest WHERE chain = 'solana' AND address = ANY(${mintsArray}::text[])
+                `;
+                // Stablecoin depeg / structural-health snapshots (0019). Tier and
+                // structural history is per-mint provider data, not audit; the
+                // advisory events table is the audit trail and is kept.
+                const webacyDepeg = await tx`
+                    DELETE FROM webacy_depeg_latest WHERE chain = 'solana' AND address = ANY(${mintsArray}::text[])
+                `;
+                const webacyDepegEvents = await tx`
+                    DELETE FROM webacy_depeg_tier_events WHERE chain = 'solana' AND address = ANY(${mintsArray}::text[])
+                `;
+                const webacyStructural = await tx`
+                    DELETE FROM webacy_structural_health_latest WHERE chain = 'solana' AND address = ANY(${mintsArray}::text[])
+                `;
+                const webacyStructuralDaily = await tx`
+                    DELETE FROM webacy_structural_health_daily WHERE chain = 'solana' AND address = ANY(${mintsArray}::text[])
+                `;
+                // In-house peg guard snapshots (0020): same per-mint provider
+                // data shape as the Webacy tables, counted with them.
+                const pegGuard = await tx`
+                    DELETE FROM peg_guard_latest WHERE chain = 'solana' AND address = ANY(${mintsArray}::text[])
+                `;
+                const pegGuardEvents = await tx`
+                    DELETE FROM peg_guard_tier_events WHERE chain = 'solana' AND address = ANY(${mintsArray}::text[])
                 `;
                 const ohlcv = await tx`DELETE FROM ohlcv_candles WHERE address = ANY(${mintsArray}::text[])`;
 
@@ -152,7 +181,12 @@ export function makePostgresHardDeleteRepo(sql: Sql): HardDeleteRepo {
                 await tx`DELETE FROM variant_fill_quality_latest WHERE mint = ANY(${mintsArray}::text[])`;
                 await tx`DELETE FROM asset_variant_views WHERE asset_id = ${assetId}`;
 
-                // 9. Variants + the canonical asset row itself.
+                // 9. v2 (multichain) rows: every variant the asset owns on any
+                //    chain (mirrored, derived and admin) plus the mirrored
+                //    Solana market rows nothing else references.
+                const v2 = await hardDeleteV2(tx, { assetId, mints });
+
+                // 10. Variants + the canonical asset row itself.
                 const variants = await tx`DELETE FROM asset_variants WHERE asset_id = ${assetId}`;
                 await tx`DELETE FROM assets WHERE asset_id = ${assetId}`;
 
@@ -160,13 +194,23 @@ export function makePostgresHardDeleteRepo(sql: Sql): HardDeleteRepo {
                     membershipsDeleted: memberships.count,
                     aliasesDeleted: aliases.count,
                     variantsDeleted: variants.count,
+                    v2VariantsDeleted: v2.variantsDeleted,
                     variantMarketsDeleted: variantMarkets.count,
                     tokenMarketsDeleted: tokenMarkets.count,
                     tokenDocsDeleted: tokenDocs.count,
                     tokenDescriptionSummariesDeleted: summaries.count,
                     assetRiskDeleted: assetRisk.count,
                     ohlcvDeleted: ohlcv.count,
-                    webacyDeleted: webacyToken.count + webacyTrading.count + webacyHolders.count,
+                    webacyDeleted:
+                        webacyToken.count +
+                        webacyTrading.count +
+                        webacyHolders.count +
+                        webacyDepeg.count +
+                        webacyDepegEvents.count +
+                        webacyStructural.count +
+                        webacyStructuralDaily.count +
+                        pegGuard.count +
+                        pegGuardEvents.count,
                     rwaTokenCacheDeleted: rwaTokens.count,
                     rwaAssetCacheDeleted,
                     assetMarketDeleted: assetMarket.count,

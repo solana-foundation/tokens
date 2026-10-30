@@ -1,4 +1,5 @@
 import postgres, { type Sql } from 'postgres';
+import { onPostgresNotice } from '@tokens/cloudrun-shutdown/postgres-notice';
 
 import type { CoingeckoPriceRow, PricesRepo } from './handlers/prices';
 
@@ -20,6 +21,7 @@ export function getSql(): Sql {
         idle_timeout: envNumber('PG_IDLE_TIMEOUT', 240),
         connect_timeout: envNumber('PG_CONNECT_TIMEOUT', 30),
         connection: { application_name: 'cloudrun-prices' },
+        onnotice: onPostgresNotice,
     });
     return cached;
 }
