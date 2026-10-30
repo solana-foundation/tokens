@@ -138,11 +138,14 @@ jobs:
               --tag="$tag" \
               "${extra[@]}" \
               --quiet
+            # Read the revision from the SAME tagged traffic entry as the URL:
+            # latestCreatedRevisionName could name a revision an overlapping
+            # manual deploy created, and traffic must go to the one we probed.
             desc=$(gc describe "$svc" --format=json)
-            rev=$(jq -r '.status.latestCreatedRevisionName' <<<"$desc")
+            rev=$(jq -r --arg t "$tag" '[.status.traffic[] | select(.tag == $t) | .revisionName][0] // empty' <<<"$desc")
             tag_url=$(jq -r --arg t "$tag" '[.status.traffic[] | select(.tag == $t) | .url][0] // empty' <<<"$desc")
-            if [ -z "$tag_url" ]; then
-              echo "::error::$svc: revision $rev has no URL for tag $tag; traffic left on the previous revision."
+            if [ -z "$rev" ] || [ -z "$tag_url" ]; then
+              echo "::error::$svc: no revision/URL found for tag $tag; traffic left on the previous revision."
               exit 1
             fi
             if [ -z "${PROBE_ID_TOKEN:-}" ]; then
