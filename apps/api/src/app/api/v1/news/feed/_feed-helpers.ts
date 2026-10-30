@@ -1,3 +1,5 @@
+import { Cause, Effect, Exit } from 'effect';
+
 export type NewsFeedSource = 'all' | 'news' | 'tweets';
 
 export interface FeedArticle {
@@ -42,32 +44,38 @@ export function getCoinGeckoNewsPageCount(params: { requestedCount: number; perP
     return Math.min(Math.ceil(params.requestedCount / params.perPage), params.maxPages);
 }
 
-export async function collectPaginatedFeedPages<PageItem, Result>(params: {
+/**
+ * Walk pages in order until enough results are collected, a page is empty, or a
+ * page fails. A failed page (typed error or defect) ends the walk and keeps
+ * what was collected so far, so the feed degrades to a partial list.
+ */
+export function collectPaginatedFeedPages<PageItem, Result>(params: {
     pageCount: number;
     requestedCount: number;
-    fetchPage: (page: number) => Promise<PageItem[]>;
+    fetchPage: (page: number) => Effect.Effect<PageItem[], unknown>;
     mapPageItems: (items: PageItem[]) => Result[];
     onPageError?: (error: unknown, context: { page: number; collectedCount: number }) => void;
-}): Promise<Result[]> {
-    const results: Result[] = [];
-    if (params.pageCount <= 0 || params.requestedCount <= 0) return results;
+}): Effect.Effect<Result[], never> {
+    return Effect.gen(function* () {
+        const results: Result[] = [];
+        if (params.pageCount <= 0 || params.requestedCount <= 0) return results;
 
-    for (let page = 1; page <= params.pageCount; page += 1) {
-        let pageItems: PageItem[];
-        try {
-            pageItems = await params.fetchPage(page);
-        } catch (error) {
-            params.onPageError?.(error, { page, collectedCount: results.length });
-            break;
+        for (let page = 1; page <= params.pageCount; page += 1) {
+            const exit = yield* Effect.exit(params.fetchPage(page));
+            if (Exit.isFailure(exit)) {
+                params.onPageError?.(Cause.squash(exit.cause), { page, collectedCount: results.length });
+                break;
+            }
+
+            const pageItems = exit.value;
+            if (pageItems.length === 0) break;
+
+            results.push(...params.mapPageItems(pageItems));
+            if (results.length >= params.requestedCount) break;
         }
 
-        if (pageItems.length === 0) break;
-
-        results.push(...params.mapPageItems(pageItems));
-        if (results.length >= params.requestedCount) break;
-    }
-
-    return results;
+        return results;
+    });
 }
 
 function parsePostedAtMs(value: string): number {

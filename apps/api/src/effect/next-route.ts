@@ -444,7 +444,8 @@ function statusClassField(status: number): 'status2xx' | 'status3xx' | 'status4x
     return 'status5xx';
 }
 
-async function tryLogRequest(params: {
+/** Best-effort usage row; analytics must never fail (or even log into) the request. */
+function logRequest(params: {
     platformAuth: PlatformAuthContext;
     method: string;
     path: string;
@@ -452,25 +453,19 @@ async function tryLogRequest(params: {
     latencyMs: number;
     ts: number;
     errorTag?: string;
-}): Promise<void> {
-    try {
-        await Effect.runPromise(
-            logApiRequest({
-                projectId: params.platformAuth.projectId,
-                apiKeyId: params.platformAuth.apiKeyId,
-                keyPrefix: params.platformAuth.keyPrefix,
-                method: params.method,
-                path: params.path,
-                endpoint: normalizeEndpointPath(params.path),
-                status: params.status,
-                latencyMs: params.latencyMs,
-                ts: params.ts,
-                ...(params.errorTag ? { errorTag: params.errorTag } : {}),
-            }),
-        );
-    } catch {
-        // Best-effort logging; never fail the API request due to analytics.
-    }
+}): Effect.Effect<void, never> {
+    return logApiRequest({
+        projectId: params.platformAuth.projectId,
+        apiKeyId: params.platformAuth.apiKeyId,
+        keyPrefix: params.platformAuth.keyPrefix,
+        method: params.method,
+        path: params.path,
+        endpoint: normalizeEndpointPath(params.path),
+        status: params.status,
+        latencyMs: params.latencyMs,
+        ts: params.ts,
+        ...(params.errorTag ? { errorTag: params.errorTag } : {}),
+    }).pipe(Effect.catchCause(() => Effect.void));
 }
 
 function recordUsageAggregate(params: {
@@ -523,32 +518,38 @@ function recordUsageAggregate(params: {
     });
 }
 
-async function tryDrainUsageAggregates(requestId: string): Promise<void> {
-    try {
+function drainUsageAggregates(requestId: string): Effect.Effect<void, never> {
+    return Effect.gen(function* () {
         const env = loadEnv();
-        const result = await Effect.runPromise(
-            Effect.gen(function* () {
-                const redis = yield* getRedisClientEffect();
-                return yield* maybeDrainUsageAggregates({
-                    redis,
-                    sync: syncUsageAggregates,
-                    intervalSeconds: env.usageDrainIntervalSeconds,
-                    lockValue: requestId,
+        const redis = yield* getRedisClientEffect();
+        const result = yield* maybeDrainUsageAggregates({
+            redis,
+            sync: syncUsageAggregates,
+            intervalSeconds: env.usageDrainIntervalSeconds,
+            lockValue: requestId,
+        });
+        if (result) logUsageDrain({ requestId, trigger: 'request', status: 'ok', ...result });
+    }).pipe(
+        Effect.catchCause(cause =>
+            Effect.sync(() => {
+                const error = Cause.squash(cause);
+                logUsageDrain({
+                    requestId,
+                    trigger: 'request',
+                    status: 'failed',
+                    reason: error instanceof Error ? error.message : String(error),
                 });
             }),
-        );
-        if (result) logUsageDrain({ requestId, trigger: 'request', status: 'ok', ...result });
-    } catch (error) {
-        logUsageDrain({
-            requestId,
-            trigger: 'request',
-            status: 'failed',
-            reason: error instanceof Error ? error.message : String(error),
-        });
-    }
+        ),
+    );
 }
 
-async function recordApiRequestUsage(params: {
+/**
+ * Post-response usage accounting. Every step is fail-open: aggregation,
+ * draining and raw logging each swallow their own failures (defects included,
+ * as the previous try/catch did) so one broken sink cannot starve the others.
+ */
+function recordApiRequestUsage(params: {
     requestId: string;
     platformAuth: PlatformAuthContext;
     method: string;
@@ -557,27 +558,32 @@ async function recordApiRequestUsage(params: {
     latencyMs: number;
     ts: number;
     errorTag?: string;
-}): Promise<void> {
-    const env = loadEnv();
-    const shouldSampleRaw = env.usageRawSampleRate > 0 && Math.random() < env.usageRawSampleRate;
+}): Effect.Effect<void, never> {
+    return Effect.gen(function* () {
+        const env = loadEnv();
+        const shouldSampleRaw = env.usageRawSampleRate > 0 && Math.random() < env.usageRawSampleRate;
 
-    if (env.usageLogMode === 'aggregated') {
-        try {
-            await Effect.runPromise(recordUsageAggregate(params));
-        } catch (error) {
-            logUsageAggregationDegraded({
-                requestId: params.requestId,
-                apiKeyId: params.platformAuth.apiKeyId,
-                projectId: params.platformAuth.projectId,
-                reason: error instanceof Error ? error.message : String(error),
-            });
+        if (env.usageLogMode === 'aggregated') {
+            yield* recordUsageAggregate(params).pipe(
+                Effect.catchCause(cause =>
+                    Effect.sync(() => {
+                        const error = Cause.squash(cause);
+                        logUsageAggregationDegraded({
+                            requestId: params.requestId,
+                            apiKeyId: params.platformAuth.apiKeyId,
+                            projectId: params.platformAuth.projectId,
+                            reason: error instanceof Error ? error.message : String(error),
+                        });
+                    }),
+                ),
+            );
+            yield* drainUsageAggregates(params.requestId);
         }
-        await tryDrainUsageAggregates(params.requestId);
-    }
 
-    if (env.usageLogMode === 'raw' || shouldSampleRaw) {
-        await tryLogRequest(params);
-    }
+        if (env.usageLogMode === 'raw' || shouldSampleRaw) {
+            yield* logRequest(params);
+        }
+    });
 }
 
 function scheduleUsageRecording(params: {
@@ -592,18 +598,18 @@ function scheduleUsageRecording(params: {
 }): void {
     if (!params.platformAuth || !params.path) return;
     runAfterResponse(
-        Effect.tryPromise(() =>
-            recordApiRequestUsage({
-                requestId: params.requestId,
-                platformAuth: params.platformAuth as PlatformAuthContext,
-                method: params.method,
-                path: params.path as string,
-                status: params.status,
-                latencyMs: params.latencyMs,
-                ts: params.ts,
-                ...(params.errorTag ? { errorTag: params.errorTag } : {}),
-            }),
-        ).pipe(Effect.catch(() => Effect.void)),
+        recordApiRequestUsage({
+            requestId: params.requestId,
+            platformAuth: params.platformAuth,
+            method: params.method,
+            path: params.path,
+            status: params.status,
+            latencyMs: params.latencyMs,
+            ts: params.ts,
+            ...(params.errorTag ? { errorTag: params.errorTag } : {}),
+            // Post-response work runs outside the request fiber; re-attach the
+            // request id so the usage service's external_call logs correlate.
+        }).pipe(Effect.provideService(CurrentRequestId, params.requestId)),
     );
 }
 

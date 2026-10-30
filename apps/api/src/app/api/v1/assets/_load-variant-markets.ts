@@ -1,11 +1,11 @@
-import { Effect } from 'effect';
+import { Array as Arr, Effect } from 'effect';
 
 import {
     tokenMarketsGetLatestByMints,
     variantFillQualityGetLatestByMints,
     variantMarketsGetLatestByMints,
+    type CloudRunError,
 } from '@/lib/cloudrun';
-import { CloudRunQueryMemo, type CloudRunMemoStore } from '@/lib/cloudrun/client';
 
 import {
     buildSnapshotFromTokenMarketsDoc,
@@ -110,50 +110,49 @@ export function loadVariantMarkets(
 }
 
 /**
- * These helpers run their RPC in a nested runtime (`Effect.runPromise`), which
- * cannot see the request's `CloudRunQueryMemo` Reference. Callers that hold
- * the request memo pass it in so a speculative batch can still answer the
- * call; the error semantics of the nested run are unchanged.
+ * Latest variant-market snapshot per mint. Runs in the caller's fiber, so the
+ * request's Cloud Run memo (speculative batch) and abort signal apply, and a
+ * Cloud Run failure keeps its tag (timeout -> 504, 429 -> 429).
  */
-export async function loadTokensByMints(
-    mints: string[],
-    memo: CloudRunMemoStore | null = null,
-): Promise<Map<string, TokenMarketSnapshot>> {
+export function loadTokensByMints(mints: string[]): Effect.Effect<Map<string, TokenMarketSnapshot>, CloudRunError> {
     const uniqueMints = Array.from(new Set(mints.map(m => m.trim()).filter(Boolean)));
-    if (uniqueMints.length === 0) return new Map();
+    if (uniqueMints.length === 0) return Effect.succeed(new Map());
 
-    const rows = await Effect.runPromise(
-        variantMarketsGetLatestByMints({ mints: uniqueMints }).pipe(Effect.provideService(CloudRunQueryMemo, memo)),
+    return variantMarketsGetLatestByMints({ mints: uniqueMints }).pipe(
+        Effect.map(rows => {
+            const out = new Map<string, TokenMarketSnapshot>();
+            for (const row of rows) {
+                const market = row.market;
+                if (!market) continue;
+                out.set(row.mint, tokenMarketSnapshotFromConvexMarket(row.mint, market));
+            }
+            return out;
+        }),
     );
-
-    const out = new Map<string, TokenMarketSnapshot>();
-    for (const row of rows) {
-        const market = row.market;
-        if (!market) continue;
-
-        out.set(row.mint, tokenMarketSnapshotFromConvexMarket(row.mint, market));
-    }
-
-    return out;
 }
 
-export async function loadExecutionQualityByMints(
+const FILL_QUALITY_CHUNK_SIZE = 250;
+
+/** Latest execution-quality snapshot per mint, in sequential chunks of 250 (the RPC's batch cap). */
+export function loadExecutionQualityByMints(
     mints: string[],
-    memo: CloudRunMemoStore | null = null,
-): Promise<Map<string, VariantExecutionQualitySnapshot>> {
+): Effect.Effect<Map<string, VariantExecutionQualitySnapshot>, CloudRunError> {
     const uniqueMints = Array.from(new Set(mints.map(m => m.trim()).filter(Boolean)));
-    if (uniqueMints.length === 0) return new Map();
+    if (uniqueMints.length === 0) return Effect.succeed(new Map());
 
-    const rows = await Effect.runPromise(
-        variantFillQualityGetLatestByMints({ mints: uniqueMints }).pipe(Effect.provideService(CloudRunQueryMemo, memo)),
+    return Effect.forEach(Arr.chunksOf(uniqueMints, FILL_QUALITY_CHUNK_SIZE), chunk =>
+        variantFillQualityGetLatestByMints({ mints: chunk }),
+    ).pipe(
+        Effect.map(chunks => {
+            const out = new Map<string, VariantExecutionQualitySnapshot>();
+            for (const rows of chunks) {
+                for (const row of rows) {
+                    const snapshot = executionQualitySnapshotFromConvexFillQuality(row.fillQuality);
+                    if (!snapshot) continue;
+                    out.set(row.mint, snapshot);
+                }
+            }
+            return out;
+        }),
     );
-
-    const out = new Map<string, VariantExecutionQualitySnapshot>();
-    for (const row of rows) {
-        const snapshot = executionQualitySnapshotFromConvexFillQuality(row.fillQuality);
-        if (!snapshot) continue;
-        out.set(row.mint, snapshot);
-    }
-
-    return out;
 }

@@ -1,3 +1,8 @@
+import { Effect } from 'effect';
+
+import { variantMarketsGetLatestByMints, type CloudRunError } from '@/lib/cloudrun';
+import { cleanTokenName, getTokenLogoURL } from '@/lib/logo-overrides';
+
 export interface PoolProtocolTokenConfig {
     source: string;
     address: string;
@@ -56,4 +61,73 @@ export function getProtocolTokenFallback(sourceOrAddress: string): PoolProtocolT
     const value = sourceOrAddress.trim();
     if (!value) return null;
     return POOL_PROTOCOL_TOKENS.find(config => config.address === value || config.match.test(value)) ?? null;
+}
+
+/** Display fields for a market's protocol token (matches `TokenMarketToken` in `@/lib/birdeye`). */
+export interface ProtocolTokenDisplay {
+    address: string;
+    decimals?: number;
+    symbol?: string;
+    icon?: string;
+    name?: string;
+}
+
+/**
+ * Resolve the protocol token (ORCA, RAY, ...) behind each market's `source`,
+ * keyed by market address, with the latest variant-market metadata layered over
+ * the static fallback. One batched Cloud Run read; runs in the caller's fiber.
+ */
+export function loadProtocolTokensByMarketAddress(
+    markets: ReadonlyArray<{ address: string; source?: string }>,
+): Effect.Effect<Record<string, ProtocolTokenDisplay | undefined>, CloudRunError> {
+    const marketToMint: Array<{ marketAddress: string; mint: string }> = [];
+    const mintToFallback = new Map<string, PoolProtocolTokenConfig>();
+
+    for (const market of markets) {
+        const config = market.source ? getProtocolTokenFallback(market.source) : null;
+        if (!config) continue;
+
+        marketToMint.push({ marketAddress: market.address, mint: config.address });
+        mintToFallback.set(config.address, config);
+    }
+
+    const uniqueMints = Array.from(mintToFallback.keys());
+    if (uniqueMints.length === 0) return Effect.succeed({});
+
+    return variantMarketsGetLatestByMints({ mints: uniqueMints }).pipe(
+        Effect.map(rows => {
+            const marketByMint = new Map<string, (typeof rows)[number]['market']>();
+            for (const row of rows) marketByMint.set(row.mint, row.market);
+
+            const tokensByMint = new Map<string, ProtocolTokenDisplay | undefined>();
+            for (const mint of uniqueMints) {
+                const fallback = mintToFallback.get(mint);
+                const market = marketByMint.get(mint) ?? null;
+                if (!market) {
+                    tokensByMint.set(mint, {
+                        address: mint,
+                        symbol: fallback?.symbol,
+                        name: fallback?.name,
+                        icon: undefined,
+                    });
+                    continue;
+                }
+
+                const symbol = market.symbol ?? fallback?.symbol ?? '???';
+                const cleanedName = cleanTokenName(market.name);
+                tokensByMint.set(mint, {
+                    address: mint,
+                    symbol,
+                    name: cleanedName === 'Unknown' ? fallback?.name : cleanedName,
+                    icon: getTokenLogoURL(symbol, market.logoURI),
+                });
+            }
+
+            const tokensByMarket: Record<string, ProtocolTokenDisplay | undefined> = {};
+            for (const { marketAddress, mint } of marketToMint) {
+                tokensByMarket[marketAddress] = tokensByMint.get(mint);
+            }
+            return tokensByMarket;
+        }),
+    );
 }

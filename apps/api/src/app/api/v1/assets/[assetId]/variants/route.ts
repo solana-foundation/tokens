@@ -5,7 +5,7 @@ import { BadRequestError, NotFoundError } from '@tokens/effect';
 import { decodeUnknownOrBadRequest, SolanaAddress } from '@tokens/effect';
 import { tapErrorAndDefault } from '@tokens/effect';
 import { loadAdvisoriesOrEmpty } from '@/lib/advisories';
-import { CloudRunQueryMemo, type CloudRunMemoStore } from '@/lib/cloudrun/client';
+import { loadExecutionQualityByMints } from '../../_load-variant-markets';
 import { seedSpeculativeMemo } from '@/lib/cloudrun/speculative-batch';
 import { getByAssetId as cloudRunGetByAssetId } from '@/lib/cloudrun/assets';
 import {
@@ -15,7 +15,6 @@ import {
     tokenMarketsGetLatestByMint,
     tokenMarketsGetTopMarketsByMints,
     tokensGetByAddress,
-    variantFillQualityGetLatestByMints,
     variantMarketsGetLatestByMints,
     type ListSolanaVariantsForApiResult,
 } from '@/lib/cloudrun';
@@ -28,7 +27,6 @@ import {
     resolveAlias as resolveRegistryAlias,
 } from '@tokens/asset-registry';
 import {
-    executionQualitySnapshotFromConvexFillQuality,
     optionalText,
     parseStockVariantTier,
     parseVariantSortBy,
@@ -105,27 +103,6 @@ function uniqueNonEmptyStrings(items: string[]): string[] {
         if (trimmed) seen.add(trimmed);
     }
     return Array.from(seen);
-}
-
-/** Nested runtime: the request memo is passed in explicitly (see `_load-variant-markets.ts`). */
-async function loadExecutionQualityByMints(
-    mints: string[],
-    memo: CloudRunMemoStore | null = null,
-): Promise<Map<string, VariantExecutionQualitySnapshot>> {
-    const uniqueMints = uniqueNonEmptyStrings(mints);
-    if (uniqueMints.length === 0) return new Map();
-
-    const out = new Map<string, VariantExecutionQualitySnapshot>();
-    for (const chunk of Arr.chunksOf(uniqueMints, 250)) {
-        const rows = await Effect.runPromise(
-            variantFillQualityGetLatestByMints({ mints: chunk }).pipe(Effect.provideService(CloudRunQueryMemo, memo)),
-        );
-        for (const row of rows) {
-            const snapshot = executionQualitySnapshotFromConvexFillQuality(row.fillQuality);
-            if (snapshot) out.set(row.mint, snapshot);
-        }
-    }
-    return out;
 }
 
 /**
@@ -383,7 +360,6 @@ export const GET = route(
                 rawKind || rawLiquidityTier || rawTrustTier || rawStockVariantTier || variantsMode || url.searchParams.get('mint'),
             );
             yield* seedSpeculativeMemo({ profile: 'variants', ref: assetRef, hasFilters });
-            const memo = yield* Effect.service(CloudRunQueryMemo);
 
             const assetId = yield* resolveAssetIdFromRef(assetRef);
 
@@ -416,9 +392,9 @@ export const GET = route(
                 const symbol =
                     typeof token?.symbol === 'string' && token.symbol.trim() ? token.symbol.trim() : undefined;
                 const name = typeof token?.name === 'string' && token.name.trim() ? token.name.trim() : undefined;
-                const fillQualityByMint = yield* Effect.tryPromise(() =>
-                    loadExecutionQualityByMints([singletonMint], memo),
-                ).pipe(tapErrorAndDefault('assets.variants.singletonFillQuality', new Map(), { mint: singletonMint }));
+                const fillQualityByMint = yield* loadExecutionQualityByMints([singletonMint]).pipe(
+                    tapErrorAndDefault('assets.variants.singletonFillQuality', new Map(), { mint: singletonMint }),
+                );
 
                 const variant: AssetVariant & {
                     liquidityTier: LiquidityTier;
@@ -460,11 +436,8 @@ export const GET = route(
                     const view = yield* getSolanaDefaultVariantsViewForApi().pipe(tapErrorAndDefault('assets.variants.solanaDefaultView', null, { assetId }));
 
                     if (view) {
-                        const fillQualityByMint = yield* Effect.tryPromise(() =>
-                            loadExecutionQualityByMints(
-                                (view.variants as Array<{ mint: string }>).map(variant => variant.mint),
-                                memo,
-                            ),
+                        const fillQualityByMint = yield* loadExecutionQualityByMints(
+                            (view.variants as Array<{ mint: string }>).map(variant => variant.mint),
                         ).pipe(tapErrorAndDefault('assets.variants.solanaDefaultFillQuality', new Map(), { assetId }));
                         const variants = sortVariantRows(
                             attachExecutionQuality(view.variants, fillQualityByMint, advisoriesByMint),
@@ -495,8 +468,8 @@ export const GET = route(
                         );
                     }
 
-                    const fillQualityByMint = yield* Effect.tryPromise(() =>
-                        loadExecutionQualityByMints(result.variants.map(variant => variant.mint), memo),
+                    const fillQualityByMint = yield* loadExecutionQualityByMints(
+                        result.variants.map(variant => variant.mint),
                     ).pipe(tapErrorAndDefault('assets.variants.solanaListFillQuality', new Map(), { assetId }));
                     const variants = sortVariantRows(
                         attachExecutionQuality(result.variants, fillQualityByMint, advisoriesByMint),
@@ -607,9 +580,9 @@ export const GET = route(
             for (const row of rows) {
                 if (row.market) marketByMint.set(row.mint, row.market);
             }
-            const fillQualityByMint = yield* Effect.tryPromise(() =>
-                loadExecutionQualityByMints(filteredVariants.map(v => v.mint), memo),
-            ).pipe(tapErrorAndDefault('assets.variants.fillQuality', new Map(), { assetId: outAssetId }));
+            const fillQualityByMint = yield* loadExecutionQualityByMints(filteredVariants.map(v => v.mint)).pipe(
+                tapErrorAndDefault('assets.variants.fillQuality', new Map(), { assetId: outAssetId }),
+            );
 
             function toMarketSnapshot(
                 market: NonNullable<(typeof rows)[number]['market']>,

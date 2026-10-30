@@ -10,7 +10,6 @@ import {
     TimeInterval as TimeIntervalSchema,
 } from '@tokens/effect';
 import { getByAssetId as cloudRunGetByAssetId } from '@/lib/cloudrun/assets';
-import { CloudRunQueryMemo } from '@/lib/cloudrun/client';
 import { seedSpeculativeMemo } from '@/lib/cloudrun/speculative-batch';
 import {
     assetVariantsListByAssetIds,
@@ -176,7 +175,6 @@ export const GET = route(
             // One round-trip pre-answers the chain of lookups below (see
             // `speculative-batch.ts`); every call still runs exactly as written.
             yield* seedSpeculativeMemo({ profile: 'price-chart', ref: assetRef });
-            const memo = yield* Effect.service(CloudRunQueryMemo);
 
             const assetId = yield* resolveAssetIdFromRef(assetRef);
 
@@ -308,12 +306,7 @@ export const GET = route(
 
             const mintRank = buildCuratedMintRank();
             const fallbackAsset = assetForOnchainChartFallback(canonical);
-            const tokenByMint = yield* Effect.tryPromise(() =>
-                loadTokensByMints(
-                    fallbackAsset.variants.map(v => v.mint),
-                    memo,
-                ),
-            );
+            const tokenByMint = yield* loadTokensByMints(fallbackAsset.variants.map(v => v.mint));
             const primary = pickPrimaryVariant(fallbackAsset, mintRank, tokenByMint, undefined, {
                 strategy: fallbackAsset.category === 'equity' ? 'stock_redeemability' : 'liquidity',
             });
