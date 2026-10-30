@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 
+import { clientIdentifier, enforceRateLimit, rateLimitedResponse } from '@/lib/rate-limit';
 import { isSupportedPythTicker, normalizePythTicker } from '@/lib/realtime-prices/pyth-feed-selection';
 import { resolvePythFeed } from '@/lib/realtime-prices/pyth-pro-server';
 
@@ -10,6 +11,8 @@ import { resolvePythFeed } from '@/lib/realtime-prices/pyth-pro-server';
 
 const CACHEABLE = { 'Cache-Control': 'public, s-maxage=3600, stale-while-revalidate=86400' } as const;
 const NO_STORE = { 'Cache-Control': 'no-store' } as const;
+/** Per client: 120 lookups per minute. Cached answers are served by the CDN and never reach this. */
+const PER_CLIENT = { scope: 'pyth-feed', limit: 120, windowMs: 60_000 } as const;
 
 export async function GET(request: Request): Promise<Response> {
     const { searchParams } = new URL(request.url);
@@ -21,6 +24,9 @@ export async function GET(request: Request): Promise<Response> {
     if (!ticker || !isSupportedPythTicker(ticker)) {
         return NextResponse.json({ error: 'invalid_symbol' }, { status: 400, headers: NO_STORE });
     }
+
+    const limit = await enforceRateLimit(PER_CLIENT, clientIdentifier(request));
+    if (!limit.ok) return rateLimitedResponse(limit);
 
     const resolution = await resolvePythFeed({ ticker, category, mode });
     switch (resolution.status) {

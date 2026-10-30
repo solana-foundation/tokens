@@ -69,10 +69,11 @@ export function useLiveTablePrices(tokens: readonly Token[], enabled = true): vo
                     continue;
                 }
                 if (result.status !== 'ok' || !result.feed) continue;
-                if (subscribedFeeds.has(result.feed.feedId)) continue;
-                const list = quoteKeysByFeed.get(result.feed.feedId) ?? [];
+                const { feedId } = result.feed;
+                if (subscribedFeeds.has(feedId)) continue;
+                const list = quoteKeysByFeed.get(feedId) ?? [];
                 list.push(row.quoteKey);
-                quoteKeysByFeed.set(result.feed.feedId, list);
+                quoteKeysByFeed.set(feedId, list);
             }
 
             for (const [feedId, quoteKeys] of quoteKeysByFeed) {

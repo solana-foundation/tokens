@@ -6,6 +6,7 @@ import { useRouter } from 'next/navigation';
 import { trackEvent } from '@/lib/posthog-client';
 import { buildCoinHref } from '@/lib/coin-href';
 import { useLiveTablePrices } from '@/hooks/use-live-table-prices';
+import { rowChangeForSort, rowPriceForSort } from '@/lib/realtime-prices/table-live-values';
 import { useWindowVirtualizer } from '@tanstack/react-virtual';
 import {
     createColumnHelper,
@@ -24,13 +25,7 @@ import { getVariantByMint } from '@tokens/asset-registry';
 import { cn } from '@tokens/ui/cn';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@tokens/ui/tooltip';
 import { AssetAdvisoryBadge } from '@/components/asset-advisory-badge';
-import {
-    LivePercentChangeCell,
-    TokenLogo,
-    TokenTablePriceCell,
-    rowChangeForSort,
-    rowPriceForSort,
-} from './token-table-cells';
+import { LivePercentChangeCell, TokenLogo, TokenTablePriceCell } from './token-table-cells';
 import {
     INLINE_CHART_FALLBACK_DAYS,
     TRENDING_WINDOW_LABELS,

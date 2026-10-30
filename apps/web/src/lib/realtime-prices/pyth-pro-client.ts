@@ -64,10 +64,17 @@ function notifyStatus(sub: FeedSubscription, status: PythSubscriptionStatus): vo
     for (const listener of Array.from(sub.listeners)) listener.onStatus?.(status);
 }
 
-async function fetchAccessToken(): Promise<{ accessToken: string; expiresAtMs: number } | 'unconfigured' | null> {
+type TokenFetchResult =
+    { accessToken: string; expiresAtMs: number } | { rateLimitedForMs: number } | 'unconfigured' | null;
+
+async function fetchAccessToken(): Promise<TokenFetchResult> {
     try {
         const res = await fetch(TOKEN_ENDPOINT, { method: 'POST', cache: 'no-store' });
         if (res.status === 503) return 'unconfigured';
+        if (res.status === 429) {
+            const retryAfter = Number(res.headers.get('retry-after'));
+            return { rateLimitedForMs: Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter * 1000 : 60_000 };
+        }
         if (!res.ok) return null;
         const json = (await res.json()) as { accessToken?: unknown; expiresAt?: unknown };
         if (typeof json.accessToken !== 'string') return null;
@@ -170,6 +177,12 @@ async function connect(): Promise<void> {
     if (!token) {
         connectionState = 'closed';
         scheduleReconnect(backoffDelay());
+        return;
+    }
+    if ('rateLimitedForMs' in token) {
+        // The server is protecting the shared quota; wait out the window rather than hammer it.
+        connectionState = 'closed';
+        scheduleReconnect(token.rateLimitedForMs + Math.random() * 1_000);
         return;
     }
 

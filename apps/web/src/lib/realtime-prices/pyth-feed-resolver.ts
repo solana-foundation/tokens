@@ -137,39 +137,50 @@ export async function resolvePythFeedsBatch(
         else misses.push(item);
     }
 
+    const chunks: PythFeedRequestItem[][] = [];
     for (let i = 0; i < misses.length; i += PYTH_FEED_BATCH_MAX_ITEMS) {
-        const chunk = misses.slice(i, i + PYTH_FEED_BATCH_MAX_ITEMS);
-        try {
-            const res = await fetch('/api/realtime/pyth-feeds', {
-                method: 'POST',
-                headers: { 'content-type': 'application/json' },
-                body: JSON.stringify({
-                    items: chunk.map(item => ({ symbol: item.ticker, category: item.category, mode: item.mode })),
-                }),
-            });
-            if (res.status === 503) {
-                for (const item of chunk) out.set(pythFeedResolutionKey(item), { status: 'unconfigured', feed: null });
-                continue;
-            }
-            if (!res.ok) {
-                for (const item of chunk) out.set(pythFeedResolutionKey(item), { status: 'error', feed: null });
-                continue;
-            }
-            const json = (await res.json()) as { feeds?: Record<string, unknown> };
-            const feeds = json.feeds ?? {};
-            for (const item of chunk) {
-                const key = pythFeedResolutionKey(item);
-                const feed = (feeds[key] ?? null) as ResolvedPythFeedResult['feed'];
-                const result: ResolvedPythFeedResult =
-                    feed && typeof feed.feedId === 'number'
-                        ? { status: 'ok', feed: { ...feed, entitled: true } }
-                        : { status: 'unavailable', feed: null };
-                writeCache(`${LOCAL_CACHE_PREFIX}${key}`, result);
-                out.set(key, result);
-            }
-        } catch {
-            for (const item of chunk) out.set(pythFeedResolutionKey(item), { status: 'error', feed: null });
+        chunks.push(misses.slice(i, i + PYTH_FEED_BATCH_MAX_ITEMS));
+    }
+    const settled = await Promise.all(chunks.map(chunk => resolveBatchChunk(chunk)));
+    for (const chunkResults of settled) for (const [key, result] of chunkResults) out.set(key, result);
+    return out;
+}
+
+async function resolveBatchChunk(chunk: readonly PythFeedRequestItem[]): Promise<Map<string, ResolvedPythFeedResult>> {
+    const out = new Map<string, ResolvedPythFeedResult>();
+    const fill = (status: ResolvedPythFeedStatus) => {
+        for (const item of chunk) out.set(pythFeedResolutionKey(item), { status, feed: null });
+    };
+    try {
+        const res = await fetch('/api/realtime/pyth-feeds', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+                items: chunk.map(item => ({ symbol: item.ticker, category: item.category, mode: item.mode })),
+            }),
+        });
+        if (res.status === 503) {
+            fill('unconfigured');
+            return out;
         }
+        if (!res.ok) {
+            fill('error');
+            return out;
+        }
+        const json = (await res.json()) as { feeds?: Record<string, unknown> };
+        const feeds = json.feeds ?? {};
+        for (const item of chunk) {
+            const key = pythFeedResolutionKey(item);
+            const feed = (feeds[key] ?? null) as ResolvedPythFeedResult['feed'];
+            const result: ResolvedPythFeedResult =
+                feed && typeof feed.feedId === 'number'
+                    ? { status: 'ok', feed: { ...feed, entitled: true } }
+                    : { status: 'unavailable', feed: null };
+            writeCache(`${LOCAL_CACHE_PREFIX}${key}`, result);
+            out.set(key, result);
+        }
+    } catch {
+        fill('error');
     }
     return out;
 }
