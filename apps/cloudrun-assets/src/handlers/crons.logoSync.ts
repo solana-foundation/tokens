@@ -146,6 +146,11 @@ export interface LogoSyncArgs {
     /** Non-curated mints qualify when fetched within this many days. */
     tailDays: number;
     fetchTimeoutMs: number;
+    /**
+     * Per-mint bound across the whole fetch plan plus the store/DB writes.
+     * Defaults to room for six hops at `fetchTimeoutMs` plus the writes.
+     */
+    itemTimeoutMs: number;
     /** Hard-capped at LOGO_MAX_BYTES. */
     maxBytes: number;
     mints?: string[];
@@ -155,6 +160,7 @@ export interface LogoSyncArgs {
 export function parseLogoSyncArgs(rawArgs: unknown): LogoSyncArgs {
     const args = asObject(rawArgs);
     const mints = asMintList(args.mints);
+    const fetchTimeoutMs = clampInt(args.fetchTimeoutMs, 10_000, 1_000, 60_000);
     return {
         limit: clampInt(args.limit, 200, 1, 1000),
         concurrency: clampInt(args.concurrency, 3, 1, 6),
@@ -162,7 +168,8 @@ export function parseLogoSyncArgs(rawArgs: unknown): LogoSyncArgs {
         budgetMs: clampInt(args.budgetMs, 480_000, 1_000, 530_000),
         resyncDays: clampInt(args.resyncDays, 7, 1, 365),
         tailDays: clampInt(args.tailDays, 30, 1, 3650),
-        fetchTimeoutMs: clampInt(args.fetchTimeoutMs, 10_000, 1_000, 60_000),
+        fetchTimeoutMs,
+        itemTimeoutMs: clampInt(args.itemTimeoutMs, fetchTimeoutMs * 6 + 20_000, 100, 600_000),
         maxBytes: clampInt(args.maxBytes, LOGO_MAX_BYTES, 1024, LOGO_MAX_BYTES),
         ...(mints ? { mints } : {}),
         force: asBoolean(args.force, false),
@@ -241,12 +248,14 @@ async function tryDirectAttempt(
     deps: LogoSyncCronDeps,
     args: LogoSyncArgs,
     attempt: Extract<FetchAttempt, { url: string }>,
+    signal: AbortSignal,
 ): Promise<AttemptOutcome> {
     const fetched = await fetchLogoBytes(attempt.url, {
         provider: `logo_${attempt.source}`,
         headers: attempt.headers,
         timeoutMs: args.fetchTimeoutMs,
         maxBytes: args.maxBytes,
+        signal,
         ...(deps.fetchImpl ? { fetchImpl: deps.fetchImpl } : {}),
         ...(deps.resolveHost ? { resolveHost: deps.resolveHost } : {}),
     });
@@ -270,12 +279,14 @@ async function tryJupiterLookup(
     lookupUrl: string,
     cfg: FetchPlanConfig,
     publicBaseUrl: string,
+    signal: AbortSignal,
 ): Promise<AttemptOutcome> {
     const fetched = await fetchLogoBytes(lookupUrl, {
         provider: 'logo_jupiter_lookup',
         headers: { accept: 'application/json' },
         timeoutMs: args.fetchTimeoutMs,
         maxBytes: 512 * 1024,
+        signal,
         ...(deps.fetchImpl ? { fetchImpl: deps.fetchImpl } : {}),
         ...(deps.resolveHost ? { resolveHost: deps.resolveHost } : {}),
     });
@@ -294,7 +305,8 @@ async function tryJupiterLookup(
     const errors: string[] = [];
     for (const direct of buildDirectAttempts(icon, cfg)) {
         if (direct.source === 'jupiter') continue;
-        const outcome = await tryDirectAttempt(deps, args, direct);
+        if (signal.aborted) break;
+        const outcome = await tryDirectAttempt(deps, args, direct, signal);
         if (outcome.ok) return outcome;
         errors.push(`${direct.source}:${outcome.error ?? 'failed'}`);
     }
@@ -331,6 +343,11 @@ export async function syncLogos(deps: LogoSyncCronDeps, rawArgs: unknown): Promi
     let failed = 0;
     let skippedUnchanged = 0;
     let skippedFirstParty = 0;
+    // The terminal repo write (success or failure) per mint, with its count
+    // attached. When the per-item timeout fires while that write is in flight,
+    // `onItemError` waits for it instead of writing a second failure row, so
+    // every attempt is written and counted exactly once.
+    const terminalWrites = new Map<string, Promise<void>>();
 
     const summary = await Effect.runPromise(
         runJobPool({
@@ -339,16 +356,22 @@ export async function syncLogos(deps: LogoSyncCronDeps, rawArgs: unknown): Promi
             concurrency: args.concurrency,
             delayMs: args.delayMs,
             budgetMs: args.budgetMs,
-            itemTimeoutMs: args.fetchTimeoutMs * 6 + 20_000,
+            itemTimeoutMs: args.itemTimeoutMs,
             shouldStop: isShuttingDown,
+            // The thunk takes Effect's interruption signal: when the per-item
+            // timeout fires, the in-flight hop is aborted and every step before a
+            // write re-checks `signal.aborted`. Otherwise the orphaned body would
+            // keep running after `onItemError` already counted and recorded the
+            // failure.
             process: candidate =>
-                Effect.tryPromise(async () => {
+                Effect.tryPromise(async (signal: AbortSignal) => {
                     const nowMs = deps.base.now();
                     if (isFirstPartyLogoUrl(candidate.source_url, publicBaseUrl)) {
                         skippedFirstParty += 1;
                         return;
                     }
                     const sourceHash = await sha256Hex(candidate.source_url);
+                    if (signal.aborted) return;
                     if (!args.force && shouldSkipUnchanged(candidate, sourceHash, nowMs, args.resyncDays)) {
                         skippedUnchanged += 1;
                         return;
@@ -357,10 +380,20 @@ export async function syncLogos(deps: LogoSyncCronDeps, rawArgs: unknown): Promi
                     const errors: string[] = [];
                     let success: { kind: LogoSourceKind; contentType: string; webp: Uint8Array } | null = null;
                     for (const attempt of buildFetchPlan(candidate.mint, candidate.source_url, cfg)) {
+                        if (signal.aborted) return;
                         const outcome =
                             attempt.source === 'jupiter'
-                                ? await tryJupiterLookup(deps, args, candidate.mint, attempt.lookupUrl, cfg, publicBaseUrl)
-                                : await tryDirectAttempt(deps, args, attempt);
+                                ? await tryJupiterLookup(
+                                      deps,
+                                      args,
+                                      candidate.mint,
+                                      attempt.lookupUrl,
+                                      cfg,
+                                      publicBaseUrl,
+                                      signal,
+                                  )
+                                : await tryDirectAttempt(deps, args, attempt, signal);
+                        if (signal.aborted) return;
                         if (outcome.ok && outcome.webp && outcome.contentType) {
                             bySource[attempt.source].ok += 1;
                             success = { kind: attempt.source, contentType: outcome.contentType, webp: outcome.webp };
@@ -373,17 +406,24 @@ export async function syncLogos(deps: LogoSyncCronDeps, rawArgs: unknown): Promi
                     if (!success) {
                         const error = errors.join('; ').slice(0, 1000);
                         console.warn(`[logo-sync] mint=${candidate.mint} all sources failed: ${error}`);
-                        await deps.repo.recordFailure({
-                            mint: candidate.mint,
-                            sourceUrl: candidate.source_url,
-                            sourceTable: candidate.source_table,
-                            error,
-                            nowMs,
-                        });
-                        failed += 1;
+                        if (signal.aborted) return;
+                        const write = deps.repo
+                            .recordFailure({
+                                mint: candidate.mint,
+                                sourceUrl: candidate.source_url,
+                                sourceTable: candidate.source_table,
+                                error,
+                                nowMs,
+                            })
+                            .then(() => {
+                                failed += 1;
+                            });
+                        terminalWrites.set(candidate.mint, write);
+                        await write;
                         return;
                     }
 
+                    if (signal.aborted) return;
                     const key = logoObjectKey(candidate.mint);
                     await deps.store.put(key, success.webp, {
                         contentType: LOGO_OUTPUT_CONTENT_TYPE,
@@ -394,20 +434,38 @@ export async function syncLogos(deps: LogoSyncCronDeps, rawArgs: unknown): Promi
                             'source-url': candidate.source_url.slice(0, 1024),
                         },
                     });
-                    await deps.repo.recordSuccess({
-                        mint: candidate.mint,
-                        sourceUrl: candidate.source_url,
-                        sourceTable: candidate.source_table,
-                        sourceKind: success.kind,
-                        sourceHash,
-                        cdnUrl: deps.store.publicUrl(key),
-                        contentType: success.contentType,
-                        nowMs,
-                    });
-                    synced += 1;
+                    if (signal.aborted) return;
+                    const write = deps.repo
+                        .recordSuccess({
+                            mint: candidate.mint,
+                            sourceUrl: candidate.source_url,
+                            sourceTable: candidate.source_table,
+                            sourceKind: success.kind,
+                            sourceHash,
+                            cdnUrl: deps.store.publicUrl(key),
+                            contentType: success.contentType,
+                            nowMs,
+                        })
+                        .then(() => {
+                            synced += 1;
+                        });
+                    terminalWrites.set(candidate.mint, write);
+                    await write;
                 }),
             onItemError: (candidate, error) =>
                 Effect.tryPromise(async () => {
+                    // A timed-out item whose terminal write is in flight: let that
+                    // write (and its count) settle rather than adding a second
+                    // failure row that would bump `attempts` twice. Only when the
+                    // write itself failed does the compensation below run.
+                    const pending = terminalWrites.get(candidate.mint);
+                    if (pending) {
+                        const written = await pending.then(
+                            () => true,
+                            () => false,
+                        );
+                        if (written) return;
+                    }
                     // Store/DB failure after the fetch plan: keep any previous copy, count the failure.
                     failed += 1;
                     const message = describeError(error);

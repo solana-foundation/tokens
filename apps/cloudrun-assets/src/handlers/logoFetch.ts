@@ -32,6 +32,8 @@ export interface FetchLogoOptions {
     fetchImpl?: typeof fetch;
     /** Test seam; production resolves with `dns.lookup(all)`. Must return every address the host resolves to. */
     resolveHost?: ResolveHost;
+    /** Caller interruption (e.g. the job pool's per-item timeout); aborts the in-flight hop like the timer does. */
+    signal?: AbortSignal;
 }
 
 export type ResolveHost = (hostname: string) => Promise<string[]>;
@@ -222,11 +224,15 @@ async function fetchLogoBytesInner(url: string, opts: FetchLogoOptions): Promise
     const maxBytes = Math.min(opts.maxBytes ?? LOGO_MAX_BYTES, LOGO_MAX_BYTES);
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), Math.max(1, opts.timeoutMs));
+    const abortFromCaller = () => controller.abort();
+    if (opts.signal?.aborted) controller.abort();
+    else opts.signal?.addEventListener('abort', abortFromCaller, { once: true });
     let current: URL;
     try {
         current = new URL(url);
     } catch {
         clearTimeout(timer);
+        opts.signal?.removeEventListener('abort', abortFromCaller);
         return { ok: false, reason: 'network', message: 'invalid url' };
     }
     // Caller headers (e.g. the Pinata gateway token) are credentials for the
@@ -311,5 +317,6 @@ async function fetchLogoBytesInner(url: string, opts: FetchLogoOptions): Promise
         return { ok: false, reason: 'redirect', message: 'too many redirects' };
     } finally {
         clearTimeout(timer);
+        opts.signal?.removeEventListener('abort', abortFromCaller);
     }
 }

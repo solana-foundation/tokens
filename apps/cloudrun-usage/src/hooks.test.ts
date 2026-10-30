@@ -254,4 +254,21 @@ describe('/hooks/log-drain loki failure semantics', () => {
         expect(res.status).toBe(502);
         expect(res.headers.get('x-vercel-verify')).toBeNull();
     });
+
+    it('fails a hung Loki push fast and returns 502 so the drain retries', async () => {
+        let signal: AbortSignal | null | undefined;
+        const fetchImpl = ((_url: string | URL | Request, init?: RequestInit) => {
+            signal = init?.signal;
+            return new Promise<Response>((_resolve, reject) => {
+                init?.signal?.addEventListener('abort', () => reject(init.signal!.reason as Error));
+            });
+        }) as unknown as typeof fetch;
+        const { app } = makeApp({ fetchImpl, lokiPushTimeoutMs: 20 });
+        const started = Date.now();
+        const res = await call(app, '/hooks/log-drain', drainInit);
+        expect(res.status).toBe(502);
+        expect(Date.now() - started).toBeLessThan(5_000);
+        expect(signal).toBeInstanceOf(AbortSignal);
+        expect(signal!.aborted).toBe(true);
+    });
 });

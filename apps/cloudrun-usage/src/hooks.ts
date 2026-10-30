@@ -23,7 +23,11 @@ export interface HookDeps {
     /** Env label attached to Loki streams; defaults to 'prd' like the Convex original. */
     envLabel?: string;
     fetchImpl?: typeof fetch;
+    /** Upper bound on one Loki push (default 20 s), so a stalled Loki cannot pin the drain. */
+    lokiPushTimeoutMs?: number;
 }
+
+const DEFAULT_LOKI_PUSH_TIMEOUT_MS = 20_000;
 
 type LokiStream = {
     stream: Record<string, string>;
@@ -44,12 +48,19 @@ function mirrorTargets(url: string, auth: string): { primary: [string, string]; 
     return { primary: [urls[0] ?? '', auths[0] ?? ''], mirrors };
 }
 
-async function pushMirror(fetchImpl: typeof fetch, url: string, auth: string, body: string): Promise<void> {
+async function pushMirror(
+    fetchImpl: typeof fetch,
+    url: string,
+    auth: string,
+    body: string,
+    timeoutMs: number,
+): Promise<void> {
     try {
         const res = await fetchImpl(url, {
             method: 'POST',
             headers: { Authorization: auth, 'Content-Type': 'application/json' },
             body,
+            signal: AbortSignal.timeout(timeoutMs),
         });
         if (!res.ok) console.error(`loki: mirror push failed status=${res.status} url=${url}`);
     } catch (err) {
@@ -66,18 +77,34 @@ async function pushToLoki(deps: HookDeps, streams: LokiStream[]): Promise<boolea
     }
     if (streams.length === 0 || streams.every(s => s.values.length === 0)) return true;
     const fetchImpl = deps.fetchImpl ?? fetch;
+    const timeoutMs = deps.lokiPushTimeoutMs ?? DEFAULT_LOKI_PUSH_TIMEOUT_MS;
     const { primary, mirrors } = mirrorTargets(lokiUrl, lokiAuth);
     const body = JSON.stringify({ streams });
-    const [res] = await Promise.all([
-        fetchImpl(primary[0], {
-            method: 'POST',
-            headers: { Authorization: primary[1], 'Content-Type': 'application/json' },
-            body,
-        }),
-        ...mirrors.map(([url, auth]) => pushMirror(fetchImpl, url, auth, body)),
+    // Primary first, mirrors alongside; a mirror can never affect the result.
+    const primaryPush = fetchImpl(primary[0], {
+        method: 'POST',
+        headers: { Authorization: primary[1], 'Content-Type': 'application/json' },
+        body,
+        signal: AbortSignal.timeout(timeoutMs),
+    }).then(
+        res => ({ ok: true as const, res }),
+        (err: unknown) => ({ ok: false as const, err }),
+    );
+    const [outcome] = await Promise.all([
+        primaryPush,
+        ...mirrors.map(([url, auth]) => pushMirror(fetchImpl, url, auth, body, timeoutMs)),
     ]);
+    if (!outcome.ok) {
+        // A hang or transport failure is retryable: report it like a 5xx so the
+        // drain redelivers instead of the throw escaping to Hono's default 500.
+        console.error(`loki: push threw ${outcome.err instanceof Error ? outcome.err.message : 'unknown'}`);
+        return false;
+    }
+    const res = outcome.res;
     if (!res.ok) {
-        const text = await res.text();
+        // The decision is status-based; a stalled or aborted error body must not
+        // turn a permanent 4xx rejection into a retry (or a throw).
+        const text = await res.text().catch(() => '');
         console.error(`loki: push failed status=${res.status} body=${text.slice(0, 300)}`);
         // Loki 4xx = permanently unshippable (too-old timestamp, bad labels):
         // retrying can never succeed, so report success to stop redelivery.

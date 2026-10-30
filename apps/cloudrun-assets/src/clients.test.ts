@@ -2,6 +2,7 @@ import { afterEach, describe, expect, test } from 'bun:test';
 
 import {
     makeBirdeyeClient,
+    makeBirdeyeMarketsClient,
     makeClickhouseClient,
     makeCoingeckoFiatRatesClient,
     makeRwaXyzClient,
@@ -557,4 +558,28 @@ describe('makeWebacyDepegClient', () => {
         if (out.ok) expect(out.items[0]).toMatchObject({ address: USDT, tier: null, overallRisk: null, deviationPct: null });
     });
 
+});
+
+describe('makeBirdeyeMarketsClient timeout', () => {
+    afterEach(() => {
+        console.log = ORIGINAL_LOG;
+    });
+
+    test('aborts a hung markets fetch instead of blocking the pool lane', async () => {
+        console.log = () => {};
+        let abortObserved = false;
+        const fetchImpl = ((_url: string, init?: RequestInit) =>
+            new Promise<Response>((_resolve, reject) => {
+                init?.signal?.addEventListener('abort', () => {
+                    abortObserved = true;
+                    reject(new DOMException('The operation was aborted.', 'AbortError'));
+                });
+            })) as typeof fetch;
+
+        const client = makeBirdeyeMarketsClient({ apiKey: 'k', fetchImpl, timeoutMs: 20 });
+        const started = Date.now();
+        await expect(client.fetchTokenMarkets({ address: 'Mint', limit: 5 })).rejects.toThrow();
+        expect(abortObserved).toBe(true);
+        expect(Date.now() - started).toBeLessThan(5_000);
+    });
 });
