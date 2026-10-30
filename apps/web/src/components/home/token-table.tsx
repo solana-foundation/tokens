@@ -24,7 +24,7 @@ import { getVariantByMint } from '@tokens/asset-registry';
 import { cn } from '@tokens/ui/cn';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@tokens/ui/tooltip';
 import { AssetAdvisoryBadge } from '@/components/asset-advisory-badge';
-import { PercentChangeCell, TokenLogo, TokenTablePriceCell } from './token-table-cells';
+import { LivePercentChangeCell, TokenLogo, TokenTablePriceCell } from './token-table-cells';
 import {
     INLINE_CHART_FALLBACK_DAYS,
     TRENDING_WINDOW_LABELS,
@@ -398,25 +398,13 @@ function createColumns(variant: TokenTableVariantConfig, trendingWindow: Trendin
         variant.columns.showPriceChange1h
             ? columnHelper.accessor('priceChange1hPercent', {
                   header: '1H',
-                  cell: info => {
-                      const value = info.getValue();
-                      if (value == null)
-                          return <span className="block w-full text-right text-[14px] text-text-extra-low">—</span>;
-
-                      return <PercentChangeCell value={value} />;
-                  },
+                  cell: info => <LivePercentChangeCell token={info.row.original} field="priceChange1hPercent" />,
               })
             : null,
         variant.columns.showPriceChange24h
             ? columnHelper.accessor('priceChange24hPercent', {
                   header: '1D',
-                  cell: info => {
-                      const value = info.getValue();
-                      if (value == null)
-                          return <span className="block w-full text-right text-[14px] text-text-extra-low">—</span>;
-
-                      return <PercentChangeCell value={value} />;
-                  },
+                  cell: info => <LivePercentChangeCell token={info.row.original} field="priceChange24hPercent" />,
               })
             : null,
         variant.columns.showChart24h

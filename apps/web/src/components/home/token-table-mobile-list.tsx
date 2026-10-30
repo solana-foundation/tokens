@@ -9,7 +9,7 @@ import { ChevronDown, ChevronUp, ChevronsUpDown } from 'lucide-react';
 import { AssetAdvisoryBadge } from '@/components/asset-advisory-badge';
 import { MobileDetailDrawer } from '@/components/mobile-detail-drawer';
 import type { Token } from '@/lib/types';
-import { PercentChangeCell, TokenLogo, TokenTablePriceCell } from './token-table-cells';
+import { LivePercentChangeCell, TokenLogo, TokenTablePriceCell } from './token-table-cells';
 import { INLINE_CHART_FALLBACK_DAYS, formatVolume } from './token-table-format';
 
 const MOBILE_ROW_HEIGHT = 64;
@@ -179,15 +179,6 @@ function SortButton({ column, label }: { column: Column<Token> | undefined; labe
     );
 }
 
-function ChangeCell({ value, className }: { value: number | undefined; className?: string }) {
-    if (value == null) return <span className="text-text-extra-low">—</span>;
-    return (
-        <span className={className}>
-            <PercentChangeCell value={value} />
-        </span>
-    );
-}
-
 function TokenMobileRow({
     token,
     index,
@@ -201,7 +192,6 @@ function TokenMobileRow({
     onOpen: (token: Token) => void;
     onPrefetch: (token: Token) => void;
 }) {
-    const change = spec.change ? token[spec.change.key] : undefined;
     return (
         <li style={{ height: MOBILE_ROW_HEIGHT }}>
             <button
@@ -256,7 +246,9 @@ function TokenMobileRow({
             </div>
             <div className="relative flex shrink-0 flex-col items-end gap-0.5 leading-tight">
                 {spec.showPrice ? <TokenTablePriceCell token={token} /> : null}
-                {spec.change ? <ChangeCell value={change} className="[&_span]:text-[12px]" /> : null}
+                {spec.change ? (
+                    <LivePercentChangeCell token={token} field={spec.change.key} className="[&_span]:text-[12px]" />
+                ) : null}
             </div>
             </button>
         </li>
@@ -281,7 +273,6 @@ function TokenDetailDrawer({
     const shown = token ?? lastToken;
     if (!shown) return null;
 
-    const change = spec.change ? shown[spec.change.key] : undefined;
     const changeCaption = spec.change?.key === 'priceChange1hPercent' ? 'past hour' : 'past day';
     const stats = [
         { label: 'Market cap', value: shown.marketCap > 0 ? formatVolume(shown.marketCap) : '—' },
@@ -307,7 +298,7 @@ function TokenDetailDrawer({
                 ) : null}
                 {spec.change ? (
                     <span className="flex items-center gap-1.5 text-[14px] text-text-low">
-                        <ChangeCell value={change} className="[&_span]:text-[14px]" />
+                        <LivePercentChangeCell token={shown} field={spec.change.key} className="[&_span]:text-[14px]" />
                         <span>· {changeCaption}</span>
                     </span>
                 ) : null}
