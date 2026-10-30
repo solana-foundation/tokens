@@ -1127,6 +1127,9 @@ interface MakeBirdeyeMarketsOptions {
     apiKey: string;
     origin?: string;
     baseUrl?: string;
+    fetchImpl?: typeof fetch;
+    /** Per-request bound; defaults to the shared external fetch timeout. */
+    timeoutMs?: number;
 }
 
 function asNonEmptyStringField(value: unknown): string | undefined {
@@ -1487,6 +1490,8 @@ export function makePreStocksClient(opts: MakePreStocksOptions = {}): PreStocksC
 
 export function makeBirdeyeMarketsClient(opts: MakeBirdeyeMarketsOptions): BirdeyeMarketsClient {
     const baseUrl = (opts.baseUrl ?? 'https://public-api.birdeye.so').replace(/\/+$/, '');
+    const fetchImpl = opts.fetchImpl ?? fetch;
+    const timeoutMs = opts.timeoutMs ?? EXTERNAL_FETCH_TIMEOUT_MS;
     const headers: Record<string, string> = {
         'X-API-KEY': opts.apiKey,
         'x-chain': 'solana',
@@ -1508,7 +1513,9 @@ export function makeBirdeyeMarketsClient(opts: MakeBirdeyeMarketsOptions): Birde
                 limit: String(limit),
             });
             const url = `${baseUrl}/defi/v2/markets?${params.toString()}`;
-            const res = await withExternalTiming('birdeye', url, () => fetch(url, { headers }));
+            const res = await withExternalTiming('birdeye', url, () =>
+                fetchImpl(url, { headers, signal: AbortSignal.timeout(timeoutMs) }),
+            );
             const json = (await res.json().catch(() => null)) as {
                 success?: unknown;
                 data?: { items?: unknown[]; markets?: unknown[] };

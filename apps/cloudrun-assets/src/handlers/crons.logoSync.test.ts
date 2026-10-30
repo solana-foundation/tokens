@@ -124,6 +124,7 @@ describe('parseLogoSyncArgs', () => {
         expect(args.delayMs).toBe(250);
         expect(args.budgetMs).toBe(480_000);
         expect(args.resyncDays).toBe(7);
+        expect(args.itemTimeoutMs).toBe(10_000 * 6 + 20_000);
         expect(args.maxBytes).toBe(2 * 1024 * 1024);
         expect(args.force).toBe(false);
         expect(args.mints).toBeUndefined();
@@ -377,6 +378,21 @@ describe('syncLogos', () => {
         const out = await syncLogos(h.deps, fastArgs);
         expect(out.failed).toBe(1);
         expect(h.failures[0]!.error).toContain('gcs down');
+        expect(h.successes).toEqual([]);
+    });
+
+    test('an item that outlives its timeout is counted once as a failure and never recorded as a success', async () => {
+        const h = makeHarness([candidate({ source_url: 'https://good.example/a.png' })], { 'https://good.example/': png });
+        // The fetch plan succeeds quickly; the store write resolves only after the
+        // per-item timeout has fired, which is exactly when the orphaned body used
+        // to resume and record a success on top of the recorded failure.
+        h.deps.store.put = () => new Promise(resolve => setTimeout(resolve, 600));
+        const out = await syncLogos(h.deps, { ...fastArgs, itemTimeoutMs: 200 });
+        await new Promise(resolve => setTimeout(resolve, 700));
+        expect(out.failed).toBe(1);
+        expect(out.synced).toBe(0);
+        expect(h.failures).toHaveLength(1);
+        expect(h.failures[0]!.error).toStartWith('job:');
         expect(h.successes).toEqual([]);
     });
 
