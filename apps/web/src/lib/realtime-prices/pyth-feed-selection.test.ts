@@ -11,6 +11,11 @@ import {
 const entry = (pyth_lazer_id: number, symbol: string, extra: Partial<PythSymbolEntry> = {}): PythSymbolEntry => ({
     pyth_lazer_id,
     symbol,
+    description: symbol.endsWith('X/USD')
+        ? 'XSTOCK / US DOLLAR'
+        : symbol.endsWith('ON/USD')
+          ? 'ONDO TOKENIZED STOCK / US DOLLAR'
+          : '',
     state: 'stable',
     asset_type: symbol.startsWith('Crypto.') ? 'crypto' : 'equity',
     min_channel: 'fixed_rate@200ms',
@@ -81,6 +86,19 @@ describe('selectPythFeed', () => {
         expect(selectPythFeed({ ticker: 'TSLAon', category: 'equity', mode: 'variant' }, TSLA_SEARCH)?.feedId).toBe(
             3128,
         );
+    });
+
+    test('equity variants reject crypto feeds that merely share the ticker', () => {
+        // AT&T's Ondo token is `TON`; Pyth's Crypto.TON/USD is Toncoin.
+        const toncoin = [entry(1234, 'Crypto.TON/USD', { description: 'TONCOIN / US DOLLAR' })];
+        expect(selectPythFeed({ ticker: 'TON', category: 'equity', mode: 'variant' }, toncoin)).toBeNull();
+        // Li Auto's Ondo token is `LION`; Pyth's Crypto.LION/USD is a different asset.
+        const lion = [entry(1235, 'Crypto.LION/USD', { description: 'LION / US DOLLAR' })];
+        expect(selectPythFeed({ ticker: 'LION', category: 'equity', mode: 'variant' }, lion)).toBeNull();
+        // Crypto-category variants keep plain crypto feeds (JitoSOL, PAXG...).
+        const paxg = [entry(1236, 'Crypto.PAXG/USD', { description: 'PAX GOLD / US DOLLAR' })];
+        expect(selectPythFeed({ ticker: 'PAXG', category: 'commodity', mode: 'variant' }, paxg)?.feedId).toBe(1236);
+        expect(selectPythFeed({ ticker: 'TON', category: 'crypto', mode: 'variant' }, toncoin)?.feedId).toBe(1234);
     });
 
     test('a bare variant ticker never leaks into the underlying equity feed', () => {

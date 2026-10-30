@@ -18,6 +18,7 @@ export interface PythSymbolEntry {
     hermes_id?: string | null;
     exponent?: number | null;
     schedule?: string | null;
+    description?: string | null;
 }
 
 export interface PythFeedSelection {
@@ -45,6 +46,23 @@ const DEFAULT_NAMESPACES: readonly string[] = ['Crypto'];
 
 /** Variants are the tokens themselves (xStocks, Ondo, wrapped assets): always a crypto feed. */
 const VARIANT_NAMESPACES: readonly string[] = ['Crypto'];
+
+/**
+ * Categories whose variants are tokenized securities. Their token symbols are
+ * short enough to collide with unrelated crypto feeds (AT&T's Ondo token is
+ * `TON`, Li Auto's is `LION`), so a crypto feed only qualifies when Pyth
+ * describes it as a tokenized stock.
+ */
+const TOKENIZED_SECURITY_CATEGORIES: ReadonlySet<string> = new Set(['equity', 'etf', 'index', 'rwa']);
+const TOKENIZED_STOCK_DESCRIPTION = /XSTOCK|ONDO|TOKENI[SZ]ED|PRESTOCK|DINARI|BACKED/i;
+
+export function isTokenizedStockFeed(entry: Pick<PythSymbolEntry, 'description'>): boolean {
+    return TOKENIZED_STOCK_DESCRIPTION.test(entry.description ?? '');
+}
+
+function requiresTokenizedStockFeed(category: string | null | undefined, mode: PythFeedMode): boolean {
+    return mode === 'variant' && TOKENIZED_SECURITY_CATEGORIES.has((category ?? '').trim().toLowerCase());
+}
 
 export function normalizePythTicker(value: string | null | undefined): string {
     return (value ?? '').trim().toUpperCase();
@@ -103,9 +121,12 @@ export function selectPythFeed(
         bySymbol.set(symbol, entry);
     }
 
+    const mustBeTokenizedStock = requiresTokenizedStockFeed(args.category, args.mode);
     for (const candidate of candidates) {
         const hit = bySymbol.get(candidate);
-        if (hit) return toSelection(hit);
+        if (!hit) continue;
+        if (mustBeTokenizedStock && !isTokenizedStockFeed(hit)) continue;
+        return toSelection(hit);
     }
     return null;
 }
