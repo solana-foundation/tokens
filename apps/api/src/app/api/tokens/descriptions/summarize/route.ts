@@ -145,7 +145,7 @@ export const POST = route((request: Request) =>
         const model = (searchParams.get('model') ?? 'gpt-4o-mini').trim() || 'gpt-4o-mini';
         const promptVersion = 1;
 
-        const { addresses: allAddresses } = yield* Effect.tryPromise(() => getEffectiveCuratedAddresses(listId));
+        const { addresses: allAddresses } = yield* getEffectiveCuratedAddresses(listId);
 
         const addresses = addressParam ? [addressParam] : allAddresses.slice(offset, offset + limit);
 

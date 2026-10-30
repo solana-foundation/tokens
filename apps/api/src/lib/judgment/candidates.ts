@@ -24,7 +24,7 @@
  * request.
  */
 
-import { Duration, Effect, Fiber, Option } from 'effect';
+import { Cause, Duration, Effect, Fiber, Option } from 'effect';
 
 import { tapErrorAndDefault } from '@tokens/effect';
 
@@ -461,11 +461,13 @@ export function enrichCandidatesDetailed<E = never>(
         // DB-backed effective membership; a transient failure degrades to
         // no curated attestations for this request (last-good cache absorbs
         // most outages) rather than failing the search.
-        const curatedByMint = yield* Effect.promise(() =>
-            getCuratedListSlugsByMint().catch((error: unknown) => {
-                console.error('[judgment] curated membership unavailable', error);
-                return new Map<string, string[]>();
-            }),
+        const curatedByMint = yield* getCuratedListSlugsByMint().pipe(
+            Effect.catchCause(cause =>
+                Effect.sync(() => {
+                    console.error('[judgment] curated membership unavailable', Cause.squash(cause));
+                    return new Map<string, string[]>();
+                }),
+            ),
         );
 
         // Provider (Birdeye search) data is as old as the collect that

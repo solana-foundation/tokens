@@ -30,7 +30,7 @@ export const GET = route(
             const rawListId = searchParams.get('list') ?? 'all';
             const listId: CuratedTokenCategoryId = isCuratedTokenCategoryId(rawListId) ? rawListId : 'all';
 
-            const { addresses } = yield* Effect.tryPromise(() => getEffectiveCuratedAddresses(listId));
+            const { addresses } = yield* getEffectiveCuratedAddresses(listId);
 
             const rows = yield* variantMarketsGetLatestByMints({ mints: addresses });
             const marketByMint = new Map<string, (typeof rows)[number]['market']>();

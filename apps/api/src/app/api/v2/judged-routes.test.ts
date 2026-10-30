@@ -92,7 +92,7 @@ const testIndex = protectedSymbols.buildIndexFromEntries([
 ]);
 mock.module('@/lib/judgment/protected-symbols', () => ({
     ...protectedSymbols,
-    getProtectedSymbolIndex: async () => testIndex,
+    getProtectedSymbolIndex: () => Effect.succeed(testIndex),
 }));
 
 const { __resetCloudRunClientForTesting } = await import('@/lib/cloudrun/client');

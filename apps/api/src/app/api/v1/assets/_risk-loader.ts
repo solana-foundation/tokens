@@ -124,7 +124,7 @@ export function loadAssetRisk(
             };
         }
 
-        const curatedListSlugs = yield* Effect.promise(() => getCuratedListSlugsForMint(mint));
+        const curatedListSlugs = yield* getCuratedListSlugsForMint(mint);
         const marketScoreInput = { ...marketScoreInputFromVariantMarket(mint, market), curatedListSlugs };
         const marketScore = computeMarketScore(marketScoreInput);
 

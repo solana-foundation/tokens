@@ -1,5 +1,6 @@
 import { Effect } from 'effect';
 
+import { makeSnapshotCache } from '@/effect/snapshot-cache';
 import { listAssetIdRenames, type CloudRunError, type ListAssetIdRenamesResult } from '@/lib/cloudrun';
 
 /**
@@ -26,10 +27,6 @@ type RenamesLoader = () => Effect.Effect<ListAssetIdRenamesResult, CloudRunError
 
 const EMPTY: ReadonlyMap<string, string> = new Map();
 
-let snapshot: ReadonlyMap<string, string> | null = null;
-let loadedAtMs = 0;
-let inflight: Promise<ReadonlyMap<string, string>> | null = null;
-let lastFailureAtMs = 0;
 let loader: RenamesLoader = listAssetIdRenames;
 
 function toSnapshot(rows: ListAssetIdRenamesResult): ReadonlyMap<string, string> {
@@ -43,60 +40,37 @@ function toSnapshot(rows: ListAssetIdRenamesResult): ReadonlyMap<string, string>
     return out;
 }
 
-function logFailure(event: 'asset_id_renames_refresh_failed' | 'asset_id_renames_load_failed', err: unknown): void {
+function logFailure(
+    event: 'asset_id_renames_refresh_failed' | 'asset_id_renames_load_failed',
+    err: unknown,
+    stalenessMs: number | null,
+): void {
     console.error(
         JSON.stringify({
             event,
             side: 'api',
-            staleness_ms: loadedAtMs > 0 ? Date.now() - loadedAtMs : null,
+            staleness_ms: stalenessMs,
             error: err instanceof Error ? err.message : String(err),
         }),
     );
 }
 
-function startLoad(): Promise<ReadonlyMap<string, string>> {
-    const promise = Effect.runPromise(loader())
-        .then(rows => {
-            snapshot = toSnapshot(rows);
-            loadedAtMs = Date.now();
-            lastFailureAtMs = 0;
-            return snapshot;
-        })
-        .catch((err: unknown) => {
-            lastFailureAtMs = Date.now();
-            throw err;
-        })
-        .finally(() => {
-            if (inflight === promise) inflight = null;
-        });
-    inflight = promise;
-    return promise;
-}
-
-function refreshInBackground(): void {
-    if (inflight) return;
-    if (Date.now() - loadedAtMs < TTL_MS) return;
-    startLoad().catch(err => logFailure('asset_id_renames_refresh_failed', err));
-}
-
-async function getRenames(): Promise<ReadonlyMap<string, string>> {
-    if (snapshot) {
-        refreshInBackground();
-        return snapshot;
-    }
-    try {
-        if (inflight) return await inflight;
-        if (lastFailureAtMs > 0 && Date.now() - lastFailureAtMs < COLD_RETRY_BACKOFF_MS) return EMPTY;
-        return await startLoad();
-    } catch (err) {
-        logFailure('asset_id_renames_load_failed', err);
-        return EMPTY;
-    }
-}
+const cache = makeSnapshotCache<ReadonlyMap<string, string>, CloudRunError>({
+    name: 'asset_id_renames',
+    ttlMs: TTL_MS,
+    coldRetryBackoffMs: COLD_RETRY_BACKOFF_MS,
+    load: Effect.suspend(() => loader()).pipe(Effect.map(toSnapshot)),
+    onFailure: ({ error, hadSnapshot, stalenessMs }) =>
+        logFailure(
+            hadSnapshot ? 'asset_id_renames_refresh_failed' : 'asset_id_renames_load_failed',
+            error,
+            stalenessMs,
+        ),
+});
 
 /** Former id (lowercased) -> current id. Never fails; empty when unavailable. */
 export function loadAssetIdRenames(): Effect.Effect<ReadonlyMap<string, string>, never> {
-    return Effect.promise(() => getRenames());
+    return cache.getOrElse(() => EMPTY);
 }
 
 /** The asset's current id: `assetId` itself unless an admin renamed it. */
@@ -106,10 +80,7 @@ export function currentAssetId(renames: ReadonlyMap<string, string>, assetId: st
 
 /** Test hook: seed the cache (`null` clears it back to cold). */
 export function __setAssetIdRenamesForTests(renames: Record<string, string> | null): void {
-    snapshot = renames ? toSnapshot(Object.entries(renames).map(([from, to]) => ({ from, to }))) : null;
-    loadedAtMs = renames ? Date.now() : 0;
-    inflight = null;
-    lastFailureAtMs = 0;
+    cache.setForTests(renames ? toSnapshot(Object.entries(renames).map(([from, to]) => ({ from, to }))) : null);
 }
 
 /** Test hook: swap the loader (`null` restores the Cloud Run query). */

@@ -46,7 +46,7 @@ export const GET = route(
                 const curatedId = normalizeCuratedSlug(slug);
                 if (curatedId) {
                     const meta = yield* curatedListMeta(curatedId);
-                    const { addresses } = yield* Effect.tryPromise(() => getEffectiveCuratedAddresses(curatedId));
+                    const { addresses } = yield* getEffectiveCuratedAddresses(curatedId);
                     const visible = visibleListMints(addresses, advisories);
                     const page = visible.slice(offset, offset + limit);
                     const tokens = yield* hydrateCuratedMints(page, offset, { advisories });

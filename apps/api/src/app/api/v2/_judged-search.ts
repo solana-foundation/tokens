@@ -290,7 +290,7 @@ export function judgeEnriched(
     policy: PolicyDocument,
     limit: number,
 ): Effect.Effect<{ results: JudgedToken[]; suppressed: SuppressedToken[] }, never> {
-    return Effect.promise(() => getProtectedSymbolIndex()).pipe(
+    return getProtectedSymbolIndex().pipe(
         Effect.map(protectedIndex =>
             judgeCandidates(candidates, interpretation, policy, protectedIndex, { nowMs: Date.now(), limit }),
         ),

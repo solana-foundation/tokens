@@ -7,6 +7,8 @@
  * protected symbol while the protected mint is a *different* token.
  */
 
+import { Cause, Effect } from 'effect';
+
 import { getVariantByMint, listAssets } from '@tokens/asset-registry';
 
 import { getCuratedMembershipSnapshot } from '@/lib/curated-membership';
@@ -125,22 +127,27 @@ function buildProtectedSymbolIndex(snapshot: CuratedMembershipSnapshot | null): 
  * DB-backed curated membership + compiled registry identity. A membership
  * failure degrades to a registry-only index (never an empty one).
  */
-export async function getProtectedSymbolIndex(): Promise<ProtectedSymbolIndex> {
-    const snapshot = await getCuratedMembershipSnapshot().catch((error: unknown) => {
-        console.error('[judgment] protected symbols: curated membership unavailable', error);
-        return null;
-    });
+export function getProtectedSymbolIndex(): Effect.Effect<ProtectedSymbolIndex, never> {
+    return getCuratedMembershipSnapshot().pipe(
+        Effect.catchCause(cause =>
+            Effect.sync(() => {
+                console.error('[judgment] protected symbols: curated membership unavailable', Cause.squash(cause));
+                return null;
+            }),
+        ),
+        Effect.map(snapshot => {
+            const loadedAt = snapshot?.loadedAt ?? 0;
+            if (cachedIndex && cachedIndexLoadedAt === loadedAt) return cachedIndex;
 
-    const loadedAt = snapshot?.loadedAt ?? 0;
-    if (cachedIndex && cachedIndexLoadedAt === loadedAt) return cachedIndex;
-
-    const index = buildProtectedSymbolIndex(snapshot);
-    // Keep a registry-only index only until a snapshot-backed one exists.
-    if (snapshot || !cachedIndex) {
-        cachedIndex = index;
-        cachedIndexLoadedAt = loadedAt;
-    }
-    return cachedIndex ?? index;
+            const index = buildProtectedSymbolIndex(snapshot);
+            // Keep a registry-only index only until a snapshot-backed one exists.
+            if (snapshot || !cachedIndex) {
+                cachedIndex = index;
+                cachedIndexLoadedAt = loadedAt;
+            }
+            return cachedIndex ?? index;
+        }),
+    );
 }
 
 /** Test seam: inject a custom index (pure pipeline stays network/registry free). */

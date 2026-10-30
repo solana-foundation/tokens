@@ -331,9 +331,7 @@ export const GET = route(
             // Registry-derived addresses are computed locally in both paths — the
             // registry is a compiled artifact shipped with the app and doesn't
             // require a Cloud Run round-trip.
-            const { addresses: memberMints, sanctumLstMints } = yield* Effect.tryPromise(() =>
-                getEffectiveCuratedAddresses(listId),
-            );
+            const { addresses: memberMints, sanctumLstMints } = yield* getEffectiveCuratedAddresses(listId);
             const memberAssetIds = memberMints.map(mint => {
                 if (sanctumLstMints.has(mint)) return 'solana';
                 const registryMatch = getVariantByMint(mint);

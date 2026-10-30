@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it } from 'bun:test';
+import { Effect } from 'effect';
 
 import type { CuratedMembershipSnapshot } from '@/lib/cloudrun';
 import { __setCuratedMembershipSnapshotForTests } from '@/lib/curated-membership';
@@ -73,7 +74,7 @@ describe('getProtectedSymbolIndex', () => {
             }),
         );
 
-        const realIndex = await getProtectedSymbolIndex();
+        const realIndex = await Effect.runPromise(getProtectedSymbolIndex());
         expect(realIndex.size).toBeGreaterThan(50);
         expect(realIndex.has('USDC')).toBe(true);
         expect(realIndex.has('SOL')).toBe(true);
@@ -93,7 +94,7 @@ describe('getProtectedSymbolIndex', () => {
             }),
         );
 
-        const realIndex = await getProtectedSymbolIndex();
+        const realIndex = await Effect.runPromise(getProtectedSymbolIndex());
         const entry = realIndex.get('NEWCO');
         expect(entry).toBeDefined();
         expect(entry?.mints.has(newcoMint)).toBe(true);

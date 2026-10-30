@@ -82,9 +82,7 @@ export const GET = route(
                 tokenAddress: pickAnyPlatformAddress(coinDoc.platforms) ?? coinDoc.id,
             };
             // Curated exemptions only apply when the coin maps to a Solana mint.
-            marketScoreInput.curatedListSlugs = yield* Effect.promise(() =>
-                getCuratedListSlugsForMint(marketScoreInput.tokenAddress),
-            );
+            marketScoreInput.curatedListSlugs = yield* getCuratedListSlugsForMint(marketScoreInput.tokenAddress);
 
             return {
                 ok: true,

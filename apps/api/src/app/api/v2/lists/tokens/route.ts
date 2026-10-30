@@ -39,10 +39,7 @@ function resolveCurated(
 ) {
     return Effect.gen(function* () {
         const meta = yield* curatedListMeta(curatedId);
-        const { addresses } = yield* Effect.tryPromise({
-            try: () => getEffectiveCuratedAddresses(curatedId),
-            catch: error => (error instanceof Error ? error : new Error(String(error))),
-        });
+        const { addresses } = yield* getEffectiveCuratedAddresses(curatedId);
         // `blocked` mints are hidden from list surfaces; drop them here so the
         // union, its `total`, and per-list `tokenCount` agree.
         const visible = visibleListMints(addresses, advisories);
