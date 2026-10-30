@@ -712,7 +712,7 @@ jobs:
               # A burst, not one request: Cloud Run's frontend has dropped ~5%
               # of calls to a fresh revision with its own 404 (2026-10-30).
               scripts/probe-cloudrun-revision.sh "$tag_url" 40 \
-                || fail_and_rollback "$stage" "candidate /health probe failed (see the run log for the codes)"
+                || fail_and_rollback "$stage" "candidate /health probe failed (see the run log for the status)"
               window=$(( now - start + 90 ))
               fails=$(loki_count "sum(count_over_time({service=\"tokens-smoke\"} | json | event=\`smoke_canary_summary\` | failed_any = \`true\` [${window}s]))")
               [ -n "$fails" ] || fail_and_rollback "$stage" "smoke-canary query failed (Loki unreachable after 3 attempts)"

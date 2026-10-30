@@ -94,6 +94,10 @@ jobs:
             svc="tokens-${{ inputs.service }}-${{ inputs.env }}-us"
             tag="cand-${GITHUB_SHA:0:12}"
             gc() { gcloud run services "$@" --region=${{ env.GCP_REGION }} --project=${{ env.GCP_PROJECT }}; }
+            # The "Remove candidate tag" step below drops the tag however this
+            # step ends (probe failure, describe/traffic errors, cancellation),
+            # so a failed deploy cannot leave a warm tagged revision behind.
+            { echo "CANDIDATE_SERVICE=$svc"; echo "CANDIDATE_TAG=$tag"; } >> "$GITHUB_ENV"
             gcloud run deploy "$svc" \
               --image="$IMAGE" \
               --region=${{ env.GCP_REGION }} \
@@ -110,12 +114,10 @@ jobs:
               exit 1
             fi
             if ! scripts/probe-cloudrun-revision.sh "$tag_url" 100; then
-              gc update-traffic "$svc" --remove-tags="$tag" --quiet || true
               echo "::error::$svc: revision $rev failed the pre-traffic probe (see above); traffic left on the previous revision. Investigate, then re-run this deploy."
               exit 1
             fi
             gc update-traffic "$svc" --to-revisions="$rev=100" --quiet
-            gc update-traffic "$svc" --remove-tags="$tag" --quiet || true
             {
               echo "### $svc"
               echo "Revision \`$rev\` passed 100/100 frontend probes and now serves 100% of traffic."
@@ -128,6 +130,25 @@ jobs:
             # 25, so the API's resilience-<sha12> tag (23) does not fit here.
             if [ "${{ inputs.env }}" = "prd" ]; then worker_traffic+=(--no-traffic --tag="res-${GITHUB_SHA:0:12}"); fi
             gcloud run deploy "$jobs_service" --image="$IMAGE" --region=${{ env.GCP_REGION }} --project=${{ env.GCP_PROJECT }} --update-env-vars=SERVICE_ROLE=worker,PG_POOL_MAX=8,PG_CONNECT_TIMEOUT=3 "${worker_traffic[@]}" --quiet
+          fi
+
+      - name: Remove candidate tag
+        # Runs even when the deploy step failed or the run was cancelled. A
+        # tagged revision on a service with minScale stays warm forever and
+        # reserves subnet IPs (see #213/#214), so never leave one behind.
+        if: always() && env.CANDIDATE_TAG != ''
+        run: |
+          set -euo pipefail
+          tagged=$(gcloud run services describe "$CANDIDATE_SERVICE" --region=${{ env.GCP_REGION }} --project=${{ env.GCP_PROJECT }} --format=json 2>/dev/null \
+            | jq -r --arg t "$CANDIDATE_TAG" '[.status.traffic[]? | select(.tag == $t)] | length' || echo 0)
+          if [ "$tagged" = "0" ]; then
+            echo "$CANDIDATE_SERVICE: tag $CANDIDATE_TAG not present, nothing to clean up"
+            exit 0
+          fi
+          if gcloud run services update-traffic "$CANDIDATE_SERVICE" --region=${{ env.GCP_REGION }} --project=${{ env.GCP_PROJECT }} --remove-tags="$CANDIDATE_TAG" --quiet; then
+            echo "$CANDIDATE_SERVICE: removed tag $CANDIDATE_TAG"
+          else
+            echo "::warning::$CANDIDATE_SERVICE: could not remove tag $CANDIDATE_TAG; remove it by hand so the revision can scale to zero."
           fi
 
       - name: Notify Slack
