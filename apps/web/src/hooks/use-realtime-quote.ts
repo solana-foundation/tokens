@@ -1,11 +1,16 @@
 'use client';
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
-import { getPythFeedMapping } from '@/lib/realtime-prices/pyth-feed-mapping';
-import { resolveHermesCryptoUsdFeedId } from '@/lib/realtime-prices/pyth-feed-resolver';
-import { subscribeHermesPriceStream, type HermesPriceTick } from '@/lib/realtime-prices/pyth-hermes-stream';
 import { setLiveSpotPrice } from '@/lib/realtime-prices/live-spot-store';
+import {
+    resolvePythFeed,
+    resolveRetryDelayMs,
+    type ResolvedPythFeedStatus,
+} from '@/lib/realtime-prices/pyth-feed-resolver';
+import type { PythFeedMode } from '@/lib/realtime-prices/pyth-feed-selection';
+import { subscribePythFeed } from '@/lib/realtime-prices/pyth-pro-client';
+import type { PythUnavailableReason } from '@/lib/realtime-prices/pyth-pro-protocol';
 
 const UI_THROTTLE_MS = 1_000;
 const REALTIME_STALE_MS = 7_500;
@@ -16,10 +21,14 @@ export interface UseRealtimeQuoteArgs {
      * This keeps live prices scoped and prevents unrelated rerenders.
      */
     quoteKey: string;
-    coingeckoId?: string | null;
+    /** Ticker to resolve on Pyth: the asset symbol (canonical) or the token's own symbol (variant). */
     symbol?: string;
+    /** Asset category; picks the Pyth namespace (Crypto, Equity.US, Metal, ...). */
+    category?: string | null;
+    /** Canonical assets resolve by category; variants are always the token's own crypto feed. */
+    mode?: PythFeedMode;
     enabled?: boolean;
-    /** If false, do not start the Hermes stream yet. */
+    /** If false, do not open the price stream yet. */
     streamEnabled?: boolean;
     /** Optional warm-start (e.g. cached price/DB price) to seed the live store. */
     seedPriceUsd?: number | null;
@@ -27,10 +36,15 @@ export interface UseRealtimeQuoteArgs {
 
 export type RealtimeQuoteStatusKind = 'realtime' | 'last-known' | 'fallback' | 'disabled';
 
+export type RealtimeQuoteReason =
+    Exclude<ResolvedPythFeedStatus, 'ok'> | PythUnavailableReason | 'market_closed' | 'disconnected' | 'stale';
+
 export interface RealtimeQuoteStatus {
     kind: RealtimeQuoteStatusKind;
     updatedAtMs: number | null;
     source: 'pyth' | 'seed' | 'none';
+    /** Why the quote is not realtime, when known. */
+    reason?: RealtimeQuoteReason;
 }
 
 const INITIAL_STATUS: RealtimeQuoteStatus = { kind: 'fallback', updatedAtMs: null, source: 'seed' };
@@ -44,52 +58,80 @@ function shouldAcceptSeed(priceUsd: number | null | undefined): priceUsd is numb
     return typeof priceUsd === 'number' && Number.isFinite(priceUsd) && priceUsd > 0;
 }
 
+interface ResolvedFeedState {
+    key: string;
+    feedId: number | null;
+    reason: RealtimeQuoteReason | null;
+}
+
 export function useRealtimeQuote(args: UseRealtimeQuoteArgs): RealtimeQuoteStatus {
     const enabled = (args.enabled ?? true) && normalizeText(args.quoteKey).length > 0;
     const streamEnabled = enabled && (args.streamEnabled ?? true);
 
-    const coingeckoId = normalizeText(args.coingeckoId ?? undefined);
-    const mapping = useMemo(() => (coingeckoId ? getPythFeedMapping(coingeckoId) : null), [coingeckoId]);
+    const symbolUpper = normalizeText(args.symbol).toUpperCase();
+    const category = normalizeText(args.category).toLowerCase();
+    const mode: PythFeedMode = args.mode ?? 'canonical';
+    const resolveKey = `${mode}:${category}:${symbolUpper}`;
 
-    const symbolUpper = normalizeText(args.symbol ?? undefined).toUpperCase();
-    const [resolvedFeed, setResolvedFeed] = useState<{ symbolUpper: string; feedId: string } | null>(null);
-
-    const feedId = mapping?.hermesFeedId ?? (resolvedFeed?.symbolUpper === symbolUpper ? resolvedFeed.feedId : null);
+    const [resolved, setResolved] = useState<ResolvedFeedState | null>(null);
+    const feedId = resolved?.key === resolveKey ? resolved.feedId : null;
+    const resolveReason = resolved?.key === resolveKey ? resolved.reason : null;
 
     // `disabled` is derived from `enabled` at return time; state only tracks the live quote.
     const [status, setStatus] = useState<RealtimeQuoteStatus>(INITIAL_STATUS);
 
-    const latestTickRef = useRef<HermesPriceTick | null>(null);
     const lastRealtimeTickAtRef = useRef<number | null>(null);
     const lastUiUpdateAtRef = useRef(0);
 
     // Reset live-status bookkeeping whenever the quote identity (or enablement) changes.
     useEffect(() => {
-        latestTickRef.current = null;
         lastRealtimeTickAtRef.current = null;
         lastUiUpdateAtRef.current = 0;
         setStatus(INITIAL_STATUS);
-    }, [enabled, args.quoteKey, coingeckoId, symbolUpper]);
+    }, [enabled, args.quoteKey, resolveKey]);
 
-    // Resolve feed id when no static mapping is available.
+    // Resolve the Pyth feed for this ticker/category.
     useEffect(() => {
-        if (!enabled || mapping || !symbolUpper) {
-            setResolvedFeed(null);
+        if (!enabled || !symbolUpper) {
+            setResolved(null);
             return;
         }
-        if (resolvedFeed?.symbolUpper === symbolUpper) return;
 
         let cancelled = false;
-        void (async () => {
-            const next = await resolveHermesCryptoUsdFeedId(symbolUpper);
+        let retryTimer: number | null = null;
+        let attempt = 0;
+
+        const run = async () => {
+            const result = await resolvePythFeed({ symbol: symbolUpper, category: category || null, mode });
             if (cancelled) return;
-            setResolvedFeed(next ? { symbolUpper, feedId: next } : null);
-        })();
+            const ok = result.status === 'ok' && result.feed;
+            setResolved({
+                key: resolveKey,
+                feedId: ok ? result.feed!.feedId : null,
+                reason: result.status === 'ok' ? null : result.status,
+            });
+            // A transient failure (network, Pyth search timeout) is retried with backoff while
+            // the page stays open; definitive answers (not found, not entitled) are not.
+            if (result.status === 'error') {
+                const delay = resolveRetryDelayMs(attempt++);
+                retryTimer = window.setTimeout(() => void run(), delay);
+            }
+        };
+        void run();
 
         return () => {
             cancelled = true;
+            if (retryTimer != null) window.clearTimeout(retryTimer);
         };
-    }, [enabled, mapping, symbolUpper, resolvedFeed?.symbolUpper]);
+    }, [enabled, symbolUpper, category, mode, resolveKey]);
+
+    // Surface resolution failures (no feed, plan not entitled, key missing) on the status.
+    useEffect(() => {
+        if (!enabled || !resolveReason) return;
+        setStatus(prev =>
+            prev.kind === 'realtime' || prev.reason === resolveReason ? prev : { ...prev, reason: resolveReason },
+        );
+    }, [enabled, resolveReason]);
 
     // Warm-start the live store so UI can read a value before realtime connects.
     useEffect(() => {
@@ -98,34 +140,54 @@ export function useRealtimeQuote(args: UseRealtimeQuoteArgs): RealtimeQuoteStatu
 
         const now = Date.now();
         setLiveSpotPrice(args.quoteKey, { priceUsd: args.seedPriceUsd, updatedAtMs: now, source: 'seed' });
-        setStatus(prev => (prev.kind === 'realtime' ? prev : { kind: 'last-known', updatedAtMs: now, source: 'seed' }));
+        setStatus(prev =>
+            prev.kind === 'realtime'
+                ? prev
+                : { kind: 'last-known', updatedAtMs: now, source: 'seed', reason: prev.reason },
+        );
     }, [enabled, args.quoteKey, args.seedPriceUsd]);
 
     // Stream realtime ticks into the live store (throttled).
     useEffect(() => {
         if (!streamEnabled) return;
-        if (!feedId) return;
+        if (feedId == null) return;
 
-        const unsubscribe = subscribeHermesPriceStream({
-            feedIds: [feedId],
-            seedLatest: true,
-            onError: () => {
+        const quoteKey = args.quoteKey;
+        const unsubscribe = subscribePythFeed(feedId, {
+            onStatus: next => {
+                if (next.kind === 'subscribed') return;
+                const reason: RealtimeQuoteReason = next.kind === 'unavailable' ? next.reason : 'disconnected';
                 setStatus(prev =>
-                    prev.kind === 'fallback'
+                    prev.kind === 'fallback' && prev.reason === reason
                         ? prev
-                        : { kind: 'fallback', updatedAtMs: prev.updatedAtMs, source: prev.source },
+                        : {
+                              kind: prev.kind === 'realtime' ? 'fallback' : prev.kind,
+                              updatedAtMs: prev.updatedAtMs,
+                              source: prev.source,
+                              reason,
+                          },
                 );
             },
             onTick: tick => {
-                latestTickRef.current = tick;
-                lastRealtimeTickAtRef.current = Date.now();
-
                 const now = Date.now();
+                const updatedAtMs = tick.publishTimeMs ?? now;
+
+                // Outside market hours Pyth keeps repeating the last session price: show it as last-known, not live.
+                if (tick.marketSession === 'closed') {
+                    setLiveSpotPrice(quoteKey, { priceUsd: tick.priceUsd, updatedAtMs, source: 'last-known' });
+                    setStatus(prev =>
+                        prev.kind === 'last-known' && prev.reason === 'market_closed'
+                            ? prev
+                            : { kind: 'last-known', updatedAtMs, source: 'pyth', reason: 'market_closed' },
+                    );
+                    return;
+                }
+
+                lastRealtimeTickAtRef.current = now;
                 if (now - lastUiUpdateAtRef.current < UI_THROTTLE_MS) return;
                 lastUiUpdateAtRef.current = now;
 
-                const updatedAtMs = tick.publishTimeMs ?? now;
-                setLiveSpotPrice(args.quoteKey, { priceUsd: tick.priceUsd, updatedAtMs, source: 'pyth' });
+                setLiveSpotPrice(quoteKey, { priceUsd: tick.priceUsd, updatedAtMs, source: 'pyth' });
                 setStatus(prev =>
                     prev.kind === 'realtime' ? prev : { kind: 'realtime', updatedAtMs, source: 'pyth' },
                 );
@@ -138,7 +200,7 @@ export function useRealtimeQuote(args: UseRealtimeQuoteArgs): RealtimeQuoteStatu
     // Degrade realtime status if ticks go stale.
     useEffect(() => {
         if (!streamEnabled) return;
-        if (!feedId) return;
+        if (feedId == null) return;
 
         const intervalId = window.setInterval(() => {
             const lastAt = lastRealtimeTickAtRef.current;
@@ -147,7 +209,7 @@ export function useRealtimeQuote(args: UseRealtimeQuoteArgs): RealtimeQuoteStatu
 
             setStatus(prev => {
                 if (prev.kind !== 'realtime') return prev;
-                return { kind: 'fallback', updatedAtMs: prev.updatedAtMs, source: prev.source };
+                return { kind: 'fallback', updatedAtMs: prev.updatedAtMs, source: prev.source, reason: 'stale' };
             });
         }, 1_000);
 

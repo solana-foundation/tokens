@@ -8,6 +8,7 @@ interface AssetPriceChartSectionProps {
     mint?: string;
     mode?: 'canonical' | 'variant';
     coingeckoId?: string;
+    category?: string;
     symbol: string;
     realtimeSymbol?: string;
     tokenName?: string;
@@ -27,6 +28,7 @@ export function AssetPriceChartSection({
     mint,
     mode,
     coingeckoId,
+    category,
     symbol,
     realtimeSymbol,
     tokenName,
@@ -41,6 +43,7 @@ export function AssetPriceChartSection({
             mint={mint}
             mode={mode}
             coingeckoId={coingeckoId}
+            category={category}
             symbol={symbol}
             realtimeSymbol={realtimeSymbol}
             tokenName={tokenName}

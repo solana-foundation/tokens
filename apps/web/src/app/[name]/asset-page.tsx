@@ -894,6 +894,7 @@ async function AssetPageContent(props: AssetPageProps) {
     const {
         assetRef,
         canonicalAssetId,
+        category,
         coingeckoId,
         assetDescription,
         assetChains,
@@ -1035,6 +1036,7 @@ async function AssetPageContent(props: AssetPageProps) {
                 <AssetPriceChartSection
                     assetId={canonicalAssetId}
                     coingeckoId={coingeckoId ?? undefined}
+                    category={category}
                     mint={caps.chart === 'variant' ? activeSolanaMint : undefined}
                     mode={caps.chart}
                     symbol={

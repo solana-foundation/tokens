@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useSyncExternalStore } from 'react';
+import { useCallback, useEffect, useState, useSyncExternalStore } from 'react';
 
 export type LiveSpotSource = 'pyth' | 'seed' | 'last-known';
 
@@ -70,5 +70,38 @@ export function useLiveSpotPrice(key: string): LiveSpotPrice | null {
         subscribe,
         () => getLiveSpotPrice(k),
         () => null,
+    );
+}
+
+/**
+ * The live price for `key` only while it is fresh: a `pyth` tick no older than
+ * `maxAgeMs`. Unlike reading the store and checking the age inline, this hook
+ * schedules a re-render at the moment the tick expires, so a row whose stream
+ * went quiet drops back to its snapshot instead of pinning the last live value.
+ */
+export function useFreshLiveSpotPrice(key: string, maxAgeMs: number): number | null {
+    const liveSpot = useLiveSpotPrice(key);
+    const [, forceRender] = useState(0);
+
+    const expiresAtMs = liveSpot && liveSpot.source === 'pyth' ? liveSpot.updatedAtMs + maxAgeMs : null;
+    useEffect(() => {
+        if (expiresAtMs == null) return;
+        const delay = expiresAtMs - Date.now();
+        if (delay <= 0) return;
+        const id = window.setTimeout(() => forceRender(n => n + 1), delay + 1);
+        return () => window.clearTimeout(id);
+    }, [expiresAtMs]);
+
+    return isFreshLiveSpot(liveSpot, maxAgeMs) ? liveSpot!.priceUsd : null;
+}
+
+/** Synchronous freshness check for non-React callers (e.g. table sorting). */
+export function isFreshLiveSpot(liveSpot: LiveSpotPrice | null, maxAgeMs: number): boolean {
+    return (
+        !!liveSpot &&
+        liveSpot.source === 'pyth' &&
+        Number.isFinite(liveSpot.priceUsd) &&
+        liveSpot.priceUsd > 0 &&
+        Date.now() - liveSpot.updatedAtMs <= maxAgeMs
     );
 }

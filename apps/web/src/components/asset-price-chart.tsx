@@ -8,7 +8,7 @@ import { useAutoChartRange } from '@/components/charts/use-auto-chart-range';
 import { useAssetOHLCV } from '@/hooks/queries/use-asset-ohlcv';
 import { useAssetPriceChart } from '@/hooks/queries/use-asset-price-chart';
 import { useRealtimeQuote } from '@/hooks/use-realtime-quote';
-import { useLiveSpotPrice } from '@/lib/realtime-prices/live-spot-store';
+import { useFreshLiveSpotPrice, useLiveSpotPrice } from '@/lib/realtime-prices/live-spot-store';
 import { trackEvent } from '@/lib/posthog-client';
 
 interface AssetPriceChartProps {
@@ -16,6 +16,7 @@ interface AssetPriceChartProps {
     mint?: string;
     mode?: 'canonical' | 'variant';
     coingeckoId?: string;
+    category?: string;
     symbol: string;
     realtimeSymbol?: string;
     tokenName?: string;
@@ -30,6 +31,7 @@ export const AssetPriceChart = memo(function AssetPriceChart({
     mint,
     mode = 'variant',
     coingeckoId,
+    category,
     symbol,
     realtimeSymbol,
     tokenName,
@@ -79,23 +81,18 @@ export const AssetPriceChart = memo(function AssetPriceChart({
 
     useRealtimeQuote({
         quoteKey,
-        coingeckoId: isCanonical ? coingeckoId : null,
         symbol: shouldEnableRealtime ? realtimeSymbolTrimmed || symbol : undefined,
+        category,
+        mode: isCanonical ? 'canonical' : 'variant',
         seedPriceUsd,
         enabled: shouldEnableRealtime,
         streamEnabled: shouldEnableRealtime,
     });
 
     const liveSpot = useLiveSpotPrice(quoteKey);
-    const livePrice =
-        shouldEnableRealtime &&
-        liveSpot &&
-        liveSpot.source === 'pyth' &&
-        Date.now() - liveSpot.updatedAtMs <= 10_000 &&
-        Number.isFinite(liveSpot.priceUsd) &&
-        liveSpot.priceUsd > 0
-            ? liveSpot.priceUsd
-            : null;
+    // Re-renders when the tick ages out, so a quiet stream falls back instead of pinning.
+    const freshLivePrice = useFreshLiveSpotPrice(quoteKey, 10_000);
+    const livePrice = shouldEnableRealtime ? freshLivePrice : null;
     const realtimePoint = useMemo(() => {
         if (livePrice === null) return null;
         const time = liveSpot ? Math.floor(liveSpot.updatedAtMs / 1000) : null;
